@@ -197,14 +197,20 @@ class ServerOS:
         *,
         state_dir: str | Path | None = None,
         artifacts_root: str | Path | None = None,
+        owner_client=None,
+        owner_envelope=None,
     ) -> None:
+        selected = state_dir if state_dir is not None else (store.state_dir if store is not None else default_state_dir())
+        from .owner_client import OwnerRouter
+        self._owner_router = OwnerRouter(state_dir=selected, owner_client=owner_client,
+                                         envelope=owner_envelope, artifacts_root=artifacts_root)
         if store is None:
-            store = ServerOSStore(state_dir if state_dir is not None else default_state_dir())
+            store = ServerOSStore(selected, read_only=owner_client is not None or bool(owner_envelope))
         self.store = store
         self.artifacts_root = (
-            default_artifacts_dir() if artifacts_root is None else Path(artifacts_root)
+            (None if owner_client is not None or owner_envelope else default_artifacts_dir()) if artifacts_root is None else Path(artifacts_root)
         )
-        if not self.artifacts_root.is_absolute():
+        if self.artifacts_root is not None and not self.artifacts_root.is_absolute():
             raise ValueError("artifacts root must be absolute")
 
     def register_project(self, project: str, prefix: str) -> None:
@@ -216,7 +222,25 @@ class ServerOS:
         return self.store.create_item(WorkItem(item_id, project, title, kind, locator))
 
     def add_activity(self, item_id: str, activity_id: str, kind: str, needs: list[str] | None = None) -> Activity:
+        answer = self._owner_router.mutate(item_id, "activity.add", activity_ref=activity_id, kind=kind, needs=needs or [])
+        if answer is not None: return answer
         return self.store.add_activity(Activity(item_id, activity_id, kind), needs)
+
+    def transition_item(self, item_id, target, note="", **side):
+        answer = self._owner_router.mutate(item_id, "item.transition", target=target, note=note, **side)
+        return answer if answer is not None else self.store.transition_item(item_id, target, note=note, **side)
+
+    def reopen_item(self, item_id, reason, source):
+        answer = self._owner_router.mutate(item_id, "item.reopen", reason=reason, source=source)
+        return answer if answer is not None else self.store.reopen_item(item_id, reason, source)
+
+    def set_outcome(self, item_id, outcome):
+        answer = self._owner_router.mutate(item_id, "item.outcome", outcome=outcome)
+        return answer if answer is not None else self.store.set_outcome(item_id, outcome)
+
+    def transition_activity(self, item_id, activity_id, target):
+        answer = self._owner_router.mutate(item_id, "activity.transition", activity_ref=activity_id, target=target)
+        return answer if answer is not None else self.store.transition_activity(item_id, activity_id, target)
 
     def attach_context(
         self,
@@ -228,17 +252,32 @@ class ServerOS:
         revision: str,
         worktree: str = "",
         dirty: bool = False,
+        checkpoint_ref=None,
     ) -> ExecutionContext:
+        data = {"activity_ref":activity_id, "repo":repo, "mode":mode, "checkpoint_ref":checkpoint_ref}
+        if revision: data["expected_revision"] = revision
+        if worktree: data["expected_worktree"] = worktree
+        if dirty: data["expected_dirty"] = dirty
+        answer = self._owner_router.mutate(item_id, "context.attach", **data)
+        if answer is not None: return answer
         context = ExecutionContext(item_id, activity_id, repo, ContextMode(mode), revision, worktree, dirty)
         return self.store.attach_context(context)
 
     def begin_run(self, item_id: str, activity_id: str, worker: str, idempotency_key: str):
+        answer = self._owner_router.mutate(item_id, "run.begin", activity_ref=activity_id, worker_ref=worker, idempotency_key=idempotency_key)
+        if answer is not None: return answer
         return self.store.begin_run(item_id, activity_id, worker, idempotency_key, self.artifacts_root)
 
     def advance_run(self, item_id: str, run_id: str, state: RunState | str):
+        answer = self._owner_router.mutate(item_id, "run.advance", run_ref=run_id, target=state)
+        if answer is not None: return answer
         return self.store.advance_run(item_id, run_id, state)
 
-    def cancel_run(self, item_id: str, run_id: str, *, reason: str, actor: str, **options):
+    def cancel_run(self, item_id: str, run_id: str, *, reason: str, actor: str = None, **options):
+        if actor is not None and self._owner_router.client is not None:
+            raise ValueError("owner derives actor from current trusted context")
+        answer = self._owner_router.mutate(item_id, "run.terminate", run_ref=run_id, reason=reason, **options)
+        if answer is not None: return answer
         return self.store.cancel_run(item_id, run_id, reason=reason, actor=actor, **options)
 
     def resume_run(self, item_id: str, run_id: str):

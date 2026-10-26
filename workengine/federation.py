@@ -1,7 +1,7 @@
 """Validation and recoverable publication of metadata-only inventories."""
 from __future__ import annotations
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack, nullcontext
 from datetime import datetime
 import fcntl
 import hashlib
@@ -421,9 +421,35 @@ def inventory(domain, source):
     return {'domain':domain,'objects':len(rows),'sha256':digest}
 
 def publish_inventory(domain, source, target, evidence_run, receipt_recorder, receipt_lookup=None):
+    # Actual Work producer: Work BEGIN IMMEDIATE -> publication flock. Keep
+    # the flock through SQL commit and only then delete the durable journal.
+    # Generic recorders retain the existing standalone publication protocol.
+    from .store import ServerOSStore
+    store = getattr(receipt_recorder, "__self__", None)
+    if isinstance(store, ServerOSStore) and getattr(receipt_recorder, "__func__", None) is ServerOSStore.record_publication_receipt:
+        cleanup = []
+        with ExitStack() as locks:
+            with store.transaction(immediate=True) as conn:
+                item, _ = store._resolve_evidence_run_tx(conn, evidence_run)
+                store._refuse_managed_effect(conn, item_ref=item)
+                target = _canonical_target(target)
+                locks.enter_context(_publication_lock(target))
+                def record(*args):
+                    return store._record_publication_receipt_tx(conn, *args)
+                def lookup(domain, locator, evidence):
+                    row = conn.execute("SELECT * FROM publication_receipts WHERE domain=? AND locator=? AND evidence_run=?", (domain, locator, evidence)).fetchone()
+                    return dict(row) if row else None
+                result = _publish_inventory(domain, source, target, evidence_run, record, lookup, locked=True, cleanup=cleanup)
+            for pending in cleanup:
+                _remove_pending(*pending)
+        return result
+    return _publish_inventory(domain, source, target, evidence_run, receipt_recorder, receipt_lookup)
+
+
+def _publish_inventory(domain, source, target, evidence_run, receipt_recorder, receipt_lookup=None, *, locked=False, cleanup=None):
     rows, payload, digest = _prepare_inventory(domain, source)
     target=_canonical_target(target)
-    with _publication_lock(target):
+    with (nullcontext() if locked else _publication_lock(target)):
         journal=_journal_path(target)
         if os.path.lexists(journal):
             pending, pending_stage, pending_backup=_load_pending(target, domain)
@@ -463,7 +489,12 @@ def publish_inventory(domain, source, target, evidence_run, receipt_recorder, re
                 _restore_pending(target, journal, pending, pending_stage, pending_backup)
                 receipt=None
             if receipt is not None:
-                _remove_pending(journal, pending_stage, pending_backup)
+                if cleanup is not None:
+                    if not same_attempt:
+                        raise ValueError('reconcile the pending publication identity before publishing a different attempt')
+                    cleanup.append((journal, pending_stage, pending_backup))
+                else:
+                    _remove_pending(journal, pending_stage, pending_backup)
                 if same_attempt:
                     return {
                         'domain':domain, 'objects':len(rows), 'locator':str(target),
@@ -508,7 +539,10 @@ def publish_inventory(domain, source, target, evidence_run, receipt_recorder, re
             if not _journal_path(target).exists() and backup is not None:
                 backup.unlink(missing_ok=True)
             raise
-        _remove_pending(journal, staged, backup)
+        if cleanup is not None:
+            cleanup.append((journal, staged, backup))
+        else:
+            _remove_pending(journal, staged, backup)
     return {
         'domain':domain, 'objects':len(rows), 'locator':str(target),
         'sha256':digest, 'evidence_run':evidence_run, 'receipt':receipt,

@@ -157,6 +157,9 @@ class MigrationManager:
         manifest = intent["manifest"]
         cursor = intent["cursor"]
         with self.store.transaction(immediate=True) as conn:
+            self.store._refuse_managed_effect(conn, project=project)
+            if intent["status"] == "COMPENSATING":
+                raise MigrationError("compensation must finish before applying")
             conn.execute(
                 "UPDATE migration_intents SET status='APPLYING',updated_at=? WHERE project=?",
                 (now_iso(), project),
@@ -215,6 +218,13 @@ class MigrationManager:
     def compensate(self, project: str) -> dict:
         intent = self.inspect(project)
         operations = intent["manifest"]["operations"]
+        # Durable state fences first owner enrollment across every per-step
+        # commit and process crash; rollback cannot undo a filesystem move.
+        with self.store.transaction(immediate=True) as conn:
+            self.store._refuse_managed_effect(conn, project=project)
+            conn.execute(
+                "UPDATE migration_intents SET status='COMPENSATING',updated_at=? WHERE project=?",
+                (now_iso(), project))
         for index in reversed(range(intent["cursor"])):
             operation = operations[index]
             source = Path(operation["source"])
@@ -226,6 +236,9 @@ class MigrationManager:
                 _move_verified(target, source, operation["sha256"])
             else:
                 raise MigrationError(f"operation {index}: cannot compensate ambiguous state")
+            with self.store.transaction(immediate=True) as conn:
+                conn.execute("UPDATE migration_intents SET cursor=?,updated_at=? WHERE project=?",
+                             (index, now_iso(), project))
         with self.store.transaction(immediate=True) as conn:
             conn.execute(
                 "UPDATE migration_intents SET status='COMPENSATED',cursor=0,updated_at=? WHERE project=?",

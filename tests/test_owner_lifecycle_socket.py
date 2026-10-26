@@ -13,6 +13,7 @@ import json
 import shutil
 import socket
 import threading
+import subprocess
 from contextlib import contextmanager
 
 import test_owner_atomic_operations as support
@@ -172,3 +173,183 @@ def test_unknown_reply_keeps_original_operation_key(tmp_path):
         assert seen[0]["params"]["operation_id"] == "retained:key"
     finally:
         listener.close()
+
+
+def test_managed_publication_refuses_before_creating_parent_or_lock(tmp_path):
+    from workengine.federation import publish_inventory
+    from test_owner_work_store_fence import _enroll_fixture
+    world = support.make_world(tmp_path)
+    _, work, _, _ = world
+    work.add_activity(Activity("SRV-0001", "inventory", "inspect"))
+    run = work.begin_run("SRV-0001", "inventory", "worker", "inventory", tmp_path / "artifacts")
+    _enroll_fixture(work, "SRV-0001")
+    source = tmp_path / "inventory.jsonl"
+    source.write_text('{"object_id":"r1","kind":"repository","locator":"fixture","observed_at":"2026-09-09T10:00:00Z"}\n')
+    target = tmp_path / "must-not-exist" / "current.jsonl"
+    with pytest.raises(Exception, match="OWNER_COMMIT_FENCE_REQUIRED"):
+        publish_inventory("github", source, target, "SRV-0001/" + run.id,
+                          work.record_publication_receipt, work.get_publication_receipt)
+    assert not target.parent.exists()
+
+
+@pytest.mark.parametrize("fault", [None, "revision", "wrong_repo", "scope", "expired", "ambiguous", "symlink"])
+def test_context_attach_measures_git_and_uses_original_wake_producer(tmp_path, fault):
+    from workengine.owner_context import _runtime
+    world = support.make_world(tmp_path)
+    daemon, work, context, policy = world
+    policy["actions"].append("engineering.execute")
+    workspace = tmp_path / "workspace"
+    repo = workspace / "worktrees" / "serveros" / "SRV-0001"
+    repo.mkdir(parents=True)
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+    git("init")
+    (repo / "fixture.txt").write_text("fixture")
+    git("add", "fixture.txt")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture")
+    revision = git("rev-parse", "HEAD")
+    catalog = workspace / "ops/workspace/serveros/projects.yaml"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text("projects:\n  serveros:\n    worktrees_under: serveros\n    canonical_repos: [serveros]\n")
+    work.owner_workspace_root = workspace
+    work.owner_artifacts_root = tmp_path / "artifacts"
+    work.owner_continuation_receipts_root = tmp_path / "wake-receipts"
+    work.add_activity(Activity("SRV-0001", "build", "develop"))
+    request = support.issue(world)
+    control = daemon.control_store()
+    with control._mutation():
+        grant = control._data["grants"][request["grant_ref"]]
+        grant["budget"] = {"wall_seconds": 120, "max_attempts": 2, "exhausted": False}
+        grant["engineering"] = {"schema":"serveros/engineering-binding.v1", "worktree":str(repo), "image":"sha256:" + "a" * 64,
+                                "memory_bytes": 67108864, "cpus": 1, "pids_limit": 16}
+        control._flush()
+    wake, continuation = _runtime("wake"), _runtime("continuation")
+    now = support.support.iso(daemon)
+    checkpoint = continuation.build_checkpoint(work_item="SRV-0001", epoch=1, parent_owner="parent:fixture",
+        next_safe_action="inspect the fixture", waiting_on={"kind":"window", "until":support.support.iso(daemon, -1)},
+        write_scope=[str(repo)], now=support.support.iso(daemon, -30))
+    control.put_checkpoint(checkpoint)
+    spend = wake.spending(grant["budget"], item="SRV-0001", grant_ref=request["grant_ref"])
+    key = wake.action_key("SRV-0001", 1, 1)
+    envelope = wake.capability_envelope(checkpoint, grant, request["grant_ref"], attempt=1, key=key, spend=spend,
+                                      now=support.support.iso(daemon, -300) if fault == "expired" else now)
+    wake.write_envelope(wake.envelope_path(work.owner_continuation_receipts_root, key), envelope)
+    if fault == "ambiguous":
+        key2 = wake.action_key("SRV-0001", 1, 2)
+        wake.write_envelope(wake.envelope_path(work.owner_continuation_receipts_root, key2),
+            wake.capability_envelope(checkpoint, grant, request["grant_ref"], attempt=2, key=key2, spend=spend, now=now))
+    if fault == "scope":
+        with control._mutation():
+            control._data["checkpoints"][checkpoint["checkpoint_ref"]]["write_scope"] = [str(tmp_path / "other")]
+            control._flush()
+    if fault == "symlink":
+        moved = workspace / "worktrees" / "moved"
+        repo.rename(moved)
+        repo.symlink_to(moved, target_is_directory=True)
+    with serving(daemon) as client:
+        request = pin(client, request)
+        lease = client.mutate(**request)
+        assert lease["committed"], lease
+        attach = {k:v for k,v in request.items() if k != "ttl_s"}
+        attach.update(verb="context.attach", operation_id="context:1", token=lease["result"]["token"], activity_ref="build",
+                      repo="other" if fault == "wrong_repo" else "serveros", mode="develop",
+                      checkpoint_ref=checkpoint["checkpoint_ref"], expected_revision="f" * 40 if fault == "revision" else revision)
+        answer = client.mutate(**attach)
+        if fault:
+            assert answer["committed"] is False, answer
+            assert work.execution_contexts("SRV-0001", "build") == []
+        else:
+            assert answer["committed"], answer
+            stored = work.execution_contexts("SRV-0001", "build")[0]
+            assert stored.revision == revision and stored.worktree == str(repo) and not stored.dirty
+
+
+def test_control_receipt_replay_still_requires_current_lease(tmp_path):
+    world = support.make_world(tmp_path)
+    daemon, work, _, _ = world
+    request = support.issue(world)
+    acquired = support.call(daemon, "agent.work.mutate", request)
+    operation = {k:v for k,v in request.items() if k not in {"verb", "ttl_s", "expected_store_binding"}}
+    operation.update(operation_id="control:1", token=acquired["result"]["token"], intent={"checkpoint_ref":"fixture"})
+    owner = daemon.owner_work_operations()
+    assert owner.control_commit(operation, peer=support.support.a_peer(), mutation=lambda _: {"bound":True})["committed"]
+    release = {k:v for k,v in request.items() if k != "ttl_s"}
+    release.update(verb="lease.release", operation_id="release:control", token=acquired["result"]["token"])
+    assert support.call(daemon, "agent.work.mutate", release)["committed"]
+    with pytest.raises(ValueError):
+        owner.control_commit(operation, peer=support.support.a_peer(), mutation=lambda _: pytest.fail("replay effect"))
+
+
+def test_partial_cli_envelope_and_owner_refusal_never_fall_back(tmp_path, monkeypatch):
+    world = support.make_world(tmp_path)
+    daemon, work, _, _ = world
+    request = support.issue(world)
+    output = []
+    monkeypatch.setattr(cli, "emit", lambda value, **_: output.append(value))
+    assert cli.main(["--state-dir", str(work.state_dir), "--context-ref", request["context_ref"], "item", "transition", "SRV-0001", "--to", "AVAILABLE"]) == 2
+    assert "OWNER_CONTEXT_REQUIRED" in str(output)
+    with serving(daemon) as client:
+        request = pin(client, request)
+        lease = client.mutate(**request)
+        common = flags(daemon, work, request, lease["result"]["token"] + 1)
+        assert cli.main(common + ["--operation-id", "bad-token", "item", "transition", "SRV-0001", "--to", "AVAILABLE"]) == 2
+    assert work.get_item("SRV-0001").state.value == "INBOX"
+
+
+def test_target_pin_is_rechecked_after_work_lock_acquisition(tmp_path, monkeypatch):
+    world = support.make_world(tmp_path)
+    daemon, work, _, _ = world
+    request = support.issue(world)
+    original = work.transaction
+    @contextmanager
+    def replacement(*args, **kwargs):
+        with original(*args, **kwargs) as conn:
+            work.owner_artifacts_root = tmp_path / "changed-after-lock"
+            yield conn
+    monkeypatch.setattr(work, "transaction", replacement)
+    answer = support.call(daemon, "agent.work.mutate", request)
+    assert answer["committed"] is False and answer["reason"] == "WORK_STORE_MISMATCH"
+    assert work.active_lease("work-write:SRV-0001") is None
+
+
+def test_historical_expired_acquisition_cannot_authorize_new_effect(tmp_path):
+    world = support.make_world(tmp_path)
+    daemon, work, _, _ = world
+    request = support.issue(world)
+    acquired = support.call(daemon, "agent.work.mutate", request)
+    original_now = work.clock()
+    work._clock = lambda: original_now + 121
+    replay = support.call(daemon, "agent.work.mutate", request)
+    assert replay["replayed"] and replay["historical"]
+    mutate = {k:v for k,v in request.items() if k != "ttl_s"}
+    mutate.update(verb="item.transition", operation_id="after-expiry", token=acquired["result"]["token"], target="AVAILABLE")
+    assert support.call(daemon, "agent.work.mutate", mutate)["committed"] is False
+
+
+def test_publication_serializes_first_enrollment(tmp_path, monkeypatch):
+    import workengine.federation as federation
+    world = support.make_world(tmp_path)
+    daemon, work, _, _ = world
+    request = support.issue(world)
+    work.add_activity(Activity("SRV-0001", "inventory", "inspect"))
+    run = work.begin_run("SRV-0001", "inventory", "worker", "inventory", tmp_path / "artifacts")
+    source = tmp_path / "source.jsonl"
+    source.write_text('{"object_id":"r1","kind":"repository","locator":"fixture","observed_at":"2026-09-09T10:00:00Z"}\n')
+    entered, proceed, enrolled = threading.Event(), threading.Event(), threading.Event()
+    original = federation._write_transaction_file
+    def held(*args):
+        entered.set()
+        assert proceed.wait(5)
+        return original(*args)
+    monkeypatch.setattr(federation, "_write_transaction_file", held)
+    results = {}
+    publisher = threading.Thread(target=lambda: results.update(publication=federation.publish_inventory("github", source, tmp_path / "current.jsonl", "SRV-0001/" + run.id, work.record_publication_receipt, work.get_publication_receipt)))
+    publisher.start(); assert entered.wait(5)
+    def acquire():
+        results["acquire"] = support.call(daemon, "agent.work.mutate", request)
+        enrolled.set()
+    writer = threading.Thread(target=acquire); writer.start()
+    assert not enrolled.wait(.05)
+    proceed.set(); publisher.join(5); writer.join(5)
+    assert results["acquire"]["committed"]
+    assert results["publication"]["receipt"]["item_id"] == "SRV-0001"

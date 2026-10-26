@@ -150,7 +150,18 @@ class OwnerWorkOperations:
     """Trusted daemon-side producer. Inputs select references, never identity."""
     BASE = {"context_ref", "grant_ref", "project", "item_ref", "expected_epoch", "operation_id", "verb"}
     ARGUMENTS = {"lease.acquire": {"ttl_s"}, "lease.renew": {"token", "ttl_s"},
-                 "lease.release": {"token"}, "item.transition": {"token", "target"}}
+                 "lease.release": {"token"}, "item.transition": {"token", "target"},
+                 "item.reopen": {"token", "reason", "source"}, "item.outcome": {"token", "outcome"},
+                 "activity.add": {"token", "activity_ref", "kind"},
+                 "activity.transition": {"token", "activity_ref", "target"},
+                 "context.attach": {"token", "activity_ref", "repo", "mode", "checkpoint_ref"},
+                 "run.begin": {"token", "activity_ref", "idempotency_key", "worker_ref"},
+                 "run.advance": {"token", "run_ref", "target"},
+                 "run.terminate": {"token", "run_ref", "reason"}}
+    OPTIONAL = {"item.transition": {"note", "reason", "return_state", "unblock_condition"},
+                "activity.add": {"needs"},
+                "context.attach": {"expected_revision", "expected_worktree", "expected_dirty"},
+                "run.terminate": {"reason_code", "target", "evidence", "operation", "acknowledge_active_worker", "dry_run"}}
 
     def __init__(self, control_store, work_store):
         self.control = control_store
@@ -160,7 +171,7 @@ class OwnerWorkOperations:
         control, policy = _modules()
         now = _iso(self.work.clock())
         context = _context(data, request["context_ref"], now)
-        action = "work.commit" if request["verb"] == "item.transition" else request["verb"]
+        action = request["verb"] if request["verb"].startswith("lease.") else "work.commit"
         verified = control.verify_live_grant(
             data["grants"], context=context, peer=peer, grant_ref=request["grant_ref"],
             project=request["project"], item_ref=request["item_ref"], action=action,
@@ -192,30 +203,54 @@ class OwnerWorkOperations:
             raise Refused("STALE_OWNER_LEASE", "lease acquisition belongs to another authority generation")
         return dict(row)
 
+    def inspect_target(self, request, *, peer):
+        """Authenticated routing read for the exact intended operation scope."""
+        _closed(request, self.BASE - {"operation_id"})
+        if self.work is None:
+            raise Refused("BLOCKED_OWNER_COMMIT_SEAM", "no explicit Work store is bound")
+        if request["verb"] not in self.ARGUMENTS:
+            raise Refused("UNSUPPORTED_OWNER_OPERATION", "unsupported intended operation")
+        with self.control._mutation():
+            self._authorize(self.control._data, request, peer)
+            with self.work.transaction(immediate=True) as conn:
+                self._authorize(self.control._data, request, peer)
+                item = conn.execute("SELECT project FROM items_index WHERE item_id=?", (request["item_ref"],)).fetchone()
+                if item is None or item[0] != request["project"]:
+                    raise Refused("ITEM_MISMATCH", "Item/project mismatch")
+                return {"verified": True, **self.work.owner_target_info()}
+
     def mutate(self, request, *, peer):
         if self.work is None:
             raise Refused("BLOCKED_OWNER_COMMIT_SEAM", "no explicit Work store is bound")
         verb = request.get("verb") if isinstance(request, dict) else None
         if verb not in self.ARGUMENTS:
             raise Refused("UNSUPPORTED_OWNER_OPERATION", "no protected implementation for this operation")
-        _closed(request, self.BASE | self.ARGUMENTS[verb])
+        _closed(request, self.BASE | self.ARGUMENTS[verb] | {"expected_store_binding"}, self.OPTIONAL.get(verb, ()))
         for key in self.BASE - {"expected_epoch"}:
             _ref(request[key])
         if type(request["expected_epoch"]) is not int or request["expected_epoch"] < 1:
             raise Refused("INVALID_OWNER_OPERATION", "positive grant epoch required")
-        digest = _digest(request)
+        for field in ("dry_run", "acknowledge_active_worker", "expected_dirty"):
+            if field in request and type(request[field]) is not bool:
+                raise Refused("INVALID_OWNER_OPERATION", field + " must be boolean")
+        digest = _digest({k: v for k, v in request.items() if k != "expected_store_binding"})
         # No Work mutation or authority decision can escape this lock order.
         with self.control._mutation():
             data = self.control._data
             grant, context, policy = self._authorize(data, request, peer)
+            if self.work.owner_target_info()["store_binding"] != request["expected_store_binding"]:
+                raise Refused("WORK_STORE_MISMATCH", "owner target binding differs")
             with self.work.transaction(immediate=True) as conn:
                 # Re-age after waiting for SQLite. A long lock wait cannot
                 # turn an expired context/grant/policy into a valid writer.
                 grant, context, policy = self._authorize(data, request, peer)
+                if self.work.owner_target_info()["store_binding"] != request["expected_store_binding"]:
+                    raise Refused("WORK_STORE_MISMATCH", "owner target changed while acquiring transaction")
                 item = conn.execute("SELECT project FROM items_index WHERE item_id=?", (request["item_ref"],)).fetchone()
                 if item is None or item["project"] != request["project"]:
                     raise Refused("ITEM_MISMATCH", "Work Item does not belong to the named project")
-                old = conn.execute("SELECT digest,receipt_json FROM owner_operation_receipts WHERE operation_id=?",
+                dry_run = verb == "run.terminate" and request.get("dry_run") is True
+                old = None if dry_run else conn.execute("SELECT digest,receipt_json FROM owner_operation_receipts WHERE operation_id=?",
                                    (request["operation_id"],)).fetchone()
                 if old is not None:
                     if old["digest"] != digest:
@@ -223,14 +258,33 @@ class OwnerWorkOperations:
                     receipt = json.loads(old["receipt_json"])
                     if receipt["os_principal"] != grant["os_principal"]:
                         raise Refused("UNTRUSTED_ACTOR", "receipt belongs to another kernel principal")
+                    # Historical reconciliation deliberately precedes _lease:
+                    # released/expired/superseded tokens can read their old
+                    # result under CURRENT context/grant/policy/scope checks.
+                    # This returns no current writer capability. Control-only
+                    # receipts below retain their current-lease requirement.
                     return {"committed": True, "replayed": True, "historical": True,
                             "result": receipt["result"], "receipt": receipt}
                 if verb != "lease.acquire":
                     self._lease(conn, request, grant)
+                if dry_run:
+                    arguments = {key: value for key, value in request.items() if key not in self.BASE | {"expected_store_binding"}}
+                    result = self.work._apply_owner_operation(conn, verb=verb, item_ref=request["item_ref"],
+                                                              principal=grant["actor_ref"], arguments=arguments)
+                    self._authorize(data, request, peer)
+                    self._lease(conn, request, grant)
+                    return {"committed": False, "dry_run": True, "result": result, "operation_id": request["operation_id"]}
                 conn.create_function("owner_commit_scope", 1,
                                      lambda item: int(item == request["item_ref"]))
                 with self.work._owner_scope(conn, request["item_ref"]):
-                    arguments = {key: value for key, value in request.items() if key not in self.BASE}
+                    arguments = {key: value for key, value in request.items() if key not in self.BASE | {"expected_store_binding"}}
+                    if verb == "run.begin":
+                        for key in ("activity_ref", "idempotency_key", "worker_ref"):
+                            _ref(request[key])
+                        arguments.update(artifact_root=getattr(self.work, "owner_artifacts_root", None),
+                                         allocation={"operation_id": request["operation_id"], "digest": digest})
+                    if verb == "context.attach":
+                        arguments = {"token": request["token"], "context": self.work.owner_execution_context(request, data, grant)}
                     result = self.work._apply_owner_operation(conn, verb=verb, item_ref=request["item_ref"],
                                                               principal=grant["actor_ref"], arguments=arguments)
                     receipt = {"operation_id": request["operation_id"], "verb": verb,

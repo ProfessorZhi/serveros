@@ -61,6 +61,7 @@ def issue(world):
     return {"context_ref": context["context_ref"], "grant_ref": grant["grant_ref"],
             "project": "serveros", "item_ref": "SRV-0001",
             "expected_epoch": grant["epoch"], "operation_id": "acquire:1",
+            "expected_store_binding": work.owner_target_info()["store_binding"],
             "verb": "lease.acquire", "ttl_s": 120}
 
 
@@ -290,7 +291,7 @@ def test_control_only_commit_keeps_binding_and_receipt_in_json(tmp_path):
     request = issue(world)
     daemon, work, _, _ = world
     acquired = call(daemon, "agent.work.mutate", request)
-    operation = {key: value for key, value in request.items() if key not in ("ttl_s", "verb")}
+    operation = {key: value for key, value in request.items() if key not in ("ttl_s", "verb", "expected_store_binding")}
     operation.update(operation_id="binding:1", token=acquired["result"]["token"],
                      intent={"checkpoint_ref": "checkpoint:fixture", "cycle_ref": "cycle:fixture"})
 

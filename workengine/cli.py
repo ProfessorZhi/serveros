@@ -261,7 +261,61 @@ def _common() -> argparse.ArgumentParser:
     common.add_argument("--state-dir", default=argparse.SUPPRESS)
     common.add_argument("--artifacts-root", default=argparse.SUPPRESS)
     common.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    for flag in ("owner-socket", "context-ref", "grant-ref", "operation-id"):
+        common.add_argument("--" + flag, default=argparse.SUPPRESS)
+    for flag in ("expected-grant-epoch", "lease-token"):
+        common.add_argument("--" + flag, type=int, default=argparse.SUPPRESS)
     return common
+
+
+def _owner_command(args):
+    """Select owner routing before any schema-writing Store construction."""
+    from .owner_client import OwnerRouter
+    from .serveros_authority import UnixSocketOwnerClient
+    group, action = args.group, getattr(args, "action", None)
+    verb, data, item = None, {}, getattr(args, "item", getattr(args, "id", None))
+    if group == "item" and action in {"transition", "reopen", "outcome"}:
+        verb = "item." + action
+        if action == "transition":
+            data = {"target": args.to, "note": args.note}
+            if ItemState(args.to) in {ItemState.WAITING, ItemState.NEEDS_HUMAN, ItemState.DELEGATED}:
+                data.update(reason=args.reason, return_state=args.return_state, unblock_condition=args.unblock_condition)
+        elif action == "reopen": data = {"reason": args.reason, "source": args.source}
+        else: data = {"outcome": args.value}
+    elif group == "activity":
+        verb = "activity." + action
+        data = {"activity_ref": args.activity}
+        data.update({"kind": args.kind, "needs": args.needs} if action == "add" else {"target": args.to})
+    elif group == "run" and action in {"begin", "advance", "cancel", "abandon"}:
+        verb = "run." + ("terminate" if action in {"cancel", "abandon"} else action)
+        if action == "begin":
+            data = {"activity_ref": args.activity, "worker_ref": args.worker, "idempotency_key": args.idempotency_key}
+        elif action == "advance": data = {"run_ref": args.run, "target": args.to}
+        else:
+            if getattr(args, "owner_socket", None) and args.actor:
+                raise ValueError("owner derives actor; --actor is only valid for unmanaged termination")
+            data = {"run_ref": args.run, "reason": args.reason, "operation": action,
+                    "target": getattr(args, "to", "CANCELLED"), "evidence": args.evidence,
+                    "acknowledge_active_worker": args.acknowledge_active_worker, "dry_run": args.dry_run}
+            if args.reason_code: data["reason_code"] = args.reason_code
+    elif group == "context" and action == "attach":
+        verb = "context.attach"
+        data = {"activity_ref": args.activity, "repo": args.repo, "mode": args.mode,
+                "checkpoint_ref": args.checkpoint_ref}
+        if args.revision: data["expected_revision"] = args.revision
+        if args.worktree: data["expected_worktree"] = args.worktree
+        if args.dirty: data["expected_dirty"] = True
+    if verb is None:
+        reads = {("item", "show"), ("item", "list"), ("run", "show"), ("context", "resolve"), ("deliverable", "list"), ("board", "render"), ("migrate", "inspect"), ("migrate", "verify"), ("federation", "check"), ("federation", "proposal")}
+        if (group, action) not in reads and any(hasattr(args, flag) for flag in ("owner_socket", "context_ref", "grant_ref", "expected_grant_epoch", "lease_token", "operation_id")):
+            from .authority import AuthorityError
+            raise AuthorityError("UNSUPPORTED_OWNER_OPERATION", "this command has no owner mutation port")
+        return None
+    mapping = {"context_ref":"context_ref", "grant_ref":"grant_ref", "expected_grant_epoch":"expected_epoch", "lease_token":"token", "operation_id":"operation_id"}
+    envelope = {wire: getattr(args, flag) for flag, wire in mapping.items() if hasattr(args, flag)}
+    socket = getattr(args, "owner_socket", None)
+    return OwnerRouter(state_dir=_state_dir(args), owner_client=UnixSocketOwnerClient(socket) if socket else None,
+                       envelope=envelope, artifacts_root=getattr(args, "artifacts_root", None)).mutate(item, verb, **data)
 
 
 def build_parser(prog: str = "serverosctl") -> argparse.ArgumentParser:
@@ -361,7 +415,7 @@ def build_parser(prog: str = "serverosctl") -> argparse.ArgumentParser:
         terminate = run_actions.add_parser(action, parents=[_common()])
         terminate.add_argument("item"); terminate.add_argument("run")
         terminate.add_argument("--reason", required=True)
-        terminate.add_argument("--actor", required=True)
+        terminate.add_argument("--actor", default=None)
         terminate.add_argument("--reason-code", choices=[code.value for code in RunCancelReason])
         terminate.add_argument("--evidence", action="append", default=[])
         terminate.add_argument("--acknowledge-active-worker", action="store_true")
@@ -379,7 +433,8 @@ def build_parser(prog: str = "serverosctl") -> argparse.ArgumentParser:
     attach = context_actions.add_parser("attach", parents=[_common()])
     attach.add_argument("item"); attach.add_argument("activity"); attach.add_argument("--repo", required=True)
     attach.add_argument("--mode", required=True, choices=["inspect", "test", "develop", "release"])
-    attach.add_argument("--revision", required=True); attach.add_argument("--worktree", default="")
+    attach.add_argument("--revision", default=""); attach.add_argument("--worktree", default="")
+    attach.add_argument("--checkpoint-ref", default=None)
     attach.add_argument("--dirty", action="store_true")
     resolve = context_actions.add_parser("resolve", parents=[_common()])
     resolve.add_argument("item", nargs="?", help="Item id; inferred from --cwd or the current directory when omitted")
@@ -413,6 +468,10 @@ def build_parser(prog: str = "serverosctl") -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None, prog: str = "serverosctl") -> int:
     args = build_parser(prog).parse_args(argv)
     try:
+        owned = _owner_command(args)
+        if owned is not None:
+            emit(owned)
+            return 0 if owned.get("committed") or owned.get("dry_run") else 2
         handler = {
             "item": _cmd_item,
             "activity": _cmd_activity,

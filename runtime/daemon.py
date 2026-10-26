@@ -1621,6 +1621,7 @@ class Daemon:
             "agent.owner.policy.reissue": self._r_owner_policy_reissue,
             "agent.owner.policy.revoke": self._r_owner_policy_revoke,
             "agent.work.mutate": self._r_owner_work_mutate,
+            "agent.work.inspect": self._r_owner_work_inspect,
             "agent.approval.inspect": self._r_agent_approval_inspect,
             "agent.approval.record": self._r_agent_approval_record,
             "agent.control.status": self._r_agent_control_status,
@@ -1781,7 +1782,7 @@ class Daemon:
                 # The trusted-parent grant verification READ (not a lease verb).
                 "agent.lease.authority.verify",
                 "agent.owner.policy.issue", "agent.owner.policy.reissue",
-                "agent.owner.policy.revoke", "agent.work.mutate",
+                "agent.owner.policy.revoke", "agent.work.mutate", "agent.work.inspect",
                 "agent.approval.inspect", "agent.approval.record",
                 "agent.control.status",
                 # §17. `agent.binding.resolve` and `agent.binding.list` are
@@ -3213,6 +3214,12 @@ class Daemon:
             return self.owner_work_operations().mutate(params, peer=_CALLER_PEER.get())
         except (ValueError, agent_control_store_mod.StoreError) as exc:
             return owner_operations_mod.refusal_answer(exc)
+
+    def _r_owner_work_inspect(self, params):
+        try:
+            return self.owner_work_operations().inspect_target(params, peer=_CALLER_PEER.get())
+        except (ValueError, agent_control_store_mod.StoreError) as exc:
+            return {"verified": False, **owner_operations_mod.refusal_answer(exc)}
 
     def _r_agent_lease_authority_verify(self, params) -> dict:
         """May this caller act as this grant's principal, right now? (#237 B3)

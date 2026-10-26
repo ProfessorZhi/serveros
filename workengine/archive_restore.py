@@ -60,6 +60,9 @@ def restore_items(store, archive, projects, *, expected_sha256=None, apply=False
               "copied_rows": {}, "historical_nonterminal_runs": [],
               "leases_imported": False, "session_control_imported": False}
     with store.transaction(immediate=apply) as conn:
+        if apply:
+            for project in names:
+                store._refuse_managed_effect(conn, project=project)
         pending = []
         for item in items:
             exists = conn.execute("SELECT 1 FROM items_index WHERE item_id=?", (item["item_id"],)).fetchone()

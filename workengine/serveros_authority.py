@@ -39,8 +39,8 @@ therefore refuses any reply that carries owner markers, including a claimed
 which commits the effect and receipt together. Legacy #272 replies without
 owner markers are unchanged.
 
-No CLI verb and no MCP tool is registered here. Until an owner-approved parent
-binds this adapter, the production status remains `BLOCKED_TRUST_SOURCE`.
+The explicit Work CLI, facade and MCP startup binding uses this original-
+process client. No socket, grant or actor is discovered from the environment.
 """
 from __future__ import annotations
 
@@ -170,8 +170,40 @@ class UnixSocketOwnerClient(UnixSocketVerifyClient):
 
     METHOD = "agent.work.mutate"
 
+    def inspect_target(self, **request):
+        return self._call({"method": "agent.work.inspect", "params": request})
+
     def mutate(self, **request):
-        return self._call({"method": self.METHOD, "params": request})
+        # sendall can fail after sending a prefix. From that point even a
+        # timeout or malformed reply is UNKNOWN, never proof of no effect.
+        sent = False
+        connection = None
+        key = request.get("operation_id")
+        try:
+            payload = (json.dumps({"method": self.METHOD, "params": request}, allow_nan=False) + "\n").encode()
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            connection.settimeout(self.timeout)
+            connection.connect(str(self.socket_path))
+            sent = True
+            connection.sendall(payload)
+            buffer = b""
+            while b"\n" not in buffer:
+                chunk = connection.recv(65536)
+                if not chunk:
+                    raise ValueError("owner reply lost")
+                buffer += chunk
+                if len(buffer) > self.MAX_RESPONSE:
+                    raise ValueError("owner reply exceeds bound")
+            answer = json.loads(buffer.split(b"\n", 1)[0])
+            if not isinstance(answer, dict) or answer.get("ok") is not True or not isinstance(answer.get("result"), dict):
+                raise ValueError("no definitive owner result")
+            return answer["result"]
+        except (OSError, ValueError, TypeError) as exc:
+            return {"committed": False, "state": "UNKNOWN" if sent else "NOT_SENT",
+                    "operation_id": key, "detail": type(exc).__name__}
+        finally:
+            if connection is not None:
+                connection.close()
 
 
 class ServerOSLeaseAuthority:

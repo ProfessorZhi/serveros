@@ -10,6 +10,19 @@ or registers their own SQLite function is outside this application boundary.
 """
 from __future__ import annotations
 from contextlib import contextmanager
+from pathlib import Path
+
+
+def file_identity(path):
+    """Existing local main-file identity, never a row-derived database ID."""
+    path = Path(path)
+    if not path.is_absolute() or not path.is_file():
+        raise ValueError("WORK_STORE_MISMATCH: existing absolute database required")
+    path = path.resolve(strict=True)
+    stat = path.stat()
+    if not stat.st_ino:
+        raise ValueError("WORK_STORE_MISMATCH: stable local file identity unavailable")
+    return {"path": str(path), "device": stat.st_dev, "inode": stat.st_ino}
 
 
 def migrate(conn):
@@ -72,6 +85,12 @@ def migrate(conn):
             _guards(conn, table, lambda row: "r.item_ref IN (SELECT item_id FROM items_index " +
                     f"WHERE project={row}.project)")
         conn.execute("DROP TRIGGER IF EXISTS owner_receipt_insert")
+        conn.execute("DROP TRIGGER IF EXISTS owner_enrollment_migration")
+        conn.execute("""CREATE TRIGGER owner_enrollment_migration BEFORE INSERT
+            ON owner_operation_receipts WHEN NEW.verb='lease.acquire' AND EXISTS
+                (SELECT 1 FROM migration_intents m JOIN items_index i ON i.project=m.project
+                 WHERE i.item_id=NEW.item_ref AND m.status NOT IN ('PLANNED','COMPLETED','COMPENSATED'))
+            BEGIN SELECT RAISE(ABORT, 'OWNER_MIGRATION_ACTIVE'); END""")
         conn.execute("""CREATE TRIGGER owner_receipt_insert BEFORE INSERT
             ON owner_operation_receipts WHEN NOT EXISTS
                 (SELECT 1 FROM owner_transaction_scopes s WHERE s.item_ref=NEW.item_ref)

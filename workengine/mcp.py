@@ -106,6 +106,8 @@ TOOLS: tuple[dict, ...] = (
      "inputSchema": _schema({
          "item": _REF, "run": _REF, "reason": {"type": "string"},
          "context_ref": _CONTEXT,
+         "grant_ref": _REF, "expected_grant_epoch": {"type":"integer"},
+         "lease_token": {"type":"integer"}, "operation_id": _REF,
          "reason_code": _REF, "target": _REF,
          "evidence": {"type": "array", "items": {"type": "string"}},
          "acknowledge_active_worker": {"type": "boolean"},
@@ -120,6 +122,8 @@ TOOLS: tuple[dict, ...] = (
      "inputSchema": _schema({
          "item": _REF, "run": _REF, "reason": {"type": "string"},
          "context_ref": _CONTEXT,
+         "grant_ref": _REF, "expected_grant_epoch": {"type":"integer"},
+         "lease_token": {"type":"integer"}, "operation_id": _REF,
          "target": _REF,
          "evidence": {"type": "array", "items": {"type": "string"}},
          "acknowledge_active_worker": {"type": "boolean"},
@@ -210,15 +214,17 @@ class WorkControlClient:
     could not get.
     """
 
-    def __init__(self, *, store=None, resolve_context=None, state_dir=None) -> None:
+    def __init__(self, *, store=None, resolve_context=None, state_dir=None, owner_client=None) -> None:
         self._store = store
         self._resolve_context = resolve_context
         self._state_dir = state_dir
+        self._owner_client = owner_client
+        self._owner_router = None
 
     @property
     def store(self) -> ServerOSStore:
         if self._store is None:
-            self._store = ServerOSStore(self._state_dir or default_state_dir())
+            self._store = ServerOSStore(self._state_dir or default_state_dir(), read_only=self._owner_client is not None)
         return self._store
 
     # -- the trusted actor ---------------------------------------------------
@@ -291,6 +297,24 @@ class WorkControlClient:
         run = arguments["run"]
         reason = arguments["reason"]
         dry_run = bool(arguments.get("dry_run"))
+
+        from .owner_client import OwnerRouter
+        mapping = {"context_ref":"context_ref", "grant_ref":"grant_ref", "expected_grant_epoch":"expected_epoch", "lease_token":"token", "operation_id":"operation_id"}
+        explicit = self._owner_client is not None or any(k in arguments for k in mapping if k != "context_ref")
+        envelope = {wire: arguments[k] for k, wire in mapping.items() if k in arguments} if explicit else {}
+        state = self._state_dir or (self._store.state_dir if self._store is not None else default_state_dir())
+        try:
+            data = {k: arguments[k] for k in ("target", "reason_code", "evidence", "acknowledge_active_worker") if k in arguments}
+            if self._owner_router is None:
+                self._owner_router = OwnerRouter(state_dir=state, owner_client=self._owner_client)
+            self._owner_router.envelope = envelope
+            owned = self._owner_router.mutate(
+                item, "run.terminate", run_ref=run, reason=reason, operation=operation, dry_run=dry_run, **data)
+            if owned is not None:
+                if owned.get("state") in {"UNKNOWN", "NOT_SENT"}: return owned
+                return {"state": "PLANNED" if dry_run else "TERMINATED", **_termination_plan(owned["result"]), "owner_receipt": owned.get("receipt")}
+        except (ValueError, KeyError) as exc:
+            return {"state":"REFUSED", "reason_code":getattr(exc, "reason_code", "INVALID_CONTEXT"), "detail":str(exc), "dry_run":dry_run}
 
         actor = self.actor_for(arguments.get("context_ref"))
         if actor["state"] != "RESOLVED":
@@ -475,6 +499,7 @@ def serve(instream=None, outstream=None, server=None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="serveros-work-mcp")
     parser.add_argument("--state-dir", help="absolute ServerOS state directory")
+    parser.add_argument("--owner-socket", help="explicit absolute owner socket; original MCP process connects")
     parser.add_argument("--list-tools", action="store_true")
     args = parser.parse_args(argv)
     if args.list_tools:
@@ -482,7 +507,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{tool['name']:<20} {tool['description']}")
         return 0
     state_dir = Path(args.state_dir) if args.state_dir else None
-    return serve(server=WorkMcpServer(WorkControlClient(state_dir=state_dir)))
+    from .serveros_authority import UnixSocketOwnerClient
+    return serve(server=WorkMcpServer(WorkControlClient(state_dir=state_dir,
+        owner_client=UnixSocketOwnerClient(args.owner_socket) if args.owner_socket else None)))
 
 
 if __name__ == "__main__":

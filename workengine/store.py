@@ -389,7 +389,7 @@ class LeaseError(ValueError):
 
 
 class ServerOSStore:
-    def __init__(self, state_dir: str | Path, *, clock=None) -> None:
+    def __init__(self, state_dir: str | Path, *, clock=None, read_only=False) -> None:
         state_dir = Path(state_dir)
         if not state_dir.is_absolute():
             raise ValueError("ServerOS state directory must be absolute")
@@ -400,6 +400,12 @@ class ServerOSStore:
         #: `time.time`; a caller that needs determinism injects a clock when it
         #: constructs the store, so the fence never reads a per-call clock.
         self._clock = clock or time.time
+        self._read_only = read_only
+        if read_only:
+            self.db_path = self.state_dir / "serveros.db"
+            from .owner_fence import file_identity
+            self._owner_file_identity = file_identity(self.db_path)
+            return
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.state_dir / "serveros.db"
         schema = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
@@ -408,6 +414,22 @@ class ServerOSStore:
             migrate(conn)
             from .owner_fence import migrate as migrate_owner_fence
             migrate_owner_fence(conn)
+        from .owner_fence import file_identity
+        self._owner_file_identity = file_identity(self.db_path)
+
+    def owner_target_info(self):
+        from .owner_fence import file_identity
+        identity = file_identity(self.db_path)
+        if identity != self._owner_file_identity:
+            raise LeaseError("WORK_STORE_MISMATCH", "database replaced; stop and explicitly rebind owner")
+        locations = {key: str(getattr(self, key, "") or "") for key in
+                     ("owner_artifacts_root", "owner_workspace_root", "owner_continuation_receipts_root")}
+        body = {"file_identity": identity, **locations}
+        return {**body, "store_binding": hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()}
+
+    def owner_execution_context(self, request, data, grant):
+        from .owner_context import execution_context
+        return execution_context(self, request, data, grant)
 
     def clock(self) -> float:
         """The store's trusted instant, validated like every lease clock."""
@@ -418,7 +440,13 @@ class ServerOSStore:
         return self.clock() if now is None else _lease_now(now)
 
     def connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
+        if self._read_only:
+            from .owner_fence import file_identity
+            if file_identity(self.db_path) != self._owner_file_identity:
+                raise LeaseError("WORK_STORE_MISMATCH", "selected database changed")
+            conn = sqlite3.connect(self.db_path.as_uri() + "?mode=ro", uri=True, timeout=30, isolation_level=None)
+        else:
+            conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
         conn.create_function("owner_commit_scope", 1, lambda item: 0)
         conn.execute("PRAGMA foreign_keys = ON")
@@ -587,6 +615,22 @@ class ServerOSStore:
         from .owner_fence import scope
         return scope(conn, item_ref)
 
+    def _refuse_managed_effect(self, conn, *, item_ref=None, project=None):
+        """Pre-effect interlock; caller must already hold BEGIN IMMEDIATE.
+
+        The enrollment receipt uses the same SQLite writer lock, so the check
+        cannot race first enrollment. Unsupported filesystem ports never gain
+        permission from an owner scope marker.
+        """
+        if not conn.in_transaction:
+            raise LeaseError("OWNER_COMMIT_FENCE_REQUIRED", "Work transaction required")
+        row = conn.execute(
+            "SELECT 1 FROM owner_operation_receipts r JOIN items_index i ON i.item_id=r.item_ref "
+            "WHERE r.verb='lease.acquire' AND (r.item_ref=? OR i.project=?) LIMIT 1",
+            (item_ref, project)).fetchone()
+        if row:
+            raise LeaseError("OWNER_COMMIT_FENCE_REQUIRED", "managed filesystem effect requires its owner port")
+
     def _require_live_owner_lease(self, conn, *, item_ref, principal, token):
         resource = f"work-write:{item_ref}"
         row = self._lease_row(conn, resource)
@@ -607,6 +651,9 @@ class ServerOSStore:
         resource = f"work-write:{item_ref}"
         now = self.clock()
         if verb == "lease.acquire":
+            active = conn.execute("SELECT 1 FROM migration_intents m JOIN items_index i ON i.project=m.project WHERE i.item_id=? AND m.status NOT IN ('PLANNED','COMPLETED','COMPENSATED')", (item_ref,)).fetchone()
+            if active:
+                raise LeaseError("OWNER_MIGRATION_ACTIVE", "project filesystem journal requires reconciliation")
             return self._acquire_lease_tx(conn, resource, owner=principal,
                                          ttl=_lease_ttl(arguments["ttl_s"]), now_e=now)
         token = arguments["token"]
@@ -620,14 +667,28 @@ class ServerOSStore:
         if verb == "lease.release":
             return self._release_lease_tx(conn, resource, owner=principal, token=token)
         if verb == "item.transition":
-            row = conn.execute("SELECT state FROM items_index WHERE item_id=?", (item_ref,)).fetchone()
-            target = transition(ItemState(row["state"]), arguments["target"])
-            at = now_iso()
-            conn.execute("UPDATE items_index SET state=?,updated_at=? WHERE item_id=?",
-                         (target.value, at, item_ref))
-            self._event(conn, item_ref, "transitioned", {
-                "from": row["state"], "to": target.value, "note": "owner operation"}, at=at)
-            return {"item_ref": item_ref, "state": target.value}
+            side = {k: arguments[k] for k in ("reason", "return_state", "unblock_condition") if k in arguments}
+            result = self._transition_item_tx(conn, item_ref, arguments["target"], note=arguments.get("note", "owner operation"), **side)
+            return {"item_ref": item_ref, **result.to_dict()}
+        if verb == "item.reopen":
+            return self._reopen_item_tx(conn, item_ref, arguments["reason"], arguments["source"]).to_dict()
+        if verb == "item.outcome":
+            return self._set_outcome_tx(conn, item_ref, arguments["outcome"]).to_dict()
+        from dataclasses import asdict
+        if verb == "activity.add":
+            result = self._add_activity_tx(conn, Activity(item_ref, arguments["activity_ref"], arguments["kind"]), arguments.get("needs"))
+            return asdict(result)
+        if verb == "activity.transition":
+            return asdict(self._transition_activity_tx(conn, item_ref, arguments["activity_ref"], arguments["target"]))
+        if verb == "context.attach":
+            return asdict(self._upsert_context_tx(conn, arguments["context"]))
+        if verb == "run.begin":
+            return asdict(self._begin_run_tx(conn, item_ref, arguments["activity_ref"], arguments["worker_ref"], arguments["idempotency_key"], arguments["artifact_root"], allocation=arguments.get("allocation")))
+        if verb == "run.advance":
+            return asdict(self._advance_run_tx(conn, item_ref, arguments["run_ref"], arguments["target"]))
+        if verb == "run.terminate":
+            options = {k: arguments[k] for k in ("reason_code", "target", "evidence", "operation", "acknowledge_active_worker", "dry_run") if k in arguments}
+            return self._cancel_run_tx(conn, item_ref, arguments["run_ref"], reason=arguments["reason"], actor=principal, **options)
         raise LeaseError("UNSUPPORTED_OWNER_OPERATION", "the operation has no protected mutation implementation")
 
     def active_lease(self, resource: str, *, now=None) -> dict | None:
@@ -814,8 +875,12 @@ class ServerOSStore:
         )
 
     def get_item(self, item_id: str) -> WorkItem | None:
-        with self.connection() as conn:
+        with closing(self.connection()) as conn:
             row = conn.execute("SELECT * FROM items_index WHERE item_id=?", (item_id,)).fetchone()
+        return self._item(row)
+
+    @staticmethod
+    def _item(row):
         if row is None:
             return None
         return WorkItem(
@@ -837,42 +902,48 @@ class ServerOSStore:
             sql += " WHERE project=?"
             params = (project,)
         sql += " ORDER BY item_id"
-        with self.connection() as conn:
+        with closing(self.connection()) as conn:
             ids = [row["item_id"] for row in conn.execute(sql, params)]
         return [item for item_id in ids if (item := self.get_item(item_id)) is not None]
 
     def transition_item(self, item_id: str, target: ItemState | str, note: str = "", **side) -> WorkItem:
         with self.transaction(immediate=True) as conn:
-            row = conn.execute("SELECT state FROM items_index WHERE item_id=?", (item_id,)).fetchone()
-            if row is None:
-                raise KeyError(f"unknown Item: {item_id}")
-            current = ItemState(row["state"])
-            target = transition(current, target, **side)
-            at = now_iso()
-            conn.execute("UPDATE items_index SET state=?,updated_at=? WHERE item_id=?", (target.value, at, item_id))
-            self._event(
-                conn,
-                item_id,
-                "transitioned",
-                {"from": current.value, "to": target.value, "note": note, **{k: str(v) for k, v in side.items()}},
-            )
-        return self.get_item(item_id)
+            return self._transition_item_tx(conn, item_id, target, note=note, **side)
+
+    def _transition_item_tx(self, conn, item_id, target, note="", **side):
+        row = conn.execute("SELECT state FROM items_index WHERE item_id=?", (item_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"unknown Item: {item_id}")
+        current = ItemState(row["state"])
+        target = transition(current, target, **side)
+        at = now_iso()
+        conn.execute("UPDATE items_index SET state=?,updated_at=? WHERE item_id=?", (target.value, at, item_id))
+        self._event(
+            conn,
+            item_id,
+            "transitioned",
+            {"from": current.value, "to": target.value, "note": note, **{k: str(v) for k, v in side.items()}},
+        )
+        return self._item(conn.execute("SELECT * FROM items_index WHERE item_id=?", (item_id,)).fetchone())
 
     def reopen_item(self, item_id: str, reason: str, source: str) -> WorkItem:
+        with self.transaction(immediate=True) as conn:
+            return self._reopen_item_tx(conn, item_id, reason, source)
+
+    def _reopen_item_tx(self, conn, item_id, reason, source):
         if not reason.strip() or not source.strip():
             raise ValueError("reopen requires reason and source")
-        with self.transaction(immediate=True) as conn:
-            row = conn.execute("SELECT state FROM items_index WHERE item_id=?", (item_id,)).fetchone()
-            if row is None:
-                raise KeyError(f"unknown Item: {item_id}")
-            target = reopen(ItemState(row["state"]))
-            at = now_iso()
-            conn.execute("UPDATE items_index SET state=?,updated_at=? WHERE item_id=?", (target.value, at, item_id))
-            self._event(conn, item_id, "reopened", {"reason": reason, "source": source, "to": target.value})
-        return self.get_item(item_id)
+        row = conn.execute("SELECT state FROM items_index WHERE item_id=?", (item_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"unknown Item: {item_id}")
+        target = reopen(ItemState(row["state"]))
+        at = now_iso()
+        conn.execute("UPDATE items_index SET state=?,updated_at=? WHERE item_id=?", (target.value, at, item_id))
+        self._event(conn, item_id, "reopened", {"reason": reason, "source": source, "to": target.value})
+        return self._item(conn.execute("SELECT * FROM items_index WHERE item_id=?", (item_id,)).fetchone())
 
     def item_events(self, item_id: str) -> list[dict]:
-        with self.connection() as conn:
+        with closing(self.connection()) as conn:
             rows = conn.execute(
                 "SELECT event_type,at,payload_json FROM item_events WHERE item_id=? ORDER BY event_id", (item_id,)
             ).fetchall()
@@ -882,14 +953,17 @@ class ServerOSStore:
         ]
 
     def set_outcome(self, item_id: str, outcome: Outcome | str) -> WorkItem:
-        outcome = Outcome(outcome)
         with self.transaction(immediate=True) as conn:
-            if conn.execute("SELECT 1 FROM items_index WHERE item_id=?", (item_id,)).fetchone() is None:
-                raise KeyError(f"unknown Item: {item_id}")
-            at = now_iso()
-            conn.execute("UPDATE items_index SET outcome=?,updated_at=? WHERE item_id=?", (outcome.value, at, item_id))
-            self._event(conn, item_id, "outcome_recorded", {"outcome": outcome.value})
-        return self.get_item(item_id)
+            return self._set_outcome_tx(conn, item_id, outcome)
+
+    def _set_outcome_tx(self, conn, item_id, outcome):
+        outcome = Outcome(outcome)
+        if conn.execute("SELECT 1 FROM items_index WHERE item_id=?", (item_id,)).fetchone() is None:
+            raise KeyError(f"unknown Item: {item_id}")
+        at = now_iso()
+        conn.execute("UPDATE items_index SET outcome=?,updated_at=? WHERE item_id=?", (outcome.value, at, item_id))
+        self._event(conn, item_id, "outcome_recorded", {"outcome": outcome.value})
+        return self._item(conn.execute("SELECT * FROM items_index WHERE item_id=?", (item_id,)).fetchone())
 
     def add_deliverable(self, item_id: str, kind: str, locator: str) -> dict:
         if not kind.strip() or not locator.strip():
@@ -1306,28 +1380,34 @@ class ServerOSStore:
         return self.get_item(target)
 
     def transition_activity(self, item_id, activity_id, target):
-        allowed={ActivityState.PENDING:{ActivityState.READY,ActivityState.CANCELLED},ActivityState.READY:{ActivityState.RUNNING,ActivityState.CANCELLED},ActivityState.RUNNING:{ActivityState.SUCCEEDED,ActivityState.FAILED,ActivityState.BLOCKED,ActivityState.CANCELLED},ActivityState.BLOCKED:{ActivityState.READY,ActivityState.CANCELLED}}
         with self.transaction(immediate=True) as c:
-            # The lookup here raised `KeyError(activity_id)` — the bare id, and
-            # never the Item: `activity transition DEM-9999 act-1` answered
-            # `'act-1'`, naming the half that exists. `_require_activity` names
-            # the half that matched.
-            r = self._require_activity(c, item_id, activity_id)
-            target=ActivityState(target); current=ActivityState(r['state'])
-            if target not in allowed.get(current,set()): raise ValueError(f"illegal activity transition {current} -> {target}")
-            c.execute("UPDATE activities SET state=? WHERE item_id=? AND activity_id=?",(target.value,item_id,activity_id))
+            return self._transition_activity_tx(c, item_id, activity_id, target)
+
+    def _transition_activity_tx(self, c, item_id, activity_id, target):
+        allowed={ActivityState.PENDING:{ActivityState.READY,ActivityState.CANCELLED},ActivityState.READY:{ActivityState.RUNNING,ActivityState.CANCELLED},ActivityState.RUNNING:{ActivityState.SUCCEEDED,ActivityState.FAILED,ActivityState.BLOCKED,ActivityState.CANCELLED},ActivityState.BLOCKED:{ActivityState.READY,ActivityState.CANCELLED}}
+        # The lookup here raised `KeyError(activity_id)` — the bare id, and
+        # never the Item: `activity transition DEM-9999 act-1` answered
+        # `'act-1'`, naming the half that exists. `_require_activity` names
+        # the half that matched.
+        r = self._require_activity(c, item_id, activity_id)
+        target=ActivityState(target); current=ActivityState(r['state'])
+        if target not in allowed.get(current,set()): raise ValueError(f"illegal activity transition {current} -> {target}")
+        c.execute("UPDATE activities SET state=? WHERE item_id=? AND activity_id=?",(target.value,item_id,activity_id))
         return Activity(item_id,activity_id,r['kind'],target,r['graph_revision'])
 
     def upsert_context(self, context):
         with self.transaction(immediate=True) as c:
-            # `execution_contexts` carries a composite foreign key onto
-            # `activities(item_id, activity_id)`, so attaching a context to an
-            # activity that does not exist used to answer with the constraint's
-            # sentence rather than with the activity's name. Attaching to an
-            # activity that *does* exist is the upsert this method is named for
-            # and is unchanged.
-            self._require_activity(c, context.item_id, context.activity_id)
-            c.execute("INSERT INTO execution_contexts(item_id,activity_id,repo,mode,revision,worktree,dirty) VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id,activity_id,repo) DO UPDATE SET mode=excluded.mode,revision=excluded.revision,worktree=excluded.worktree,dirty=excluded.dirty",(context.item_id,context.activity_id,context.repo,context.mode.value,context.revision,context.worktree,int(context.dirty)))
+            return self._upsert_context_tx(c, context)
+
+    def _upsert_context_tx(self, c, context):
+        # `execution_contexts` carries a composite foreign key onto
+        # `activities(item_id, activity_id)`, so attaching a context to an
+        # activity that does not exist used to answer with the constraint's
+        # sentence rather than with the activity's name. Attaching to an
+        # activity that *does* exist is the upsert this method is named for
+        # and is unchanged.
+        self._require_activity(c, context.item_id, context.activity_id)
+        c.execute("INSERT INTO execution_contexts(item_id,activity_id,repo,mode,revision,worktree,dirty) VALUES(?,?,?,?,?,?,?) ON CONFLICT(item_id,activity_id,repo) DO UPDATE SET mode=excluded.mode,revision=excluded.revision,worktree=excluded.worktree,dirty=excluded.dirty",(context.item_id,context.activity_id,context.repo,context.mode.value,context.revision,context.worktree,int(context.dirty)))
         return context
 
     def _require_item(self, connection, item_id):
@@ -1598,6 +1678,7 @@ class ServerOSStore:
                         authorization, stored_receipt)
             if r['state'] != 'FINALIZING':
                 raise ValueError("run must be FINALIZING")
+            self._refuse_managed_effect(c, item_ref=item_id)
             locator = str(Path(r['artifact_dir']) / 'finalize.json')
             Path(r['artifact_dir']).mkdir(parents=True, exist_ok=True)
             temporary = Path(locator + '.tmp')
@@ -1703,15 +1784,22 @@ class ServerOSStore:
             return dict(row)
 
     def resolve_evidence_run(self, evidence_run):
+        with closing(self.connection()) as conn:
+            return self._resolve_evidence_run_tx(conn, evidence_run)
+
+    def _resolve_evidence_run_tx(self, conn, evidence_run):
         parts = str(evidence_run).split('/', 1)
         if len(parts) != 2 or not parts[0] or not re.fullmatch(r"RUN-[0-9]{4,}", parts[1]):
             raise ValueError("evidence Run must be ITEM/RUN-0001")
         item_id, run_id = parts
-        if self.get_run(item_id, run_id) is None:
-            raise KeyError(f"unknown Run: {evidence_run}")
+        self._require_run(conn, item_id, run_id)
         return item_id, run_id
 
     def record_publication_receipt(self, domain, locator, sha256, evidence_run):
+        with self.transaction(immediate=True) as c:
+            return self._record_publication_receipt_tx(c, domain, locator, sha256, evidence_run)
+
+    def _record_publication_receipt_tx(self, c, domain, locator, sha256, evidence_run):
         target = Path(locator)
         if not domain or not target.is_absolute() or not target.is_file():
             raise ValueError("publication receipt requires domain and existing absolute current locator")
@@ -1719,30 +1807,29 @@ class ServerOSStore:
             raise ValueError("publication receipt requires SHA-256")
         if hashlib.sha256(target.read_bytes()).hexdigest() != sha256:
             raise ValueError("publication receipt hash does not match current projection")
-        item_id, run_id = self.resolve_evidence_run(evidence_run)
-        with self.transaction(immediate=True) as c:
-            existing = c.execute(
-                "SELECT * FROM publication_receipts WHERE domain=? AND locator=? AND evidence_run=?",
-                (domain, str(target), evidence_run),
-            ).fetchone()
-            if existing is not None:
-                if existing['sha256'] != sha256 or existing['item_id'] != item_id or existing['run_id'] != run_id:
-                    raise ValueError("publication identity already has a different projection")
-                return dict(existing)
-            c.execute(
-                """INSERT INTO publication_receipts
-                   (domain,object_id,revision,locator,sha256,evidence_run,item_id,run_id,created_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (domain, 'current', sha256, str(target), sha256, evidence_run, item_id, run_id, now_iso()),
-            )
-            row = c.execute(
-                "SELECT * FROM publication_receipts WHERE domain=? AND locator=? AND evidence_run=?",
-                (domain, str(target), evidence_run),
-            ).fetchone()
+        item_id, run_id = self._resolve_evidence_run_tx(c, evidence_run)
+        existing = c.execute(
+            "SELECT * FROM publication_receipts WHERE domain=? AND locator=? AND evidence_run=?",
+            (domain, str(target), evidence_run),
+        ).fetchone()
+        if existing is not None:
+            if existing['sha256'] != sha256 or existing['item_id'] != item_id or existing['run_id'] != run_id:
+                raise ValueError("publication identity already has a different projection")
+            return dict(existing)
+        c.execute(
+            """INSERT INTO publication_receipts
+               (domain,object_id,revision,locator,sha256,evidence_run,item_id,run_id,created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (domain, 'current', sha256, str(target), sha256, evidence_run, item_id, run_id, now_iso()),
+        )
+        row = c.execute(
+            "SELECT * FROM publication_receipts WHERE domain=? AND locator=? AND evidence_run=?",
+            (domain, str(target), evidence_run),
+        ).fetchone()
         return dict(row)
 
     def get_publication_receipt(self, domain, locator, evidence_run):
-        with self.connection() as c:
+        with closing(self.connection()) as c:
             row = c.execute(
                 "SELECT * FROM publication_receipts WHERE domain=? AND locator=? AND evidence_run=?",
                 (domain, locator, evidence_run),
@@ -1750,7 +1837,7 @@ class ServerOSStore:
         return dict(row) if row is not None else None
 
     def list_deliverables(self, item_id: str) -> list[dict]:
-        with self.connection() as conn:
+        with closing(self.connection()) as conn:
             rows = conn.execute(
                 "SELECT deliverable_id,kind,locator,created_at FROM deliverables WHERE item_id=? ORDER BY deliverable_id",
                 (item_id,),
@@ -1762,37 +1849,40 @@ class ServerOSStore:
 
     def add_activity(self, activity: Activity, needs: list[str] | None = None) -> Activity:
         with self.transaction(immediate=True) as conn:
-            self._require_item(conn, activity.item_id)
-            declared = conn.execute(
-                "SELECT * FROM activities WHERE item_id=? AND activity_id=?",
-                (activity.item_id, activity.id),
-            ).fetchone()
-            if declared is not None:
-                # Measured before this refusal: `activity add` twice for one id
-                # answered with `sqlite3.IntegrityError: UNIQUE constraint
-                # failed` — the primary key, in the database's words. Nothing is
-                # added by a second `add`: the row it would write is the row
-                # that is there. Its `kind` is not rewritten by a second add and
-                # its `state` belongs to `transition_activity`, so the only
-                # thing a re-add could do is disagree silently. It is refused
-                # instead, and the refusal says which activity and which kind
-                # the store already has.
-                raise ValueError(
-                    f"activity {activity.item_id}/{activity.id} is already declared as "
-                    f"{declared['kind']}; adding it again would not declare a second one. "
-                    "Its state is moved by `activity transition`, not by re-adding it."
-                )
-            for dependency in needs or ():
-                self._require_activity(conn, activity.item_id, dependency)
-            conn.execute(
-                "INSERT INTO activities(item_id,activity_id,kind,state,graph_revision) VALUES (?,?,?,?,?)",
-                (activity.item_id, activity.id, activity.kind, activity.state.value, activity.graph_revision),
+            return self._add_activity_tx(conn, activity, needs)
+
+    def _add_activity_tx(self, conn, activity, needs=None):
+        self._require_item(conn, activity.item_id)
+        declared = conn.execute(
+            "SELECT * FROM activities WHERE item_id=? AND activity_id=?",
+            (activity.item_id, activity.id),
+        ).fetchone()
+        if declared is not None:
+            # Measured before this refusal: `activity add` twice for one id
+            # answered with `sqlite3.IntegrityError: UNIQUE constraint
+            # failed` — the primary key, in the database's words. Nothing is
+            # added by a second `add`: the row it would write is the row
+            # that is there. Its `kind` is not rewritten by a second add and
+            # its `state` belongs to `transition_activity`, so the only
+            # thing a re-add could do is disagree silently. It is refused
+            # instead, and the refusal says which activity and which kind
+            # the store already has.
+            raise ValueError(
+                f"activity {activity.item_id}/{activity.id} is already declared as "
+                f"{declared['kind']}; adding it again would not declare a second one. "
+                "Its state is moved by `activity transition`, not by re-adding it."
             )
-            for dependency in needs or ():
-                conn.execute(
-                    "INSERT INTO activity_dependencies(item_id,activity_id,needs_activity_id) VALUES (?,?,?)",
-                    (activity.item_id, activity.id, dependency),
-                )
+        for dependency in needs or ():
+            self._require_activity(conn, activity.item_id, dependency)
+        conn.execute(
+            "INSERT INTO activities(item_id,activity_id,kind,state,graph_revision) VALUES (?,?,?,?,?)",
+            (activity.item_id, activity.id, activity.kind, activity.state.value, activity.graph_revision),
+        )
+        for dependency in needs or ():
+            conn.execute(
+                "INSERT INTO activity_dependencies(item_id,activity_id,needs_activity_id) VALUES (?,?,?)",
+                (activity.item_id, activity.id, dependency),
+            )
         return activity
 
     def attach_context(self, context: ExecutionContext) -> ExecutionContext:
@@ -1801,7 +1891,7 @@ class ServerOSStore:
         return self.upsert_context(context)
 
     def execution_contexts(self, item_id: str, activity_id: str) -> list[ExecutionContext]:
-        with self.connection() as conn:
+        with closing(self.connection()) as conn:
             rows = conn.execute(
                 "SELECT * FROM execution_contexts WHERE item_id=? AND activity_id=? ORDER BY repo",
                 (item_id, activity_id),
@@ -1820,44 +1910,67 @@ class ServerOSStore:
         ]
 
     def begin_run(self, item_id: str, activity_id: str, worker: str, key: str, artifact_root: Path) -> Run:
-        from .artifacts import artifact_dir
-
         with self.transaction(immediate=True) as conn:
-            # Both halves of the key `runs` is foreign-keyed on are named before
-            # anything is written. Before this, an unknown Item reached
-            # `self.get_item(item_id).project` one line below and answered
-            # `AttributeError: 'NoneType' object has no attribute 'project'`,
-            # and an unknown activity reached the foreign key and answered
-            # `FOREIGN KEY constraint failed`. Validating first also removes a
-            # second lookup of the same row: the Item is read once, here, and
-            # its `project` is used from that read.
-            item = self._require_item(conn, item_id)
-            self._require_activity(conn, item_id, activity_id)
-            existing = conn.execute(
-                "SELECT * FROM runs WHERE item_id=? AND activity_id=? AND idempotency_key=?",
-                (item_id, activity_id, key),
-            ).fetchone()
-            if existing:
-                return self._run(existing)
-            sequence = conn.execute("SELECT COUNT(*) AS n FROM runs WHERE item_id=?", (item_id,)).fetchone()["n"] + 1
-            run_id = f"RUN-{sequence:04d}"
-            attempt = conn.execute(
-                "SELECT COUNT(*) AS n FROM runs WHERE item_id=? AND activity_id=?", (item_id, activity_id)
-            ).fetchone()["n"] + 1
-            path = artifact_dir(artifact_root, item["project"], item_id, run_id)
-            started = now_iso()
-            conn.execute(
-                """INSERT INTO runs
-                   (item_id,run_id,activity_id,worker,idempotency_key,state,artifact_dir,attempt,started_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (item_id, run_id, activity_id, worker, key, RunState.ALLOCATED.value, str(path), attempt, started),
-            )
-            row = conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
-        path.mkdir(parents=True, exist_ok=True)
+            self._refuse_managed_effect(conn, item_ref=item_id)
+            result = self._begin_run_tx(conn, item_id, activity_id, worker, key, artifact_root)
+            Path(result.artifact_dir).mkdir(parents=True, exist_ok=True)
+        return result
+
+    def _begin_run_tx(self, conn, item_id, activity_id, worker, key, artifact_root, *, allocation=None):
+        from .artifacts import artifact_dir
+        if artifact_root is None:
+            raise LeaseError("OWNER_ARTIFACT_ROOT_REQUIRED", "explicit owner artifact root required")
+        # Both halves of the key `runs` is foreign-keyed on are named before
+        # anything is written. Before this, an unknown Item reached
+        # `self.get_item(item_id).project` one line below and answered
+        # `AttributeError: 'NoneType' object has no attribute 'project'`,
+        # and an unknown activity reached the foreign key and answered
+        # `FOREIGN KEY constraint failed`. Validating first also removes a
+        # second lookup of the same row: the Item is read once, here, and
+        # its `project` is used from that read.
+        item = self._require_item(conn, item_id)
+        self._require_activity(conn, item_id, activity_id)
+        existing = conn.execute(
+            "SELECT * FROM runs WHERE item_id=? AND activity_id=? AND idempotency_key=?",
+            (item_id, activity_id, key),
+        ).fetchone()
+        if existing:
+            if allocation is not None and existing["worker"] != worker:
+                raise LeaseError("IDEMPOTENCY_CONFLICT", "Run key has a different worker")
+            if allocation is not None:
+                from .owner_artifacts import real_path
+                expected = artifact_dir(artifact_root, item["project"], item_id, existing["run_id"])
+                if real_path(artifact_root) not in real_path(expected).parents or str(expected) != existing["artifact_dir"]:
+                    raise LeaseError("OWNER_LOCATION_MISMATCH", "existing Run has another artifact binding")
+                marker = real_path(expected / ".owner-allocation.json")
+                if not marker.is_file():
+                    raise LeaseError("OWNER_ARTIFACT_ORPHAN", "existing Run has no owner allocation manifest")
+                recorded = json.loads(marker.read_text(encoding="utf-8"))
+                if any(recorded.get(k) != v for k, v in {"item_ref": item_id, "run_ref": existing["run_id"], "idempotency_key": key, "worker_ref": worker}.items()):
+                    raise LeaseError("OWNER_ARTIFACT_ORPHAN", "existing allocation manifest differs")
+            return self._run(existing)
+        sequence = conn.execute("SELECT COUNT(*) AS n FROM runs WHERE item_id=?", (item_id,)).fetchone()["n"] + 1
+        run_id = f"RUN-{sequence:04d}"
+        attempt = conn.execute(
+            "SELECT COUNT(*) AS n FROM runs WHERE item_id=? AND activity_id=?", (item_id, activity_id)
+        ).fetchone()["n"] + 1
+        path = artifact_dir(artifact_root, item["project"], item_id, run_id)
+        if allocation is not None:
+            from .owner_artifacts import allocate_directory
+            allocate_directory(artifact_root, path, {**allocation, "item_ref": item_id,
+                               "run_ref": run_id, "idempotency_key": key, "worker_ref": worker})
+        started = now_iso()
+        conn.execute(
+            """INSERT INTO runs
+               (item_id,run_id,activity_id,worker,idempotency_key,state,artifact_dir,attempt,started_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (item_id, run_id, activity_id, worker, key, RunState.ALLOCATED.value, str(path), attempt, started),
+        )
+        row = conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
         return self._run(row)
 
     def get_run(self, item_id: str, run_id: str) -> Run | None:
-        with self.connection() as conn:
+        with closing(self.connection()) as conn:
             row = conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone()
         return self._run(row) if row else None
 
@@ -1874,7 +1987,7 @@ class ServerOSStore:
         fault. `_require_run` distinguishes all three; this is that boundary,
         offered without a connection so a read-only verb can reach it.
         """
-        with self.connection() as conn:
+        with closing(self.connection()) as conn:
             return self._run(self._require_run(conn, item_id, run_id))
 
     def list_runs(self, item_id: str | None = None, *, state: RunState | str | None = None) -> list[Run]:
@@ -1896,7 +2009,7 @@ class ServerOSStore:
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY started_at DESC, run_id DESC"
-        with self.connection() as conn:
+        with closing(self.connection()) as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._run(row) for row in rows]
 
@@ -1953,6 +2066,10 @@ class ServerOSStore:
         }
 
     def advance_run(self, item_id: str, run_id: str, target: RunState | str) -> Run:
+        with self.transaction(immediate=True) as conn:
+            return self._advance_run_tx(conn, item_id, run_id, target)
+
+    def _advance_run_tx(self, conn, item_id, run_id, target):
         target = RunState(target)
         if target in {RunState.CANCELLED, RunState.INVALID}:
             # Those two are operator terminations, not forward steps. They owe a
@@ -1962,45 +2079,44 @@ class ServerOSStore:
                 "use cancel_run (CLI: run cancel / run abandon) so the reason, actor, "
                 "and audit event are preserved"
             )
-        with self.transaction(immediate=True) as conn:
-            # This lookup used to be written out here, and it answered
-            # `unknown Run: {item}/{run}` for every miss — including a Run that
-            # exists under another Item and an Item that does not exist at all.
-            # `_require_run` answers those three separately; measured on the
-            # installed shim, `run advance DEM-0001 RUN-0001` (a Run of
-            # DEM-0002) said "unknown Run" while `run evidence` with the same
-            # arguments named the Item that owns it.
-            row = self._require_run(conn, item_id, run_id)
-            current = RunState(row["state"])
-            # SUCCEEDED and FAILED are verdicts, not steps. A Run that reaches
-            # either one through here would carry a claim — "this run succeeded"
-            # — with no evidence row behind it: no verdict, no exit code, no
-            # revision. The ledger would say a thing happened and nothing would
-            # say on what basis, which is the failure this whole release is
-            # about one plane over.
-            #
-            # FAILED is only refused from FINALIZING, where finalize_run is the
-            # producer and records the verdict. From PREPARING or RUNNING it is
-            # an abort rather than a judgement, finalize_run has no route to it
-            # (it requires FINALIZING), and refusing it would remove a
-            # capability instead of redirecting one.
-            if target is RunState.SUCCEEDED or (
-                target is RunState.FAILED and current is RunState.FINALIZING
-            ):
-                raise ValueError(
-                    f"advance_run cannot conclude a Run as {target.value}; a verdict is "
-                    "not a transition. Use finalize_run (CLI: run finalize), which "
-                    "records the verdict, exit code and revision the claim rests on. "
-                    "If the Run is being abandoned rather than judged, use cancel_run "
-                    "(CLI: run abandon)."
-                )
-            target = transition_run(current, target)
-            ended = now_iso() if target in RUN_TERMINAL else ""
-            conn.execute(
-                "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
-                (target.value, ended, item_id, run_id),
+        # This lookup used to be written out here, and it answered
+        # `unknown Run: {item}/{run}` for every miss — including a Run that
+        # exists under another Item and an Item that does not exist at all.
+        # `_require_run` answers those three separately; measured on the
+        # installed shim, `run advance DEM-0001 RUN-0001` (a Run of
+        # DEM-0002) said "unknown Run" while `run evidence` with the same
+        # arguments named the Item that owns it.
+        row = self._require_run(conn, item_id, run_id)
+        current = RunState(row["state"])
+        # SUCCEEDED and FAILED are verdicts, not steps. A Run that reaches
+        # either one through here would carry a claim — "this run succeeded"
+        # — with no evidence row behind it: no verdict, no exit code, no
+        # revision. The ledger would say a thing happened and nothing would
+        # say on what basis, which is the failure this whole release is
+        # about one plane over.
+        #
+        # FAILED is only refused from FINALIZING, where finalize_run is the
+        # producer and records the verdict. From PREPARING or RUNNING it is
+        # an abort rather than a judgement, finalize_run has no route to it
+        # (it requires FINALIZING), and refusing it would remove a
+        # capability instead of redirecting one.
+        if target is RunState.SUCCEEDED or (
+            target is RunState.FAILED and current is RunState.FINALIZING
+        ):
+            raise ValueError(
+                f"advance_run cannot conclude a Run as {target.value}; a verdict is "
+                "not a transition. Use finalize_run (CLI: run finalize), which "
+                "records the verdict, exit code and revision the claim rests on. "
+                "If the Run is being abandoned rather than judged, use cancel_run "
+                "(CLI: run abandon)."
             )
-        return self.get_run(item_id, run_id)
+        target = transition_run(current, target)
+        ended = now_iso() if target in RUN_TERMINAL else ""
+        conn.execute(
+            "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
+            (target.value, ended, item_id, run_id),
+        )
+        return self._run(conn.execute("SELECT * FROM runs WHERE item_id=? AND run_id=?", (item_id, run_id)).fetchone())
 
     def cancel_run(
         self,
@@ -2016,6 +2132,10 @@ class ServerOSStore:
         acknowledge_active_worker: bool = False,
         dry_run: bool = False,
     ) -> dict:
+        with self.transaction(immediate=True) as conn:
+            return self._cancel_run_tx(conn, item_id, run_id, reason=reason, actor=actor, reason_code=reason_code, target=target, evidence=evidence, operation=operation, acknowledge_active_worker=acknowledge_active_worker, dry_run=dry_run)
+
+    def _cancel_run_tx(self, conn, item_id, run_id, *, reason, actor, reason_code=None, target=RunState.CANCELLED, evidence=(), operation="cancel", acknowledge_active_worker=False, dry_run=False):
         """End a Run by explicit operator action, and record why.
 
         This is the audited way to reach CANCELLED or INVALID.  It moves the Run
@@ -2041,66 +2161,65 @@ class ServerOSStore:
         if any(not Path(locator).is_absolute() for locator in references):
             raise ValueError("termination evidence references must be absolute paths")
 
-        with self.transaction(immediate=True) as conn:
-            row = self._require_run(conn, item_id, run_id)
-            current = RunState(row["state"])
-            if current in RUN_TERMINAL:
-                if current != target:
-                    raise ValueError(
-                        f"Run {item_id}/{run_id} already ended as {current.value}; "
-                        f"refusing to restate it as {target.value}"
-                    )
-                # Nothing is written, so report what the ledger already says
-                # rather than what this caller asked for: a reader asking why a
-                # Run ended must not be handed a reason that was never recorded.
-                recorded = self._recorded_termination(conn, item_id, run_id)
-                return self._termination_record(
-                    item_id, run_id,
-                    recorded["operation"] if recorded else operation,
-                    RunCancelReason(recorded["reason_code"]) if recorded else reason_code,
-                    recorded["reason"] if recorded else "",
-                    recorded["actor"] if recorded else "",
-                    tuple(recorded["evidence"]) if recorded else (),
-                    current, current, row["ended_at"],
-                    runtime_may_still_be_active=bool(recorded and recorded["runtime_may_still_be_active"]),
-                    already_terminal=True, dry_run=False,
+        row = self._require_run(conn, item_id, run_id)
+        current = RunState(row["state"])
+        if current in RUN_TERMINAL:
+            if current != target:
+                raise ValueError(
+                    f"Run {item_id}/{run_id} already ended as {current.value}; "
+                    f"refusing to restate it as {target.value}"
                 )
-            # Legality stays with the state machine. cancel_run adds the reason,
-            # the actor, and the audit record on top of it and nothing else.
-            target = transition_run(current, target)
-            # The control plane owns no worker handle: runs.state is a statement
-            # of intent, not an observation of a live process. A RUNNING Run may
-            # still have a worker executing, so require an explicit extra action.
-            active = current == RunState.RUNNING
-            if active and not acknowledge_active_worker:
-                raise ActiveWorkerAckRequired(
-                    f"Run {item_id}/{run_id} is {current.value}: the control plane cannot observe or "
-                    "stop a worker process, so terminating here would not end one. Re-run with "
-                    "--acknowledge-active-worker to record the control-plane fact anyway."
-                )
-            at = now_iso()
-            if not dry_run:
-                conn.execute(
-                    "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
-                    (target.value, at, item_id, run_id),
-                )
-                self._event(
-                    conn,
-                    item_id,
-                    "run_terminated",
-                    {
-                        "run": run_id,
-                        "operation": operation,
-                        "from": current.value,
-                        "to": target.value,
-                        "reason_code": reason_code.value,
-                        "reason": reason,
-                        "actor": actor,
-                        "evidence": list(references),
-                        "runtime_may_still_be_active": active,
-                    },
-                    at=at,
-                )
+            # Nothing is written, so report what the ledger already says
+            # rather than what this caller asked for: a reader asking why a
+            # Run ended must not be handed a reason that was never recorded.
+            recorded = self._recorded_termination(conn, item_id, run_id)
+            return self._termination_record(
+                item_id, run_id,
+                recorded["operation"] if recorded else operation,
+                RunCancelReason(recorded["reason_code"]) if recorded else reason_code,
+                recorded["reason"] if recorded else "",
+                recorded["actor"] if recorded else "",
+                tuple(recorded["evidence"]) if recorded else (),
+                current, current, row["ended_at"],
+                runtime_may_still_be_active=bool(recorded and recorded["runtime_may_still_be_active"]),
+                already_terminal=True, dry_run=False,
+            )
+        # Legality stays with the state machine. cancel_run adds the reason,
+        # the actor, and the audit record on top of it and nothing else.
+        target = transition_run(current, target)
+        # The control plane owns no worker handle: runs.state is a statement
+        # of intent, not an observation of a live process. A RUNNING Run may
+        # still have a worker executing, so require an explicit extra action.
+        active = current == RunState.RUNNING
+        if active and not acknowledge_active_worker:
+            raise ActiveWorkerAckRequired(
+                f"Run {item_id}/{run_id} is {current.value}: the control plane cannot observe or "
+                "stop a worker process, so terminating here would not end one. Re-run with "
+                "--acknowledge-active-worker to record the control-plane fact anyway."
+            )
+        at = now_iso()
+        if not dry_run:
+            conn.execute(
+                "UPDATE runs SET state=?,ended_at=? WHERE item_id=? AND run_id=?",
+                (target.value, at, item_id, run_id),
+            )
+            self._event(
+                conn,
+                item_id,
+                "run_terminated",
+                {
+                    "run": run_id,
+                    "operation": operation,
+                    "from": current.value,
+                    "to": target.value,
+                    "reason_code": reason_code.value,
+                    "reason": reason,
+                    "actor": actor,
+                    "evidence": list(references),
+                    "runtime_may_still_be_active": active,
+                },
+                at=at,
+            )
         return self._termination_record(
             item_id, run_id, operation, reason_code, reason, actor, references,
             current, target, at,
