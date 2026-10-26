@@ -24,6 +24,7 @@
 | 文档 | 回答什么问题 | 状态 / 日期 |
 |---|---|---|
 | [Fleet V1 拓扑与运行](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) | 每台设备上 Core、Runtime、Ability 的边界；Fleet 如何连接 | 设计 · 2026-10-17 |
+| [Fleet 四层与仓库目录](architecture/FLEET-FOUR-LAYERS.md) | Fleet 的四层（底座、接入与枢纽、设备能力、指挥侧）各管什么、在哪个目录、怎么依赖；目录登记表 [layers.yaml](architecture/layers.yaml) | 设计 · 2026-10-26 |
 | [Fleet Next 验收手册](fleet-next-acceptance-runbook.md) | 人工验收怎么做；离线测试覆盖不到什么 | 运行手册 |
 | [Next ingress runbook](fleet-v1-next-ingress-runbook.md) | 独立 Tailscale 节点从零到可用的完整步骤 | 运行手册 |
 | [Owner/runtime 验收 2026-10-22](fleet-v1-owner-runtime-acceptance-20261022.md) | 候选版本的 34 个工具、授权与恢复行为 | 候选证据 · 2026-10-22 |
