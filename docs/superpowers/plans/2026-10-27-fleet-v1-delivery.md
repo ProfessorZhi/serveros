@@ -75,6 +75,7 @@ Each Task below gets an implementation commit and an independent review. Fixes u
 
 - [ ] RED: five-minute same-project completion aggregation; immediate failed/decide; confirmed receipt never resent; retryable not-sent retained; uncertain delivery remains UNKNOWN; restart retains cursor and receipts; wrong audience never called.
 - [ ] Implement consumer and owned-service wiring. Resolve unique owner destination from actual existing binding; no destination guess and no fixture sends live messages.
+- [ ] Persist notification ingestion before advancing its cursor, separately from delivery settlement, so a pending completion batch cannot block a later urgent failure. Bind each immutable batch to its exact event IDs, content digest, owner recipient and one stable idempotency key. Reuse the transport's actual finite deduplication window; uncertain outcomes outside it remain UNKNOWN, never blind retry. On first installation, an explicit subscription cutover bounds outbound notifications to newly accepted dispatches; old/unknown-origin events remain visible in the inbox without retroactive notification floods. Carry the trusted dispatch acceptance time from the existing owner into derived event metadata as needed, and test restart/cutover boundaries; do not relabel observation time as dispatch time.
 - [ ] Run consumer/outbox/notification regressions, commit and review.
 
 ### Task 4: F4 dependency-complete manager wake
