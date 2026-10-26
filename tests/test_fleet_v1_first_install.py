@@ -492,7 +492,7 @@ class NoPlaceholderIsEverWritten(unittest.TestCase):
             manifest = builder.load_manifest(f.source)
             bundle = builder.source_bundle(f.source, f.out, manifest, refusal.status)
         self.assertEqual(bundle["archive"],
-                         "serveros-fleet-ingress-v1.0.0" + builder.SOURCE_BUNDLE_SUFFIX)
+                         "serveros-fleet-ingress-v1.0.1" + builder.SOURCE_BUNDLE_SUFFIX)
         self.assertFalse(bundle["installable"])
         self.assertIn(builder.NOT_INSTALLABLE_MEMBER, bundle["members"])
         # …and no release-shaped archive beside it.

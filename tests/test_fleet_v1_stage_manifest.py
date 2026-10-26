@@ -125,7 +125,7 @@ class StagingRun(unittest.TestCase):
 
     #: The name the fixture's plugin manifest produces, so the test can write a
     #: file at the exact path the run would have used.
-    MANIFEST_NAME = "serveros-fleet-ingress-v1.0.0" + "-STAGING-MANIFEST.json"
+    MANIFEST_NAME = "serveros-fleet-ingress-v1.0.1" + "-STAGING-MANIFEST.json"
 
     def test_a_preexisting_manifest_is_never_overwritten(self) -> None:
         """An incomplete prior run is still evidence, and the manifest is the half
