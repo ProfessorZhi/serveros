@@ -95,6 +95,7 @@ Each Task below gets an implementation commit and an independent review. Fixes u
 
 - [ ] RED: client cannot issue; scope/actor validation; replay once; concurrent completion after fence cannot wake/write; offline interrupt records partial UNKNOWN; reachable fixture stops within 60 seconds; stale writer is denied at real mutation seam.
 - [ ] Implement owner operation and per-target reconciliation without fabricating shutdown or rolling back committed direction on network failure.
+- [ ] Close the actual owner/lease commit seam before claiming protected writes: current `runtime/daemon.py::_r_agent_lease_authority_verify` and `workengine/serveros_authority.py` deliberately return BLOCKED_OWNER_COMMIT_SEAM for owner-backed point-in-time reads. Use a trusted owner-side atomic lease/mutation operation with a documented lock order and durable receipt; do not change this refusal into verified=true while leaving a verify-then-write race. Add revoke/epoch-change-during-acquire and crash-boundary tests at the actual producer/consumer path.
 - [ ] Verify lease/epoch, directive, continuation and tool tests; commit and review.
 
 ### Task 6: F6 commander source and current generated plugin
@@ -129,6 +130,7 @@ Each Task below gets an implementation commit and an independent review. Fixes u
 
 - [ ] Pin old store schema/path, trusted producer/consumer behavior and actual current CLI/MCP operations. Add negative guard that workengine does not import runtime.
 - [ ] Move ownership without changing safety logic. Route covered operations through Fleet; retain necessary functionality in thin adapters, remove duplicate control implementations only after all consumers migrate.
+- [ ] Migrate daemon's semantic RPC handlers with their actual consumers. The inspected70-route census assigns43 clear semantic/context methods to Work/reports/ability owners and27 mixed observation/view methods to native facts plus projection. In the already-running colocated hub, bind a bounded serialized Unix compatibility listener that directly accepts the original caller and reads SO_PEERCRED; do not proxy caller-provided peer JSON. Preserve existing ledger paths, alert/card serialization, tick-driven detector cadence and unknown/freshness views. Noncolocated local consumers require independently authenticated native peer evidence or a bounded original-FD helper only where an actual consumer needs it; do not install extra resident Python hubs by default.
 - [ ] Run S1/S2, grant, writer, continuation and plugin startup suites. Commit/review migrations separately from behavior changes.
 
 ### Task 10: D8/D9 one native serverosd
@@ -139,6 +141,7 @@ Each Task below gets an implementation commit and an independent review. Fixes u
 
 - [ ] RED native/Python tests: duplicate owner rejected, manual stop/busy/expired lease refuses; C++ can observe and recover fixture while hub disconnected; Windows IPC identity/refusal remains intact.
 - [ ] Implement ownership guard; migrate observation, recovery, local lease and facts one at a time. Disable corresponding Python effects as each switches. Do not delete daemon until all remaining consumers resolve elsewhere.
+- [ ] Wire the existing Linux generation fence into resident persisted state; currently PlanInput.applied_generation is not supplied. Revalidate ownership/desired state under the same effect lock on every attempt, including expiry and same-generation/different-content refusal. Preserve pending journals and recovery budget across transfer; lock exclusion alone does not prevent alternating actuators. Replace the repeating Python facts publisher with bounded native sources or authenticated connector facts, retaining local facts needed during connector/hub outage. Windows keeps its SID/PID/creation-time proof and separate native lane.
 - [ ] Rename only once installed entrypoints/rollback mapping are prepared. Run Linux CMake/ctest, Windows native workflows and real toy recovery. Commit/review each takeover.
 
 ### Task 11: Q2/A0 honest quality and six-combination acceptance
