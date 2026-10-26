@@ -1697,8 +1697,10 @@ class Daemon:
         from `SO_PEERCRED`. It is a parameter rather than something a handler
         fetches, because a handler that can go looking for its caller's
         identity can also go looking at the wrong moment. Only one method
-        reads it (`agent.context.attach`), and that method's whole job is to
-        bind an observation to the process that made it.
+        reads it: `agent.context.attach`, whose whole job is to bind an
+        observation to the process that made it, and `agent.grant.issue`,
+        which stores the grant against `uid:<n>` — a principal the kernel
+        named rather than one the caller wrote.
         """
         # These two readings happen BEFORE the `try` below, so a request whose
         # shape this method did not anticipate would not be an error response —
