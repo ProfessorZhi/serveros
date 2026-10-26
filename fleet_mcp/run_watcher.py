@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import threading
 import time
 
@@ -90,6 +91,15 @@ class RunWatcher:
                 for field in ("project", "work_ref", "parent_ref", "agent_ref", "principal_subject", "principal_kind"):
                     if record.get(field) is not None:
                         template[field] = record[field]
+                # Only the owner's successful ACK commit supplies this origin.
+                # Historical/invalid origin is absent, never observation time.
+                try:
+                    accepted = dt.datetime.fromisoformat(record["accepted_at"].replace("Z", "+00:00"))
+                    origin = accepted.timestamp()
+                    if accepted.tzinfo is not None and math.isfinite(origin) and 0 <= origin <= now:
+                        template["dispatch_accepted_at"] = origin
+                except (KeyError, AttributeError, TypeError, ValueError, OverflowError, OSError):
+                    pass
                 validate_event(template)
                 first_seen = now
                 recorded_at = record.get("recorded_at")

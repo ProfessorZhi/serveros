@@ -66,8 +66,8 @@ class LiveSenderDisabled(LiveSenderError):
 
 
 def _declared_app(text: str) -> str:
-    found = re.search(r"cli_[a-z0-9]{10,}", text or "")
-    return found.group(0) if found else ""
+    found = set(re.findall(r"cli_[a-z0-9]{10,}", text or ""))
+    return next(iter(found)) if len(found) == 1 else ""
 
 
 def _stored_credential(credential_dir: Path) -> tuple[str, str]:
@@ -81,11 +81,12 @@ def _stored_credential(credential_dir: Path) -> tuple[str, str]:
         names = sorted(os.listdir(credential_dir))
     except OSError:
         return "", ""
+    found = set()
     for name in names:
         match = re.match(r"(cli_[a-z0-9]+)_(ou_[a-z0-9]+)\.enc$", name)
         if match:
-            return match.group(1), match.group(2)
-    return "", ""
+            found.add((match.group(1), match.group(2)))
+    return next(iter(found)) if len(found) == 1 else ("", "")
 
 
 def owner_binding(*, config_path=None, credential_dir=None) -> dict:
@@ -108,12 +109,12 @@ def owner_binding(*, config_path=None, credential_dir=None) -> dict:
         raise LiveSenderError(
             "the config declares no app id: refusing, because a recipient read "
             "from a config that does not name its app could belong to any app")
-    found = re.search(r"ou_[A-Za-z0-9]{10,}", text)
-    if not found:
+    found = set(re.findall(r"ou_[A-Za-z0-9]{10,}", text))
+    if len(found) != 1:
         raise LiveSenderError(
             "the config declares no owner open_id: this module will not guess a "
             "recipient, and a guess is not recallable")
-    owner_open_id = found.group(0)
+    owner_open_id = next(iter(found))
     credential_app, credential_user = _stored_credential(credential_dir)
     if not credential_app or not credential_user:
         raise LiveSenderError(

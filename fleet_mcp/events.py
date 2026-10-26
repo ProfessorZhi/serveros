@@ -23,7 +23,7 @@ STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "UNKNOWN"})
 _REQUIRED = {"event_id", "kind", "level", "device_ref", "runtime", "session_ref",
              "run_id", "dispatcher", "occurred_at", "summary"}
 _OPTIONAL = {"project", "work_ref", "parent_ref", "agent_ref", "delivery_id",
-             "principal_subject", "principal_kind"}
+             "principal_subject", "principal_kind", "dispatch_accepted_at"}
 
 
 def _text(value, name, maximum=512):
@@ -42,7 +42,7 @@ def _cursor(value):
 def validate_event(event):
     if not isinstance(event, dict) or set(event) - _REQUIRED - _OPTIONAL or not _REQUIRED <= set(event):
         raise ValueError("event fields are closed")
-    for name in (_REQUIRED | _OPTIONAL) - {"occurred_at", "summary"}:
+    for name in (_REQUIRED | _OPTIONAL) - {"occurred_at", "summary", "dispatch_accepted_at"}:
         if name in event:
             if name == "run_id" and event[name] is None and "delivery_id" in event:
                 continue
@@ -74,6 +74,11 @@ def validate_event(event):
     at = event["occurred_at"]
     if isinstance(at, bool) or not isinstance(at, (int, float)) or not math.isfinite(at) or at < 0:
         raise ValueError("occurred_at must be a finite timestamp")
+    if "dispatch_accepted_at" in event:
+        origin = event["dispatch_accepted_at"]
+        if (isinstance(origin, bool) or not isinstance(origin, (int, float))
+                or not math.isfinite(origin) or not 0 <= origin <= at):
+            raise ValueError("dispatch_accepted_at must be a finite timestamp no later than observation")
     try:
         key = SessionKey.parse(event["session_ref"])
     except FleetRefusal:

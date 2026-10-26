@@ -211,6 +211,7 @@ class FleetService:
         self.dispatch = DispatchGuard(attempts)
         self.events = events
         self.run_watcher = None
+        self.event_delivery = None
         self.discovery = DiscoveryPool(config.policy.discovery_workers)
 
     # -- helpers -----------------------------------------------------------
@@ -3129,6 +3130,8 @@ class FleetService:
                 "status": "AVAILABLE" if self.events is not None else "UNAVAILABLE",
                 "durability": "SQLITE" if self.events is not None else "UNAVAILABLE",
                 "observer": self.run_watcher.last_result if self.run_watcher is not None else None,
+                "notifications": (self.event_delivery.last_result if self.event_delivery is not None
+                                  else {"status": "DISABLED"}),
             },
             "identity_layer": {
                 "authority": "fleet/registry.yaml",

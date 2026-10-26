@@ -1,0 +1,36 @@
+schema: serveros/fleet-event-delivery.v1
+owner: runtime/fleet_event_delivery.py
+authority: derived-projection-only
+storage: existing-event-sqlite
+subscription:
+  name: fleet-owner-notification
+  cutover: immutable-explicit-dispatch-acceptance-epoch
+  historical_or_missing_origin: inbox-only
+  ingestion: persist-queue-before-independent-ack
+intent:
+  immutable: [event_ids, text, text_digest, recipient, key]
+  maximum_events: 10
+  maximum_text_utf8_bytes: 24000
+  key: sha256-canonical-intent-first-50-hex-characters
+scheduling:
+  completion_project_window_seconds: 300
+  failure_or_decide: immediate-priority
+  ingestion_page: 100
+  maximum_sends_per_tick: 8
+settlement:
+  delivered_requires: real-nonempty-provider-remote_id
+  confirmed_receipt: never-resent
+  uncertain: UNKNOWN
+  retry_safe_not_sent: retains-intent
+  not_sent_after_unknown: does-not-disprove-earlier-effect
+  finite_deduplication_window: runtime/message_transport.py:IDEMPOTENCY_WINDOW_SECONDS
+  request_margin_seconds: 20
+  expired_unknown: retained-no-send
+lifecycle:
+  construction: no-threads-no-live-config-no-sends
+  owned_opt_in: [--notify-owner, --notification-cutover]
+  binding: live_sender.owner_binding-unique-owner-private-user
+  identity: bot
+  request_timeout_seconds: 20
+  shutdown_join_seconds: 60
+  failure: independent-of-control-and-run-observer

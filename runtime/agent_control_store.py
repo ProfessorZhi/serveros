@@ -1330,7 +1330,10 @@ class AgentControlStore:
                 if record["verb"] == "project.create" or record.get("project", project) != project:
                     raise StoreError("delivery project differs from original intent")
                 updated["project"] = project
-            updated.update(phase="ACCEPTED", result=dict(receipt))
+            # This timestamp belongs to the original ACK commit, never to a
+            # claimant's input, recovery observation, or an accepted replay.
+            updated.update(phase="ACCEPTED", result=dict(receipt),
+                           accepted_at=datetime.now(timezone.utc).isoformat())
             section[str(key)] = updated
             self._flush()
             return json.loads(json.dumps(updated))

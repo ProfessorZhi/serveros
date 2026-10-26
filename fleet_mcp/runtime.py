@@ -98,6 +98,16 @@ def build_http_surface(config: FleetConfig, service: FleetService) -> HttpSurfac
     return HttpSurface(service=service, config=config, oauth=oauth, audit=service.audit)
 
 
+def _delivery_lifecycle(service, method):
+    """An optional derived consumer cannot disable the Fleet control surface."""
+    delivery = getattr(service, "event_delivery", None)
+    if delivery is not None:
+        try:
+            getattr(delivery, method)()
+        except Exception:
+            delivery.last_result = {"status": "UNAVAILABLE"}
+
+
 def run_http(config: FleetConfig, *, service: FleetService | None = None) -> int:
     service = service or build_service(config)
     surface = build_http_surface(config, service)
@@ -130,10 +140,12 @@ def run_http(config: FleetConfig, *, service: FleetService | None = None) -> int
     try:
         if observer is not None:
             observer.start()
+        _delivery_lifecycle(service, "start")
         server.serve_forever()
     except KeyboardInterrupt:
         sys.stderr.write(f"{SERVER_NAME}: interrupted\n")
     finally:
+        _delivery_lifecycle(service, "close")
         try:
             if observer is not None:
                 observer.close()
@@ -158,6 +170,7 @@ def run_stdio(config: FleetConfig, *, service: FleetService | None = None) -> in
     try:
         if observer is not None:
             observer.start()
+        _delivery_lifecycle(service, "start")
         for line in sys.stdin:
             line = line.strip()
             if not line:
@@ -175,6 +188,7 @@ def run_stdio(config: FleetConfig, *, service: FleetService | None = None) -> in
             out.write(dumps(response) + "\n")
             out.flush()
     finally:
+        _delivery_lifecycle(service, "close")
         if observer is not None:
             observer.close()
     return 0
