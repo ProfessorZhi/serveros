@@ -7,14 +7,27 @@ import errno
 import json
 import os
 import shutil
+from contextlib import closing
+from functools import wraps
 from pathlib import Path
 
 from .model import now_iso
 from .store import ServerOSStore
+from .migration_lock import actuator
 
 
 class MigrationError(ValueError):
     pass
+
+
+def _serialized(method):
+    @wraps(method)
+    def run(self, *args, **kwargs):
+        # Global maintenance actuator -> short Work transactions. Never invert
+        # this order or hold a Work transaction across the entire journal.
+        with actuator(self.store):
+            return method(self, *args, **kwargs)
+    return run
 
 
 def path_sha256(path: Path) -> str:
@@ -77,10 +90,10 @@ def _move_verified(source: Path, target: Path, expected: str) -> None:
             raise
 
     temporary = target.with_name(f".{target.name}.serveros-migrate-{expected[:12]}.tmp")
-    if temporary.exists():
+    if os.path.lexists(temporary):
         if path_sha256(temporary) != expected:
             _remove_path(temporary)
-    if not temporary.exists():
+    if not os.path.lexists(temporary):
         if source.is_dir():
             shutil.copytree(source, temporary)
         else:
@@ -92,13 +105,32 @@ def _move_verified(source: Path, target: Path, expected: str) -> None:
     _remove_path(source)
 
 
+def _settle_temporaries(source, target, expected):
+    """Only complete, hash-verified protocol copies can be removed."""
+    for destination in (source, target):
+        temporary = destination.with_name(f".{destination.name}.serveros-migrate-{expected[:12]}.tmp")
+        if os.path.lexists(temporary):
+            if path_sha256(temporary) != expected:
+                raise MigrationError("ambiguous partial copy; migration remains fenced")
+            _remove_path(temporary)
+
+
 class MigrationManager:
     def __init__(self, store: ServerOSStore) -> None:
         self.store = store
 
+    def _control_boundary(self, manifest):
+        root = self.store.state_dir.resolve()
+        for operation in manifest["operations"]:
+            for key in ("source", "target"):
+                path = Path(operation[key]).resolve()
+                if path == root or path in root.parents or root in path.parents:
+                    raise MigrationError("migration must not move or overwrite reserved control state/actuator files")
+
     def _validate(self, manifest: dict) -> None:
         if not manifest.get("project") or not isinstance(manifest.get("operations"), list):
             raise MigrationError("manifest requires project and operations")
+        self._control_boundary(manifest)
         seen_targets: list[tuple[Path, Path]] = []
         for index, operation in enumerate(manifest["operations"]):
             if operation.get("type") != "move":
@@ -119,7 +151,7 @@ class MigrationManager:
                     if (prior_source / relative).exists():
                         raise MigrationError(f"operation {index}: nested target would overwrite parent source content")
             seen_targets.append((source, target))
-            if target.exists():
+            if os.path.lexists(target):
                 raise MigrationError(f"operation {index}: target already exists: {target}")
             actual = path_sha256(source)
             expected = operation.get("sha256")
@@ -127,6 +159,7 @@ class MigrationManager:
                 raise MigrationError(f"operation {index}: source hash mismatch")
             operation["sha256"] = actual
 
+    @_serialized
     def plan(self, manifest: dict) -> dict:
         manifest = json.loads(json.dumps(manifest))
         self._validate(manifest)
@@ -141,7 +174,7 @@ class MigrationManager:
         return {"project": project, "status": "PLANNED", "operations": len(manifest["operations"])}
 
     def inspect(self, project: str) -> dict:
-        with self.store.connection() as conn:
+        with closing(self.store.connection()) as conn:
             row = conn.execute("SELECT * FROM migration_intents WHERE project=?", (project,)).fetchone()
         if row is None:
             raise MigrationError(f"unknown migration: {project}")
@@ -152,9 +185,11 @@ class MigrationManager:
             "manifest": json.loads(row["manifest_json"]),
         }
 
+    @_serialized
     def apply(self, project: str, crash_after: int | None = None) -> dict:
         intent = self.inspect(project)
         manifest = intent["manifest"]
+        self._control_boundary(manifest)
         cursor = intent["cursor"]
         with self.store.transaction(immediate=True) as conn:
             self.store._refuse_managed_effect(conn, project=project)
@@ -170,20 +205,21 @@ class MigrationManager:
             source = Path(operation["source"])
             target = Path(operation["target"])
             expected = operation["sha256"]
-            if source.exists() and not target.exists():
+            if os.path.lexists(source) and not os.path.lexists(target):
                 if path_sha256(source) != expected:
                     raise MigrationError(f"operation {index}: source changed after plan")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 _move_verified(source, target, expected)
-            elif target.exists() and not source.exists():
+            elif os.path.lexists(target) and not os.path.lexists(source):
                 if path_sha256(target) != expected:
                     raise MigrationError(f"operation {index}: resumed target hash mismatch")
-            elif source.exists() and target.exists():
+            elif os.path.lexists(source) and os.path.lexists(target):
                 if path_sha256(source) != expected or path_sha256(target) != expected:
                     raise MigrationError(f"operation {index}: ambiguous source/target state")
                 _remove_path(source)
             else:
                 raise MigrationError(f"operation {index}: ambiguous source/target state")
+            _settle_temporaries(source, target, expected)
             with self.store.transaction(immediate=True) as conn:
                 conn.execute(
                     "UPDATE migration_intents SET cursor=?,updated_at=? WHERE project=?",
@@ -192,6 +228,10 @@ class MigrationManager:
             applied_this_call += 1
             if crash_after is not None and applied_this_call == crash_after:
                 raise RuntimeError("simulated migration controller crash")
+        for operation in manifest["operations"]:
+            _settle_temporaries(Path(operation["source"]), Path(operation["target"]), operation["sha256"])
+        if self.verify(project)["status"] != "PASS":
+            raise MigrationError("migration filesystem verification failed; APPLYING fence retained")
         with self.store.transaction(immediate=True) as conn:
             conn.execute(
                 "UPDATE migration_intents SET status='COMPLETED',updated_at=? WHERE project=?",
@@ -211,13 +251,15 @@ class MigrationManager:
                 for later in operations[index + 1 :]
                 if target in (later_target := Path(later["target"])).parents
             )
-            if source.exists() or not target.exists() or _path_sha256_excluding(target, nested_targets) != operation["sha256"]:
+            if os.path.lexists(source) or not os.path.lexists(target) or _path_sha256_excluding(target, nested_targets) != operation["sha256"]:
                 failures.append(index)
         return {"project": project, "status": "PASS" if not failures else "FAIL", "failures": failures}
 
+    @_serialized
     def compensate(self, project: str) -> dict:
         intent = self.inspect(project)
         operations = intent["manifest"]["operations"]
+        self._control_boundary(intent["manifest"])
         # Durable state fences first owner enrollment across every per-step
         # commit and process crash; rollback cannot undo a filesystem move.
         with self.store.transaction(immediate=True) as conn:
@@ -225,20 +267,34 @@ class MigrationManager:
             conn.execute(
                 "UPDATE migration_intents SET status='COMPENSATING',updated_at=? WHERE project=?",
                 (now_iso(), project))
-        for index in reversed(range(intent["cursor"])):
+        # The cursor can lag a completed move if the process died before its
+        # next SQL commit. Reconcile every manifest step, in reverse order,
+        # before declaring terminal. State ambiguity keeps the durable fence.
+        for index in reversed(range(len(operations))):
             operation = operations[index]
             source = Path(operation["source"])
             target = Path(operation["target"])
-            if source.exists() and not target.exists():
-                continue
-            if target.exists() and not source.exists() and path_sha256(target) == operation["sha256"]:
+            expected = operation["sha256"]
+            if os.path.lexists(source) and path_sha256(source) == expected:
+                if os.path.lexists(target):
+                    if path_sha256(target) != expected:
+                        raise MigrationError(f"operation {index}: cannot compensate ambiguous state")
+                    _remove_path(target)
+            elif os.path.lexists(target) and not os.path.lexists(source) and path_sha256(target) == expected:
                 source.parent.mkdir(parents=True, exist_ok=True)
-                _move_verified(target, source, operation["sha256"])
+                _move_verified(target, source, expected)
             else:
                 raise MigrationError(f"operation {index}: cannot compensate ambiguous state")
+            # Cross-device copy can also die before publication in either
+            # direction. Only a fully verified owned temporary is removable;
+            # partial/foreign bytes stay fenced for explicit reconciliation.
+            _settle_temporaries(source, target, expected)
             with self.store.transaction(immediate=True) as conn:
                 conn.execute("UPDATE migration_intents SET cursor=?,updated_at=? WHERE project=?",
                              (index, now_iso(), project))
+        for operation in operations:
+            if os.path.lexists(operation["target"]) or path_sha256(Path(operation["source"])) != operation["sha256"]:
+                raise MigrationError("compensation filesystem verification failed; fence retained")
         with self.store.transaction(immediate=True) as conn:
             conn.execute(
                 "UPDATE migration_intents SET status='COMPENSATED',cursor=0,updated_at=? WHERE project=?",

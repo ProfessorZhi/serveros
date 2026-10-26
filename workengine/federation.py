@@ -432,22 +432,33 @@ def publish_inventory(domain, source, target, evidence_run, receipt_recorder, re
             with store.transaction(immediate=True) as conn:
                 item, _ = store._resolve_evidence_run_tx(conn, evidence_run)
                 store._refuse_managed_effect(conn, item_ref=item)
+                prepared = _prepare_inventory(domain, source)
                 target = _canonical_target(target)
                 locks.enter_context(_publication_lock(target))
+                # Recovery belongs to the journal's original Item, which may
+                # differ from this incoming request and may have enrolled since
+                # the publisher died. Check BOTH scopes before any restoration,
+                # receipt recording, cleanup or new projection staging.
+                if os.path.lexists(_journal_path(target)):
+                    pending, _, _ = _load_pending(target, domain)
+                    pending_item, _ = store._resolve_evidence_run_tx(conn, pending["evidence_run"])
+                    store._refuse_managed_effect(conn, item_ref=pending_item)
+                    if pending["evidence_run"] != evidence_run or pending["new_sha256"] != prepared[2]:
+                        raise ValueError('reconcile the pending publication identity before publishing a different attempt')
                 def record(*args):
                     return store._record_publication_receipt_tx(conn, *args)
                 def lookup(domain, locator, evidence):
                     row = conn.execute("SELECT * FROM publication_receipts WHERE domain=? AND locator=? AND evidence_run=?", (domain, locator, evidence)).fetchone()
                     return dict(row) if row else None
-                result = _publish_inventory(domain, source, target, evidence_run, record, lookup, locked=True, cleanup=cleanup)
+                result = _publish_inventory(domain, source, target, evidence_run, record, lookup, locked=True, cleanup=cleanup, prepared=prepared)
             for pending in cleanup:
                 _remove_pending(*pending)
         return result
     return _publish_inventory(domain, source, target, evidence_run, receipt_recorder, receipt_lookup)
 
 
-def _publish_inventory(domain, source, target, evidence_run, receipt_recorder, receipt_lookup=None, *, locked=False, cleanup=None):
-    rows, payload, digest = _prepare_inventory(domain, source)
+def _publish_inventory(domain, source, target, evidence_run, receipt_recorder, receipt_lookup=None, *, locked=False, cleanup=None, prepared=None):
+    rows, payload, digest = prepared if prepared is not None else _prepare_inventory(domain, source)
     target=_canonical_target(target)
     with (nullcontext() if locked else _publication_lock(target)):
         journal=_journal_path(target)

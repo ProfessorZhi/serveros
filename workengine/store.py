@@ -414,6 +414,11 @@ class ServerOSStore:
             migrate(conn)
             from .owner_fence import migrate as migrate_owner_fence
             migrate_owner_fence(conn)
+        # Serialize first creation without replacing an existing actuator inode.
+        # Read-only owner clients return above and create no lock/schema files.
+        with self.transaction(immediate=True):
+            from .migration_lock import initialize
+            initialize(self.state_dir)
         from .owner_fence import file_identity
         self._owner_file_identity = file_identity(self.db_path)
 
@@ -1400,6 +1405,8 @@ class ServerOSStore:
             return self._upsert_context_tx(c, context)
 
     def _upsert_context_tx(self, c, context):
+        if not isinstance(context.revision, str) or not context.revision.strip():
+            raise ValueError("context requires a non-empty string revision")
         # `execution_contexts` carries a composite foreign key onto
         # `activities(item_id, activity_id)`, so attaching a context to an
         # activity that does not exist used to answer with the constraint's
@@ -2147,7 +2154,7 @@ class ServerOSStore:
             raise ValueError(f"unsupported termination operation: {operation}")
         if not str(reason).strip():
             raise ValueError("run termination requires a non-empty reason")
-        if not str(actor).strip():
+        if not isinstance(actor, str) or not actor.strip():
             raise ValueError("run termination requires a non-empty actor")
         reason_code = (
             RunCancelReason(reason_code)

@@ -314,8 +314,20 @@ def _owner_command(args):
     mapping = {"context_ref":"context_ref", "grant_ref":"grant_ref", "expected_grant_epoch":"expected_epoch", "lease_token":"token", "operation_id":"operation_id"}
     envelope = {wire: getattr(args, flag) for flag, wire in mapping.items() if hasattr(args, flag)}
     socket = getattr(args, "owner_socket", None)
-    return OwnerRouter(state_dir=_state_dir(args), owner_client=UnixSocketOwnerClient(socket) if socket else None,
+    return OwnerRouter(state_dir=_state_dir(args), owner_client=UnixSocketOwnerClient(socket) if socket is not None else None,
                        envelope=envelope, artifacts_root=getattr(args, "artifacts_root", None)).mutate(item, verb, **data)
+
+
+class WorkArgumentParser(argparse.ArgumentParser):
+    def parse_args(self, args=None, namespace=None):
+        parsed = super().parse_args(args, namespace)
+        owned = any(hasattr(parsed, field) for field in ("owner_socket", "context_ref", "grant_ref", "expected_grant_epoch", "lease_token", "operation_id"))
+        if not owned:
+            if parsed.group == "run" and parsed.action in {"cancel", "abandon"} and not (parsed.actor and parsed.actor.strip()):
+                self.error("--actor is required for unmanaged run termination")
+            if parsed.group == "context" and parsed.action == "attach" and not parsed.revision.strip():
+                self.error("--revision is required for unmanaged context attachment")
+        return parsed
 
 
 def build_parser(prog: str = "serverosctl") -> argparse.ArgumentParser:
@@ -324,7 +336,7 @@ def build_parser(prog: str = "serverosctl") -> argparse.ArgumentParser:
     # composed entry, and as `python -m workengine`, the internal/compatibility
     # entry whose historical name is `serverosctl`. A hard-coded name let the
     # subcommand's own help claim a top-level surface it does not have.
-    parser = argparse.ArgumentParser(prog=prog, description="ServerOS v3 control plane", parents=[_common()])
+    parser = WorkArgumentParser(prog=prog, description="ServerOS v3 control plane", parents=[_common()])
     groups = parser.add_subparsers(dest="group", required=True)
 
     item = groups.add_parser("item", parents=[_common()])

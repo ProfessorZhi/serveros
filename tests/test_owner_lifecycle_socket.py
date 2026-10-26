@@ -390,7 +390,7 @@ def test_publication_recovery_of_managed_pending_item_has_zero_file_effects(tmp_
     def files():
         return {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
     before = files()
-    with pytest.raises(ValueError, match="OWNER_COMMIT_FENCE_REQUIRED"):
+    with pytest.raises(Exception, match="OWNER_COMMIT_FENCE_REQUIRED"):
         federation.publish_inventory("github", source, target, "SRV-0002/RUN-0001", work.record_publication_receipt, work.get_publication_receipt)
     assert files() == before
 

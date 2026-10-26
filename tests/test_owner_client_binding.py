@@ -45,3 +45,12 @@ def test_getter_releases_file_handle_for_explicit_stopped_owner_rebind(tmp_path)
     store.create_item(WorkItem("SRV-0001", "serveros", "fixture", "feature", "fixture"))
     assert store.get_item("SRV-0001") is not None
     store.db_path.rename(tmp_path / "stopped-owner.db")
+
+
+def test_read_only_store_does_not_create_migration_actuator(tmp_path):
+    store = ServerOSStore(tmp_path / "work")
+    lock = store.state_dir / ".migration-actuator.lock"
+    lock.unlink()
+    before = sorted(path.name for path in store.state_dir.iterdir())
+    ServerOSStore(store.state_dir, read_only=True)
+    assert sorted(path.name for path in store.state_dir.iterdir()) == before
