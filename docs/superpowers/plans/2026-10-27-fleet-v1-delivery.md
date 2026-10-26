@@ -43,7 +43,7 @@
 - Existing `scripts/build.py`, `release.py`, `fleet_mcp/deploy/`: independently versioned products and reversible deployment.
 - `serverosd/`: final C++ node owner, migrated from native/node-core with consumer updates.
 
-Each Task below gets an implementation commit and an independent review. Fixes use the same implementer. Exact migration file inventories are derived from source imports before movement and recorded in the task report; they cannot be guessed from old counts.
+Each Task below gets an implementation commit and an independent review. Fixes use the same implementer. Exact migration file inventories are derived from source imports before movement and recorded in the task report; they cannot be guessed from old counts. Execution order is Task1, Task14, then Tasks2–13: Task14 closes a real native delivery-ID adapter gap discovered while implementing Task1.
 
 ### Task 1: F1 durable events, watcher and authenticated inbox
 
@@ -169,6 +169,20 @@ Each Task below gets an implementation commit and an independent review. Fixes u
 - [ ] Upgrade first Linux node, second Linux, Windows under bounded windows, proving old/new compatibility and active-run preservation. Promote hub/main client route only after all needed proofs.
 - [ ] Verify create/send/read/interrupt/continue for all six cells, events→owner notice→manager→downstream, preemption/lease refusal, hub and connector restarts, and actual rollback compatibility. Retain negative evidence.
 - [ ] Observe deployed candidate for at least two hours while finishing receipts. Only then mark FINAL_ACCEPTANCE, record running digests and hand off operation/rollback commands. If credentials or approvals block a cell, keep release candidate and report exact missing action; never reduce denominator.
+
+### Task 14: preserve delivery IDs and resolve queued execution evidence
+
+**Why added:** Read-only inspection of installed Tokyo @yalehwang/cloudcli 1.41.0 found AC-386: session_send returns deliveryId, runId and queuedMessageUuid separately; run_get accepts exactly one of runId or deliveryId. Fleet currently drops deliveryId and pins the old runId-only schema. The installed mcp-run-get.js digest is eb8e8c12ceeda3a449a5bfd189b5924a458b6a4379270ea78f0c2046dabbb38a. This is observed source, not a guarantee every device has that version.
+
+**Files:** `fleet_mcp/dispatch.py`, `fleet.py`, `providers/base.py`, `providers/cloudcli.py`, `providers/fleet_node.py`, `cloudcli_native.py`, `tools.py`, `node/connector.py`, existing signed native-call route, `events.py`, `run_watcher.py`; create `tests/test_fleet_delivery_correlation.py`, update affected exact-schema/native-contract/receipt tests.
+
+**Interfaces:** optional `delivery_id` is preserved in accepted/replayed receipts. `DeviceProvider.get_delivery(key: SessionKey, delivery_id: str) -> dict` defaults to explicit unsupported; CloudCliProvider calls run_get with deliveryId and session, FleetNodeProvider uses the existing signed closed native-call transport after schema/capability validation. Extend `fleet_get_run` to accept exactly one run_id/delivery_id with old calls unchanged. A delivery response must match idKind=delivery, deliveryId and native sessionId; never guess queuedMessageUuid equals deliveryId.
+
+- [ ] RED: send result deliveryId survives persistence/reconstruction; old receipts without new field replay unchanged; both/neither IDs refuse; wrong session/delivery ID refuses; older device reports unsupported, never false success; two deliveries in one Run remain distinct.
+- [ ] Implement optional receipt/context propagation with strict allowed fields and existing current authorization. Update pinned run_get schema/projection to the verified additive shape and gate actual device support. No second node endpoint or arbitrary native command is necessary.
+- [ ] RED observer tests: accepted delivery with null Run resolves to the provider-reported Run; completed delivery alone does not certify Run success; cancelled delivery yields cancellation without re-dispatch; mismatched binding produces UNKNOWN; provider restart/missing Run never attaches the current unrelated Run. Repeated delivery readings cannot generate duplicate events or wakes.
+- [ ] Extend durable observation identity to delivery references while preserving existing run watches and stored SQLite state. Distinguish delivery terminal from Run terminal: only use confirmed bound Run outcome for work completion, since native delivery completion and provider RESULT may arrive independently. If no trustworthy bound Run proof exists, retain unresolved and emit bounded decision evidence after timeout; do not parse assistant prose as success.
+- [ ] Run delivery/dispatch/native schema/node-signed transport/observer tests; record older-provider compatibility and current-source proof. Run exact-SHA Linux CI, commit and independently review before Tasks2–6 depend on this path.
 
 ## Execution record
 
