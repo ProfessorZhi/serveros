@@ -56,10 +56,15 @@ def migrate(conn):
         _guards(conn, "claim_observations", lambda row: "r.item_ref IN (" + linked + f"WHERE cc.claim_id={row}.claim_id)")
         _guards(conn, "observations", lambda row: "r.item_ref IN (" + linked +
                 "JOIN claim_observations co ON co.claim_id=cc.claim_id " +
-                f"WHERE co.observation_id={row}.observation_id)")
+                f"WHERE co.observation_id={row}.observation_id "
+                "UNION SELECT f.item_id FROM feedback f " +
+                f"WHERE f.observation_id={row}.observation_id)")
         _guards(conn, "source_objects", lambda row: "r.item_ref IN (" + linked +
                 "JOIN claim_observations co ON co.claim_id=cc.claim_id "
                 "JOIN observations o ON o.observation_id=co.observation_id " +
+                f"WHERE o.source_id={row}.source_id "
+                "UNION SELECT f.item_id FROM feedback f "
+                "JOIN observations o ON o.observation_id=f.observation_id " +
                 f"WHERE o.source_id={row}.source_id)")
         _guards(conn, "id_sequences", lambda row:
                 f"(r.item_ref={row}.scope OR 'work-write:' || r.item_ref={row}.scope)")

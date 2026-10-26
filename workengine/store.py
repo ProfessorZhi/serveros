@@ -450,7 +450,10 @@ class ServerOSStore:
                 owner = conn.execute("SELECT project FROM projects WHERE prefix=?", (prefix,)).fetchone()
                 if owner and owner["project"] != project:
                     raise ValueError(f"Item prefix already registered: {prefix}")
-                conn.execute("INSERT OR IGNORE INTO projects(project,prefix) VALUES (?,?)", (project, prefix))
+                # BEFORE INSERT guards run even for INSERT OR IGNORE. An
+                # identical registration is a replay, not a project mutation.
+                if existing is None:
+                    conn.execute("INSERT INTO projects(project,prefix) VALUES (?,?)", (project, prefix))
                 conn.execute(
                     "INSERT OR IGNORE INTO id_sequences(scope,kind,next_value) VALUES (?,?,1)",
                     (project, "item"),

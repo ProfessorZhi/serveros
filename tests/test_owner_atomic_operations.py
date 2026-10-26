@@ -86,7 +86,11 @@ def test_policy_issuance_requires_exact_trusted_issuer(tmp_path, fault):
     daemon, _, context, policy = world
     if fault in ("actor", "unverified"):
         context = support.a_context(daemon, actor="human:B" if fault == "actor" else "human:A",
-                                    status="BLOCKED" if fault == "unverified" else "VERIFIED")
+                                    status="BLOCKED" if fault == "unverified" else "VERIFIED",
+                                    provenance="UNKNOWN" if fault == "unverified" else "FACT")
+        if fault == "unverified":
+            support.actor_mod.validate(context)
+            assert support.actor_mod.authorizes(context, support.iso(daemon))["authorizes"] is False
     elif fault in ("provider", "stale"):
         context = dict(context)
         if fault == "provider":
@@ -99,6 +103,9 @@ def test_policy_issuance_requires_exact_trusted_issuer(tmp_path, fault):
         peer=None if fault == "peer" else True)
     assert result["committed"] is False
     assert not daemon.control_store()._read().get("owner_policies")
+    assert not daemon.control_store()._read().get("owner_policy_receipts")
+    if fault == "unverified":
+        assert result["reason"] == "UNTRUSTED_ACTOR"
 
 
 def test_policy_receipt_replay_cas_and_revoke_survive_reopen(tmp_path):

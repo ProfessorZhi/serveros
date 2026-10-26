@@ -10,6 +10,40 @@ from workengine.model import WorkItem
 from workengine.store import ServerOSStore
 
 
+def _enroll_fixture(store, item):
+    """Synthetic enrollment only; mutations under test use normal connections."""
+    with store.transaction(immediate=True) as conn:
+        conn.create_function("owner_commit_scope", 1, lambda value: int(value == item))
+        with store._owner_scope(conn, item):
+            conn.execute("INSERT INTO owner_operation_receipts VALUES (?,?,?,?,?)",
+                         ("fixture:" + item, item, "lease.acquire", "fixture-digest", "{}"))
+
+
+def _feedback_fixture(tmp_path, second_link=None):
+    from workengine.engine import ServerOS
+    store = ServerOSStore(tmp_path / "feedback-work")
+    engine = ServerOS(store, artifacts_root=tmp_path / "artifacts")
+    engine.register_project("serveros", "SRV")
+    for title in ("first", "second"):
+        engine.create_item("serveros", title, "feature")
+    source = store.register_source("fixture", "feedback", revision="1", locator="feedback-source")
+    spare = store.register_source("fixture", "spare", revision="1", locator="spare-source")
+    for ref, source_id in (("obs:feedback", source["source_id"]), ("obs:spare", spare["source_id"])):
+        store.record_observation(source_id, ref, semantic_type="fixture", content_hash="a" * 64)
+    store.record_feedback("SRV-0001", "feedback", "review", "obs:feedback")
+    if second_link == "feedback":
+        store.record_feedback("SRV-0002", "shared-feedback", "review", "obs:feedback")
+    elif second_link == "candidate":
+        store.record_claim("claim:feedback", "shared-claim", ["obs:feedback"])
+        store.create_candidate("candidate:feedback", "serveros", "shared", "feature",
+                               dedupe_key="feedback", claim_ids=["claim:feedback"])
+        store.match_candidate("candidate:feedback", "SRV-0002")
+    _enroll_fixture(store, "SRV-0001")
+    if second_link:
+        _enroll_fixture(store, "SRV-0002")
+    return store
+
+
 @pytest.fixture
 def managed(tmp_path):
     store = ServerOSStore(tmp_path / "work")
@@ -182,3 +216,74 @@ def test_cleanup_failure_and_disabled_foreign_keys_cannot_leave_scope(managed):
         conn.close()
     with managed.transaction() as conn:
         assert conn.execute("SELECT count(*) FROM owner_transaction_scopes").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("sql", [
+    "UPDATE observations SET content_hash='changed' WHERE observation_id='obs:feedback'",
+    "UPDATE source_objects SET locator='changed' WHERE source_id='fixture:feedback:1'",
+    "UPDATE observations SET observation_id='obs:escaped' WHERE observation_id='obs:feedback'",
+    "UPDATE observations SET observation_id='obs:feedback' WHERE observation_id='obs:spare'",
+    "UPDATE source_objects SET source_id='source:escaped' WHERE source_id='fixture:feedback:1'",
+    "UPDATE source_objects SET source_id='fixture:feedback:1' WHERE source_id='fixture:spare:1'",
+    "DELETE FROM observations WHERE observation_id='obs:feedback'",
+    "DELETE FROM source_objects WHERE source_id='fixture:feedback:1'",
+])
+def test_feedback_only_provenance_guards_old_and_new_identity(tmp_path, sql):
+    store = _feedback_fixture(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError, match="OWNER_COMMIT_FENCE"):
+        with store.transaction(immediate=True) as conn:
+            conn.execute(sql)
+
+
+@pytest.mark.parametrize("second_link", ["feedback", "candidate"])
+@pytest.mark.parametrize("scope_item", ["SRV-0001", "SRV-0002"])
+@pytest.mark.parametrize("sql", [
+    "UPDATE observations SET content_hash='changed' WHERE observation_id='obs:feedback'",
+    "UPDATE source_objects SET locator='changed' WHERE source_id='fixture:feedback:1'",
+])
+def test_shared_feedback_provenance_requires_every_managed_item(tmp_path, second_link, scope_item, sql):
+    store = _feedback_fixture(tmp_path, second_link)
+    with store.transaction(immediate=True) as conn:
+        conn.create_function("owner_commit_scope", 1, lambda item: int(item == scope_item))
+        with store._owner_scope(conn, scope_item):
+            with pytest.raises(sqlite3.IntegrityError, match="OWNER_COMMIT_FENCE"):
+                conn.execute(sql)
+
+
+@pytest.mark.parametrize("second_link", ["feedback", "candidate"])
+def test_shared_feedback_provenance_accepts_all_exact_fixture_scopes(tmp_path, second_link):
+    store = _feedback_fixture(tmp_path, second_link)
+    with store.transaction(immediate=True) as conn:
+        conn.create_function("owner_commit_scope", 1, lambda item: int(item in {"SRV-0001", "SRV-0002"}))
+        with store._owner_scope(conn, "SRV-0001"), store._owner_scope(conn, "SRV-0002"):
+            conn.execute("UPDATE observations SET content_hash='scoped' WHERE observation_id='obs:feedback'")
+            conn.execute("UPDATE source_objects SET locator='scoped' WHERE source_id='fixture:feedback:1'")
+
+
+def test_mixed_project_register_then_create_preserves_unmanaged_workflow(tmp_path):
+    from workengine.engine import ServerOS
+    store = _feedback_fixture(tmp_path)
+    with store.transaction() as conn:
+        before = tuple(conn.execute("SELECT * FROM projects WHERE project='serveros'").fetchone())
+    # The real CLI's _cmd_item(create) performs these exact two facade calls.
+    # Exercise them directly so this portable regression does not import the
+    # CLI's unrelated POSIX-only federation module on Windows.
+    engine = ServerOS(store, artifacts_root=tmp_path / "artifacts")
+    engine.register_project("serveros", "SRV")
+    created = engine.create_item("serveros", "third", "feature")
+    assert created.id == "SRV-0003"
+    with store.transaction() as conn:
+        assert tuple(conn.execute("SELECT * FROM projects WHERE project='serveros'").fetchone()) == before
+        assert conn.execute("SELECT count(*) FROM owner_operation_receipts WHERE item_ref='SRV-0003'").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("sql", [
+    "UPDATE projects SET prefix='OTHER' WHERE project='serveros'",
+    "DELETE FROM projects WHERE project='serveros'",
+    "INSERT OR REPLACE INTO projects VALUES ('serveros','OTHER')",
+])
+def test_mixed_project_real_mutation_still_requires_owner_scope(tmp_path, sql):
+    store = _feedback_fixture(tmp_path)
+    with pytest.raises(sqlite3.IntegrityError, match="OWNER_COMMIT_FENCE"):
+        with store.transaction(immediate=True) as conn:
+            conn.execute(sql)
