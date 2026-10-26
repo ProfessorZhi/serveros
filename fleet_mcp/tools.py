@@ -765,6 +765,24 @@ TOOLS: tuple[Tool, ...] = (
                      "idempotentHint": False, "openWorldHint": True},
         handler=_delete_project,
     ),
+    Tool(
+        name="fleet_inbox", title="Read durable Fleet events",
+        description=("Read bounded pages of derived run status events visible under your current "
+                     "Fleet read permission. Each credential has its own durable cursor. "
+                     "Reading leaves the cursor unacknowledged; ack=true acknowledges the returned "
+                     "scanned range. Hidden and filtered events advance next_cursor without disclosure. "
+                     "No prompt or transcript is retained. Standalone surfaces report UNAVAILABLE."),
+        input_schema={"type": "object", "properties": {
+            "since": _integer("Scan after this sequence; omit to resume acknowledged cursor.", minimum=0),
+            "limit": _integer("Maximum events scanned, including hidden entries.", minimum=1, maximum=200, default=100),
+            "kinds": {"type": "array", "maxItems": 5, "items": {"type": "string", "enum": [
+                "run.completed", "run.failed", "run.cancelled", "run.unknown", "run.corrected"]}},
+            "level": {"type": "string", "enum": ["auto", "notify", "decide"]},
+            "ack": _boolean("Acknowledge this subscriber's returned scanned range.")},
+            "additionalProperties": False},
+        annotations=_read_only(),
+        handler=lambda ctx, args: ctx.service.inbox(ctx.principal, **args),
+    ),
 )
 
 # --------------------------------------------------------------------------

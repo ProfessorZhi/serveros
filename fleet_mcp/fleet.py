@@ -220,7 +220,7 @@ class _AuthoredVerb:
 
 class FleetService:
     def __init__(self, config: FleetConfig, *, registry=None, providers=None,
-                 core_lite_source=None, attempts=None) -> None:
+                 core_lite_source=None, attempts=None, events=None) -> None:
         self.config = config
         self.registry = registry if registry is not None else load_registry(config.registry_path)
         self.providers: dict[str, DeviceProvider] = (
@@ -234,6 +234,8 @@ class FleetService:
         self.audit = AuditLog(config.audit)
         self.limiter = RateLimiter(config.audit.rate_limit_per_minute) if config.audit else None
         self.dispatch = DispatchGuard(attempts)
+        self.events = events
+        self.run_watcher = None
         self.discovery = DiscoveryPool(config.policy.discovery_workers)
 
     # -- helpers -----------------------------------------------------------
@@ -2292,6 +2294,38 @@ class FleetService:
         )
         return {**payload, **key.as_dict(), "run_id": run_id}
 
+    def _event_visible(self, principal: Principal, event: dict) -> bool:
+        """Current Fleet read boundary, also the seam for authored read restrictions.
+
+        fleet:read currently covers enabled configured bindings globally. Create
+        grants/defaults do not restrict reads. No project is inferred from them.
+        """
+        try:
+            key = SessionKey.parse(event["session_ref"])
+            resolve_or_refuse(self.registry, key.device_ref)
+            self._session_provider(key)
+            return (event["device_ref"] == key.device_ref
+                    and event["runtime"] == key.provider)
+        except (FleetRefusal, KeyError, ValueError):
+            return False
+
+    def inbox(self, principal: Principal, *, since=None, kinds=None, level=None,
+              limit=100, ack=False) -> dict[str, Any]:
+        principal.require(SCOPE_READ)
+        self.admit(principal)
+        if not isinstance(ack, bool):
+            raise ValueError("ack must be boolean")
+        if self.events is None:
+            return {"status": "UNAVAILABLE", "events": [],
+                    "durability": "UNAVAILABLE"}
+        subscriber = json.dumps([principal.credential_kind, principal.name], separators=(",", ":"))
+        page = self.events.read(subscriber, since=since, limit=limit,
+                                visible=partial(self._event_visible, principal),
+                                kinds=kinds, level=level)
+        if ack:
+            page["acknowledged_cursor"] = self.events.ack(subscriber, page["next_cursor"])
+        return {**page, "status": "AVAILABLE", "durability": "SQLITE"}
+
     # -- status ------------------------------------------------------------
 
     def _runtime_for_call(self, device_ref: str, session_ref: str | None,
@@ -3059,6 +3093,11 @@ class FleetService:
                 "config_source": str(self.config.source) if self.config.source else None,
                 "audit_enabled": bool(self.config.audit),
                 "idempotency_durability": self.dispatch.durability,
+            },
+            "event_projection": {
+                "status": "AVAILABLE" if self.events is not None else "UNAVAILABLE",
+                "durability": "SQLITE" if self.events is not None else "UNAVAILABLE",
+                "observer": self.run_watcher.last_result if self.run_watcher is not None else None,
             },
             "identity_layer": {
                 "authority": "fleet/registry.yaml",

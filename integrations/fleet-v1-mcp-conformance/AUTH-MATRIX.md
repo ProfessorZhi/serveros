@@ -1,7 +1,7 @@
-# The 44-tool catalogue and what actually authorizes a call
+# The 45-tool catalogue and what actually authorizes a call
 
-`TOOL_SURFACE_REVISION = "fleet-mcp-7"` serves **44 tools**: 11 hand-written,
-31 mirrored CloudCLI verbs, and 2 capability reads. `tools/list` shows all 44
+`TOOL_SURFACE_REVISION = "fleet-mcp-8"` serves **45 tools**: 12 hand-written,
+31 mirrored CloudCLI verbs, and 2 capability reads. `tools/list` shows all 45
 to every client that can reach the surface. That is discovery. It is not
 entitlement.
 
@@ -37,7 +37,7 @@ Consequences visible in the catalogue:
   or the default grant. A caller that needs them needs an OAuth token minted
   with them and a deployment that marks them grantable.
 
-## 2. The 44 rows
+## 2. The 45 rows
 
 Scope is **necessary, never sufficient**. The `gates` column names the binding
 checks that still apply after the scope. A scope-admitted call can be refused.
@@ -55,39 +55,40 @@ checks that still apply after the scope. A scope-admitted call can be refused.
 | 9 | `fleet_interrupt_session` | authored | `fleet:control` | device `allow_control` AND (`control_allow` contains the session OR operator `control`) |
 | 10 | `fleet_create_project` | authored | `fleet:create` | exact owner-max principal/namespace AND configured local root AND target-local fresh creation |
 | 11 | `fleet_delete_project` | authored | `fleet:control` | device `allow_control` AND operator `control`; target resolved from the device catalogue (archived rows included) and `confirm_path` must equal its `path` |
-| 12 | `fleet_cloudcli_overview` | mirror | `fleet:read` | — |
-| 13 | `fleet_cloudcli_projects_list` | mirror | `fleet:read` | — |
-| 14 | `fleet_cloudcli_sessions_list` | mirror | `fleet:read` | — |
-| 15 | `fleet_cloudcli_session_get` | mirror | `fleet:read` | — |
-| 16 | `fleet_cloudcli_session_read` | mirror | `fleet:read` | — |
-| 17 | `fleet_cloudcli_run_get` | mirror | `fleet:read` | — |
-| 18 | `fleet_cloudcli_quay_snapshot` | mirror | `fleet:read` | — |
-| 19 | `fleet_cloudcli_ui_last_opened_session` | mirror | `fleet:read` | — |
-| 20 | `fleet_cloudcli_ui_visible_context` | mirror | `fleet:read` | — |
-| 21 | `fleet_cloudcli_ui_clients_list` | mirror | `fleet:read` | — |
-| 22 | `fleet_cloudcli_session_search` | mirror | `fleet:read` | — |
-| 23 | `fleet_cloudcli_approvals_list` | mirror | `fleet:read` | — |
-| 24 | `fleet_cloudcli_changes` | mirror | `fleet:read` | — |
-| 25 | `fleet_cloudcli_mcp_usage_stats` | mirror | `fleet:read` | — |
-| 26 | `fleet_cloudcli_ui_selected_text` | mirror | `fleet:read` | — |
-| 27 | `fleet_cloudcli_draft_get` | mirror | `fleet:read` | — |
-| 28 | `fleet_cloudcli_session_send` | mirror | `fleet:send` | same per-session floor as row 5 |
-| 29 | `fleet_cloudcli_draft_set` | mirror | `fleet:send` | same per-session floor as row 5 (the device declares it destructive: it overwrites a draft) |
-| 30 | `fleet_cloudcli_draft_submit` | mirror | `fleet:send` | same per-session floor as row 5 |
-| 31 | `fleet_cloudcli_session_create` | mirror | `fleet:create` | device `allow_create` AND project in `create_allow` AND operator `create` (always) |
-| 32 | `fleet_cloudcli_session_interrupt` | mirror | `fleet:control` | device `allow_control` AND operator `control` (always) |
-| 33 | `fleet_cloudcli_session_start` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
-| 34 | `fleet_cloudcli_session_close` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
-| 35 | `fleet_cloudcli_ui_open_session` | mirror | `fleet:navigate` | per-session send floor AND operator `navigate` |
-| 36 | `fleet_cloudcli_ui_focus_turn` | mirror | `fleet:navigate` | per-session send floor AND operator `navigate` |
-| 37 | `fleet_cloudcli_ui_show_diff` | mirror | `fleet:navigate` | per-session send floor AND operator `navigate` |
-| 38 | `fleet_cloudcli_ui_open_task` | mirror | `fleet:navigate` | per-session send floor AND operator `navigate` |
-| 39 | `fleet_cloudcli_session_cancel_queued` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
-| 40 | `fleet_cloudcli_session_reconfigure` | mirror | `fleet:control` | device `allow_control` AND operator `control`; model/mode ceiling is a separate policy check |
-| 41 | `fleet_cloudcli_session_background` | mirror | `fleet:read` (list) / `fleet:control` (stop) | list: —; stop: device `allow_control` AND operator `control` |
-| 42 | `fleet_cloudcli_approval_answer` | mirror | `fleet:approve` | device `allow_control` AND operator `control`; approval ownership verified against the named session |
-| 43 | `fleet_cloudcli_native_manifest` | capability | **none** | — (static catalogue; discovery is not entitlement) |
-| 44 | `fleet_cloudcli_native_capability` | capability | `fleet:read` | — (live per-device answer) |
+| 12 | `fleet_inbox` | authored | `fleet:read` | current enabled configured binding; subscriber may acknowledge only its contiguous scanned range |
+| 13 | `fleet_cloudcli_overview` | mirror | `fleet:read` | — |
+| 14 | `fleet_cloudcli_projects_list` | mirror | `fleet:read` | — |
+| 15 | `fleet_cloudcli_sessions_list` | mirror | `fleet:read` | — |
+| 16 | `fleet_cloudcli_session_get` | mirror | `fleet:read` | — |
+| 17 | `fleet_cloudcli_session_read` | mirror | `fleet:read` | — |
+| 18 | `fleet_cloudcli_run_get` | mirror | `fleet:read` | — |
+| 19 | `fleet_cloudcli_quay_snapshot` | mirror | `fleet:read` | — |
+| 20 | `fleet_cloudcli_ui_last_opened_session` | mirror | `fleet:read` | — |
+| 21 | `fleet_cloudcli_ui_visible_context` | mirror | `fleet:read` | — |
+| 22 | `fleet_cloudcli_ui_clients_list` | mirror | `fleet:read` | — |
+| 23 | `fleet_cloudcli_session_search` | mirror | `fleet:read` | — |
+| 24 | `fleet_cloudcli_approvals_list` | mirror | `fleet:read` | — |
+| 25 | `fleet_cloudcli_changes` | mirror | `fleet:read` | — |
+| 26 | `fleet_cloudcli_mcp_usage_stats` | mirror | `fleet:read` | — |
+| 27 | `fleet_cloudcli_ui_selected_text` | mirror | `fleet:read` | — |
+| 28 | `fleet_cloudcli_draft_get` | mirror | `fleet:read` | — |
+| 29 | `fleet_cloudcli_session_send` | mirror | `fleet:send` | same per-session floor as row 5 |
+| 30 | `fleet_cloudcli_draft_set` | mirror | `fleet:send` | same per-session floor as row 5 (the device declares it destructive: it overwrites a draft) |
+| 31 | `fleet_cloudcli_draft_submit` | mirror | `fleet:send` | same per-session floor as row 5 |
+| 32 | `fleet_cloudcli_session_create` | mirror | `fleet:create` | device `allow_create` AND project in `create_allow` AND operator `create` (always) |
+| 33 | `fleet_cloudcli_session_interrupt` | mirror | `fleet:control` | device `allow_control` AND operator `control` (always) |
+| 34 | `fleet_cloudcli_session_start` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
+| 35 | `fleet_cloudcli_session_close` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
+| 36 | `fleet_cloudcli_ui_open_session` | mirror | `fleet:navigate` | per-session send floor AND operator `navigate` |
+| 37 | `fleet_cloudcli_ui_focus_turn` | mirror | `fleet:navigate` | per-session send floor AND operator `navigate` |
+| 38 | `fleet_cloudcli_ui_show_diff` | mirror | `fleet:navigate` | per-session send floor AND operator `navigate` |
+| 39 | `fleet_cloudcli_ui_open_task` | mirror | `fleet:navigate` | per-session send floor AND operator `navigate` |
+| 40 | `fleet_cloudcli_session_cancel_queued` | mirror | `fleet:control` | device `allow_control` AND operator `control` |
+| 41 | `fleet_cloudcli_session_reconfigure` | mirror | `fleet:control` | device `allow_control` AND operator `control`; model/mode ceiling is a separate policy check |
+| 42 | `fleet_cloudcli_session_background` | mirror | `fleet:read` (list) / `fleet:control` (stop) | list: —; stop: device `allow_control` AND operator `control` |
+| 43 | `fleet_cloudcli_approval_answer` | mirror | `fleet:approve` | device `allow_control` AND operator `control`; approval ownership verified against the named session |
+| 44 | `fleet_cloudcli_native_manifest` | capability | **none** | — (static catalogue; discovery is not entitlement) |
+| 45 | `fleet_cloudcli_native_capability` | capability | `fleet:read` | — (live per-device answer) |
 
 ## 3. What each credential can reach
 
@@ -96,9 +97,9 @@ gates.
 
 | credential | scopes | tools admitted | tools denied at the scope |
 |---|---|---|---|
-| operator who writes nothing | `read`, `send` | **29** | **15** |
-| owner personal access token | `read`, `send`, `create` | **32** | **12** |
-| a token granted all six | all six | **44** | **0** |
+| operator who writes nothing | `read`, `send` | **30** | **15** |
+| owner personal access token | `read`, `send`, `create` | **33** | **12** |
+| a token granted all six | all six | **45** | **0** |
 
 The 15 tools the default grant cannot reach are the three creates, the six
 controls (`fleet_interrupt_session` and five mirror verbs), the four navigate

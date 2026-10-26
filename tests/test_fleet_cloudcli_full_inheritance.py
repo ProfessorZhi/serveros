@@ -804,17 +804,17 @@ class NodeRouteSignatureTest(unittest.TestCase):
 
 
 class SurfaceTest(unittest.TestCase):
-    def test_the_served_surface_is_the_eleven_plus_the_thirty_one(self):
+    def test_the_served_surface_is_the_twelve_plus_the_thirty_one(self):
         names = {t.name for t in tools_mod.SERVED_TOOLS}
         for tool in cloudcli_native.NATIVE_TOOLS:
             self.assertIn(tool.namespaced, names)
         mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
         self.assertEqual(len(mirrored), 31)
-        # eleven hand-written + 31 mirrored + manifest reader + capability reader.
-        self.assertEqual(len(names), 44)
+        # twelve hand-written + 31 mirrored + manifest reader + capability reader.
+        self.assertEqual(len(names), 45)
         self.assertIn("fleet_cloudcli_native_manifest", names)
         self.assertIn("fleet_cloudcli_native_capability", names)
-        self.assertEqual(len(tools_mod.tool_names()), 11)
+        self.assertEqual(len(tools_mod.tool_names()), 12)
 
     def test_mirror_annotations_match_the_manifest(self):
         by_name = {t.name: t for t in tools_mod.NATIVE_MIRROR_TOOLS}

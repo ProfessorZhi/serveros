@@ -125,12 +125,19 @@ def run_http(config: FleetConfig, *, service: FleetService | None = None) -> int
         f"  control authorized  {[r for r, b in config.providers.items() if b.allow_control]}\n"
         f"  create authorized   {[r for r, b in config.providers.items() if b.allow_create]}\n"
     )
+    observer = getattr(service, "run_watcher", None)
     try:
+        if observer is not None:
+            observer.start()
         server.serve_forever()
     except KeyboardInterrupt:
         sys.stderr.write(f"{SERVER_NAME}: interrupted\n")
     finally:
-        server.server_close()
+        try:
+            if observer is not None:
+                observer.close()
+        finally:
+            server.server_close()
     return 0
 
 
@@ -146,22 +153,29 @@ def run_stdio(config: FleetConfig, *, service: FleetService | None = None) -> in
     context = lambda: ToolContext(service=service, principal=owner_principal(config))  # noqa: E731
     mcp = McpServer(context)
     out = sys.stdout
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            message = loads(line)
-        except json.JSONDecodeError as exc:
-            out.write(dumps({"jsonrpc": "2.0", "id": None,
-                             "error": {"code": -32700, "message": f"parse error: {exc}"}}) + "\n")
+    observer = getattr(service, "run_watcher", None)
+    try:
+        if observer is not None:
+            observer.start()
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = loads(line)
+            except json.JSONDecodeError as exc:
+                out.write(dumps({"jsonrpc": "2.0", "id": None,
+                                 "error": {"code": -32700, "message": f"parse error: {exc}"}}) + "\n")
+                out.flush()
+                continue
+            response = mcp.handle(message)
+            if response is None:
+                continue
+            out.write(dumps(response) + "\n")
             out.flush()
-            continue
-        response = mcp.handle(message)
-        if response is None:
-            continue
-        out.write(dumps(response) + "\n")
-        out.flush()
+    finally:
+        if observer is not None:
+            observer.close()
     return 0
 
 

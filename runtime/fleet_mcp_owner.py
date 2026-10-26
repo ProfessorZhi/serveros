@@ -11,6 +11,8 @@ from pathlib import Path
 
 from fleet_mcp.errors import DISPATCH_STATE_UNAVAILABLE, refuse
 from fleet_mcp.fleet import FleetService
+from fleet_mcp.events import EventStore
+from fleet_mcp.run_watcher import RunWatcher
 
 _HERE = Path(__file__).resolve().parent
 
@@ -40,13 +42,21 @@ def control_store_path():
 def build_service(config, *, providers=None):
     try:
         owner = _load("serveros_runtime_agent_control_store", _HERE / "agent_control_store.py")
-        store = owner.AgentControlStore(control_store_path(), require_existing=True)
+        path = control_store_path()
+        store = owner.AgentControlStore(path, require_existing=True)
     except Exception as exc:
         raise refuse(DISPATCH_STATE_UNAVAILABLE,
                      "the existing ServerOS Agent Control owner is unavailable; "
                      "no empty store or process-local fallback was created",
                      retry_safe=False) from exc
-    return FleetService(config, attempts=store, providers=providers)
+    try:
+        events = EventStore(path.parent / "fleet-events.sqlite3")
+    except Exception as exc:
+        raise refuse(DISPATCH_STATE_UNAVAILABLE,
+                     "the owned Fleet event projection is unavailable", retry_safe=False) from exc
+    service = FleetService(config, attempts=store, events=events, providers=providers)
+    service.run_watcher = RunWatcher(service, events, store)
+    return service
 
 
 def main(argv=None):

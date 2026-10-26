@@ -129,7 +129,7 @@ class TheTableCannotDriftFromTheCatalogue(unittest.TestCase):
         served = sorted(tools_mod.SERVED_BY_NAME)
         declared = sorted(matrix.BY_NAME)
         self.assertEqual(declared, served)
-        self.assertEqual(len(matrix.AUTHORITY), 44)
+        self.assertEqual(len(matrix.AUTHORITY), 45)
 
     def test_every_tool_is_named_in_the_human_matrix(self):
         text = (HERE / "AUTH-MATRIX.md").read_text(encoding="utf-8")
@@ -144,10 +144,10 @@ class TheTableCannotDriftFromTheCatalogue(unittest.TestCase):
         self.assertEqual(len(matrix.OWNER_PAT), 3)
         self.assertNotIn(SCOPE_CONTROL, matrix.OWNER_PAT)
 
-    def test_the_default_grant_admits_29_and_denies_15(self):
+    def test_the_default_grant_admits_30_and_denies_15(self):
         admitted = matrix.scope_admitted(matrix.DEFAULT_GRANTABLE)
         denied = matrix.scope_denied(matrix.DEFAULT_GRANTABLE)
-        self.assertEqual(len(admitted), 29, admitted)
+        self.assertEqual(len(admitted), 30, admitted)
         self.assertEqual(len(denied), 15, denied)
         self.assertEqual(
             set(denied),
@@ -165,10 +165,10 @@ class TheTableCannotDriftFromTheCatalogue(unittest.TestCase):
             },
         )
 
-    def test_the_owner_pat_admits_32_and_still_cannot_control_navigate_or_approve(self):
+    def test_the_owner_pat_admits_33_and_still_cannot_control_navigate_or_approve(self):
         admitted = matrix.scope_admitted(matrix.OWNER_PAT)
         denied = set(matrix.scope_denied(matrix.OWNER_PAT))
-        self.assertEqual(len(admitted), 32, admitted)
+        self.assertEqual(len(admitted), 33, admitted)
         self.assertEqual(len(denied), 12, sorted(denied))
         self.assertIn("fleet_cloudcli_ui_open_session", denied)
         self.assertIn("fleet_cloudcli_approval_answer", denied)
@@ -184,7 +184,7 @@ class TheTableCannotDriftFromTheCatalogue(unittest.TestCase):
         owner = set(matrix.scope_admitted(matrix.OWNER_PAT))
         all_six = set(matrix.scope_admitted(matrix.SIX_SCOPES))
         self.assertLess(default, owner)
-        self.assertEqual(len(all_six), 44)
+        self.assertEqual(len(all_six), 45)
 
 
 class StatusIsAReadAndMustBeGatedAsOne(unittest.TestCase):
@@ -435,7 +435,7 @@ class DiscoveryIsNotEntitlement(unittest.TestCase):
     def test_zero_scope_can_still_list_tools(self):
         result = self.h.server(set()).handle(
             {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
-        self.assertEqual(len(result["result"]["tools"]), 44)
+        self.assertEqual(len(result["result"]["tools"]), 45)
 
 
 class UnknownsStayDistinct(unittest.TestCase):

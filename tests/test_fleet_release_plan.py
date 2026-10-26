@@ -105,7 +105,7 @@ class PlanClaimsTest(unittest.TestCase):
 
     def test_the_gate_count_is_not_the_stale_thirty_one(self):
         """`31` was 9 + 22 and left out the two tools that describe the mirror."""
-        self.assertEqual(len(tools.SERVED_TOOLS), 44)
+        self.assertEqual(len(tools.SERVED_TOOLS), 45)
         self.assertNotIn("served_tools == 31", rp.plan()["rollout"][0]["gates"])
 
     def test_the_scope_gate_is_the_running_scope_count(self):

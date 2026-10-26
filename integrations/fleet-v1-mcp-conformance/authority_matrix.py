@@ -1,4 +1,4 @@
-"""The 44-tool catalogue's authorization contract, in one table.
+"""The 45-tool catalogue's authorization contract, in one table.
 
 Why this module exists
 ----------------------
@@ -7,7 +7,7 @@ per tool, *which* Fleet scope a caller must present, and the two questions are
 different: a tool is visible to every client that can read `tools/list`, while
 being callable only by a credential that carries the scope, and (for the write
 verbs) by a principal the local binding also names. A release gate that counted
-44 tools and stopped there would be reporting discovery as entitlement.
+45 tools and stopped there would be reporting discovery as entitlement.
 
 So this module is the join. Every served tool has exactly one row, the row
 names the scope alternatives the call can take, and `selftest.py` fails if the
@@ -93,7 +93,7 @@ def _dual(name: str, family: str, alternatives: tuple[tuple[str, ...], ...], *,
 
 
 AUTHORITY: tuple[Authority, ...] = (
-    # -- the eleven hand-written tools -----------------------------------
+    # -- the twelve hand-written tools -----------------------------------
     _tool("fleet_list_devices", "authored", READ, gates="—",
           note="Enrolled devices and route reachability."),
     _tool("fleet_list_sessions", "authored", READ, gates="—"),
@@ -122,6 +122,10 @@ AUTHORITY: tuple[Authority, ...] = (
           note="Removal is control, not creation: `allow_create` and the "
                "`create` grant do not authorize it. Archiving is the default; "
                "`force` deletes rows and transcripts and never the directory."),
+
+    _tool("fleet_inbox", "authored", READ,
+          gates="current enabled binding; per-subscriber contiguous delivered acknowledgement",
+          note="Derived bounded status summaries, unavailable in standalone runtime."),
 
     # -- the 31 mirrored CloudCLI verbs ----------------------------------
     _tool("fleet_cloudcli_overview", "mirror", READ, gates="—"),

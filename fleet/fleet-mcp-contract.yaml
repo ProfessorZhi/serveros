@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-7
+tool_surface_revision: fleet-mcp-8
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -378,6 +378,31 @@ tools:
       answer would replay the past.
 
 
+  fleet_inbox:
+    verb: read
+    scope: fleet:read
+    answered_by: fleet_mcp/events.py (derived event projection)
+    answers: bounded run-status pages under current enabled configured bindings
+    parameters:
+      since: nonnegative integer; omit to resume acknowledged cursor
+      limit: integer 1..200; bounds scanned rows including filtered entries
+      kinds: [run.completed, run.failed, run.cancelled, run.unknown, run.corrected]
+      level: [auto, notify, decide]
+      ack: boolean; false by default; acknowledges the scanned returned range
+    rule: >-
+      Subscriber identity comes from authenticated credential kind and name.
+      Reads and acknowledgements require current fleet:read admission. Each
+      subscriber can acknowledge only contiguous scanned ranges it received.
+      Hidden and filtered rows advance next_cursor without exposing their data.
+      Read access currently spans enabled configured bindings globally; create
+      grants are not read restrictions. Authored read restrictions may narrow
+      the visibility seam, failing closed when project evidence is absent.
+    durability: >-
+      The full owned runtime injects SQLite under the existing owner state root
+      and starts/closes the run observer with HTTP or stdio service lifespan.
+      Standalone runtime reports UNAVAILABLE, never process-local durability.
+    privacy: closed bounded status summaries; no raw prompt, credentials or transcript
+
 # ---------------------------------------------------------------------------
 # Addressability
 # ---------------------------------------------------------------------------
@@ -652,7 +677,7 @@ native_mirror:
   # The CloudCLI native surface, inherited whole. The 31 verbs are NOT
   # enumerated here: the surface is DERIVED once, in
   # `fleet_mcp/cloudcli_native.py`, and the MCP server serves it alongside the
-  # hand-written eleven. Restating 31 rows here would be a second copy that
+  # hand-written twelve. Restating 31 rows here would be a second copy that
   # drifts the first time CloudCLI adds a parameter.
   #
   # Two of the device's verbs are NOT mirrored: `project_create` and
@@ -666,11 +691,11 @@ native_mirror:
   native_version_recorded: '1.40.0'
   count: 31
   extension_claimed: ['project_create', 'project_delete']
-  # The hand-written eleven, the 31 mirrored verbs, plus the two read-only tools
+  # The hand-written twelve, the 31 mirrored verbs, plus the two read-only tools
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 44
+  served_total: 45
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.
