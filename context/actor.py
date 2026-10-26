@@ -218,6 +218,37 @@ def verify_delegation(evidence: dict, *, now: str) -> tuple[dict, dict]:
     return {**grant, "delegated_by": context["context_ref"]}, context
 
 
+#: Fields the store writes onto a recorded grant and the provider did not sign.
+#: `runtime/agent_control_store.OWNER_WRITTEN_GRANT_FIELDS` is the same list,
+#: and it excludes them from the store's own write-once comparison for the same
+#: reason: a field minted after approval is not part of the approved scope.
+#: This module cannot import the store (context/ does not reach into runtime/),
+#: so the copy is kept in step by `tests/test_grant_field_lists_agree.py` rather
+#: than by hope. On 2026-10-26 `epoch` had joined the store's list and not this
+#: one, and every provider-issued grant came back DELEGATION_SCOPE_CHANGED.
+STORE_WRITTEN_GRANT_FIELDS = (
+    "revoked", "revoked_at", "revoked_reason", "epoch", "os_principal",
+    "owner_policy_ref", "owner_policy_epoch", "owner_policy_issued_by",
+    "owner_policy_issued_at", "actor_ref",
+)
+
+#: What a stored grant may carry without the signature having covered it: the
+#: issuance receipt, the envelope's own name, and everything the store writes.
+UNSIGNED_GRANT_FIELDS = ("issuance", "ref") + STORE_WRITTEN_GRANT_FIELDS
+
+
+def unsigned_scope(grant: dict) -> dict:
+    """The part of a stored grant the provider signed, and only that.
+
+    `issued_delegation` asks «is this still the scope that was approved?», and a
+    field the store minted after approval is not part of any answer to that:
+    excluding it is what makes a re-read idempotent instead of a refusal. A
+    field that is neither signed nor store-written is kept, so the comparison
+    still refuses a grant that grew a key nobody can account for.
+    """
+    return {k: v for k, v in grant.items() if k not in UNSIGNED_GRANT_FIELDS}
+
+
 def issued_delegation(grant: dict, *, now: str) -> dict:
     """Validate durable issuance without extending the signed scope or actor TTL."""
     issuance = grant.get("issuance")
@@ -228,7 +259,7 @@ def issued_delegation(grant: dict, *, now: str) -> dict:
     if _parse(at) > _parse(now):
         raise Rejected("DELEGATION_ISSUANCE_INVALID: receipt is ahead of execution clock")
     approved, context = verify_delegation(issuance["evidence"], now=at)
-    actual = {k: v for k, v in grant.items() if k not in ("issuance", "ref", "revoked", "revoked_at", "revoked_reason")}
+    actual = unsigned_scope(grant)
     if actual != approved:
         raise Rejected("DELEGATION_SCOPE_CHANGED: stored grant differs from provider-approved scope")
     return {**authorizes(context, at), "issuance_ref": context["context_ref"],

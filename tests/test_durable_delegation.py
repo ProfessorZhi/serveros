@@ -11,6 +11,8 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+import owner_policy_fixtures as opf
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -210,10 +212,21 @@ def test_daemon_issuance_uses_owner_clock_and_persists_signed_scope(tmp_path, si
     class Registry:
         def all(self): return []
         def __len__(self): return 0
+    # The owner-policy gate was added after this test: with no resolver bound,
+    # `_r_agent_grant_issue` answers BLOCKED_OWNER_POLICY and mints nothing, so
+    # the assertion below would be reading a refusal. A TEST DOUBLE, the same
+    # one tests/test_v1_grant_epoch_authority.py uses — the gate has its own
+    # test, and what this one is about is the owner's clock and the stored scope.
     daemon = daemon_mod.Daemon(Registry(), state_dir=tmp_path / "daemon",
-                               now=lambda: datetime.fromisoformat(ISSUED).timestamp())
+                               now=lambda: datetime.fromisoformat(ISSUED).timestamp(),
+                               owner_policy_resolver=opf.PermissiveOwnerPolicyResolver())
     _, sign, _ = signing
-    response = daemon.handle({"method": "agent.grant.issue", "params": {"evidence": sign()}})
+    # An in-process call has no uid, and the owner-policy gate mints nothing for
+    # one: the principal on a bound grant is the kernel's peer, not a field in
+    # the request. This is the peer a real socket would hand the daemon.
+    peer = {"pid": 4242, "uid": 1000, "gid": 1000}
+    response = daemon.handle({"method": "agent.grant.issue", "params": {"evidence": sign()}},
+                             peer=peer)
     assert response["ok"], response
     grant = response["result"]["grant"]
     assert grant["issuance"]["accepted_at"] == ISSUED

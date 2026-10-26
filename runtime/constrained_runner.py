@@ -431,19 +431,44 @@ class Systemd:
     def available(self) -> tuple[bool, str]:
         """Whether a bounded run is possible here at all.
 
-        Two questions, and both must be yes: is there a user manager to own the
-        unit, and is the memory controller delegated far enough down for a
-        transient unit to carry `memory.max`? A node with systemd but no
-        delegation would accept the unit and silently not enforce the memory
-        bound, which is the failure this check exists to make impossible.
+        Three questions, and each must answer yes: are the tools runnable, is
+        there a user manager to own the unit, and is the memory controller
+        delegated far enough down for a transient unit to carry `memory.max`? A
+        node with systemd but no delegation would accept the unit and silently
+        not enforce the memory bound, which is the failure this check exists to
+        make impossible.
+
+        The manager is asked, not assumed. `systemd-run --user --version` prints
+        a version without ever opening the bus, so a host with the tools
+        installed and no reachable manager answered yes here and then failed at
+        launch — a check reporting a fact it had not established.
+        `systemctl --user show-environment` can only answer with the manager on
+        the other end of that socket. It is asked twice, a moment apart, because
+        on a freshly started session the socket can appear after the binaries.
         """
         try:
-            proc = subprocess.run([self.systemd_run_bin, "--user", "--version"],
+            proc = subprocess.run([self.systemd_run_bin, "--version"],
                                   capture_output=True, text=True, timeout=10)
         except (OSError, subprocess.SubprocessError) as exc:
             return False, f"{self.systemd_run_bin} is not runnable: {exc}"
         if proc.returncode != 0:
-            return False, f"no user systemd: {proc.stderr.strip()[:200]}"
+            return False, (f"{self.systemd_run_bin} is not runnable: "
+                           f"{proc.stderr.strip()[:200]}")
+        why = "the user manager did not answer"
+        for attempt in range(2):
+            try:
+                proc = subprocess.run(
+                    [self.systemctl_bin, "--user", "show-environment"],
+                    capture_output=True, text=True, timeout=10)
+            except (OSError, subprocess.SubprocessError) as exc:
+                return False, f"{self.systemctl_bin} is not runnable: {exc}"
+            if proc.returncode == 0:
+                break
+            why = (proc.stderr.strip() or proc.stdout.strip())[:200]
+            if attempt == 0:
+                time.sleep(0.25)
+        else:
+            return False, f"no reachable user manager: {why}"
         controllers = Path("/sys/fs/cgroup/cgroup.controllers")
         try:
             text = controllers.read_text()
