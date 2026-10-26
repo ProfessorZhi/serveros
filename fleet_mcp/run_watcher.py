@@ -10,6 +10,7 @@ import time
 from .events import validate_event
 from .errors import FleetRefusal
 from .identity import SessionKey
+from .cloudcli_native import validate_delivery
 
 _BACKOFF = (10, 30, 120, 600)
 _TERMINAL = {"completed": "COMPLETED", "succeeded": "COMPLETED",
@@ -61,9 +62,9 @@ class RunWatcher:
             try:
                 receipt = record["result"]
                 if (not isinstance(receipt, dict) or receipt.get("accepted") is not True
-                        or set(receipt) - {"accepted", "session_ref", "run_id", "queued_message_uuid"}):
+                        or set(receipt) - {"accepted", "session_ref", "run_id", "delivery_id", "queued_message_uuid"}):
                     raise ValueError("malformed receipt")
-                for field in ("run_id", "queued_message_uuid"):
+                for field in ("run_id", "delivery_id", "queued_message_uuid"):
                     value = receipt.get(field)
                     if value is not None and (not isinstance(value, str) or not value.strip()
                                               or len(value) > 512 or any(ord(c) < 32 for c in value)):
@@ -73,14 +74,19 @@ class RunWatcher:
                         or record.get("session_ref", key.ref) != key.ref):
                     raise ValueError("receipt target differs from intent")
                 run_id = receipt.get("run_id")
-                if run_id is None:
+                delivery_id = receipt.get("delivery_id")
+                if run_id is None and delivery_id is None:
                     result["unresolved"] += 1
                     continue
-                watch_id = hashlib.sha256(json.dumps([token, key.ref, run_id]).encode()).hexdigest()
+                # Preserve IDs of existing run watches; delivery namespace cannot collide.
+                identity = [token, key.ref, "delivery", delivery_id] if delivery_id else [token, key.ref, run_id]
+                watch_id = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
                 template = {"event_id": watch_id + ":unknown", "kind": "run.unknown", "level": "decide",
                             "device_ref": key.device_ref, "runtime": key.provider, "session_ref": key.ref,
                             "run_id": run_id, "dispatcher": record["principal"], "occurred_at": now,
                             "summary": {"status": "UNKNOWN"}}
+                if delivery_id is not None:
+                    template["delivery_id"] = delivery_id
                 for field in ("project", "work_ref", "parent_ref", "agent_ref"):
                     if record.get(field) is not None:
                         template[field] = record[field]
@@ -103,12 +109,41 @@ class RunWatcher:
         key = SessionKey.parse(template["session_ref"])
         provider = self.service._session_provider(key)
         self.service._verified_family_detail(key, provider)
-        payload = provider.get_run(key, template["run_id"], wait=False, wait_seconds=0)
+        run_id = template["run_id"]
+        delivery_id = template.get("delivery_id")
+        boot_id = None
+        if delivery_id is not None:
+            payload = validate_delivery(provider.get_delivery(key, delivery_id), key, delivery_id)
+            if payload.get("provider") is not None:
+                binding = self.service.config.session_binding(key)
+                if payload["provider"] not in {key.provider, binding.family}:
+                    raise ValueError("delivery family mismatch")
+            bound = payload.get("runId")
+            if run_id is not None and bound is not None and run_id != bound:
+                raise ValueError("delivery contradicts acknowledged Run")
+            if watch.get("bound_run_id") is not None and bound != watch["bound_run_id"]:
+                raise ValueError("delivery binding changed")
+            if bound is not None:
+                boot_id = payload.get("bootId")
+                self.events.bind_delivery(watch["watch_id"], bound, boot_id)
+                run_id = bound
+                watch["resolved_run_id"] = bound
+            if payload.get("status") == "cancelled":
+                return "CANCELLED"
+            if bound is None:
+                return None
+        payload = provider.get_run(key, run_id, wait=False, wait_seconds=0)
         if not isinstance(payload, dict):
             raise ValueError("unsupported run response")
-        expected = {**key.as_dict(), "run_id": template["run_id"], "runId": template["run_id"],
-                    "id": template["run_id"]}
-        for field in ("device_ref", "session_ref", "native_session_id", "run_id", "runId", "id"):
+        if delivery_id is not None and (payload.get("idKind") != "run"
+                or payload.get("runId") != run_id or payload.get("sessionId") != key.native_session_id
+                or boot_id is not None and payload.get("bootId") != boot_id):
+            raise ValueError("missing or mismatched bound Run proof")
+        if payload.get("idKind") is not None and payload["idKind"] != "run":
+            raise ValueError("wrong execution namespace")
+        expected = {**key.as_dict(), "run_id": run_id, "runId": run_id,
+                    "id": run_id, "sessionId": key.native_session_id}
+        for field in ("device_ref", "session_ref", "native_session_id", "run_id", "runId", "id", "sessionId"):
             if payload.get(field) is not None and payload[field] != expected[field]:
                 raise ValueError("run identity mismatch")
         if payload.get("provider") is not None:
@@ -167,6 +202,8 @@ class RunWatcher:
                                  kind="run.corrected" if watch["unknown_emitted"] else "run." + status.lower(),
                                  level="decide" if status == "FAILED" else "notify", occurred_at=now,
                                  summary={"status": status})
+                    if "resolved_run_id" in watch:
+                        event["run_id"] = watch["resolved_run_id"]
                     if watch["unknown_emitted"]:
                         event["summary"]["previous_status"] = "UNKNOWN"
                     result["terminal"] += 1

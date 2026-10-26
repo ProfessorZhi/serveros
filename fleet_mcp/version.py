@@ -30,7 +30,8 @@ SERVER_VERSION = "0.2.0"
 # changed, but the schema of one tool did: a client that cached `tools/list` at
 # `-6` would call it the same way and keep failing.
 # `fleet-mcp-8`: authenticated durable run-event inbox (45 tools total).
-TOOL_SURFACE_REVISION = "fleet-mcp-8"
+# `fleet-mcp-9`: preserve native delivery IDs and expose one-of Run/delivery reads.
+TOOL_SURFACE_REVISION = "fleet-mcp-9"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

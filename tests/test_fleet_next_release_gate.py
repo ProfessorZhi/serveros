@@ -49,7 +49,7 @@ class TheSurfaceIsTheOneTheDocumentsDescribe(unittest.TestCase):
         import yaml
 
         # V5 retains core-lite output and adds the fresh-project entry.
-        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-8")
+        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-9")
         contract = yaml.safe_load(
             (ROOT / "fleet" / "fleet-mcp-contract.yaml").read_text(encoding="utf-8"))
         self.assertEqual(contract["tool_surface_revision"], version.TOOL_SURFACE_REVISION)

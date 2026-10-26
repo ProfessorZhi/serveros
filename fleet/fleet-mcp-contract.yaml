@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-8
+tool_surface_revision: fleet-mcp-9
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -177,7 +177,9 @@ tools:
 
   fleet_get_run:
     verb: read
-    answers: the state of one run, optionally after waiting
+    answers: the state of exactly one run or native delivery, optionally waiting for a run
+    identifiers: exactly one run_id or delivery_id, within the original session
+    delivery_evidence: native delivery completion does not establish Run success
     answered_by: the device's provider adapter
 
   fleet_status:

@@ -353,6 +353,8 @@ class FleetNodeProvider(DeviceProvider):
             return refuse(SESSION_NOT_FOUND, detail)
         if code == "PROJECT_NOT_FOUND":
             return refuse(PROJECT_NOT_FOUND, detail)
+        if code == "CAPABILITY_UNSUPPORTED":
+            return refuse(code, detail)
         if code == "WRITE_NOT_GRANTED":
             # The connector on the far side refused on its own authority. It is
             # not this surface's decision and must not be reported as one: the
@@ -491,6 +493,16 @@ class FleetNodeProvider(DeviceProvider):
             query["waitSeconds"] = str(float(wait_seconds))
         path = f"/v1/runs/{urllib.parse.quote(run_id)}?" + urllib.parse.urlencode(query)
         return self._request("GET", path)
+
+    def get_delivery(self, key: SessionKey, delivery_id: str) -> dict[str, Any]:
+        from ..session_detail import validate_binding_target
+        validate_binding_target(key, self.binding)
+        arguments = {"deliveryId": delivery_id, "session": key.native_session_id}
+        problems = cloudcli_native.validate_arguments(arguments, cloudcli_native.input_schema("run_get"))
+        if problems:
+            raise refuse(BAD_REQUEST, "; ".join(problems))
+        payload = self.native_call("run_get", arguments, session_ref=key.ref)
+        return cloudcli_native.validate_delivery(payload, key, delivery_id, family=self.binding.family)
 
     def create(
         self,

@@ -489,7 +489,7 @@ class TheSurfaceStillHoldsItsShape(unittest.TestCase):
         from fleet_mcp.version import TOOL_SURFACE_REVISION
         self.assertEqual(len(tools_mod.SERVED_TOOLS), 45)
         self.assertEqual(len(scopes.ALLOWED_SCOPES), 6)
-        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-8")
+        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-9")
         self.assertNotIn("core_lite_status",
                          [t.name for t in tools_mod.SERVED_TOOLS])
 

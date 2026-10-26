@@ -862,6 +862,8 @@ class MatrixTest(unittest.TestCase):
         props = cloudcli_native.NATIVE_INPUT_SCHEMAS[native.name].get("properties", {})
         for name in required:
             out[name] = True if props.get(name, {}).get("type") == "boolean" else "x"
+        if native.name == "run_get":
+            out["runId"] = "x"
         return out
 
     def test_every_read_tool_routes_on_both_provider_kinds(self):
@@ -1621,6 +1623,21 @@ def _capture():
         return json.load(handle)
 
 
+def _current_input_schema(entry):
+    if entry["name"] != "run_get":
+        return entry["inputSchema"] or {}
+    # Only run_get changed since the historical 1.40 tools/list capture.
+    # Source contract: installed Tokyo 1.41.0 mcp-run-get.js (AC-386),
+    # SHA256 eb8e8c12ceeda3a449a5bfd189b5924a458b6a4379270ea78f0c2046dabbb38a.
+    # This describes its argument semantics, not a fabricated tools/list capture.
+    return {"type": "object", "properties": {
+        "runId": {"type": "string", "minLength": 1},
+        "deliveryId": {"type": "string", "minLength": 1},
+        "session": {"type": "string"}, "waitSeconds": {"type": "number"}},
+        "required": [], "additionalProperties": False,
+        "oneOf": [{"required": ["runId"]}, {"required": ["deliveryId"]}]}
+
+
 def _missing_constraints(recorded, live, where):
     """Constraints `live` states that `recorded` does not, as strings."""
     if not isinstance(live, dict):
@@ -1699,7 +1716,7 @@ class RecordedTableMatchesTheBuildTest(unittest.TestCase):
             recorded = cloudcli_native.NATIVE_INPUT_SCHEMAS.get(entry["name"])
             self.assertIsNotNone(recorded, f"{entry['name']} has no recorded schema")
             problems.extend(_missing_constraints(
-                recorded, entry["inputSchema"] or {}, entry["name"]))
+                recorded, _current_input_schema(entry), entry["name"]))
         self.assertEqual(problems, [], "\n" + "\n".join(problems))
 
     def test_the_PUBLISHED_arguments_schema_omits_nothing_the_device_declares(self):
@@ -1721,7 +1738,7 @@ class RecordedTableMatchesTheBuildTest(unittest.TestCase):
             published = tools_mod.SERVED_BY_NAME[native.namespaced].input_schema
             arguments = (published.get("properties") or {}).get("arguments") or {}
             problems.extend(_missing_constraints(
-                arguments, entry["inputSchema"] or {}, entry["name"]))
+                arguments, _current_input_schema(entry), entry["name"]))
         self.assertEqual(problems, [], "\n" + "\n".join(problems))
 
     def test_recorded_annotations_are_the_capture_s_annotations(self):

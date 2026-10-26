@@ -189,6 +189,20 @@ class CloudCliProvider(DeviceProvider):
                 f"{tool!r} is not a CloudCLI native tool this build mirrors; the "
                 f"mirror forwards only names it recorded.",
             )
+        if tool == "run_get":
+            problems = cloudcli_native.validate_arguments(arguments, cloudcli_native.input_schema(tool))
+            if problems:
+                raise refuse(BAD_REQUEST, "; ".join(problems))
+            if "deliveryId" in arguments:
+                session = arguments.get("session")
+                if not isinstance(session, str) or not session.strip():
+                    raise refuse(BAD_REQUEST, "delivery lookup requires its native session")
+                key = (SessionKey.parse(session_ref) if session_ref else
+                       SessionKey.compose(self.device_ref, self.binding.runtime, session))
+                if key.device_ref != self.device_ref or key.native_session_id != session:
+                    raise refuse(BAD_SESSION_REF, "delivery target contradicts its requested session")
+                return cloudcli_native.validate_delivery(self._delivery_call(arguments), key,
+                    arguments["deliveryId"], family=self.binding.family)
         # `session_ref` is accepted for parity with the node route and is not
         # used here: for a `cloudcli-mcp-http` device the ownership check runs
         # one layer up, against THIS device's own `approvals_list` register, so
@@ -413,7 +427,6 @@ class CloudCliProvider(DeviceProvider):
         arguments: dict[str, Any] = {
             "runId": run_id,
             "session": key.native_session_id,
-            "wait": bool(wait),
         }
         if wait and wait_seconds:
             arguments["waitSeconds"] = float(wait_seconds)
@@ -421,6 +434,30 @@ class CloudCliProvider(DeviceProvider):
         if not payload:
             raise refuse(RUN_NOT_FOUND, f"run {run_id!r} is not known for {key.ref}")
         return payload
+
+    def _delivery_call(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Measure this gateway's support; a recorded Tokyo source is not its capability."""
+        try:
+            advertised = self._client().tools_list()
+        except ProviderRefusal as exc:
+            raise _translate(exc) from None
+        schema = next((row.get("inputSchema") for row in advertised
+                       if isinstance(row, dict) and row.get("name") == "run_get"), None)
+        if (not isinstance(schema, dict)
+                or (schema.get("properties") or {}).get("deliveryId", {}).get("type") != "string"
+                or cloudcli_native.validate_arguments(arguments, schema)):
+            raise refuse("CAPABILITY_UNSUPPORTED", "gateway does not advertise delivery-addressed run_get")
+        return self._call("run_get", arguments)
+
+    def get_delivery(self, key: SessionKey, delivery_id: str) -> dict[str, Any]:
+        if key.device_ref != self.device_ref:
+            raise refuse(BAD_SESSION_REF, "delivery lookup addresses another device")
+        arguments = {"deliveryId": delivery_id, "session": key.native_session_id}
+        problems = cloudcli_native.validate_arguments(arguments, cloudcli_native.input_schema("run_get"))
+        if problems:
+            raise refuse(BAD_REQUEST, "; ".join(problems))
+        family = self.binding.family if self.binding.runtime == key.provider else None
+        return cloudcli_native.validate_delivery(self._delivery_call(arguments), key, delivery_id, family=family)
 
     def create(
         self,

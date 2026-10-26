@@ -1278,9 +1278,10 @@ class AgentControlStore:
                 or receipt.get("accepted") is not True
                 or len(json.dumps(receipt, allow_nan=False).encode("utf-8")) > 65536):
             raise StoreError("invalid closed delivery receipt")
-        for name in ("run_id", "queued_message_uuid"):
+        for name in ("run_id", "delivery_id", "queued_message_uuid"):
             value = receipt.get(name)
-            if value is not None and (not isinstance(value, str) or not value.strip()):
+            if value is not None and (not isinstance(value, str) or not value.strip()
+                                      or len(value) > 512 or any(ord(c) < 32 for c in value)):
                 raise StoreError("invalid receipt identifier")
         with self._mutation():
             section = self._data.setdefault("dispatch_attempts", {})
@@ -1297,7 +1298,7 @@ class AgentControlStore:
                         or receipt["project_path"] != record.get("expected_project_path")):
                     raise StoreError("invalid or misbound project receipt")
             else:
-                if (set(receipt) - {"session_ref", "run_id", "queued_message_uuid", "accepted"}
+                if (set(receipt) - {"session_ref", "run_id", "delivery_id", "queued_message_uuid", "accepted"}
                         or not isinstance(receipt.get("session_ref"), str)):
                     raise StoreError("invalid session receipt")
                 parts = receipt["session_ref"].split("|")
@@ -1307,7 +1308,7 @@ class AgentControlStore:
                             and record["session_ref"] != receipt["session_ref"])):
                     raise StoreError("receipt addresses a different target")
                 if (record["verb"] == "session.send" and not receipt.get("run_id")
-                        and not receipt.get("queued_message_uuid")):
+                        and not receipt.get("queued_message_uuid") and not receipt.get("delivery_id")):
                     raise StoreError("send acknowledgement has no execution reference")
             updated = {k: v for k, v in record.items() if k != "_dispatch_claim"}
             updated.update(phase="ACCEPTED", result=dict(receipt))

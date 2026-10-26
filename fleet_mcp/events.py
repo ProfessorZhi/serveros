@@ -21,7 +21,7 @@ LEVELS = frozenset({"auto", "notify", "decide"})
 STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "UNKNOWN"})
 _REQUIRED = {"event_id", "kind", "level", "device_ref", "runtime", "session_ref",
              "run_id", "dispatcher", "occurred_at", "summary"}
-_OPTIONAL = {"project", "work_ref", "parent_ref", "agent_ref"}
+_OPTIONAL = {"project", "work_ref", "parent_ref", "agent_ref", "delivery_id"}
 
 
 def _text(value, name, maximum=512):
@@ -42,6 +42,8 @@ def validate_event(event):
         raise ValueError("event fields are closed")
     for name in (_REQUIRED | _OPTIONAL) - {"occurred_at", "summary"}:
         if name in event:
+            if name == "run_id" and event[name] is None and "delivery_id" in event:
+                continue
             _text(event[name], name)
     if event["kind"] not in KINDS or event["level"] not in LEVELS:
         raise ValueError("unknown event kind or level")
@@ -52,6 +54,8 @@ def validate_event(event):
             or ("previous_status" in summary and summary["previous_status"] != "UNKNOWN")):
         raise ValueError("summary accepts only closed run status codes")
     status = summary["status"]
+    if event["run_id"] is None and status in {"COMPLETED", "FAILED"}:
+        raise ValueError("work outcome requires a bound Run")
     expected = "run." + status.lower()
     if event["kind"] == "run.corrected":
         if summary.get("previous_status") != "UNKNOWN" or status == "UNKNOWN":
@@ -99,6 +103,14 @@ class EventStore:
                     terminal INTEGER NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS watches_due ON watches(terminal, next_poll);
             """)
+            # executescript commits its caller's transaction; reacquire the
+            # write lock before checking/adding columns across hub restarts.
+            db.execute("BEGIN IMMEDIATE")
+            # Additive migration: old watches, events and delivery cursors survive.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(watches)")}
+            for name in ("bound_run_id", "bound_boot_id"):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE watches ADD COLUMN {name} TEXT")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -202,6 +214,22 @@ class EventStore:
             return [dict(row) for row in db.execute(
                 "SELECT * FROM watches WHERE terminal=0 AND next_poll<=? ORDER BY next_poll,watch_id LIMIT ?",
                 (now, limit))]
+
+    def bind_delivery(self, watch_id, run_id, boot_id=None):
+        """Retain the first typed binding without replacing the original ACK."""
+        _text(run_id, "bound_run_id")
+        if boot_id is not None:
+            _text(boot_id, "bound_boot_id")
+        with self._transaction() as db:
+            row = db.execute("SELECT bound_run_id,bound_boot_id FROM watches WHERE watch_id=?",
+                             (watch_id,)).fetchone()
+            if row is None:
+                raise ValueError("unknown observation task")
+            if (row["bound_run_id"] is not None and row["bound_run_id"] != run_id
+                    or row["bound_boot_id"] is not None and row["bound_boot_id"] != boot_id):
+                raise ValueError("delivery binding changed")
+            db.execute("UPDATE watches SET bound_run_id=?,bound_boot_id=COALESCE(bound_boot_id,?) WHERE watch_id=?",
+                       (run_id, boot_id, watch_id))
 
     def record_observation(self, watch_id, *, now, delay, event=None, terminal=False, unknown=False):
         """Append before completing the watch, in one crash-safe transaction."""

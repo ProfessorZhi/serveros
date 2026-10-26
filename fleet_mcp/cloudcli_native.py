@@ -394,14 +394,14 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
         "after": {"type": "number"},
         "cursor": {"type": "string"},
     }, ["session"]),
-    # 1.40 made `runId` REQUIRED and dropped the old `run` / `wait` aliases: a
-    # call that names no run is now refused by the device rather than answered
-    # with a "latest run" this table never described.
+    # AC-386, installed 1.41.0 mcp-run-get.js, SHA256 eb8e8c12ceeda3a449a5bfd189b5924a458b6a4379270ea78f0c2046dabbb38a.
+    # Exactly one namespace; device support is checked from its own live schema.
     "run_get": _s({
         "runId": {"type": "string", "minLength": 1},
+        "deliveryId": {"type": "string", "minLength": 1},
         "waitSeconds": {"type": "number"},
         "session": {"type": "string"},
-    }, ["runId"]),
+    }, []),
     "quay_snapshot": _s({"project": {"type": "string"},
                          "refresh": {"type": "boolean"}}, []),
     "ui_last_opened_session": _s({}, []),
@@ -531,6 +531,8 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     }, ["session", "taskId"]),
 }
 
+NATIVE_INPUT_SCHEMAS["run_get"]["oneOf"] = [{"required": ["runId"]}, {"required": ["deliveryId"]}]
+
 
 def input_schema(native_name: str) -> dict[str, Any]:
     """The recorded native schema for one tool, or an empty object.
@@ -594,6 +596,9 @@ def manifest() -> dict[str, Any]:
         # 1.39.0 through `fleet-mcp-5`; `fleet-mcp-6` reads 1.40.0, whose
         # `tools/list` is the 33-entry capture in `tests/data/`.
         "native_version_recorded": "1.40.0",
+        "native_schema_overrides": {"run_get": {
+            "version": "1.41.0", "source": "installed mcp-run-get.js (AC-386)",
+            "sha256": "eb8e8c12ceeda3a449a5bfd189b5924a458b6a4379270ea78f0c2046dabbb38a"}},
         "prefix": PREFIX,
         "count": len(NATIVE_TOOLS),
         "count_expected": NATIVE_TOOL_COUNT,
@@ -767,11 +772,13 @@ def mirrored_schema(native: NativeTool, device_schema: dict | None = None) -> di
     }
     if native_required:
         arguments["required"] = native_required
+    if isinstance(source, dict) and "oneOf" in source:
+        arguments["oneOf"] = source["oneOf"]
     # The native `required` lives INSIDE `arguments`, so `arguments` itself is
     # required exactly when the native tool has a parameter it refuses to run
     # without — a caller that omits the payload is refused at the outer schema
     # rather than at the device.
-    outer_required = ["device_ref"] + (["arguments"] if native_required else [])
+    outer_required = ["device_ref"] + (["arguments"] if native_required or arguments.get("oneOf") else [])
     # LOW-13: the Fleet address a call's floor is stated over is REQUIRED at
     # runtime, so the schema says so — a schema-driven client learns it from the
     # schema rather than by trying. Read from the SAME predicate that declared
@@ -997,6 +1004,16 @@ def validate_arguments(arguments, schema) -> list[str]:
     if not isinstance(arguments, dict):
         return ["arguments must be an object"]
     declared = set(schema.get("properties") or {})
+    if "oneOf" in schema:
+        matches = sum(not validate_arguments(arguments, branch) for branch in schema["oneOf"])
+        if matches != 1:
+            problems.append("arguments must satisfy exactly one identifier alternative")
+    for name in ("runId", "deliveryId"):
+        if name in declared and name in arguments:
+            value = arguments[name]
+            if (not isinstance(value, str) or not value.strip() or len(value) > 512
+                    or any(ord(c) < 32 for c in value)):
+                problems.append(f"invalid identifier {name!r}")
     for name in schema.get("required") or []:
         if name not in arguments:
             problems.append(f"missing required parameter {name!r}")
@@ -1004,3 +1021,27 @@ def validate_arguments(arguments, schema) -> list[str]:
         for name in sorted(set(arguments) - declared):
             problems.append(f"unknown parameter {name!r}")
     return problems
+
+
+def validate_delivery(payload, key, delivery_id, *, family=None):
+    """Typed native delivery identity is mandatory, including the native session."""
+    from .errors import BAD_SESSION_REF, refuse
+    if (not isinstance(payload, dict) or payload.get("idKind") != "delivery"
+            or payload.get("deliveryId") != delivery_id
+            or payload.get("sessionId") != key.native_session_id):
+        raise refuse(BAD_SESSION_REF, "delivery metadata contradicts its requested target")
+    expected = {**key.as_dict(), "delivery_id": delivery_id, "run_id": payload.get("runId")}
+    expected.pop("provider")
+    for field, value in expected.items():
+        if payload.get(field) is not None and payload[field] != value:
+            raise refuse(BAD_SESSION_REF, "delivery metadata contradicts its requested target")
+    native_family = key.provider if key.provider in {"claude", "codex"} else family
+    if payload.get("provider") is not None:
+        providers = {key.provider} if payload.get("session_ref") is not None else {key.provider, native_family}
+        if native_family is not None and payload["provider"] not in providers:
+            raise refuse(BAD_SESSION_REF, "delivery metadata names another session family")
+    run_id = payload.get("runId")
+    if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()
+                               or len(run_id) > 512 or any(ord(c) < 32 for c in run_id)):
+        raise refuse(BAD_SESSION_REF, "delivery has malformed Run binding")
+    return payload

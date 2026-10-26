@@ -986,6 +986,10 @@ class Connector:
             )
         if not isinstance(arguments, dict):
             raise FleetRefusal("BAD_REQUEST", "arguments must be a JSON object")
+        if tool == "run_get":
+            problems = cloudcli_native.validate_arguments(arguments, cloudcli_native.input_schema(tool))
+            if problems:
+                raise FleetRefusal("BAD_REQUEST", "; ".join(problems))
         # BLOCKER-2: the DEVICE's own floor, applied here on the machine, using
         # the device-LOCAL session id inside `arguments` (not the Fleet-side
         # address, which this machine never sees). Without this the route would
@@ -993,6 +997,24 @@ class Connector:
         # `allow_control_to` this workstation's owner wrote at this keyboard.
         self._native_floor(cloudcli_native, cloudcli_native.NATIVE_BY_NAME[tool],
                            arguments)
+        if tool == "run_get" and "deliveryId" in arguments:
+            session = arguments.get("session")
+            if not isinstance(session, str) or not session.strip():
+                raise FleetRefusal("BAD_REQUEST", "delivery lookup requires its native session")
+            caller = getattr(self.provider, "get_delivery", None)
+            if not callable(caller):
+                raise FleetRefusal("CAPABILITY_UNSUPPORTED", "provider lacks delivery lookup")
+            key = SessionKey.compose(self.config.device_ref, self.config.runtime, session)
+            if payload.get("session_ref") is not None:
+                key = SessionKey.parse(payload["session_ref"])
+                allowed = {self.config.runtime}
+                if self.config.runtime == BASE_RUNTIME:
+                    allowed.add("codex")  # existing base native-family multiplexing
+                if (key.device_ref != self.config.device_ref or key.native_session_id != session
+                        or key.provider not in allowed):
+                    raise FleetRefusal("BAD_REQUEST", "delivery target contradicts signed runtime/session")
+            answer = caller(key, arguments["deliveryId"])
+            return cloudcli_native.validate_delivery(answer, key, arguments["deliveryId"])
         # DEVICE-side approval ownership: the requestId must be one THIS machine
         # enumerates for the named session, checked here from the machine's own
         # register. The host checks the same thing on its side; both must hold,

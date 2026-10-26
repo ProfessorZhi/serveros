@@ -183,12 +183,16 @@ def _interrupt_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]
 
 def _get_run(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     run_id = args.get("run_id")
-    if not isinstance(run_id, str) or not run_id:
-        raise refuse(BAD_REQUEST, "`run_id` is required")
+    delivery_id = args.get("delivery_id")
+    if (sum(name in args for name in ("run_id", "delivery_id")) != 1
+            or not isinstance(run_id if "run_id" in args else delivery_id, str)
+            or not (run_id if "run_id" in args else delivery_id).strip()):
+        raise refuse(BAD_REQUEST, "exactly one nonempty run_id or delivery_id is required")
     return ctx.service.get_run(
         ctx.principal,
         _session_key(ctx, args),
         run_id,
+        **({"delivery_id": delivery_id} if "delivery_id" in args else {}),
         wait=bool(args.get("wait", False)),
         wait_seconds=float(args.get("wait_seconds", 0.0)),
     )
@@ -458,9 +462,9 @@ TOOLS: tuple[Tool, ...] = (
         name="fleet_get_run",
         title="Get a run",
         description=(
-            "Get the state of a run in a session — whether it is still executing "
-            "and what it produced. Use the run id `fleet_send_to_session` "
-            "returned.\n\n"
+            "Get the state of exactly one run or native delivery in its original session. "
+            "Use run_id or delivery_id returned by `fleet_send_to_session`. "
+            "Delivery completion is independent of the bound Run result and does not prove work success.\n\n"
             "A run that has not reached a terminal state within the wait comes "
             "back as RUN_UNSETTLED, which means 'still working', not 'failed'. "
             "Set `wait` to block briefly for a result."
@@ -473,6 +477,7 @@ TOOLS: tuple[Tool, ...] = (
                 "session": _string("The provider-native session id."),
                 "provider": _string("Session provider family: `claude` (default) or `codex`."),
                 "run_id": _string("The run id returned by `fleet_send_to_session`."),
+                "delivery_id": _string("The native delivery id; completion alone does not prove Run success."),
                 "wait": _boolean("Block briefly for the run to settle.", default=False),
                 "wait_seconds": {
                     "type": "number",
@@ -480,7 +485,7 @@ TOOLS: tuple[Tool, ...] = (
                     "default": 0,
                 },
             },
-            "required": ["run_id"],
+            "oneOf": [{"required": ["run_id"]}, {"required": ["delivery_id"]}],
             "additionalProperties": False,
         },
         annotations=_read_only(),

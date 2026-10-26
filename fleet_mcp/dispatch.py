@@ -12,7 +12,7 @@ from .errors import (BAD_REQUEST, DISPATCH_OUTCOME_UNKNOWN, DISPATCH_STATE_UNAVA
                      IDEMPOTENCY_CONFLICT, RATE_LIMITED, refuse)
 from .identity import SessionKey
 
-RECEIPT_FIELDS = frozenset(("session_ref", "run_id", "queued_message_uuid", "accepted"))
+RECEIPT_FIELDS = frozenset(("session_ref", "run_id", "delivery_id", "queued_message_uuid", "accepted"))
 PROJECT_RECEIPT_FIELDS = frozenset(("project_id", "project_path", "accepted"))
 MAX_RECEIPT_BYTES = 65536
 
@@ -20,7 +20,7 @@ MAX_RECEIPT_BYTES = 65536
 def delivery_receipt(record: dict[str, Any], *, project: bool = False) -> dict[str, Any]:
     """Keep address/ACK facts; never persist raw provider data or instructions."""
     if project:
-        if any(k in record for k in ("session", "display_name", "session_ref", "run_id", "queued_message_uuid")):
+        if any(k in record for k in ("session", "display_name", "session_ref", "run_id", "delivery_id", "queued_message_uuid")):
             raise ValueError("a project receipt cannot contain session identifiers")
         receipt = {k: record.get(k) for k in PROJECT_RECEIPT_FIELDS}
         if (receipt["accepted"] is not True or any(
@@ -38,14 +38,17 @@ def delivery_receipt(record: dict[str, Any], *, project: bool = False) -> dict[s
     receipt = {"session_ref": ref, "run_id": record.get("run_id"),
                "queued_message_uuid": record.get("queued_message_uuid"),
                "accepted": record.get("accepted", True)}
+    if "delivery_id" in record:
+        receipt["delivery_id"] = record["delivery_id"]
     if receipt["accepted"] is not True:
         raise ValueError("provider did not acknowledge delivery")
     if ("display_name" in record and not receipt["run_id"]
-            and not receipt["queued_message_uuid"]):
+            and not receipt["queued_message_uuid"] and not receipt.get("delivery_id")):
         raise ValueError("send acknowledgement has no execution reference")
-    for field in ("run_id", "queued_message_uuid"):
-        value = receipt[field]
-        if value is not None and (not isinstance(value, str) or not value.strip()):
+    for field in ("run_id", "delivery_id", "queued_message_uuid"):
+        value = receipt.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()
+                                  or len(value) > 512 or any(ord(c) < 32 for c in value)):
             raise ValueError("provider returned a malformed identifier")
     if len(json.dumps(receipt, allow_nan=False).encode("utf-8")) > MAX_RECEIPT_BYTES:
         raise ValueError("provider receipt exceeds its byte bound")
@@ -163,6 +166,8 @@ class DispatchGuard:
             replay = {"session": ref.as_dict(), "display_name": ref.as_dict(),
                       "run_id": receipt.get("run_id"),
                       "queued_message_uuid": receipt.get("queued_message_uuid"), "accepted": True}
+            if "delivery_id" in receipt:
+                replay["delivery_id"] = receipt["delivery_id"]
             return Claim(token, digest, actor, None, replay)
         raise refuse(DISPATCH_OUTCOME_UNKNOWN,
                      "earlier delivery may have happened; reconcile its session/run before retrying",

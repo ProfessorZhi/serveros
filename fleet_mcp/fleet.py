@@ -1560,7 +1560,7 @@ class FleetService:
         # because no claim was requested.
         try:
             receipt = delivery_receipt(record)
-            if expect_execution and not (receipt["run_id"] or receipt["queued_message_uuid"]):
+            if expect_execution and not (receipt["run_id"] or receipt["queued_message_uuid"] or receipt.get("delivery_id")):
                 raise ValueError("execution acknowledgement has no original reference")
         except (ValueError, TypeError, AttributeError) as exc:
             raise refuse(DISPATCH_OUTCOME_UNKNOWN,
@@ -1620,6 +1620,7 @@ class FleetService:
                               "no second message was sent",
                     "run": replayed,
                     "run_id": replayed.get("run_id"),
+                    **({"delivery_id": replayed["delivery_id"]} if "delivery_id" in replayed else {}),
                     "queued_message_uuid": replayed.get("queued_message_uuid"),
                     "idempotency_durability": self.dispatch.durability,
                 }
@@ -1628,7 +1629,10 @@ class FleetService:
         self._verified_family_detail(key, provider)
         payload = provider.send(key, message, idempotency_key=idempotency_key)
         run_id = payload.get("runId") or payload.get("run_id") or (payload.get("run") or {}).get("id")
+        delivery = ({"delivery_id": payload.get("deliveryId", payload.get("delivery_id"))}
+                    if "deliveryId" in payload or "delivery_id" in payload else {})
         record = {
+            **delivery,
             "display_name": key.as_dict(),
             "run_id": run_id,
             "queued_message_uuid": payload.get("queuedMessageUuid") or payload.get("queued_message_uuid"),
@@ -1648,6 +1652,7 @@ class FleetService:
             "idempotent_replay": False,
             "run_id": run_id,
             "queued_message_uuid": record["queued_message_uuid"],
+            **delivery,
             "run": record,
             "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED",
             "note": "session_send is message delivery. It grants no authority "
@@ -2144,6 +2149,7 @@ class FleetService:
                     "detail": "this idempotency_key already created this session; "
                               "no second session was created",
                     "run_id": replayed.get("run_id"),
+                    **({"delivery_id": replayed["delivery_id"]} if "delivery_id" in replayed else {}),
                     "queued_message_uuid": replayed.get("queued_message_uuid"),
                     "created": replayed,
                     "idempotency_durability": self.dispatch.durability,
@@ -2194,7 +2200,10 @@ class FleetService:
         key = SessionKey.compose(device_ref, receipt_namespace, str(session_id))
         run_id = payload.get("runId") or payload.get("run_id")
         queued_message_uuid = payload.get("queuedMessageUuid", payload.get("queued_message_uuid"))
+        delivery = ({"delivery_id": payload.get("deliveryId", payload.get("delivery_id"))}
+                    if "deliveryId" in payload or "delivery_id" in payload else {})
         record = {
+            **delivery,
             "session": key.as_dict(),
             "run_id": run_id,
             "queued_message_uuid": queued_message_uuid,
@@ -2225,6 +2234,7 @@ class FleetService:
             "idempotent_replay": False,
             "run_id": run_id,
             "queued_message_uuid": queued_message_uuid,
+            **delivery,
             "created": record,
             "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED",
             # The caller is told, in the same answer, whether the session it just
@@ -2269,18 +2279,37 @@ class FleetService:
         self,
         principal: Principal,
         key: SessionKey,
-        run_id: str,
+        run_id: str | None = None,
         *,
+        delivery_id: str | None = None,
         wait: bool = False,
         wait_seconds: float = 0.0,
     ) -> dict[str, Any]:
         principal.require(SCOPE_READ)
         self.admit(principal)
+        identifiers = {name: value for name, value in (("runId", run_id), ("deliveryId", delivery_id))
+                       if value is not None}
+        problems = cloudcli_native.validate_arguments(identifiers, cloudcli_native.input_schema("run_get"))
+        if problems:
+            raise refuse(BAD_REQUEST, "; ".join(problems))
         provider = self._session_provider(key)
         self._verified_family_detail(key, provider)
+        if delivery_id is not None:
+            caller = getattr(provider, "get_delivery", None)
+            if not callable(caller):
+                raise refuse("CAPABILITY_UNSUPPORTED", "provider lacks delivery lookup")
+            binding = self.config.session_binding(key)
+            payload = cloudcli_native.validate_delivery(caller(key, delivery_id), key, delivery_id, family=binding.family)
+            if payload.get("provider") is not None and payload["provider"] not in {key.provider, binding.family}:
+                raise refuse(BAD_SESSION_REF, "delivery metadata names another session family")
+            self.audit.record("fleet.get_run", principal=principal.name, session_ref=key.ref,
+                              delivery_id=delivery_id)
+            return {**payload, **key.as_dict(), "delivery_id": delivery_id, "run_id": payload.get("runId")}
         payload = provider.get_run(key, run_id, wait=wait, wait_seconds=wait_seconds)
-        expected = {**key.as_dict(), "run_id": run_id, "runId": run_id}
-        for field in ("device_ref", "native_session_id", "session_ref", "run_id", "runId"):
+        expected = {**key.as_dict(), "run_id": run_id, "runId": run_id, "sessionId": key.native_session_id}
+        if payload.get("idKind") is not None and payload["idKind"] != "run":
+            raise refuse(BAD_SESSION_REF, "run lookup returned another identifier namespace")
+        for field in ("device_ref", "native_session_id", "session_ref", "run_id", "runId", "sessionId"):
             if payload.get(field) is not None and payload[field] != expected[field]:
                 raise refuse(BAD_SESSION_REF, "run metadata contradicts its requested target")
         binding = self.config.session_binding(key)

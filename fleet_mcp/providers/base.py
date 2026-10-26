@@ -257,3 +257,8 @@ class DeviceProvider(Protocol):
         self, key: SessionKey, run_id: str, *, wait: bool = False, wait_seconds: float = 0.0
     ) -> dict[str, Any]:
         ...
+
+    def get_delivery(self, key: SessionKey, delivery_id: str) -> dict[str, Any]:
+        """Older providers explicitly lack delivery-addressed observation."""
+        from ..errors import refuse
+        raise refuse("CAPABILITY_UNSUPPORTED", "provider cannot look up native delivery IDs")
