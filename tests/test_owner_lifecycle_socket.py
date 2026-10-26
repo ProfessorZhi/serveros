@@ -192,7 +192,7 @@ def test_managed_publication_refuses_before_creating_parent_or_lock(tmp_path):
     assert not target.parent.exists()
 
 
-@pytest.mark.parametrize("fault", [None, "revision", "wrong_repo", "scope", "expired", "ambiguous", "symlink"])
+@pytest.mark.parametrize("fault", [None, "revision", "wrong_repo", "scope", "expired", "ambiguous", "symlink", "fsmonitor"])
 def test_context_attach_measures_git_and_uses_original_wake_producer(tmp_path, fault):
     from workengine.owner_context import _runtime
     world = support.make_world(tmp_path)
@@ -208,10 +208,18 @@ def test_context_attach_measures_git_and_uses_original_wake_producer(tmp_path, f
     git("add", "fixture.txt")
     git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture")
     revision = git("rev-parse", "HEAD")
+    monitor_effect = tmp_path / "must-not-run-fsmonitor"
+    if fault == "fsmonitor":
+        hook = repo / ".git" / "fixture-monitor"
+        hook.write_text("#!/bin/sh\ntouch '" + str(monitor_effect) + "'\n")
+        hook.chmod(0o700)
+        git("config", "core.fsmonitor", str(hook))
     catalog = workspace / "ops/workspace/serveros/projects.yaml"
     catalog.parent.mkdir(parents=True)
     catalog.write_text("projects:\n  serveros:\n    worktrees_under: serveros\n    canonical_repos: [serveros]\n")
     work.owner_workspace_root = workspace
+    from pathlib import Path
+    work.owner_git_executable = Path(shutil.which("git")).resolve()
     work.owner_artifacts_root = tmp_path / "artifacts"
     work.owner_continuation_receipts_root = tmp_path / "wake-receipts"
     work.add_activity(Activity("SRV-0001", "build", "develop"))
@@ -255,13 +263,14 @@ def test_context_attach_measures_git_and_uses_original_wake_producer(tmp_path, f
                       repo="other" if fault == "wrong_repo" else "serveros", mode="develop",
                       checkpoint_ref=checkpoint["checkpoint_ref"], expected_revision="f" * 40 if fault == "revision" else revision)
         answer = client.mutate(**attach)
-        if fault:
+        if fault and fault != "fsmonitor":
             assert answer["committed"] is False, answer
             assert work.execution_contexts("SRV-0001", "build") == []
         else:
             assert answer["committed"], answer
             stored = work.execution_contexts("SRV-0001", "build")[0]
             assert stored.revision == revision and stored.worktree == str(repo) and not stored.dirty
+            assert not monitor_effect.exists()
 
 
 def test_control_receipt_replay_still_requires_current_lease(tmp_path):

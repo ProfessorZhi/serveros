@@ -102,15 +102,31 @@ def execution_context(store, request, data, grant):
         grant=grant, worktrees_root=workspace / "worktrees")
     if Path(resolved["worktree"]) != worktree:
         raise ValueError("OWNER_REPOSITORY_MISMATCH: signed worktree differs from project layout")
+    measured = measure_git(worktree, getattr(store, "owner_git_executable", None))
+    revision, dirty = measured["revision"], measured["dirty"]
+    for key, actual in (("expected_revision", revision), ("expected_worktree", str(worktree)), ("expected_dirty", dirty)):
+        if key in request and request[key] != actual:
+            raise ValueError("OWNER_REPOSITORY_MISMATCH: caller expectation differs from measured Git facts")
+    return ExecutionContext(request["item_ref"], request["activity_ref"], repo, ContextMode(request["mode"]), revision, str(worktree), dirty)
+
+
+def measure_git(worktree, executable):
+    """Measure local facts; the outer owner supplies the Git executable."""
+    worktree = real_path(worktree)
+    if executable is None or not Path(executable).is_absolute() or not Path(executable).is_file():
+        raise ValueError("OWNER_GIT_BINDING_REQUIRED: explicit absolute Git executable required")
+    executable = real_path(executable)
+    # Keep no inherited GIT_*/HOME/PATH/config/credential redirect. These
+    # commands invoke no helpers; fsmonitor and optional index writes are off.
+    env = {"PATH": str(executable.parent), "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": os.devnull, "GIT_OPTIONAL_LOCKS": "0"}
+    if "SYSTEMROOT" in os.environ: env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     def git(*args):
-        result = subprocess.run(["git", "-C", str(worktree), *args], capture_output=True, text=True, timeout=10)
+        result = subprocess.run([str(executable), "-c", "core.fsmonitor=false", "-C", str(worktree), *args],
+                                capture_output=True, text=True, timeout=10, env=env)
         if result.returncode:
             raise ValueError("OWNER_REPOSITORY_MISMATCH: cannot measure local Git repository")
         return result.stdout.strip()
     if Path(git("rev-parse", "--show-toplevel")).resolve() != worktree:
         raise ValueError("OWNER_REPOSITORY_MISMATCH: Git top-level differs from worktree")
-    revision, dirty = git("rev-parse", "HEAD"), bool(git("status", "--porcelain"))
-    for key, actual in (("expected_revision", revision), ("expected_worktree", str(worktree)), ("expected_dirty", dirty)):
-        if key in request and request[key] != actual:
-            raise ValueError("OWNER_REPOSITORY_MISMATCH: caller expectation differs from measured Git facts")
-    return ExecutionContext(request["item_ref"], request["activity_ref"], repo, ContextMode(request["mode"]), revision, str(worktree), dirty)
+    return {"revision": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--ignore-submodules=all"))}

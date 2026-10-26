@@ -44,5 +44,3 @@ def allocate_directory(root, path, manifest):
                 os.fsync(fd)
             finally:
                 os.close(fd)
-            if directory == root:
-                break

@@ -423,7 +423,7 @@ class ServerOSStore:
         if identity != self._owner_file_identity:
             raise LeaseError("WORK_STORE_MISMATCH", "database replaced; stop and explicitly rebind owner")
         locations = {key: str(getattr(self, key, "") or "") for key in
-                     ("owner_artifacts_root", "owner_workspace_root", "owner_continuation_receipts_root")}
+                     ("owner_artifacts_root", "owner_workspace_root", "owner_continuation_receipts_root", "owner_git_executable")}
         body = {"file_identity": identity, **locations}
         return {**body, "store_binding": hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()}
 
