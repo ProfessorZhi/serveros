@@ -192,3 +192,25 @@ def test_conflicting_terminal_states_are_reported_and_remain_nonterminal(tmp_pat
     s.provider.get_run = lambda *args, **kwargs: {"state": "completed", "status": "failed"}
     assert watcher(s, e, Attempts(), lambda: 0).tick()["errors"] == 1
     assert rows(e) == []
+
+@pytest.mark.parametrize("recorded_at", [123, True, [], {}, 0, False, ""])
+@pytest.mark.parametrize("provider_status, expected_kind", [
+    ("completed", "run.completed"), ("running", "run.unknown"),
+])
+def test_malformed_receipt_timestamp_cannot_starve_existing_due_watch(
+        tmp_path, recorded_at, provider_status, expected_kind):
+    e, s, a, now = store(tmp_path / "events.db"), Service(), Attempts(), [86400]
+    e.discover_watch("existing-watch", event(kind="run.unknown", level="decide",
+                     summary={"status": "UNKNOWN"}), first_seen=0, now=0)
+    a.records["attempt-1"]["recorded_at"] = recorded_at
+    s.provider.status = provider_status
+    w = watcher(s, e, a, lambda: now[0])
+    result = w.tick()
+    assert result["malformed"] == 1
+    assert result["recovered"] == 0
+    assert result["observed"] == 1
+    assert [row["kind"] for row in rows(e)] == [expected_kind]
+    # The corrupt record is encountered again; it must not poison later ticks.
+    now[0] += 600
+    assert w.tick()["malformed"] == 1
+    assert [row["kind"] for row in rows(e)] == [expected_kind]

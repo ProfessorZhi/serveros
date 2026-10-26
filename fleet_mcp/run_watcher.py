@@ -86,8 +86,11 @@ class RunWatcher:
                         template[field] = record[field]
                 validate_event(template)
                 first_seen = now
-                if record.get("recorded_at"):
-                    first_seen = dt.datetime.fromisoformat(record["recorded_at"].replace("Z", "+00:00")).timestamp()
+                recorded_at = record.get("recorded_at")
+                if recorded_at is not None:
+                    if not isinstance(recorded_at, str) or not recorded_at.strip():
+                        raise ValueError("malformed receipt timestamp")
+                    first_seen = dt.datetime.fromisoformat(recorded_at.replace("Z", "+00:00")).timestamp()
                     if first_seen < 0 or first_seen > now:
                         first_seen = now
                 self.events.discover_watch(watch_id, template, first_seen=first_seen, now=now)
