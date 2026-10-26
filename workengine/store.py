@@ -10,7 +10,7 @@ import os
 import re
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from .model import (
@@ -403,9 +403,11 @@ class ServerOSStore:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.state_dir / "serveros.db"
         schema = (Path(__file__).with_name("schema.sql")).read_text(encoding="utf-8")
-        with self.connection() as conn:
+        with closing(self.connection()) as conn:
             conn.executescript(schema)
             migrate(conn)
+            from .owner_fence import migrate as migrate_owner_fence
+            migrate_owner_fence(conn)
 
     def clock(self) -> float:
         """The store's trusted instant, validated like every lease clock."""
@@ -418,7 +420,9 @@ class ServerOSStore:
     def connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30, isolation_level=None)
         conn.row_factory = sqlite3.Row
+        conn.create_function("owner_commit_scope", 1, lambda item: 0)
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA recursive_triggers = ON")
         conn.execute("PRAGMA busy_timeout = 30000")
         return conn
 
@@ -509,27 +513,30 @@ class ServerOSStore:
         ttl = _lease_ttl(ttl_s)
         now_e = self._now(now)
         with self.transaction(immediate=True) as conn:
-            row = self._lease_row(conn, resource)
-            if row is not None and _lease_epoch(row["expires_at"]) > now_e:
-                raise LeaseError(
-                    "LEASE_HELD_BY_OTHER",
-                    f"{resource!r} is held by {row['owner']!r} (token "
-                    f"{row['token']}) until {row['expires_at']}. An exclusive "
-                    f"write scope has one writer at a time; renewed holders call "
-                    f"renew_lease, and a superseded one has lost the token, not "
-                    f"just the turn")
-            token = self._next_lease_token(conn, resource)
-            expires = _lease_expiry(now_e, ttl)
-            if row is None:
-                conn.execute(
-                    "INSERT INTO leases(resource,owner,token,expires_at) VALUES (?,?,?,?)",
-                    (resource, owner, token, expires))
-            else:
-                conn.execute(
-                    "UPDATE leases SET owner=?, token=?, expires_at=? WHERE resource=?",
-                    (owner, token, expires, resource))
-            return {"resource": resource, "owner": owner, "token": token,
-                    "expires_at": expires}
+            return self._acquire_lease_tx(conn, resource, owner=owner, ttl=ttl, now_e=now_e)
+
+    def _acquire_lease_tx(self, conn, resource, *, owner, ttl, now_e):
+        row = self._lease_row(conn, resource)
+        if row is not None and _lease_epoch(row["expires_at"]) > now_e:
+            raise LeaseError(
+                "LEASE_HELD_BY_OTHER",
+                f"{resource!r} is held by {row['owner']!r} (token "
+                f"{row['token']}) until {row['expires_at']}. An exclusive "
+                f"write scope has one writer at a time; renewed holders call "
+                f"renew_lease, and a superseded one has lost the token, not "
+                f"just the turn")
+        token = self._next_lease_token(conn, resource)
+        expires = _lease_expiry(now_e, ttl)
+        if row is None:
+            conn.execute(
+                "INSERT INTO leases(resource,owner,token,expires_at) VALUES (?,?,?,?)",
+                (resource, owner, token, expires))
+        else:
+            conn.execute(
+                "UPDATE leases SET owner=?, token=?, expires_at=? WHERE resource=?",
+                (owner, token, expires, resource))
+        return {"resource": resource, "owner": owner, "token": token,
+                "expires_at": expires}
 
     def renew_lease(self, resource: str, *, owner: str, token: int,
                     ttl_s: float, now=None) -> dict:
@@ -543,29 +550,70 @@ class ServerOSStore:
         ttl = _lease_ttl(ttl_s)
         now_e = self._now(now)
         with self.transaction(immediate=True) as conn:
-            row = self._lease_row(conn, resource)
-            self._require_holder(row, resource, owner=owner, token=token)
-            if _lease_epoch(row["expires_at"]) <= now_e:
-                raise LeaseError(
-                    "LEASE_EXPIRED",
-                    f"{resource!r} lapsed at {row['expires_at']} and cannot be "
-                    f"renewed by its old holder — re-acquire it, which mints a "
-                    f"new token and fences the lapsed one")
-            expires = _lease_expiry(now_e, ttl)
-            conn.execute("UPDATE leases SET expires_at=? WHERE resource=?",
-                         (expires, resource))
-            return {"resource": resource, "owner": row["owner"],
-                    "token": int(row["token"]), "expires_at": expires}
+            return self._renew_lease_tx(conn, resource, owner=owner, token=token, ttl=ttl, now_e=now_e)
+
+    def _renew_lease_tx(self, conn, resource, *, owner, token, ttl, now_e):
+        row = self._lease_row(conn, resource)
+        self._require_holder(row, resource, owner=owner, token=token)
+        if _lease_epoch(row["expires_at"]) <= now_e:
+            raise LeaseError(
+                "LEASE_EXPIRED",
+                f"{resource!r} lapsed at {row['expires_at']} and cannot be "
+                f"renewed by its old holder — re-acquire it, which mints a "
+                f"new token and fences the lapsed one")
+        expires = _lease_expiry(now_e, ttl)
+        conn.execute("UPDATE leases SET expires_at=? WHERE resource=?",
+                     (expires, resource))
+        return {"resource": resource, "owner": row["owner"],
+                "token": int(row["token"]), "expires_at": expires}
 
     def release_lease(self, resource: str, *, owner: str, token: int,
                       now=None) -> dict:
         """Give the lease back. Only the current holder, by token, may."""
         with self.transaction(immediate=True) as conn:
-            row = self._lease_row(conn, resource)
-            self._require_holder(row, resource, owner=owner, token=token)
-            conn.execute("DELETE FROM leases WHERE resource=?", (resource,))
-            return {"resource": resource, "owner": owner, "token": int(token),
-                    "released": True}
+            return self._release_lease_tx(conn, resource, owner=owner, token=token)
+
+    def _release_lease_tx(self, conn, resource, *, owner, token):
+        row = self._lease_row(conn, resource)
+        self._require_holder(row, resource, owner=owner, token=token)
+        conn.execute("DELETE FROM leases WHERE resource=?", (resource,))
+        return {"resource": resource, "owner": owner, "token": int(token),
+                "released": True}
+
+    def _apply_owner_operation(self, conn, *, verb, item_ref, principal, arguments):
+        """Closed operations on the owner's already fenced connection.
+
+        This internal entry never opens or commits a second transaction. The
+        owner service checks policy/grant/context and persists its receipt in
+        this same connection. Arbitrary SQL and callbacks are not RPC inputs.
+        """
+        if not conn.in_transaction:
+            raise LeaseError("OWNER_COMMIT_FENCE_REQUIRED", "an owner transaction is required")
+        resource = f"work-write:{item_ref}"
+        now = self.clock()
+        if verb == "lease.acquire":
+            return self._acquire_lease_tx(conn, resource, owner=principal,
+                                         ttl=_lease_ttl(arguments["ttl_s"]), now_e=now)
+        token = arguments["token"]
+        row = self._lease_row(conn, resource)
+        self._require_holder(row, resource, owner=principal, token=token)
+        if _lease_epoch(row["expires_at"]) <= now:
+            raise LeaseError("LEASE_EXPIRED", "the current Work lease has expired")
+        if verb == "lease.renew":
+            return self._renew_lease_tx(conn, resource, owner=principal, token=token,
+                                       ttl=_lease_ttl(arguments["ttl_s"]), now_e=now)
+        if verb == "lease.release":
+            return self._release_lease_tx(conn, resource, owner=principal, token=token)
+        if verb == "item.transition":
+            row = conn.execute("SELECT state FROM items_index WHERE item_id=?", (item_ref,)).fetchone()
+            target = transition(ItemState(row["state"]), arguments["target"])
+            at = now_iso()
+            conn.execute("UPDATE items_index SET state=?,updated_at=? WHERE item_id=?",
+                         (target.value, at, item_ref))
+            self._event(conn, item_ref, "transitioned", {
+                "from": row["state"], "to": target.value, "note": arguments.get("note", "")}, at=at)
+            return {"item_ref": item_ref, "state": target.value}
+        raise LeaseError("UNSUPPORTED_OWNER_OPERATION", "the operation has no protected mutation implementation")
 
     def active_lease(self, resource: str, *, now=None) -> dict | None:
         """The live lease on a resource, or None. An expired row is None.

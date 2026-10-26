@@ -250,3 +250,79 @@ def test_owner_client_preserves_real_kernel_socket_peer(tmp_path):
     finally:
         thread.join(5)
         server.close()
+
+
+def test_private_bootstrap_file_requires_private_owner_file(tmp_path):
+    path = tmp_path / "issuer.json"
+    document = {"schema": "serveros/owner-policy-issuer.v1", "os_principal": f"uid:{os.getuid()}",
+                "actor_ref": "human:A", "human_control_provider": "provider:botmux-human-control"}
+    path.write_text(json.dumps(document))
+    path.chmod(0o600)
+    assert support.owner_policy_mod.load_issuer(path).actor_ref == "human:A"
+    path.chmod(0o644)
+    with pytest.raises(ValueError, match="UNSAFE_FILE"):
+        support.owner_policy_mod.load_issuer(path)
+    path.chmod(0o600)
+    link = tmp_path / "issuer-link.json"
+    link.symlink_to(path)
+    with pytest.raises(ValueError, match="UNSAFE_FILE"):
+        support.owner_policy_mod.load_issuer(link)
+
+
+def test_control_only_commit_keeps_binding_and_receipt_in_json(tmp_path):
+    world = make_world(tmp_path)
+    request = issue(world)
+    daemon, work, _, _ = world
+    acquired = call(daemon, "agent.work.mutate", request)
+    operation = {key: value for key, value in request.items() if key not in ("ttl_s", "verb")}
+    operation.update(operation_id="binding:1", token=acquired["result"]["token"],
+                     intent={"checkpoint_ref": "checkpoint:fixture", "cycle_ref": "cycle:fixture"})
+
+    def mutation(document):
+        document["admissions"]["cycle:fixture"] = {"fixture": "bound"}
+        return {"bound": True}
+
+    owner = daemon.owner_work_operations()
+    result = owner.control_commit(operation, peer=support.a_peer(), mutation=mutation)
+    assert result["committed"] and not result["replayed"]
+    stored = daemon.control_store()._read()
+    assert stored["admissions"]["cycle:fixture"] == {"fixture": "bound"}
+    assert stored["owner_control_receipts"]["binding:1"]["result"] == {"bound": True}
+    replay = owner.control_commit(operation, peer=support.a_peer(), mutation=lambda _: pytest.fail("replayed mutation"))
+    assert replay["replayed"]
+    assert revoke(world)["committed"]
+    with pytest.raises(ValueError):
+        owner.control_commit(operation, peer=support.a_peer(), mutation=mutation)
+
+
+def test_signed_grant_issuance_uses_unique_existing_owner_policy(tmp_path, monkeypatch):
+    import base64
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+    world = make_world(tmp_path)
+    issue(world)
+    daemon, _, context, policy = world
+    actor = support.daemon_mod.actor_mod
+    private = Ed25519PrivateKey.generate()
+    public = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    trust = tmp_path / "provider-trust.json"
+    policy_provider = context["human_control_provider"]
+    trust.write_text(json.dumps({"schema": "serveros/human-control-trust.v1", "audience": "device:fixture",
+        "providers": {policy_provider: {"keys": {"fixture": {
+            "enabled": True, "public_key": base64.b64encode(public).decode()}}}}}))
+    monkeypatch.setattr(actor, "DELEGATION_TRUST", trust)
+    report = {key: context[key] for key in actor.PROVIDER_REPORT_FIELDS}
+    grant = {"grant_ref": "grant:signed-fixture", "projects": policy["projects"], "items": policy["items"],
+             "actions": policy["actions"], "valid_from": policy["valid_from"], "expires_at": policy["expires_at"],
+             "scope_digests": {"SRV-0001": "sha256:" + "a" * 64},
+             "budget": {"wall_seconds": 120, "max_attempts": 1, "max_output_bytes": 1024, "exhausted": False}}
+    payload = {"schema": actor.DELEGATION_EVIDENCE_SCHEMA, "provider_id": policy_provider,
+               "key_id": "fixture", "audience": "device:fixture", "issued_at": support.iso(daemon),
+               "actor_report": report, "grant": grant}
+    evidence = {"payload": payload, "signature": base64.b64encode(private.sign(actor.signed_bytes(payload))).decode()}
+    answer = call(daemon, "agent.grant.issue", {"evidence": evidence})
+    assert answer["issued"], answer
+    stored = daemon.control_store().get_grant(grant["grant_ref"])
+    assert stored["owner_policy_ref"] == "policy:owned" and stored["owner_policy_epoch"] == 1
+    assert revoke(world)["committed"]
+    assert call(daemon, "agent.grant.issue", {"evidence": evidence})["issued"] is False

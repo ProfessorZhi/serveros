@@ -33,11 +33,11 @@ A proxy process would change the peer and must be refused; the adapter does not
 paper over that.
 
 An owner-backed answer is a point-in-time read, not a write grant. This adapter
-therefore refuses any reply that carries owner markers unless the parent
-explicitly commits it with `atomicity: "COMMIT_FENCED"`. No production parent
-emits that marker today, so an owner-backed lease remains
-`BLOCKED_OWNER_COMMIT_SEAM`; a revoked owner after the last read must not
-produce a lease. Legacy #272 replies without owner markers are unchanged.
+therefore refuses any reply that carries owner markers, including a claimed
+`atomicity: "COMMIT_FENCED"`: a marker cannot protect a later local write.
+`UnixSocketOwnerClient` instead sends a closed mutation to the original owner,
+which commits the effect and receipt together. Legacy #272 replies without
+owner markers are unchanged.
 
 No CLI verb and no MCP tool is registered here. Until an owner-approved parent
 binds this adapter, the production status remains `BLOCKED_TRUST_SOURCE`.
@@ -99,6 +99,9 @@ class UnixSocketVerifyClient:
                 "item_ref": str(item_ref),
             },
         }
+        return self._call(request)
+
+    def _call(self, request):
         connection = None
         try:
             connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -156,6 +159,21 @@ class UnixSocketVerifyClient:
         return result
 
 
+class UnixSocketOwnerClient(UnixSocketVerifyClient):
+    """Closed owner mutation request from the original local caller process.
+
+    A result is an operation receipt, never a LeaseGrant. Lost replies are
+    reconciled by repeating the identical operation_id and payload; the owner
+    rechecks current authority before returning a historical receipt. There
+    is no verify-then-local-write step and no proxy-supplied peer credential.
+    """
+
+    METHOD = "agent.work.mutate"
+
+    def mutate(self, **request):
+        return self._call({"method": self.METHOD, "params": request})
+
+
 class ServerOSLeaseAuthority:
     """`LeaseAuthority` backed by the serverosd #272 verified read.
 
@@ -184,18 +202,17 @@ class ServerOSLeaseAuthority:
                 str(answer.get("because") or "the trusted parent refused the "
                     "verify read"))
         # An owner-backed reply is a point-in-time read unless the parent
-        # explicitly commits it against an owner-issued policy/epoch fence.
+        # can execute the actual mutation inside its policy/epoch fence.
         # This adapter is the last place before `OwnerVerifiedLease.acquire`
         # writes, so it must not swallow a missing fence as decoration: only
-        # the exact COMMIT_FENCED marker permits an owner-backed grant. A
-        # synthetic signature or a legacy grant readback is not that fence.
+        # no COMMIT_FENCED marker can authorize this later client-side write.
         if ("owner_policy" in answer or "point_in_time" in answer
                 or "atomicity" in answer):
-            if answer.get("atomicity") != "COMMIT_FENCED":
-                raise AuthorityError(
-                    "BLOCKED_OWNER_COMMIT_SEAM",
-                    "the owner-backed verify answer is not commit-fenced; a "
-                    "point-in-time read cannot authorize a lease write")
+            raise AuthorityError(
+                "BLOCKED_OWNER_COMMIT_SEAM",
+                "an owner-backed verification read cannot authorize a local "
+                "write, including a claimed COMMIT_FENCED marker; use the "
+                "owner mutation operation and its durable receipt")
         grant = answer.get("grant")
         if not isinstance(grant, dict):
             raise AuthorityError(

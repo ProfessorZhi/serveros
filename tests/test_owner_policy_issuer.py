@@ -52,3 +52,23 @@ def test_policy_scope_is_explicit_and_server_audit_is_not_input():
 def test_policy_shape_and_window_fail_closed(changes):
     with pytest.raises(ValueError):
         policy.validate_policy_request(policy_document(**changes), now=NOW)
+
+
+def test_private_issuer_file_refuses_relative_path():
+    with pytest.raises(ValueError, match="absolute"):
+        policy.load_issuer("caller-selected.json")
+
+
+def test_point_read_cannot_claim_commit_fence():
+    from workengine.authority import AuthorityError
+    from workengine.serveros_authority import ServerOSLeaseAuthority
+
+    class Snapshot:
+        def verify(self, *args, **kwargs):
+            return {"verified": True, "atomicity": "COMMIT_FENCED", "grant": {
+                "grant_ref": "grant:1", "principal": "human:owner", "os_principal": "uid:123",
+                "epoch": 1, "valid_from": 1, "expires_at": 9999999999, "revoked": False}}
+
+    with pytest.raises(AuthorityError, match="BLOCKED_OWNER_COMMIT_SEAM"):
+        ServerOSLeaseAuthority(Snapshot(), grant_ref="grant:1").verify(
+            "context:fixture", action="lease.acquire", project="serveros", item_ref="SRV-0001", now=10)

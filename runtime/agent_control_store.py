@@ -978,7 +978,9 @@ class AgentControlStore:
             return {"schema": SCHEMA, "contexts": {}, "approvals": {},
                     "bindings": {}, "selections": {}, "grants": {},
                     "admissions": {}, "checkpoints": {},
-                    "dispatch_attempts": {}, "grant_epoch": 0}
+                    "dispatch_attempts": {}, "grant_epoch": 0,
+                    "owner_policies": {}, "owner_policy_receipts": {},
+                    "owner_control_receipts": {}}
         try:
             data = strict_data if strict_data is not None else json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -1008,6 +1010,9 @@ class AgentControlStore:
         # an older document reads as 0 and the FIRST new grant gets 1. Existing
         # grants are NOT backfilled (see `verify_live_grant`).
         data.setdefault("grant_epoch", 0)
+        data.setdefault("owner_policies", {})
+        data.setdefault("owner_policy_receipts", {})
+        data.setdefault("owner_control_receipts", {})
         data["schema"] = SCHEMA
         return data
 
@@ -1043,7 +1048,8 @@ class AgentControlStore:
         if not isinstance(data, dict) or data.get("schema") != SCHEMA:
             raise StoreError("the configured owner anchor is not an Agent Control store")
         for collection in ("contexts", "approvals", "bindings", "selections", "grants",
-                           "admissions", "checkpoints", "dispatch_attempts"):
+                           "admissions", "checkpoints", "dispatch_attempts",
+                           "owner_policies", "owner_policy_receipts", "owner_control_receipts"):
             if collection in data and not isinstance(data[collection], dict):
                 raise StoreError("the owner store contains an invalid collection")
         return data

@@ -466,6 +466,7 @@ agent_control_store_mod = _load("serveros_runtime_agent_control_store",
 # BLOCKED_OWNER_POLICY. Loaded under the same name the store uses, so the
 # `OwnerPolicy` class is one object.
 owner_policy_mod = _load("serveros_runtime_owner_policy", "owner_policy.py")
+owner_operations_mod = _load("serveros_runtime_owner_operations", "owner_operations.py")
 # §21. The alert state machine. Loaded here for the same reason the control
 # store is: the daemon is what runs the tick, and the tick is what keeps the
 # register current. It is NOT loaded so the daemon can send anything — the
@@ -891,6 +892,7 @@ class Daemon:
                  dispatch_observation_source=None,
                  dispatch_grant_verifier=None,
                  owner_policy_resolver=None,
+                 owner_policy_issuer=None, owner_work_store=None,
                  native_lease_path=None, owner_map_path=None) -> None:
         self.registry = registry
         self.state_dir = Path(state_dir)
@@ -943,6 +945,14 @@ class Daemon:
         # minted for an unknown user. A resolver is a READ of an owner-issued
         # fact, never a second grant store.
         self._owner_policy_resolver = owner_policy_resolver
+        if owner_policy_issuer is not None:
+            if not isinstance(owner_policy_issuer, owner_policy_mod.OwnerPolicyIssuer):
+                raise ValueError("owner_policy_issuer requires an explicit OwnerPolicyIssuer")
+            if owner_policy_resolver is not None:
+                raise ValueError("configured ledger issuer cannot share an external policy resolver")
+            self._owner_policy_resolver = owner_operations_mod.LedgerPolicyResolver(self.control_store)
+        self._owner_policy_issuer = owner_policy_issuer
+        self._owner_work_store = owner_work_store
 
         self.budget = Budget(self.state_dir / "health/reconcile-state.json", now=self._now)
         # Passed `runner`, not `host`: the actuator must not be reachable
@@ -1607,6 +1617,10 @@ class Daemon:
             # `OwnerVerifiedLease` needs. Read-only: it mints nothing, acquires
             # nothing and mutates no lease. It is NOT a lease verb.
             "agent.lease.authority.verify": self._r_agent_lease_authority_verify,
+            "agent.owner.policy.issue": self._r_owner_policy_issue,
+            "agent.owner.policy.reissue": self._r_owner_policy_reissue,
+            "agent.owner.policy.revoke": self._r_owner_policy_revoke,
+            "agent.work.mutate": self._r_owner_work_mutate,
             "agent.approval.inspect": self._r_agent_approval_inspect,
             "agent.approval.record": self._r_agent_approval_record,
             "agent.control.status": self._r_agent_control_status,
@@ -1766,6 +1780,8 @@ class Daemon:
                 "agent.grant.issue",
                 # The trusted-parent grant verification READ (not a lease verb).
                 "agent.lease.authority.verify",
+                "agent.owner.policy.issue", "agent.owner.policy.reissue",
+                "agent.owner.policy.revoke", "agent.work.mutate",
                 "agent.approval.inspect", "agent.approval.record",
                 "agent.control.status",
                 # §17. `agent.binding.resolve` and `agent.binding.list` are
@@ -3165,6 +3181,36 @@ class Daemon:
                     "detail": str(exc)}
         return {"issued": True, "grant": record,
                 "basis": "provider-signed-delegation"}
+
+    def _owner_policy_mutate(self, verb, params):
+        try:
+            return owner_operations_mod.policy_mutate(
+                self.control_store(), self._owner_policy_issuer, verb=verb,
+                request=params, peer=_CALLER_PEER.get(), now=lambda: _iso(self._now()))
+        except (ValueError, agent_control_store_mod.StoreError) as exc:
+            return owner_operations_mod.refusal_answer(exc)
+
+    def _r_owner_policy_issue(self, params):
+        return self._owner_policy_mutate("issue", params)
+
+    def _r_owner_policy_reissue(self, params):
+        return self._owner_policy_mutate("reissue", params)
+
+    def _r_owner_policy_revoke(self, params):
+        return self._owner_policy_mutate("revoke", params)
+
+    def owner_work_operations(self):
+        """In-process owner seam; never a caller-provided callback or identity."""
+        return owner_operations_mod.OwnerWorkOperations(self.control_store(), self._owner_work_store)
+
+    def _r_owner_work_mutate(self, params):
+        if self._owner_policy_issuer is None:
+            return {"committed": False, "reason": "BLOCKED_OWNER_ISSUER",
+                    "detail": "owner policy source is not configured"}
+        try:
+            return self.owner_work_operations().mutate(params, peer=_CALLER_PEER.get())
+        except (ValueError, agent_control_store_mod.StoreError) as exc:
+            return owner_operations_mod.refusal_answer(exc)
 
     def _r_agent_lease_authority_verify(self, params) -> dict:
         """May this caller act as this grant's principal, right now? (#237 B3)
@@ -5401,6 +5447,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="the shared unit->owner map the Core also reads; with it "
                              "set, an unlisted unit is refused rather than acted on")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--owner-policy-issuer", help="explicit absolute private owner issuer JSON file")
+    parser.add_argument("--owner-work-state-dir", help="explicit existing Work Engine state directory")
     args = parser.parse_args(argv)
 
     registry_path = Path(args.registry) if args.registry else registry_mod.default_path()
@@ -5408,6 +5456,14 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"serverosd: no registry at {registry_path}\n")
         return 2
     registry = registry_mod.Registry(path=registry_path)
+    issuer = owner_policy_mod.load_issuer(args.owner_policy_issuer) if args.owner_policy_issuer else None
+    owner_work = None
+    if args.owner_work_state_dir:
+        work_path = Path(args.owner_work_state_dir)
+        if issuer is None or not work_path.is_absolute() or not (work_path / "serveros.db").is_file():
+            raise ValueError("owner Work assembly requires a configured issuer and an existing absolute Work database")
+        from workengine.store import ServerOSStore
+        owner_work = ServerOSStore(work_path)
     daemon = Daemon(
         registry,
         state_dir=Path(args.state_dir) if args.state_dir else default_state_dir(),
@@ -5415,6 +5471,8 @@ def main(argv: list[str] | None = None) -> int:
         enable_reconcile=args.enable_reconcile,
         native_lease_path=args.native_lease,
         owner_map_path=args.owner_map,
+        owner_policy_issuer=issuer,
+        owner_work_store=owner_work,
         log=lambda message: sys.stderr.write(f"serverosd: {message}\n"),
     )
     if args.once:

@@ -9,12 +9,11 @@ principal for that project/Item/actions. The provider-signed delegation names a
 human; the issuing process names a uid. The remaining #237 B3 unknown is that
 bridge.
 
-This module is the CONTRACT and the pure check, **not a registry**. An owner
-policy is an external, owner-issued fact; the daemon receives a resolver at
-construction. Production binds no resolver, so every issue/verify refuses
-`BLOCKED_OWNER_POLICY`. Nothing here infers a policy from a uid, a context, a
-request field or a clock; no grant is minted for an unknown user, and no
-unknown uid is backfilled into a policy.
+This module defines the contract, pure checks and explicit bootstrap issuer.
+Configured daemons persist owner-issued policies in the existing Agent Control
+ledger through `owner_operations`; there is no second policy database. With
+no configured issuer or resolver the source remains blocked. Nothing infers a
+policy from a uid, context, request label or clock; no unknown uid is backfilled.
 
 An `OwnerPolicy` binds:
 
@@ -32,11 +31,127 @@ grant's `owner_policy_ref`, or `None`. An exception or `None` is a refusal.
 from __future__ import annotations
 
 import datetime
+import json
+import os
+import re
+import stat
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 #: The source owner -> uid -> actor -> scope binding is not established.
 BLOCKED_OWNER_POLICY = "BLOCKED_OWNER_POLICY"
+
+_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/|%+\-]{0,199}\Z")
+_UID = re.compile(r"uid:(0|[1-9][0-9]*)\Z")
+
+
+def _reference(value, field):
+    if not isinstance(value, str) or _REF.fullmatch(value) is None:
+        raise ValueError(f"INVALID_OWNER_POLICY: {field} must be an exact bounded reference")
+    return value
+
+
+def _principal(value):
+    if not isinstance(value, str) or _UID.fullmatch(value) is None:
+        raise ValueError("INVALID_OWNER_POLICY: os_principal must be a canonical uid")
+    if int(value[4:]) > 2**32 - 2:
+        raise ValueError("INVALID_OWNER_POLICY: uid is outside the kernel uid range")
+    return value
+
+
+@dataclass(frozen=True)
+class OwnerPolicyIssuer:
+    """Explicit operator binding; never inferred from the daemon's own uid.
+
+    This is the identity permitted to author policy, not a policy or grant.
+    The daemon additionally requires its current trusted context and the
+    original kernel socket peer for every operation.
+    """
+
+    os_principal: str
+    actor_ref: str
+    human_control_provider: str
+
+    def __post_init__(self):
+        _principal(self.os_principal)
+        _reference(self.actor_ref, "actor_ref")
+        _reference(self.human_control_provider, "human_control_provider")
+
+    @classmethod
+    def from_document(cls, document):
+        if (not isinstance(document, dict)
+                or set(document) != {"schema", "os_principal", "actor_ref", "human_control_provider"}
+                or document["schema"] != "serveros/owner-policy-issuer.v1"):
+            raise ValueError("INVALID_OWNER_ISSUER: exact issuer schema required")
+        return cls(**{key: value for key, value in document.items() if key != "schema"})
+
+
+def validate_policy_request(document, *, now):
+    """Validate only owner-authored policy fields; epochs/audit are minted later."""
+    fields = {"policy_ref", "os_principal", "actor_ref", "projects", "items", "actions",
+              "valid_from", "expires_at"}
+    if not isinstance(document, dict) or set(document) != fields:
+        raise ValueError("INVALID_OWNER_POLICY: exact policy fields required")
+    result = dict(document)
+    _reference(result["policy_ref"], "policy_ref")
+    _reference(result["actor_ref"], "actor_ref")
+    _principal(result["os_principal"])
+    for key in ("projects", "items", "actions"):
+        values = result[key]
+        if not isinstance(values, list) or not 1 <= len(values) <= 256:
+            raise ValueError(f"INVALID_OWNER_POLICY: {key} requires 1..256 exact references")
+        for value in values:
+            _reference(value, key)
+        if len(set(values)) != len(values):
+            raise ValueError(f"INVALID_OWNER_POLICY: {key} has duplicate references")
+        result[key] = sorted(values)
+    start, end, clock = (instant(result["valid_from"]), instant(result["expires_at"]), instant(now))
+    if start is None or end is None or clock is None or not start < end or end <= clock:
+        raise ValueError("INVALID_OWNER_POLICY: live bounded zoned window required")
+    return result
+
+
+def load_issuer(path):
+    """Load an explicitly named private POSIX bootstrap identity file.
+
+    Native Windows needs a separately reviewed ACL/named-pipe identity path;
+    it must never substitute the daemon's uid or a request field here.
+    """
+    target = Path(path)
+    if not target.is_absolute():
+        raise ValueError("owner issuer path must be absolute")
+    if os.name != "posix":
+        raise ValueError("OWNER_ISSUER_PLATFORM_UNSUPPORTED: POSIX ownership and kernel peer required")
+    for directory in reversed(target.parents):
+        info = directory.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.geteuid()):
+            raise ValueError("OWNER_ISSUER_UNSAFE_PATH: unowned or symbolic ancestor")
+        if info.st_mode & 0o022 and not (info.st_uid == 0 and info.st_mode & stat.S_ISVTX):
+            raise ValueError("OWNER_ISSUER_UNSAFE_PATH: writable ancestor")
+    info = target.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+            or info.st_mode & 0o077 or info.st_nlink != 1):
+        raise ValueError("OWNER_ISSUER_UNSAFE_FILE: a private owner regular file is required")
+    handle = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(handle, encoding="utf-8") as stream:
+        opened = os.fstat(stream.fileno())
+        if ((opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino)
+                or opened.st_mode & 0o077 or opened.st_uid != os.geteuid() or opened.st_nlink != 1):
+            raise ValueError("OWNER_ISSUER_UNSAFE_FILE: issuer file changed while opening")
+        raw = stream.read(8193)
+    if len(raw) > 8192:
+        raise ValueError("OWNER_ISSUER_UNSAFE_FILE: issuer document exceeds bound")
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("INVALID_OWNER_ISSUER: duplicate key")
+            result[key] = value
+        return result
+
+    return OwnerPolicyIssuer.from_document(json.loads(raw, object_pairs_hook=unique))
 
 
 @dataclass(frozen=True)
