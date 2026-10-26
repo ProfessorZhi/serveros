@@ -148,17 +148,17 @@ owner 决定：本地监控与自愈只有一个程序、一个名字——serve
 3. **改名。** `native/node-core` 改名为 `serverosd/`，二进制与服务名统一为 serverosd；`bin/serverosd` 指向 C++ 二进制。
 4. **退役 Python 守护。** `runtime/daemon.py` 只剩转发后删除；`runtime/` 里非 L1 的部分按 §5 第 2 条迁走。
 
-### 6.2 旧控制面退役
+### 6.2 旧控制面退役（已定：退役，2026-10-26）
 
-`mcp/agent_mcp.py`、`fleet/controller.py`、`fleet/agent_control_router.py` 与 `fleet_mcp/` 并存。三步退役：
+`mcp/agent_mcp.py`、`fleet/controller.py`、`fleet/agent_control_router.py` 与 `fleet_mcp/` 并存。owner 决定退役，按三步执行（工作包 D6）：
 
 1. 列出仍在调用它们的入口；
 2. 能由 `fleet_mcp/` 覆盖的调用改走 `fleet_mcp/`，覆盖不了的降为 `fleet_mcp` 的适配器；
 3. 删除，并把「L2 只有一个控制面」加进测试。
 
-### 6.3 `plugins/` 里的实验插件
+### 6.3 `plugins/` 里的实验插件（已删除，2026-10-26）
 
-`serveros-fleet-zip-lab-20261014` 是 10-14 的打包实验，登记为 `side: lab`。确定不再需要后删除，连同 `.agents/plugins/marketplace.json` 里它的条目。
+`serveros-fleet-zip-lab-20261014` 是 10-14 的打包实验。owner 决定删除，已连同 `.agents/`（只列了它的 marketplace）、它的 CI workflow 与打包脚本 `scripts/build_fleet_plugin_zip.py` 一起删除。`plugins/` 现在只有指挥侧插件。
 
 ## 7. 新增代码时怎么做
 

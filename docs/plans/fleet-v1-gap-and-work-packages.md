@@ -27,7 +27,7 @@
 | 舵手 | owner 最新指令优先、可抢占；身份区分 owner / client / agent | `Principal` 只有 name / scopes / credential_kind；无方向记录 | 身份与指令 | F3、F5 |
 | 解耦：`runtime/` | 只留 L1 | 123 个文件，混着 L1（39 个模块）、L0 代理控制记录（10 个）、L2 枢纽装配（8 个）、product 卡片与报告（26 个）；`cli.py` 15.6k 行横跨各层 | 迁出非 L1 部分；拆 CLI | D2、D3、D4、D10 |
 | 解耦：`fleet/` | 只剩身份与拓扑 | 一半身份（L0），一半旧控制面 | 退役旧控制面 | D5、D6 |
-| 解耦：`mcp/` | 只有一个控制面 | `mcp/agent_mcp.py` 等旧适配器与 `fleet_mcp/` 并存 | 退役或降为适配层 | D6 |
+| 解耦：`mcp/` | 只有一个控制面 | `mcp/agent_mcp.py` 等旧适配器与 `fleet_mcp/` 并存（owner 已定：退役） | 退役 | D6 |
 | 质量 | 基线只剩「必须在节点上跑」的条目 | 基线 56 条，其中约 20 条是 main 上真实的不一致（drift） | 修 drift | Q2 |
 | CI | 4 片全绿 | 缺 `SIBLING_REPOS_TOKEN` 时第 1、4 片红 | owner 配 secret | Q1 |
 
@@ -37,7 +37,7 @@
 
 ```text
 泳道 F 功能（枢纽，Python）  F1 ─▶ F2 ─▶ F3 ─▶ F4 ─▶ F5 ─▶ F6
-泳道 D 解耦（Python）        D2 ─▶ D3 ─▶ D10 ─▶ D4        （D5/D6 等 owner 决定）
+泳道 D 解耦（Python）        D2 ─▶ D3 ─▶ D10 ─▶ D4 ─▶ D6 ─▶ D5
 泳道 B 构建与发布            D1 ─▶ D7
 泳道 C serverosd（C++）      D8 ─▶ D9
 泳道 Q 质量与运维            Q1（owner） · Q2（可随时） · Q3（owner 或指定设备会话）
@@ -168,7 +168,7 @@
 - **范围**：D6 完成后，`fleet/` 中旧控制面文件已删除；更新 `fleet/README.md` 与 `layers.yaml`（取消 `split`）。
 - **依赖**：D6。
 
-### D6 旧控制面退役　〔需要 owner 决定后开工〕
+### D6 旧控制面退役　〔owner 已决定退役，2026-10-26〕
 
 - **范围**：`mcp/agent_mcp.py`、`fleet/controller.py`、`fleet/agent_control_router.py`（及 `fleet/node.py`、`fleet/interfaces.py`、`fleet/remote_desktop_commander.py` 的去留）。
 - **步骤**（FOUR-LAYERS §6.2）：
@@ -240,7 +240,7 @@
 全部满足才算 V1 完成：
 
 1. F1–F6 合并：派发后不轮询即可收到结果；飞书收到通知；总管被唤醒继续；owner 指令可抢占。
-2. D1–D4、D7–D10 合并，D5/D6 按 owner 决定完成：
+2. D1–D10 全部合并：
    - `runtime/` 只剩 L1；
    - `layers.yaml` 中没有 `split: true` 的目录（`fleet_mcp/` 例外：它按 hub / node 拆的是发布物，不是目录）；
    - 每次搬迁对应的依赖规则都在测试里。

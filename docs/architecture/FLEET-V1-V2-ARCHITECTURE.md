@@ -210,7 +210,7 @@ fleet_inbox(since?: seq, kinds?: [...], level?: str, limit?: int ≤ 200, ack?: 
 
 ### 5.4 东京总管唤醒
 
-- 「总管」在 V1 是东京一个指定的 Claude Code Session（owner-max，项目为 serveros 或指定项目）。
+- 「总管」在 V1 是东京一个指定的 Claude Code Session：owner-max，使用 Fleet 本地默认运行配置（生产服 admin 账号创建、DeepSeek 模型；以回读的实际值为准），项目为 serveros 或 owner 指定的项目。
 - 派发时若写了 `parent_ref`（接口 2），对应事件到达后由 `runtime/wake.py` 的接收器唤醒持有该检查点的总管 Session，送入「事件 + 检查点」，由它决定下一步。
 - 唤醒前必须重新验证：检查点仍是该工作项的当前持有者、授权仍有效（复用 `continuation_control.py` 的 ALLOW / DENY 判定）。
 
@@ -305,9 +305,15 @@ owner（舵手）
 | V1-f | serverosd 收敛为 C++（FOUR-LAYERS §6.1）与设备侧插件拆分构建 | 一个 unit 一个恢复者；设备侧 Skill 改动不重建节点运行时 |
 | V2 | §7 | §7.3 的度量持续下降 |
 
-## 9. 待定事项
+## 9. 已定与待定
 
-1. 旧控制面 `mcp/agent_mcp.py`、`fleet/controller.py`、`fleet/agent_control_router.py` 是否按 FOUR-LAYERS §6.2 退役；
-2. 实验插件 `serveros-fleet-zip-lab-20261014` 是否删除；
-3. 东京「总管」Session 的项目与模型；
+已定（owner，2026-10-26）：
+
+1. 旧控制面 `mcp/agent_mcp.py`、`fleet/controller.py`、`fleet/agent_control_router.py` 退役（FOUR-LAYERS §6.2，工作包 D6）。
+2. 实验插件 `serveros-fleet-zip-lab-20261014` 删除（已在本次变更中删除）。
+3. 东京「总管」Session 使用 Fleet 的本地默认运行配置：由生产服 admin 账号创建、模型为 DeepSeek（当前默认 `deepseek-v4-flash-vision-anthropic`，以运行时回读的实际值为准，不在代码里写死）。
+
+待定：
+
 4. 是否启用 ChatGPT 定时任务每小时读一次收件箱。
+5. 总管 Session 负责的项目范围（建议：serveros 起步，再扩到 owner 指定的其他项目）。

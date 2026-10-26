@@ -52,7 +52,6 @@ directories:
   skills: L3         # 设备侧 serveros skill 源
   plugins: L4        # 生成好的可安装插件，见下方 `plugins`
   .claude-plugin: L4 # 仓库根 marketplace 清单
-  .agents: L4        # agent-plugins.org 的 marketplace 清单
   context: product
   intake: product
   memory: product
@@ -75,9 +74,6 @@ plugins:
     layer: L4
     side: commander
     source: integrations/fleet-v1-first-install/plugin   # 改这里，然后 scripts/fleet_plugin.py build
-  serveros-fleet-zip-lab-20261014:
-    layer: L4
-    side: lab          # 10-14 的打包实验，不发布；保留到有人决定删除
 
 rules:
   - id: hub-does-not-reach-into-runtime-or-mcp
