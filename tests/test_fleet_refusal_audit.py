@@ -62,7 +62,9 @@ class _Service:
         return SessionKey.parse(session_ref or f"{device}|{provider_name or 'claude'}|{session}")
 
     def send_to_session(self, principal: Principal, key, *, message: str,
-                        idempotency_key: str | None = None):
+                        idempotency_key: str | None = None,
+                        work_ref: str | None = None, parent_ref: str | None = None,
+                        agent_ref: str | None = None):
         principal.require("fleet:send")
         raise AssertionError("the scope check should have refused this call")
 

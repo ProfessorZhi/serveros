@@ -386,8 +386,18 @@ class ThePrincipalAxis(unittest.TestCase):
             [p for p in params if "name" in p or "principal" == p], ["principal"],
             "the only identity a send accepts is the one the transport built",
         )
+        self.assertTrue({"kind", "subject"}.isdisjoint(params),
+                        "trusted identity labels cannot be selected by send arguments")
         signature = inspect.signature(Principal)
-        self.assertEqual(list(signature.parameters), ["name", "scopes", "credential_kind"])
+        self.assertEqual(list(signature.parameters),
+                         ["name", "scopes", "credential_kind", "kind", "subject"])
+        for name in ("name", "scopes", "credential_kind"):
+            self.assertIs(signature.parameters[name].default, inspect.Parameter.empty)
+            self.assertIs(signature.parameters[name].kind, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        self.assertEqual(signature.parameters["kind"].default, "client")
+        self.assertIsNone(signature.parameters["subject"].default)
+        legacy = Principal(OAUTH, frozenset({SCOPE_SEND}), "oauth")
+        self.assertEqual((legacy.name, legacy.kind, legacy.subject), (OAUTH, "client", OAUTH))
 
     def test_the_grant_does_not_leak_across_devices(self):
         h = self.harness(grants={OAUTH: {TOKYO: ("send",)}})
