@@ -290,9 +290,14 @@ class TestTheRecordDerivesItsActorAndNeverCarriesOne:
         # here: `put_grant` writes `revoked: False` on the record it stages, and
         # `context/delegation.ROW_PRODUCED` says of them «written by the store,
         # never here». A verb that could write one could also write it back.
+        # `epoch` is here for the reason `revoked` is: it is the STORE's field,
+        # not the verb's. `put_grant` mints it from a durable monotonic counter
+        # and `runtime/agent_control_store.OWNER_WRITTEN_GRANT_FIELDS` names it
+        # beside the revocation triple, because an epoch a caller could choose is
+        # one a caller could keep after it was superseded.
         allowed = {"grant_ref", "delegated_by", "valid_from", "expires_at",
                    "items", "projects", "actions", "budget", "covers",
-                   "revoked", "revoked_at", "revoked_reason"}
+                   "revoked", "revoked_at", "revoked_reason", "epoch"}
         assert set(grant) <= allowed, (
             f"the grant carries {sorted(set(grant) - allowed)}: a field this "
             f"verb wrote alongside `delegated_by` is a second answer to «who "

@@ -55,7 +55,6 @@ tests/test_mutation_guard.py::TheLiveTreeIsCovered::test_every_declaration_still
 tests/test_mutation_guard.py::TheLiveTreeIsCovered::test_every_product_call_site_is_declared
 tests/test_native_node_core_adapter.py::test_the_adapter_is_wired_into_nothing
 tests/test_target_resolver.py::test_the_reason_vocabulary_is_the_brief_s_fifteen_plus_what_the_kernels_return
-tests/test_work_delegate.py::TestTheRecordDerivesItsActorAndNeverCarriesOne::test_the_stored_record_carries_no_second_copy_of_the_actor
 
 ## Fails on main off-node, not yet triaged (environment or drift: look before deleting)
 tests/test_authority_bindings_have_readers.py::TheDeclaredDifferenceTests::test_the_names_outside_the_root_vocabulary_are_exactly_the_declared_ones
