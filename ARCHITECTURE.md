@@ -1,5 +1,7 @@
 # ServerOS Architecture
 
+> **2026-10-26 owner alignment:** [Fleet requirements and V1/V2 architecture](docs/architecture/FLEET-V1-V2-ARCHITECTURE.md) — the owner is the helmsman (latest owner directive wins), agents are entities and sessions are replaceable carriers, V1 ships the event inbox and Feishu notification and reserves 13 interfaces so V2 (layered management, multi-commander, OpenAgents, multi-IM) only adds. serverosd is one process, mostly C++.
+>
 > **2026-10-26 repository layers:** [Fleet four layers](docs/architecture/FLEET-FOUR-LAYERS.md) maps every top-level directory to one layer (L0 authority, L1 node runtime, L2 connector/hub, L3 device abilities, L4 commander) or to the product / shared tooling, in [layers.yaml](docs/architecture/layers.yaml), enforced by `tests/test_repository_layers.py`.
 
 > **2026-10-22 Fleet V2 product target:** [Autonomous Agent Organization + Owner Full-Control](docs/architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md), with [phased acceptance](docs/plans/fleet-v2-delivery-and-acceptance.md), extends the established native Agent/Session design with a user-requested hierarchical-autonomy, peer-collaboration, DSH/CC/Codex, device-repair and self-update operating model. **DESIGN ONLY**: current V1 #237 safety gates, actual OS/Owner authorities and deployment state remain unchanged.

@@ -29,7 +29,7 @@
         ┌────────────────────────────────┼────────────────────────────────┐
         │ 每台设备（Tokyo / Dell / Windows / …，每个授权 OS 用户一份）        │
         │  L2 接入   Node Connector ──→ CloudCLI ──→ CC / Codex Session      │  fleet_mcp/node/
-        │  L1 底座   serverosd + Native Core：观测、受控自愈、本地 lease      │  runtime/(节点部分) native/
+        │  L1 底座   serverosd（一个进程，C++ 为主）：观测、受控自愈、本地 lease │  native/ → serverosd，runtime/(节点部分)
         │  L3 能力   该设备装的 ability / skill / plugin 组合 + 安装情况观测  │  plugin/ skills/ abilities/
         └─────────────────────────────────────────────────────────────────┘
   L0 权威：设备身份与拓扑 fleet/registry.yaml·profiles.yaml；工作状态 workengine/；能力目录 ability-management 仓库
@@ -55,8 +55,9 @@
 
 | | |
 |---|---|
-| 管 | 每台设备、每个授权 OS 用户一个常驻实例：CPU/内存/磁盘/GPU/网络/服务的观测，本机受控自愈（预算、退避、熔断、忙碌 Agent 不动），本地 lease，自愈收据 |
-| 目录 | `native/`（C++ Native Core 与 supervisor，含 Windows Core）；`runtime/` 的节点部分（daemon、health、probes、desired、inventory、resource_*、anomaly、attribution、network_*、native_core_facts…）；入口 `bin/serverosd` |
+| 管 | 每台设备、每个授权 OS 用户**一个**常驻进程 **serverosd**：CPU/内存/磁盘/GPU/网络/服务的观测，本机受控自愈（预算、退避、熔断、忙碌 Agent 不动），本地 lease，自愈收据，以及给 L2 的本机事实 |
+| 名字与实现 | 只有一个名字：serverosd。不再另称 Native Core / Core-Lite / supervisor，它们是 serverosd 的内部模块。实现以 C++ 为主（`native/node-core`，约 2.9 万行，含 Windows 部分）；Python `runtime/daemon.py`（约 5400 行）在迁移期继续运行，按 §6.1 把监控与自愈逐项交给 C++ 后退役 |
+| 目录 | `native/`（C++ 主体，目标改名 `serverosd/`）；`runtime/` 的节点部分（daemon、health、probes、desired、inventory、resource_*、anomaly、attribution、network_*、native_core_facts…，迁移期）；入口 `bin/serverosd` |
 | 跑在 | 每台设备 |
 | 产物 | node-runtime 版本目录 + systemd user unit / Windows 计划任务 |
 | 依赖 | L0（读身份与策略） |
@@ -138,11 +139,14 @@ product ──▶ L0（读）               shared ──▶ 任意层（构建/
 
 ## 6. 待定事项
 
-### 6.1 自愈由谁执行（需要 owner 决定，L1 开工前）
+### 6.1 serverosd 收敛为一个 C++ 进程（已定，2026-10-26）
 
-仓库里有两个 L1 实现：Python `serverosd`（`runtime/daemon.py`）和 C++ Native Core（`native/node-core`，含 Windows Core）。Fleet V1 的设计要求**迁移期间两者不能同时恢复同一个 unit**。
+owner 决定：本地监控与自愈只有一个程序、一个名字——serverosd，以 C++ 为主。仓库里现在有两套实现：Python `runtime/daemon.py`（叫 serverosd）与 C++ `native/node-core`（叫 Native Core）。收敛顺序：
 
-建议：**serverosd 决策，Native Core 执行与观测。** 也就是说，serverosd 持有策略、预算、"该不该修"；Native Core 负责 Windows SCM / 计划任务、Linux 服务的实际启停，以及新鲜的观测事实。每个 unit 只登记一个写入者。若二选一，则另一方只观测、不动作。
+1. **一个 unit 一个写入者。** 迁移期间每个受管服务只登记一个恢复者（Python 或 C++），绝不两者同时重启同一个 unit。
+2. **逐项迁移。** 按「观测 → 自愈 → 本地 lease → 对 L2 的本机事实接口」的顺序，一项一项由 C++ 接管；每接管一项，Python 侧对应代码只读不动作，验收后删除。
+3. **改名。** `native/node-core` 改名为 `serverosd/`，二进制与服务名统一为 serverosd；`bin/serverosd` 指向 C++ 二进制。
+4. **退役 Python 守护。** `runtime/daemon.py` 只剩转发后删除；`runtime/` 里非 L1 的部分按 §5 第 2 条迁走。
 
 ### 6.2 旧控制面退役
 
