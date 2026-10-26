@@ -792,6 +792,74 @@ class TestOrchestrationFailsClosed:
 
 
 # ---------------------------------------------------------------------------
+# The preflight asks the manager, not the binaries
+# ---------------------------------------------------------------------------
+
+
+def _fake_tool(directory: Path, name: str, body: list[str]) -> str:
+    """A stand-in for `systemd-run` / `systemctl` that says only what it is told."""
+    path = Path(directory) / name
+    path.write_text("#!/bin/sh\n" + "\n".join(body) + "\n", encoding="utf-8")
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_a_host_with_no_user_bus_is_refused_by_the_preflight(cr, tmp_path):
+    """The binaries being installed is not the question this check must answer.
+
+    This is the shape that used to read "available": `systemd-run --user
+    --version` exits 0 without a bus, and the run then died at launch with
+    `Failed to connect to bus`. Nothing is asserted about a manager that is
+    absent except that the preflight says so, in the manager's own words.
+    """
+    run = _fake_tool(tmp_path, "systemd-run", ["echo 'systemd 255'", "exit 0"])
+    ctl = _fake_tool(tmp_path, "systemctl",
+                     ["echo 'Failed to connect to bus: No such file' >&2",
+                      "exit 1"])
+    ok, why = cr.Systemd(systemd_run_bin=run, systemctl_bin=ctl).available()
+    assert ok is False
+    assert "no reachable user manager" in why
+    assert "Failed to connect to bus" in why
+
+
+def test_a_manager_that_answers_is_not_reported_as_missing(cr, tmp_path):
+    """The positive control: the same preflight, one question later.
+
+    Whatever this node's cgroup delegation says — and it may say no — the
+    reason must not be that the manager was unreachable, or the first test
+    would pass for the wrong reason.
+    """
+    run = _fake_tool(tmp_path, "systemd-run", ["echo 'systemd 255'", "exit 0"])
+    ctl = _fake_tool(tmp_path, "systemctl", ["echo VAR=value", "exit 0"])
+    ok, why = cr.Systemd(systemd_run_bin=run, systemctl_bin=ctl).available()
+    assert "no reachable user manager" not in why
+
+
+def test_the_manager_is_asked_twice_before_it_is_called_missing(cr, tmp_path):
+    """A socket that appears a moment late is not a host without systemd.
+
+    The first answer is the one CI gives while the user manager is still
+    starting; the second is the same host a quarter second later.
+    """
+    counter = tmp_path / "calls"
+    ctl = _fake_tool(tmp_path, "systemctl", [
+        f"n=$(cat '{counter}' 2>/dev/null || echo 0)",
+        "n=$((n+1))",
+        f"echo $n > '{counter}'",
+        'if [ "$n" -eq 1 ]; then',
+        "  echo 'Failed to connect to bus' >&2",
+        "  exit 1",
+        "fi",
+        "echo VAR=value",
+        "exit 0",
+    ])
+    run = _fake_tool(tmp_path, "systemd-run", ["echo 'systemd 255'", "exit 0"])
+    ok, why = cr.Systemd(systemd_run_bin=run, systemctl_bin=ctl).available()
+    assert "no reachable user manager" not in why
+    assert counter.read_text().strip() == "2"
+
+
+# ---------------------------------------------------------------------------
 # The one test that talks to the kernel. Small on purpose.
 # ---------------------------------------------------------------------------
 
