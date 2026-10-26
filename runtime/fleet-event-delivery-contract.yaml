@@ -25,6 +25,9 @@ settlement:
   not_sent_after_unknown: does-not-disprove-earlier-effect
   finite_deduplication_window: runtime/message_transport.py:IDEMPOTENCY_WINDOW_SECONDS
   request_margin_seconds: 20
+  claim_commit: recheck-persisted-deadline-before-io
+  process_creation: recheck-after-cli-resolution-and-cap-timeout-to-remaining-deadline
+  proven_not_started: document_transport.PreExecutionFault-to-NOT_SENT-retry_safe
   expired_unknown: retained-no-send
 lifecycle:
   construction: no-threads-no-live-config-no-sends

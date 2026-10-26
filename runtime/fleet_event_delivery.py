@@ -193,7 +193,7 @@ class FleetEventDelivery:
                     first = now
                 db.execute("UPDATE fleet_notification_outbox SET state='UNKNOWN',first_attempt=?,retry_at=? WHERE batch_key=?", (first, now + 30, row["batch_key"]))
                 attempt = db.execute("INSERT INTO fleet_notification_attempts(batch_key,attempted_at,state) VALUES (?,?,'UNKNOWN')", (row["batch_key"], now)).lastrowid
-                return intent, attempt, row["state"]
+                return intent, attempt, row["state"], first + self._dedupe_seconds
         return None
 
     def tick(self):
@@ -226,9 +226,17 @@ class FleetEventDelivery:
                 claim = self._claim(attempt_time, recipient)
                 if claim is None:
                     break
-                intent, attempt, prior_state = claim
+                intent, attempt, prior_state, deadline = claim
                 try:
-                    answer = self.sender.send_text(intent["text"], idempotency_key=intent["key"])
+                    # The claim transaction may have waited for SQLite or fsync.
+                    # Recheck its persisted deadline AFTER that commit. The real
+                    # adapter also caps its request budget at process creation.
+                    before_io = self.clock()
+                    if not _timestamp(before_io) or deadline - before_io <= REQUEST_BOUND:
+                        answer = {"state": "NOT_SENT", "retry_safe": True}
+                    else:
+                        answer = self.sender.send_text(intent["text"], idempotency_key=intent["key"],
+                                                       deadline=deadline, clock=self.clock)
                 except Exception:
                     answer = {}  # IO exceptions prove neither delivery nor not-sent.
                 if not isinstance(answer, dict):

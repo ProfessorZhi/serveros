@@ -31,9 +31,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
+import time
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
 
@@ -149,7 +151,12 @@ class TransportFault(Exception):
     """The CLI could not be run, or answered with a failure. Nothing implied."""
 
 
-def run(argv: list[str], *, timeout: int = 120, cwd: str | None = None) -> dict:
+class PreExecutionFault(TransportFault):
+    """Process creation was refused before a child could have an effect."""
+
+
+def run(argv: list[str], *, timeout: int = 120, cwd: str | None = None,
+        deadline: float | None = None, clock=None) -> dict:
     """One CLI call, its JSON answer, or a fault that carries the CLI's words.
 
     The CLI's own `ok`/`error` envelope is honoured rather than the exit code
@@ -164,11 +171,25 @@ def run(argv: list[str], *, timeout: int = 120, cwd: str | None = None) -> dict:
     login shells. An `argv` that already names a file is passed through.
     """
     argv = _cli_resolved(argv)
+    # Resolution can block on local filesystems. Check at the subprocess
+    # boundary, after resolution, and fit its budget inside the same deadline.
+    if deadline is not None:
+        now = (clock or time.time)()
+        if (isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+                or not math.isfinite(deadline) or isinstance(now, bool)
+                or not isinstance(now, (int, float)) or not math.isfinite(now)):
+            raise PreExecutionFault("invalid send deadline; no process was started")
+        remaining = deadline - now
+        if remaining <= 0:
+            raise PreExecutionFault("send deadline expired; no process was started")
+        timeout = min(timeout, remaining)
     try:
         proc = subprocess.run(argv, capture_output=True, text=True,
                               timeout=timeout, cwd=cwd)
     except FileNotFoundError as exc:
-        raise TransportFault(f"{argv[0]} is not on this host: {exc}") from exc
+        # With shell=False this exception is Popen's process-creation failure,
+        # not an exit code or an error printed by a child that already ran.
+        raise PreExecutionFault(f"{argv[0]} is not on this host: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
         raise TransportFault(
             f"{' '.join(argv[:3])} … did not answer within {timeout}s. Whether it "

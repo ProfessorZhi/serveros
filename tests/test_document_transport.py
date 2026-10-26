@@ -316,3 +316,35 @@ class TestTheMediaWrite:
     def test_media_that_is_not_asked_for_is_not_supplied(self):
         assert "media" not in transport.transport(URL)["writers"]
         assert "media" in transport.transport(URL, with_media=True)["writers"]
+
+
+def test_pre_execution_missing_executable_has_a_typed_no_effect_fault(monkeypatch):
+    def missing(argv, **kwargs):
+        raise FileNotFoundError("not started")
+    monkeypatch.setattr(transport.subprocess, "run", missing)
+    with pytest.raises(transport.PreExecutionFault):
+        transport.run(["fixture-lark", "im", "+messages-send"])
+
+
+def test_cli_resolution_delay_is_rechecked_before_subprocess_creation(monkeypatch):
+    now, executions = [10], []
+    def resolve(argv):
+        now[0] = 51
+        return argv
+    monkeypatch.setattr(transport, "_cli_resolved", resolve)
+    monkeypatch.setattr(transport.subprocess, "run", lambda *a, **k: executions.append(a))
+    with pytest.raises(transport.PreExecutionFault):
+        transport.run(["fixture-lark", "im"], deadline=50, clock=lambda: now[0])
+    assert executions == []
+
+
+def test_subprocess_budget_fits_the_remaining_deadline(monkeypatch):
+    import subprocess
+    budgets = []
+    def execute(argv, **kwargs):
+        budgets.append(kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, '{"ok":true}', '')
+    monkeypatch.setattr(transport.subprocess, "run", execute)
+    assert transport.run(["fixture-lark", "im"], timeout=120, deadline=40, clock=lambda: 10) == {"ok": True}
+    assert len(budgets) == 1
+    assert 0 < budgets[0] <= 30

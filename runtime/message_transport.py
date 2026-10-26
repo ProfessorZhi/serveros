@@ -95,6 +95,10 @@ class TransportFault(Exception):
     """The CLI could not be run, or answered with a failure. Nothing implied."""
 
 
+class PreExecutionFault(TransportFault):
+    """Typed proof from the existing CLI runner that no child was started."""
+
+
 _DOCUMENT_TRANSPORT = None
 
 
@@ -118,14 +122,22 @@ def _document_transport():
     return _DOCUMENT_TRANSPORT
 
 
-def run(argv: list[str], *, timeout: int = 120, cwd: str | None = None) -> dict:
+def run(argv: list[str], *, timeout: int = 120, cwd: str | None = None,
+        deadline: float | None = None, clock=None) -> dict:
     """One CLI call, through the same reader every other CLI call goes through.
 
     A named seam rather than a direct call, so a test can say what the CLI
     answered without a subprocess. What it is NOT is a second implementation:
     the envelope rule stays in one place, and this delegates to it.
     """
-    return _document_transport().run(argv, timeout=timeout, cwd=cwd)
+    document = _document_transport()
+    kwargs = {"timeout": timeout, "cwd": cwd}
+    if deadline is not None:
+        kwargs.update(deadline=deadline, clock=clock)
+    try:
+        return document.run(argv, **kwargs)
+    except document.PreExecutionFault as exc:
+        raise PreExecutionFault(str(exc)) from exc
 
 
 def split_recipient(recipient: str) -> tuple[str, str]:
@@ -320,7 +332,8 @@ class LarkMessageSender:
                              "identity": self.identity,
                              "recipient": self.recipient}}
 
-    def send_text(self, text: str, *, idempotency_key: str) -> dict:
+    def send_text(self, text: str, *, idempotency_key: str,
+                  deadline: float | None = None, clock=None) -> dict:
         """Carry one short sentence to the receiver, as a NEW message.
 
         This is the notification half of the transport — the shape an alert
@@ -336,13 +349,24 @@ class LarkMessageSender:
         structured text takes the Markdown path. What the receiver sees is the
         service's rendering of the sentence, so the receipt ties to the send and
         not to a byte comparison of what arrived.
+
+        Optional deadline/clock keep a durable consumer's finite dedupe window
+        intact across CLI resolution and process creation. Only the runner's
+        typed pre-execution failure is safe NOT_SENT; other faults still raise.
         """
         argv = [self.cli, "im", "+messages-send", "--as", self.identity,
                 self.flag, self.value,
                 "--markdown", str(text),
                 "--idempotency-key", str(idempotency_key)[:50],
                 "--format", "json"]
-        answer = run(argv, timeout=self.timeout)
+        kwargs = {"timeout": self.timeout}
+        if deadline is not None:
+            kwargs.update(deadline=deadline, clock=clock)
+        try:
+            answer = run(argv, **kwargs)
+        except PreExecutionFault:
+            return {"state": "NOT_SENT", "retry_safe": True,
+                    "why": "the CLI runner proved no subprocess was started"}
         remote_id = (answer.get("data") or {}).get("message_id")
         return {"state": "DELIVERED",
                 "why": ("通道接受了这条消息"

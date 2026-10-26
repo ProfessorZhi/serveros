@@ -28,7 +28,7 @@ class Sender:
         self.answers = list(answers)
         self.sent = []
         self.inspect = None
-    def send_text(self, text, *, idempotency_key):
+    def send_text(self, text, *, idempotency_key, deadline=None, clock=None):
         if self.inspect:
             self.inspect(text, idempotency_key)
         self.sent.append((text, idempotency_key))
@@ -381,7 +381,9 @@ owned.configure_notifications(service,enabled=True,cutover=100)
 service.events.append({"event_id":"e1","kind":"run.failed","level":"decide","device_ref":"device:work-fj","runtime":"claude","session_ref":"device:work-fj|claude|session-1","run_id":"run-1","dispatcher":"owner","occurred_at":110,"dispatch_accepted_at":100,"summary":{"status":"FAILED"}})
 service.event_delivery.clock=lambda:110
 assert service.event_delivery.tick()["delivered"]==1
-assert calls[0][1]=={"timeout":20}
+assert calls[0][1]["timeout"]==20
+assert calls[0][1]["deadline"]==3710
+assert callable(calls[0][1]["clock"])
 argv=calls[0][0]
 assert argv[argv.index("--as")+1]=="bot"
 assert argv[argv.index("--user-id")+1]=="ou_owner"
@@ -396,7 +398,7 @@ def test_late_uncertain_attempt_cannot_overwrite_a_confirmed_receipt(tmp_path):
     e, now = store(tmp_path / "events.db"), [110]
     second = consumer(store(e.path), Sender(), now)
     class SlowSender(Sender):
-        def send_text(self, text, *, idempotency_key):
+        def send_text(self, text, *, idempotency_key, deadline=None, clock=None):
             now[0] = 140
             assert second.tick()["delivered"] == 1
             raise TimeoutError("late uncertain answer")
@@ -405,3 +407,80 @@ def test_late_uncertain_attempt_cannot_overwrite_a_confirmed_receipt(tmp_path):
     first.tick()
     assert receipts(e)[0]["state"] == "DELIVERED"
     assert receipts(e)[0]["remote_id"] == "om_fixture"
+
+def test_actual_adapter_missing_executable_can_recover_after_dedupe_expiry(tmp_path, monkeypatch):
+    import subprocess
+    module = delivery_module()
+    transport = module._runtime_module("serveros_runtime_message_transport", "message_transport.py")
+    document = transport._document_transport()
+    now, calls = [110], []
+    def execute(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if len(calls) == 1:
+            raise FileNotFoundError("fixture executable absent before launch")
+        return subprocess.CompletedProcess(argv, 0, '{"ok":true,"data":{"message_id":"om_repaired"}}', '')
+    monkeypatch.setattr(document.subprocess, "run", execute)
+    sender = transport.sender("user:ou_owner", identity="bot", cli="fixture-lark", timeout=20)
+    e = store(tmp_path / "events.db")
+    append(e, "urgent", "FAILED")
+    c = consumer(e, sender, now)
+    c.tick()
+    assert receipts(e)[0]["state"] == "NOT_SENT"
+    now[0] = 4000
+    assert c.tick()["delivered"] == 1
+    assert receipts(e)[0]["remote_id"] == "om_repaired"
+    assert calls[0][0] == calls[1][0]
+
+
+def test_claim_commit_latency_cannot_start_retry_without_its_full_request_budget(tmp_path, monkeypatch):
+    import subprocess
+    module = delivery_module()
+    transport = module._runtime_module("serveros_runtime_message_transport", "message_transport.py")
+    document = transport._document_transport()
+    now, calls = [110], []
+    def execute(argv, **kwargs):
+        calls.append((now[0], kwargs["timeout"]))
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+    monkeypatch.setattr(document.subprocess, "run", execute)
+    sender = transport.sender("user:ou_owner", identity="bot", cli="fixture-lark", timeout=20)
+    e = store(tmp_path / "events.db")
+    append(e, "urgent", "FAILED")
+    c = consumer(e, sender, now)
+    c.tick()
+    claim = c._claim
+    def delayed_claim(at, recipient):
+        result = claim(at, recipient)  # real SQLite claim and commit
+        now[0] += 9
+        return result
+    monkeypatch.setattr(c, "_claim", delayed_claim)
+    now[0] = 3690
+    c.tick()
+    assert calls == [(110, 20)]
+    assert receipts(e)[0]["state"] == "UNKNOWN"
+    assert receipts(e)[0]["first_attempt"] == 110
+
+
+@pytest.mark.parametrize("failure", ["timeout", "os-error", "cli-error"])
+def test_actual_adapter_ambiguous_failures_remain_unknown(tmp_path, monkeypatch, failure):
+    import subprocess
+    module = delivery_module()
+    transport = module._runtime_module("serveros_runtime_message_transport", "message_transport.py")
+    document = transport._document_transport()
+    now, calls = [110], []
+    def execute(argv, **kwargs):
+        calls.append(argv)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        if failure == "os-error":
+            raise OSError("ambiguous IO error")
+        return subprocess.CompletedProcess(argv, 1, '{"ok":false,"error":{"message":"after launch"}}', '')
+    monkeypatch.setattr(document.subprocess, "run", execute)
+    sender = transport.sender("user:ou_owner", identity="bot", cli="fixture-lark", timeout=20)
+    e = store(tmp_path / "events.db")
+    append(e, "urgent", "FAILED")
+    c = consumer(e, sender, now)
+    c.tick()
+    assert receipts(e)[0]["state"] == "UNKNOWN"
+    now[0] = 4000
+    c.tick()
+    assert len(calls) == 1
