@@ -86,7 +86,7 @@ def test_policy_issuance_requires_exact_trusted_issuer(tmp_path, fault):
     daemon, _, context, policy = world
     if fault in ("actor", "unverified"):
         context = support.a_context(daemon, actor="human:B" if fault == "actor" else "human:A",
-                                    status="UNVERIFIED" if fault == "unverified" else "VERIFIED")
+                                    status="BLOCKED" if fault == "unverified" else "VERIFIED")
     elif fault in ("provider", "stale"):
         context = dict(context)
         if fault == "provider":
@@ -127,7 +127,7 @@ def test_atomic_acquire_and_transition_receipts_replay_once(tmp_path):
     assert replay["result"]["token"] == acquired["result"]["token"]
     transition = {k: v for k, v in request.items() if k != "ttl_s"}
     transition.update(verb="item.transition", operation_id="transition:1",
-                      token=acquired["result"]["token"], target="AVAILABLE", note="fixture")
+                      token=acquired["result"]["token"], target="AVAILABLE")
     assert call(daemon, "agent.work.mutate", transition)["committed"] is True
     assert call(daemon, "agent.work.mutate", transition)["replayed"] is True
     assert work.get_item("SRV-0001").state.value == "AVAILABLE"
@@ -159,7 +159,8 @@ def test_old_store_paths_cannot_bypass_managed_item_fence(tmp_path, verb):
                              "DELETE FROM owner_operation_receipts WHERE item_ref='SRV-0001'")
 
 
-def test_revoke_waits_for_actual_acquire_transaction_then_fences_writer(tmp_path, monkeypatch):
+@pytest.mark.parametrize("change", ["policy_revoke", "policy_reissue", "grant_revoke"])
+def test_revoke_waits_for_actual_acquire_transaction_then_fences_writer(tmp_path, monkeypatch, change):
     world = make_world(tmp_path)
     request = issue(world)
     daemon, work, _, _ = world
@@ -180,7 +181,15 @@ def test_revoke_waits_for_actual_acquire_transaction_then_fences_writer(tmp_path
     assert inside.wait(5)
 
     def revoke_in_thread():
-        results["revoke"] = revoke(world)
+        if change == "policy_revoke":
+            results["revoke"] = revoke(world)
+        elif change == "policy_reissue":
+            results["revoke"] = call(daemon, "agent.owner.policy.reissue", {
+                "context_ref": world[2]["context_ref"], "operation_id": "reissue:1",
+                "expected_epoch": 1, "policy": world[3]})
+        else:
+            daemon.control_store().revoke_grant(request["grant_ref"], at=support.iso(daemon))
+            results["revoke"] = {"committed": True}
         revoked.set()
 
     revoker = threading.Thread(target=revoke_in_thread)

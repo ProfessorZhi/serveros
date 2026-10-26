@@ -178,12 +178,8 @@ class OwnerWorkOperations:
         return grant, context, owned
 
     def _lease(self, conn, request, grant):
-        from workengine.store import _lease_epoch
-        resource = "work-write:" + request["item_ref"]
-        row = self.work._lease_row(conn, resource)
-        self.work._require_holder(row, resource, owner=grant["actor_ref"], token=request["token"])
-        if _lease_epoch(row["expires_at"]) <= self.work.clock():
-            raise Refused("LEASE_EXPIRED", "the current Work lease expired")
+        row = self.work._require_live_owner_lease(conn, item_ref=request["item_ref"],
+                                                principal=grant["actor_ref"], token=request["token"])
         acquired = conn.execute("SELECT receipt_json FROM owner_operation_receipts "
                                 "WHERE item_ref=? AND verb='lease.acquire' ORDER BY rowid DESC LIMIT 1",
                                 (request["item_ref"],)).fetchone()
@@ -202,13 +198,11 @@ class OwnerWorkOperations:
         verb = request.get("verb") if isinstance(request, dict) else None
         if verb not in self.ARGUMENTS:
             raise Refused("UNSUPPORTED_OWNER_OPERATION", "no protected implementation for this operation")
-        _closed(request, self.BASE | self.ARGUMENTS[verb], {"note"} if verb == "item.transition" else ())
+        _closed(request, self.BASE | self.ARGUMENTS[verb])
         for key in self.BASE - {"expected_epoch"}:
             _ref(request[key])
         if type(request["expected_epoch"]) is not int or request["expected_epoch"] < 1:
             raise Refused("INVALID_OWNER_OPERATION", "positive grant epoch required")
-        if "note" in request and (not isinstance(request["note"], str) or len(request["note"]) > 2000):
-            raise Refused("INVALID_OWNER_OPERATION", "bounded text note required")
         digest = _digest(request)
         # No Work mutation or authority decision can escape this lock order.
         with self.control._mutation():
@@ -235,33 +229,93 @@ class OwnerWorkOperations:
                     self._lease(conn, request, grant)
                 conn.create_function("owner_commit_scope", 1,
                                      lambda item: int(item == request["item_ref"]))
-                arguments = {key: value for key, value in request.items() if key not in self.BASE}
-                result = self.work._apply_owner_operation(conn, verb=verb, item_ref=request["item_ref"],
-                                                          principal=grant["actor_ref"], arguments=arguments)
-                receipt = {"operation_id": request["operation_id"], "verb": verb,
-                           "item_ref": request["item_ref"], "project": request["project"],
-                           "context_ref": context["context_ref"], "grant_ref": grant["grant_ref"],
-                           "grant_epoch": grant["epoch"], "policy_ref": policy.policy_ref,
-                           "policy_epoch": policy.epoch, "os_principal": grant["os_principal"],
-                           "actor_ref": grant["actor_ref"], "committed_at": _iso(self.work.clock()),
-                           "result": result}
-                conn.execute("INSERT INTO owner_operation_receipts VALUES (?,?,?,?,?)",
-                             (request["operation_id"], request["item_ref"], verb, digest,
-                              json.dumps(receipt, sort_keys=True)))
-                self._authorize(data, request, peer)
-                if verb != "lease.release":
-                    token = result["token"] if "token" in result else request["token"]
-                    self._lease(conn, {**request, "token": token}, grant)
+                with self.work._owner_scope(conn, request["item_ref"]):
+                    arguments = {key: value for key, value in request.items() if key not in self.BASE}
+                    result = self.work._apply_owner_operation(conn, verb=verb, item_ref=request["item_ref"],
+                                                              principal=grant["actor_ref"], arguments=arguments)
+                    receipt = {"operation_id": request["operation_id"], "verb": verb,
+                               "item_ref": request["item_ref"], "project": request["project"],
+                               "context_ref": context["context_ref"], "grant_ref": grant["grant_ref"],
+                               "grant_epoch": grant["epoch"], "policy_ref": policy.policy_ref,
+                               "policy_epoch": policy.epoch, "os_principal": grant["os_principal"],
+                               "actor_ref": grant["actor_ref"], "committed_at": _iso(self.work.clock()),
+                               "result": result}
+                    conn.execute("INSERT INTO owner_operation_receipts VALUES (?,?,?,?,?)",
+                                 (request["operation_id"], request["item_ref"], verb, digest,
+                                  json.dumps(receipt, sort_keys=True)))
+                    self._authorize(data, request, peer)
+                    if verb != "lease.release":
+                        token = result["token"] if "token" in result else request["token"]
+                        self._lease(conn, {**request, "token": token}, grant)
                 # Both changes commit on exiting this one SQLite transaction;
                 # the control ledger is read while locked, never dual-written.
             return {"committed": True, "replayed": False, "historical": False,
                     "result": result, "receipt": receipt}
 
+    def control_commit(self, request, *, peer, mutation):
+        """In-process control-only producer seam for Task 4.
+
+        `mutation` is trusted owner code, NEVER deserialized or sent over RPC.
+        It receives a private copy of the current ledger; only admissions and
+        checkpoints may change. The producer must validate its specific
+        binding/dependency semantics. It receives no SQLite connection.
+
+        Binding and receipt flush together in JSON while the Work transaction
+        holds lease stability. SQLite is not written; a failed/restarted caller
+        reconciles the same JSON receipt. This is not a cross-store commit or
+        permission to send an external message after the locks are released.
+        """
+        if self.work is None:
+            raise Refused("BLOCKED_OWNER_COMMIT_SEAM", "no explicit Work store is bound")
+        required = (self.BASE - {"verb"}) | {"token", "intent"}
+        _closed(request, required)
+        for key in ("context_ref", "grant_ref", "project", "item_ref", "operation_id"):
+            _ref(request[key])
+        if not isinstance(request["intent"], dict) or len(json.dumps(request["intent"])) > 16384:
+            raise Refused("INVALID_OWNER_OPERATION", "bounded binding intent required")
+        digest = _digest(request)
+        authority_request = {**request, "verb": "item.transition"}
+        with self.control._mutation():
+            data = self.control._data
+            grant, context, policy = self._authorize(data, authority_request, peer)
+            with self.work.transaction(immediate=True) as conn:
+                grant, context, policy = self._authorize(data, authority_request, peer)
+                item = conn.execute("SELECT project FROM items_index WHERE item_id=?", (request["item_ref"],)).fetchone()
+                if item is None or item["project"] != request["project"]:
+                    raise Refused("ITEM_MISMATCH", "Work Item does not belong to the named project")
+                self._lease(conn, request, grant)
+                receipts = data.setdefault("owner_control_receipts", {})
+                old = receipts.get(request["operation_id"])
+                if old is not None:
+                    if old["digest"] != digest:
+                        raise Refused("IDEMPOTENCY_CONFLICT", "binding operation key has different intent")
+                    return {"committed": True, "replayed": True, "historical": True,
+                            "result": old["result"], "receipt": old}
+                working = json.loads(json.dumps(data))
+                result = mutation(working)
+                if any(working.get(key) != data.get(key) for key in set(data) | set(working)
+                       if key not in {"admissions", "checkpoints"}):
+                    raise Refused("UNSUPPORTED_DUAL_WRITE", "control producer may change only admissions/checkpoints")
+                if not all(isinstance(working.get(key), dict) for key in ("admissions", "checkpoints")):
+                    raise Refused("INVALID_OWNER_OPERATION", "control collections must remain mappings")
+                self._authorize(data, authority_request, peer)
+                self._lease(conn, request, grant)
+                receipt = {"operation_id": request["operation_id"], "digest": digest,
+                           "item_ref": request["item_ref"], "grant_ref": grant["grant_ref"],
+                           "grant_epoch": grant["epoch"], "policy_epoch": policy.epoch,
+                           "token": request["token"], "result": result,
+                           "committed_at": _iso(self.work.clock())}
+                data["admissions"] = working["admissions"]
+                data["checkpoints"] = working["checkpoints"]
+                receipts[request["operation_id"]] = receipt
+                self.control._flush()
+            return {"committed": True, "replayed": False, "historical": False,
+                    "result": result, "receipt": receipt}
+
 
 def refusal_answer(exc):
-    from workengine.store import LeaseError
     if isinstance(exc, Refused):
         return {"committed": False, "reason": exc.reason, "detail": exc.detail}
-    if isinstance(exc, LeaseError):
+    if hasattr(exc, "reason_code") and hasattr(exc, "detail"):
         return {"committed": False, "reason": exc.reason_code, "detail": exc.detail}
     return {"committed": False, "reason": "INVALID_OWNER_OPERATION", "detail": str(exc)}

@@ -580,6 +580,18 @@ class ServerOSStore:
         return {"resource": resource, "owner": owner, "token": int(token),
                 "released": True}
 
+    def _owner_scope(self, conn, item_ref):
+        from .owner_fence import scope
+        return scope(conn, item_ref)
+
+    def _require_live_owner_lease(self, conn, *, item_ref, principal, token):
+        resource = f"work-write:{item_ref}"
+        row = self._lease_row(conn, resource)
+        self._require_holder(row, resource, owner=principal, token=token)
+        if _lease_epoch(row["expires_at"]) <= self.clock():
+            raise LeaseError("LEASE_EXPIRED", "the current Work lease expired")
+        return dict(row)
+
     def _apply_owner_operation(self, conn, *, verb, item_ref, principal, arguments):
         """Closed operations on the owner's already fenced connection.
 
@@ -611,7 +623,7 @@ class ServerOSStore:
             conn.execute("UPDATE items_index SET state=?,updated_at=? WHERE item_id=?",
                          (target.value, at, item_ref))
             self._event(conn, item_ref, "transitioned", {
-                "from": row["state"], "to": target.value, "note": arguments.get("note", "")}, at=at)
+                "from": row["state"], "to": target.value, "note": "owner operation"}, at=at)
             return {"item_ref": item_ref, "state": target.value}
         raise LeaseError("UNSUPPORTED_OWNER_OPERATION", "the operation has no protected mutation implementation")
 

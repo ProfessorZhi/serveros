@@ -3201,6 +3201,8 @@ class Daemon:
 
     def owner_work_operations(self):
         """In-process owner seam; never a caller-provided callback or identity."""
+        if self._owner_policy_issuer is None:
+            raise owner_operations_mod.Refused("BLOCKED_OWNER_ISSUER", "no configured owner source")
         return owner_operations_mod.OwnerWorkOperations(self.control_store(), self._owner_work_store)
 
     def _r_owner_work_mutate(self, params):
@@ -3340,12 +3342,10 @@ class Daemon:
         # informational only and carries no grant.
         return {"verified": False,
                 "reason": "BLOCKED_OWNER_COMMIT_SEAM",
-                "because": ("no owner-issued atomic policy/epoch commit fence "
-                            "exists for the lease write. The owner checks "
-                            "passed at this instant, but a revocation after "
-                            "this read is invisible to the mutating consumer, "
-                            "so a point-in-time read cannot authorize a "
-                            "lease"),
+                "because": ("this read cannot hold the owner policy/epoch "
+                            "fence across a later client write. Use the closed "
+                            "agent.work.mutate operation, which commits the "
+                            "actual Work mutation and its receipt together"),
                 "point_in_time": True,
                 "owner_policy": owner_policy_mod.audit(policy_again)}
 
@@ -5424,7 +5424,7 @@ def default_state_dir() -> Path:
     return registry_mod.state_root() / "runtime"
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, owner_work_factory=None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -5462,8 +5462,9 @@ def main(argv: list[str] | None = None) -> int:
         work_path = Path(args.owner_work_state_dir)
         if issuer is None or not work_path.is_absolute() or not (work_path / "serveros.db").is_file():
             raise ValueError("owner Work assembly requires a configured issuer and an existing absolute Work database")
-        from workengine.store import ServerOSStore
-        owner_work = ServerOSStore(work_path)
+        if owner_work_factory is None:
+            raise ValueError("owner Work assembly must use the explicit owner server composition entry")
+        owner_work = owner_work_factory(work_path)
     daemon = Daemon(
         registry,
         state_dir=Path(args.state_dir) if args.state_dir else default_state_dir(),
