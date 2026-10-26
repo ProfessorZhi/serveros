@@ -43,7 +43,7 @@
 - Existing `scripts/build.py`, `release.py`, `fleet_mcp/deploy/`: independently versioned products and reversible deployment.
 - `serverosd/`: final C++ node owner, migrated from native/node-core with consumer updates.
 
-Each Task below gets an implementation commit and an independent review. Fixes use the same implementer. Exact migration file inventories are derived from source imports before movement and recorded in the task report; they cannot be guessed from old counts. Execution order is Task1, Task14, then Tasks2–13: Task14 closes a real native delivery-ID adapter gap discovered while implementing Task1.
+Each Task below gets an implementation commit and an independent review. Fixes use the same implementer. Exact migration file inventories are derived from source imports before movement and recorded in the task report; they cannot be guessed from old counts. Execution order is Task1, Task14, Task2, Task3, Task5, Task4, then Tasks6–13. Task14 closes a real native delivery-ID adapter gap discovered while implementing Task1. Task4 preflight found that the admitted-child to Fleet-dispatch binding needs Task5's atomic owner commit boundary; the existing admission action_key belongs to synchronous bounded invocation and cannot be repurposed as a Fleet dispatch key.
 
 ### Task 1: F1 durable events, watcher and authenticated inbox
 
@@ -86,6 +86,7 @@ Each Task below gets an implementation commit and an independent review. Fixes u
 
 - [ ] RED: two required children yield one wake only after both complete; duplicate event/restart no new wake; stale/cancelled parent refuses; revoked grant/epoch refuses; UNKNOWN does not satisfy completion; failed child yields decision path.
 - [ ] Implement durable wake claim keyed to checkpoint revision/dependency set; recheck authority before effect; use actual Tokyo serveros manager binding and approved default model readback. No cross-project session reuse.
+- [ ] Bind admitted child cycles to exact Fleet dispatch key/digest/target through an authenticated owner operation after Task5's atomic fence exists. Preserve admission.action_key; do not join by coincidental key equality or caller work/parent refs. Store the immutable binding in the existing admission record, derive Run/delivery from the owner's receipt and verified observer binding, and refuse unbound legacy admissions. Exercise the actual authenticated producer and wake consumer together. Model/mode readback must use a supported actual provider read seam; idle session_get on the inspected CloudCLI1.41.0 does not expose those fields.
 - [ ] Verify new tests plus continuation/wake tests, commit and review.
 
 ### Task 5: F5 owner directives and bounded preemption
@@ -97,6 +98,7 @@ Each Task below gets an implementation commit and an independent review. Fixes u
 - [ ] RED: client cannot issue; scope/actor validation; replay once; concurrent completion after fence cannot wake/write; offline interrupt records partial UNKNOWN; reachable fixture stops within 60 seconds; stale writer is denied at real mutation seam.
 - [ ] Implement owner operation and per-target reconciliation without fabricating shutdown or rolling back committed direction on network failure.
 - [ ] Close the actual owner/lease commit seam before claiming protected writes: current `runtime/daemon.py::_r_agent_lease_authority_verify` and `workengine/serveros_authority.py` deliberately return BLOCKED_OWNER_COMMIT_SEAM for owner-backed point-in-time reads. Use a trusted owner-side atomic lease/mutation operation with a documented lock order and durable receipt; do not change this refusal into verified=true while leaving a verify-then-write race. Add revoke/epoch-change-during-acquire and crash-boundary tests at the actual producer/consumer path.
+- [ ] Provide the concrete fence interface needed by Task4's existing-admission binding and wake eligibility. Keep the existing Work Engine lease as the authority and original kernel peer identity at authenticated local ingress. Do not introduce a second authority registry or pass an arbitrary callback/code payload across the RPC boundary.
 - [ ] Verify lease/epoch, directive, continuation and tool tests; commit and review.
 
 ### Task 6: F6 commander source and current generated plugin
