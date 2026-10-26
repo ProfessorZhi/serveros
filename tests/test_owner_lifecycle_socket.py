@@ -362,3 +362,43 @@ def test_publication_serializes_first_enrollment(tmp_path, monkeypatch):
     proceed.set(); publisher.join(5); writer.join(5)
     assert results["acquire"]["committed"]
     assert results["publication"]["receipt"]["item_id"] == "SRV-0001"
+
+
+@pytest.mark.parametrize("pending_target_matches", [True, False])
+def test_publication_recovery_of_managed_pending_item_has_zero_file_effects(tmp_path, monkeypatch, pending_target_matches):
+    import workengine.federation as federation
+    from workengine.model import WorkItem
+    from test_owner_work_store_fence import _enroll_fixture
+    _, work, _, _ = support.make_world(tmp_path)
+    work.create_item(WorkItem("SRV-0002", "serveros", "unmanaged", "feature", "fixture"))
+    for item in ("SRV-0001", "SRV-0002"):
+        work.add_activity(Activity(item, "inventory", "inspect"))
+        work.begin_run(item, "inventory", "worker", "key", tmp_path / "artifacts")
+    source = tmp_path / "objects.jsonl"
+    source.write_text('{"object_id":"r1","kind":"repository","locator":"fixture","observed_at":"2026-09-09T10:00:00Z"}\n')
+    target = tmp_path / "current.jsonl"
+    target.write_text("old\n")
+    original = work._record_publication_receipt_tx
+    class ProcessDeath(BaseException): pass
+    def crash(*args): raise ProcessDeath()
+    monkeypatch.setattr(work, "_record_publication_receipt_tx", crash)
+    with pytest.raises(ProcessDeath):
+        federation.publish_inventory("github", source, target, "SRV-0001/RUN-0001", work.record_publication_receipt, work.get_publication_receipt)
+    monkeypatch.setattr(work, "_record_publication_receipt_tx", original)
+    _enroll_fixture(work, "SRV-0001")
+    if not pending_target_matches: target.write_text("old\n")
+    def files():
+        return {p.name: p.read_bytes() for p in tmp_path.iterdir() if p.is_file()}
+    before = files()
+    with pytest.raises(ValueError, match="OWNER_COMMIT_FENCE_REQUIRED"):
+        federation.publish_inventory("github", source, target, "SRV-0002/RUN-0001", work.record_publication_receipt, work.get_publication_receipt)
+    assert files() == before
+
+
+def test_parser_requires_unmanaged_actor_and_revision_but_not_owner_facts():
+    parser = cli.build_parser()
+    for args in (["run", "abandon", "SRV-0001", "RUN-0001", "--reason", "fixture"],
+                 ["context", "attach", "SRV-0001", "build", "--repo", "serveros", "--mode", "develop"]):
+        with pytest.raises(SystemExit): parser.parse_args(args)
+        parsed = parser.parse_args(["--owner-socket", "/explicit/owner.sock", *args])
+        assert parsed.owner_socket == "/explicit/owner.sock"

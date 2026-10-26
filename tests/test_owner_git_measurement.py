@@ -1,5 +1,6 @@
 """Real portable Git measurement: no authority or security emulation."""
 import shutil
+import os
 import subprocess
 from pathlib import Path
 
@@ -59,3 +60,36 @@ def test_git_measurement_ignores_inherited_config_and_path(repo, tmp_path, monke
     monkeypatch.setenv("PATH", str(tmp_path / "missing-bin"))
     assert measure_git(directory, git) == {"revision": revision, "dirty": False}
     assert not touched.exists()
+
+
+@pytest.mark.parametrize("helper", ["clean", "process"])
+def test_git_measurement_refuses_content_filters_before_helper_execution(repo, tmp_path, helper):
+    directory, git, run, revision = repo
+    tracked = directory / "fixture.txt"
+    (directory / ".gitattributes").write_text("fixture.txt filter=fixture\n")
+    run("add", ".gitattributes")
+    run("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "attributes")
+    marker = tmp_path / (helper + "-effect")
+    hook = directory / ".git" / (helper + "-helper")
+    hook.write_text('#!/bin/sh\nprintf effect > "' + marker.as_posix() + '"\n' + ("cat\n" if helper == "clean" else "exit 1\n"))
+    hook.chmod(0o700)
+    run("config", "filter.fixture." + helper, hook.as_posix())
+    # Same byte count forces content conversion, unlike a size-only dirty test.
+    tracked.write_text("changed")
+    os.utime(tracked, (1700000000, 1700000000))
+    try:
+        measure_git(directory, git)
+    except ValueError as exc:
+        refusal = str(exc)
+    else:
+        refusal = ""
+    assert not marker.exists(), "Git content conversion executed the repository helper"
+    assert "OWNER_REPOSITORY_HELPER_REFUSED" in refusal
+
+
+@pytest.mark.parametrize("key", ["remote.fixture.promisor", "extensions.partialClone", "core.alternateRefsCommand", "diff.fixture.textconv"])
+def test_git_measurement_refuses_lazy_or_helper_configuration(repo, key):
+    directory, git, run, revision = repo
+    run("config", key, "true")
+    with pytest.raises(ValueError, match="OWNER_REPOSITORY_HELPER_REFUSED"):
+        measure_git(directory, git)

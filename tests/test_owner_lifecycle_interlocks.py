@@ -119,3 +119,86 @@ def test_compensation_failure_keeps_durable_fence_for_enrollment(tmp_path, monke
     assert manager.inspect("demo")["status"] == "COMPENSATING"
     with pytest.raises(Exception, match="OWNER_MIGRATION_ACTIVE"):
         _enroll_fixture(store, item.id)
+
+
+def test_compensation_cannot_release_fence_while_apply_is_active(tmp_path, monkeypatch):
+    import threading
+    import workengine.migration as migration
+    store, item, run = world(tmp_path)
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.write_text("content")
+    manager = MigrationManager(store)
+    manager.plan({"project":"demo", "operations":[{"type":"move", "source":str(source), "target":str(target)}]})
+    entered, proceed, compensated = threading.Event(), threading.Event(), threading.Event()
+    original = migration._move_verified
+    errors = []
+    def paused(*args):
+        entered.set()
+        assert proceed.wait(10)
+        return original(*args)
+    monkeypatch.setattr(migration, "_move_verified", paused)
+    def apply():
+        try: manager.apply("demo")
+        except Exception as exc: errors.append(exc)
+    def compensate():
+        try: manager.compensate("demo")
+        except Exception as exc: errors.append(exc)
+        finally: compensated.set()
+    actor = threading.Thread(target=apply); actor.start()
+    assert entered.wait(5)
+    recovery = threading.Thread(target=compensate); recovery.start()
+    try:
+        assert compensated.wait(5), "busy actuator must return a bounded refusal"
+        assert len(errors) == 1 and "MIGRATION_BUSY" in str(errors[0])
+        errors.clear()
+        with pytest.raises(Exception, match="OWNER_MIGRATION_ACTIVE"):
+            _enroll_fixture(store, item.id)
+        with pytest.raises(ValueError, match="MIGRATION_BUSY"):
+            manager.plan({"project":"other", "operations":[]})
+    finally:
+        proceed.set(); actor.join(10); recovery.join(10)
+    assert not errors
+    manager.compensate("demo")
+    assert manager.inspect("demo")["status"] == "COMPENSATED"
+    assert source.read_text() == "content" and not target.exists()
+    _enroll_fixture(store, item.id)
+    assert manager.plan({"project":"other", "operations":[]})["status"] == "PLANNED"
+
+
+def test_compensation_reconciles_actual_move_before_cursor_commit(tmp_path, monkeypatch):
+    import workengine.migration as migration
+    store, item, run = world(tmp_path)
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.write_text("content")
+    manager = MigrationManager(store)
+    manager.plan({"project":"demo", "operations":[{"type":"move", "source":str(source), "target":str(target)}]})
+    original = migration._move_verified
+    def crash(*args):
+        original(*args)
+        raise RuntimeError("actual move happened before cursor commit")
+    monkeypatch.setattr(migration, "_move_verified", crash)
+    with pytest.raises(RuntimeError): manager.apply("demo")
+    monkeypatch.setattr(migration, "_move_verified", original)
+    assert manager.inspect("demo")["cursor"] == 0
+    assert target.is_file() and not source.exists()
+    manager.compensate("demo")
+    assert source.read_text() == "content" and not target.exists()
+    _enroll_fixture(store, item.id)
+
+
+@pytest.mark.parametrize("actor", [None, 1, [], {}])
+def test_unmanaged_termination_requires_string_actor_at_store_boundary(tmp_path, actor):
+    store, item, run = world(tmp_path)
+    with pytest.raises(ValueError, match="actor"):
+        store.cancel_run(item.id, run.id, reason="fixture", actor=actor)
+    assert store.require_run(item.id, run.id).state.value == "ALLOCATED"
+    assert not store.run_events(item.id, run.id)
+
+
+@pytest.mark.parametrize("revision", [None, "", "  ", 5])
+def test_unmanaged_context_requires_string_revision_at_store_boundary(tmp_path, revision):
+    from workengine.model import ExecutionContext, ContextMode
+    store, item, run = world(tmp_path)
+    with pytest.raises(ValueError, match="revision"):
+        store.attach_context(ExecutionContext(item.id, "build", "demo", ContextMode.DEVELOP, revision))
+    assert not store.execution_contexts(item.id, "build")
