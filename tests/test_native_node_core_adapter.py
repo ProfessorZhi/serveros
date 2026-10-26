@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import io
 import json
 import os
 import sys
+import tokenize
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -478,22 +480,89 @@ def test_the_adapter_reaches_the_collector_through_the_declared_chokepoint():
     assert "bounded_invocation" in text and "invoke_once" in text
 
 
+def _code_without_prose(path):
+    """This file's code, with its comments and its docstrings removed.
+
+    A module that explains which document it reads is not wired to the thing
+    that writes the document, and three files here do exactly that: two name
+    the supervisor's path in their docstrings and one names the adapter in a
+    `#:` comment. Scanning raw text cannot tell prose from an import, and it
+    fails in both directions — red for whoever documents the wiring, green for
+    whoever smuggles a real reference past it inside a string.
+
+    What is dropped is narrow. `#` comments go, and so does a STRING that opens
+    its own logical line and is the whole statement on it, which is the shape of
+    a module or function docstring. A string assigned to a name, passed to a
+    call, or listed inside brackets stays in the text, because those are the
+    shapes a real reachability would take.
+    """
+    source = path.read_text(errors="replace")
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except (tokenize.TokenError, SyntaxError):
+        # Unparseable is not exonerated: scan it whole and let it be judged.
+        return source
+    significant = [t for t in tokens
+                   if t.type not in (tokenize.COMMENT, tokenize.NL)]
+    kept = []
+    previous = None
+    for index, token in enumerate(significant):
+        following = significant[index + 1] if index + 1 < len(significant) else None
+        opens_a_line = previous is None or previous.type in (
+            tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT)
+        if (token.type == tokenize.STRING and opens_a_line
+                and (following is None
+                     or following.type in (tokenize.NEWLINE, tokenize.ENDMARKER))):
+            previous = token
+            continue
+        if token.type not in (tokenize.NEWLINE, tokenize.INDENT,
+                              tokenize.DEDENT, tokenize.ENDMARKER):
+            kept.append(token.string)
+        previous = token
+    return "\n".join(kept)
+
+
+def _adapter_offenders(directories, root=REPO):
+    wanted = ("native_node_core", "native-node-core", "native/node-core")
+    offenders = []
+    for directory in directories:
+        for path in (root / directory).rglob("*.py"):
+            text = _code_without_prose(path)
+            if any(name in text for name in wanted):
+                offenders.append(str(path.relative_to(root)))
+    return sorted(offenders)
+
+
 def test_the_adapter_is_wired_into_nothing():
     """The run-loop property, asserted rather than intended.
 
-    Nothing under `runtime/`, `mcp/`, `context/`, `fleet/` or `abilities/` may
-    mention this module: it is invoked, never imported, so it cannot enter
-    serverosd's loader closure that tests/test_core_freeze.py asserts.
+    Nothing under `runtime/`, `mcp/`, `context/`, `fleet/`, `abilities/`, `bin/`,
+    `scripts/` or `intake/` may refer to this module in CODE: it is invoked,
+    never imported, so it cannot enter serverosd's loader closure that
+    tests/test_core_freeze.py asserts. Prose is not a reference — three files
+    name the adapter's path while explaining which document they read — and
+    `_code_without_prose` is what separates the two.
     """
-    wanted = ("native_node_core", "native-node-core", "native/node-core")
-    offenders = []
-    for directory in ("runtime", "mcp", "context", "fleet", "abilities", "bin",
-                      "scripts", "intake"):
-        for path in (REPO / directory).rglob("*.py"):
-            text = path.read_text(errors="replace")
-            if any(name in text for name in wanted):
-                offenders.append(str(path.relative_to(REPO)))
+    offenders = _adapter_offenders(("runtime", "mcp", "context", "fleet",
+                                    "abilities", "bin", "scripts", "intake"))
     assert offenders == [], f"the adapter must be invoked, not imported: {offenders}"
+
+
+def test_the_wiring_scan_can_go_red(tmp_path):
+    """The positive control. Without it, a `_code_without_prose` that excused
+    too much would make the test above green for the wrong reason: a scanner
+    that drops everything reports nothing. Four files name the adapter, two in
+    prose and two in code, and only the code shapes may be reported."""
+    (tmp_path / "in_a_docstring.py").write_text(
+        '"""The envelope `native_node_core.py` produces."""\nVALUE = 1\n')
+    (tmp_path / "in_a_comment.py").write_text(
+        "#: the shape native/node-core writes\nVALUE = 1\n")
+    (tmp_path / "in_a_literal.py").write_text(
+        'ADAPTER = "native/node-core/adapter/native_node_core.py"\n')
+    (tmp_path / "in_a_multiline_list.py").write_text(
+        'PATHS = [\n    "native_node_core.py",\n]\n')
+    offenders = _adapter_offenders(("",), root=tmp_path)
+    assert offenders == ["in_a_literal.py", "in_a_multiline_list.py"]
 
 
 def test_the_adapter_declares_no_window_of_its_own():
