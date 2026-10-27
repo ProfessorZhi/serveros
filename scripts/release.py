@@ -1019,10 +1019,10 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
     if len(listed) != len(set(listed)):
         problems.append("members lists a path more than once")
     if ARTIFACT_MANIFEST not in listed:
-        problems.append(f"the member list omits {ARTIFACT_MANIFEST} itself; the release "
-                        f"path's own undeclared-file check exempts only {TREE_MANIFEST}, "
-                        f"so an unlisted manifest is reported as a file the build did "
-                        f"not produce")
+        problems.append(f"the member list omits {ARTIFACT_MANIFEST} itself; the L2 "
+                        f"contract (#431) requires it because the manifest is one of "
+                        f"the files the release carries, and a list that omits it "
+                        f"describes a payload the build did not produce")
     digests = [name for name in listed if name != ARTIFACT_MANIFEST]
     if isinstance(recorded, dict):
         extra_digests = sorted(set(recorded) - set(digests))
@@ -1045,9 +1045,11 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
         # are the same file written two ways, and a manifest that lists both is a
         # manifest whose member count is a claim about spelling rather than about
         # contents.
-        if str(PurePosixPath(name)) != name:
-            problems.append(f"member name {name!r} is not in canonical form "
-                            f"({str(PurePosixPath(name))!r})")
+        if str(PurePosixPath(name)) != name or "\\" in name \
+                or any(ord(ch) < 0x20 or ord(ch) == 0x7f for ch in name):
+            problems.append(f"member name {name!r} is not in canonical form; a path "
+                            f"with a second spelling, a backslash or a control "
+                            f"character names one file two ways")
             continue
         if name.endswith((".pyc", ".pyo")):
             problems.append(f"{name} is bytecode; a payload carries sources")

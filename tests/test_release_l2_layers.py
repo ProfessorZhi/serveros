@@ -325,6 +325,79 @@ class L2VerificationTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("is not one of these kinds", " ".join(report["problems"]))
 
+    def test_a_non_canonical_member_name_is_refused(self):
+        art = make_l2(self.base, "l2-node")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        name = "fleet_mcp/config.py"
+        manifest["members"] = [f"fleet_mcp/./config.py" if item == name else item
+                               for item in manifest["members"]]
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("not in canonical form", " ".join(report["problems"]))
+
+    def test_bytecode_is_refused(self):
+        art = make_l2(self.base, "l2-node")
+        (art / "fleet_mcp/__pycache__").mkdir()
+        (art / "fleet_mcp/__pycache__/config.cpython-314.pyc").write_bytes(b"\x00")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["members"] = manifest["members"] + [
+            "fleet_mcp/__pycache__/config.cpython-314.pyc"]
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("is bytecode", " ".join(report["problems"]))
+
+    def test_a_member_list_without_the_manifest_is_refused(self):
+        """#431 @ 2469ec5f: `members` INCLUDES ARTIFACT.json."""
+        art = make_l2(self.base, "l2-node")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["members"] = [item for item in manifest["members"]
+                               if item != release.ARTIFACT_MANIFEST]
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("omits ARTIFACT.json", " ".join(report["problems"]))
+
+    def test_a_digest_map_that_does_not_cover_the_members_is_refused(self):
+        art = make_l2(self.base, "l2-node")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["member_sha256"]["fleet_mcp/ghost.py"] = "0" * 64   # extra key
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("covers", " ".join(report["problems"]))
+
+    def test_a_pin_entry_the_payload_no_longer_carries_is_refused(self):
+        """The pin is a measurement; an entry left behind after a cut is rot."""
+        art = make_l2(self.base, "l2-node")
+        dropped = art / "fleet_mcp/audit.py"
+        dropped.unlink()
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["members"] = [item for item in manifest["members"]
+                               if item != "fleet_mcp/audit.py"]
+        del manifest["member_sha256"]["fleet_mcp/audit.py"]
+        manifest["source"]["tree_sha256"] = tree_digest(
+            [{"path": name, "sha256": manifest["member_sha256"][name]}
+             for name in manifest["members"] if name != release.ARTIFACT_MANIFEST])
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("pinned shared surface is stale", " ".join(report["problems"]))
+
+    def test_an_import_of_a_module_the_payload_does_not_carry_is_refused(self):
+        """`fleet_mcp` is not third-party, so the dependency check cannot see this."""
+        def import_missing(manifest, art):
+            (art / "fleet_mcp/config.py").write_text("import fleet_mcp.audit\n")
+            (art / "fleet_mcp/audit.py").unlink()
+            manifest["members"] = [item for item in manifest["members"]
+                                   if item != "fleet_mcp/audit.py"]
+        art = make_l2(self.base, "l2-node", mutate=import_missing, reseal=True)
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        joined = " ".join(report["problems"])
+        self.assertIn("does not carry those modules", joined)
+
     # ------------------------------------------------------------ separation
     def test_a_node_artifact_carrying_the_hub_ingress_is_refused(self):
         def leak(manifest, art):
