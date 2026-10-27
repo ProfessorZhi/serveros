@@ -139,8 +139,26 @@ def requires_per_call_approval(text: str) -> bool:
     return False
 
 
+#: A Skill must not write the surface's size down, because the size moves.
+#: It has already moved several times (`fleet-mcp-3` 31, `-4` 33, `-5` 34,
+#: `-6` onward 44, and #407 proposes more), so naming today's wrong counts only
+#: repeats the mistake at the next one: an earlier revision of this lint knew
+#: just "33" and would have passed "44 tools". What is stable is the *shape* —
+#: a number attached to `tools`/`verbs` is a claim the surface will outgrow,
+#: wherever it sits in the sequence. So this rejects every such claim instead
+#: of a list of past ones. Anchored to the noun so a date, a port, a semver or
+#: a third-party version number in prose is not mistaken for a count.
+NUMERIC_SURFACE_COUNT = re.compile(
+    r"(?i)\b\d+[-\s]+(?:tools?|verbs?|permissions?|operations?)\b")
+WORD_SURFACE_COUNT = re.compile(
+    r"(?i)\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred)"
+    r"(?:[- ](?:one|two|three|four|five|six|seven|eight|nine))?"
+    r"[-\s]+(?:tools?|verbs?|permissions?|operations?)\b")
+
+
 def hardcodes_tool_count(text: str) -> bool:
-    return bool(re.search(r"\b33\b", text)) or "thirty-three" in text.lower()
+    return bool(NUMERIC_SURFACE_COUNT.search(text)
+                or WORD_SURFACE_COUNT.search(text))
 
 
 def names_invented_project_verb(text: str) -> bool:
@@ -298,8 +316,34 @@ class TheOwnerMaxManagedProfileIsStated(unittest.TestCase):
         self.assertNotIn("root access", all_text)
 
     def test_tool_count_is_discovered_not_hardcoded(self) -> None:
-        old = "# Thirty-three tools are not thirty-three permissions"
-        self.assertTrue(hardcodes_tool_count(old))
+        # Positive controls: counts the surface has carried, one it has not yet,
+        # and the word forms. The point of "45" is that it is *not* wrong today
+        # — the lint must reject the shape, not the number that happens to be
+        # next in the sequence.
+        for old in (
+            "# Thirty-three tools are not thirty-three permissions",
+            "The surface serves 44 tools, one of which is destructive.",
+            "31 verbs are mirrored, and 31 verbs are not 31 permissions.",
+            "authenticated durable inbox (45 tools total).",
+            "The mirror grows to 34 verbs.",
+            "forty-five tools, forty five permissions".capitalize(),
+            "a 44-tool surface",
+        ):
+            with self.subTest(old=old):
+                self.assertTrue(hardcodes_tool_count(old))
+        # Numbers a Skill may legitimately carry are not surface counts: the
+        # lint is anchored to the noun so these cannot fail the suite.
+        for benign in (
+            "requires serveros 1.31.0",
+            "upgrade to fleet-mcp 0.44.0",
+            "captured 2026-01-31 at noon",
+            "host 10.44.0.1",
+            "callback port 64648",
+            "scopes 30-44",
+            "a 31 second timeout",
+        ):
+            with self.subTest(benign=benign):
+                self.assertFalse(hardcodes_tool_count(benign))
         all_text = "\n".join(p.read_text(encoding="utf-8")
                               for p in SHARED.glob("*/SKILL.md"))
         self.assertFalse(hardcodes_tool_count(all_text))
@@ -319,6 +363,29 @@ class TheOwnerMaxManagedProfileIsStated(unittest.TestCase):
 
 
 class TheSkillsNameOnlyServedTools(unittest.TestCase):
+    def test_the_served_surface_is_the_union_the_module_builds(self) -> None:
+        """The served set is whatever the module composes — pinned, not counted.
+
+        `tool_names()` answers with the hand-written tools only; the surface a
+        client actually discovers is `SERVED_BY_NAME`. Comparing the sets
+        catches a mirror verb that stopped being served. The length comparison
+        catches what the set comparison alone hides: a mirror verb shadowing a
+        hand-written name leaves one of the two unreachable through
+        `SERVED_BY_NAME` while every expected name is still present.
+
+        This pins composition; that a Skill names only served verbs is
+        `TheSkillsNameOnlyServedTools` below.
+        """
+        expected = ({tool.name for tool in fleet_tools.TOOLS}
+                    | {tool.name for tool in fleet_tools.NATIVE_MIRROR_TOOLS}
+                    | {fleet_tools.NATIVE_MANIFEST_TOOL.name,
+                       fleet_tools.NATIVE_CAPABILITY_TOOL.name})
+        self.assertEqual(set(fleet_tools.SERVED_BY_NAME), expected)
+        self.assertEqual(len(fleet_tools.SERVED_TOOLS),
+                         len(fleet_tools.SERVED_BY_NAME),
+                         "two composed tools share a name, so one is unreachable")
+        self.assertGreater(len(expected), len(fleet_tools.TOOLS))
+
     def test_every_fleet_backtick_name_is_served(self) -> None:
         served = set(fleet_tools.SERVED_BY_NAME)
         referenced: dict[str, set[str]] = {}
