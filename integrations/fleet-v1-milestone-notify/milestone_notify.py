@@ -51,11 +51,13 @@ offline end-to-end, not a live one.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
 import sqlite3
 import sys
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -63,6 +65,12 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 SCHEMA = "serveros/fleet-milestone-notify.v1"
+
+#: `runtime/message_transport.py` passes `idempotency_key[:50]` to the CLI and
+#: to the service's own dedupe. The full ledger identity may be longer, so the
+#: transport receives a scheme-tagged digest that fits that ceiling.
+TRANSPORT_KEY_PREFIX = "ms1:"
+TRANSPORT_KEY_LENGTH = 50
 
 #: The four answers a milestone can have. ORDINARY_GREEN and SILENT are
 #: deliberately separate from VERIFIED_GREEN: a successful daily tick is not a
@@ -106,6 +114,14 @@ _GITHUB_TERMINAL = frozenset({
     "neutral", "skipped", "stale", "startup_failure",
 })
 _PHASE_KINDS = frozenset({PHASE_ACCEPTED, PR_ACCEPTED, TASK_COMPLETED})
+
+#: The positive milestone kinds #423 offers to the #417/#422 vocabulary freeze.
+#: This is the evidence axis; it is not a delivery lifecycle. The set is
+#: explicit so a new kind cannot be added without changing this declaration
+#: and the contract tests that pin it.
+MILESTONE_KINDS = frozenset({
+    RUN_COMPLETED, CI_PASSED, PHASE_ACCEPTED, PR_ACCEPTED, TASK_COMPLETED,
+})
 _SOURCES = frozenset({"cloudcli", "github_actions", "phase"})
 
 _CLOUDCLI_ENVELOPE = frozenset({
@@ -615,8 +631,6 @@ def decide(evidence: Evidence) -> Decision:
         if evidence.status in {"FAILED", "CANCELLED"}:
             why = "RUN_FAILED" if evidence.status == "FAILED" else "RUN_CANCELLED"
             return _red(evidence, why, action_required=False)
-        if not evidence.source_trusted:
-            return _unknown(evidence, "RUN_COMPLETED_WITHOUT_TRUSTED_SOURCE")
         if not evidence.native_output_trusted:
             return _unknown(evidence, "RUN_COMPLETED_WITHOUT_NATIVE_OUTPUT")
         if not evidence.boot_identity_trusted:
@@ -642,8 +656,6 @@ def decide(evidence: Evidence) -> Decision:
         if status in {"neutral", "skipped", "stale"}:
             return _yellow(evidence, "CI_DID_NOT_PRODUCE_A_PASS")
         # success
-        if not evidence.source_trusted:
-            return _unknown(evidence, "CI_SUCCESS_WITHOUT_TRUSTED_SOURCE")
         if _missing_gates(evidence):
             return _unknown(evidence, "REQUIRED_GATES_NOT_EVIDENCED")
         if not evidence.major:
@@ -657,8 +669,6 @@ def decide(evidence: Evidence) -> Decision:
         return _yellow(
             evidence, "PHASE_NOT_ACCEPTED",
             "No out-of-band message; the phase stays on the card until it is signed off.")
-    if not evidence.source_trusted:
-        return _unknown(evidence, "PHASE_ACCEPTANCE_WITHOUT_TRUSTED_SOURCE")
     return _verified_green(evidence, evidence.milestone_kind)
 
 
@@ -692,17 +702,80 @@ def compose(decision: Decision, *, summarizer: Callable[[dict], str] | None = No
     return detail
 
 
-def delivery_key_for(decision: Decision) -> str:
-    """A stable key for one milestone outcome, derived from the fact.
+def _canonical_identity(value: str) -> str:
+    """The one byte form both keys are derived from: NFC, UTF-8.
 
-    The sentence is not part of it. A correction from UNKNOWN to a terminal
-    outcome changes the outcome word and therefore the key; replaying the same
-    outcome does not.
+    Case is NOT folded. `RunA` and `runa` are different milestones; the
+    contract's kind/key words are case-sensitive identifiers.
     """
-    return _text(
-        f"milestone:{decision.source}:{decision.device_ref}:"
-        f"{decision.milestone_kind}:{decision.key}:{decision.outcome}",
-        "delivery_key", 512)
+    if not isinstance(value, str):
+        raise MilestoneRefused("a delivery identity must be text")
+    return unicodedata.normalize("NFC", value)
+
+
+def _identity_text(decision: Decision) -> str:
+    return (f"milestone:{decision.source}:{decision.device_ref}:"
+            f"{decision.milestone_kind}:{decision.key}:{decision.outcome}")
+
+
+def raw_delivery_key_for(decision: Decision) -> str:
+    """The pre-NFC identity, used only to find a row written before NFC.
+
+    A ledger written by the previous revision may hold a decomposed identity.
+    The observer checks this value before claiming the canonical key, so such
+    a row is not resent once.
+    """
+    return _text(_identity_text(decision), "delivery_key", 512)
+
+
+def delivery_key_for(decision: Decision) -> str:
+    """The full ledger identity for one milestone outcome.
+
+    It is derived from the fact, not from the sentence, so `observed_at`, the
+    summary and a caretaker sentence do not change it. This full value is what
+    the ledger stores and what `reconcile` accepts.
+    """
+    return _text(_canonical_identity(_identity_text(decision)),
+                 "delivery_key", 512)
+
+
+def transport_key_for(full_identity: str) -> str:
+    """A <=50-character key for `runtime/message_transport.py`.
+
+    The transport passes `idempotency_key[:50]` to the CLI, so handing it a
+    full identity longer than 50 makes two different milestones share a key on
+    their common prefix. This returns `ms1:` plus 46 hex characters of
+    SHA-256 (50 total) over the NFC/UTF-8 canonical identity.
+
+    184 bits make an accidental collision vanishingly unlikely, but this is a
+    digest, not a zero-collision proof. The full identity remains the ledger
+    key and is stored next to the short key.
+    """
+    if not isinstance(full_identity, str):
+        raise MilestoneRefused("a delivery identity must be text")
+    full = _text(_canonical_identity(full_identity), "delivery_key", 512)
+    digest = hashlib.sha256(full.encode("utf-8")).hexdigest()
+    key = TRANSPORT_KEY_PREFIX + digest[
+        :TRANSPORT_KEY_LENGTH - len(TRANSPORT_KEY_PREFIX)]
+    if len(key) > TRANSPORT_KEY_LENGTH:  # pragma: no cover - fixed arithmetic
+        raise MilestoneRefused("the transport key exceeds the 50-character ceiling")
+    return key
+
+
+def legacy_transport_key(full_identity: str) -> str:
+    """The pre-digest transport key: the first 50 characters.
+
+    Used ONLY to reconcile a row written before the digest existed, so a retry
+    uses the same key its original attempt used. New rows never take this path,
+    and a legacy DELIVERED row is never replayed.
+
+    A legacy reconcile cannot retroactively distinguish two pre-fix rows that
+    shared this 50-character prefix; it trusts the provider's dedupe echo. That
+    trade-off is confined to rows written before the digest.
+    """
+    if not isinstance(full_identity, str):
+        raise MilestoneRefused("a delivery identity must be text")
+    return full_identity[:TRANSPORT_KEY_LENGTH]
 
 
 def message(decision: Decision,
@@ -773,8 +846,17 @@ class MilestoneLedger:
                     remote_id TEXT,
                     attempted_at TEXT NOT NULL,
                     why TEXT NOT NULL,
-                    intent TEXT NOT NULL);
+                    intent TEXT NOT NULL,
+                    transport_key TEXT);
             """)
+            # executescript committed; reacquire the write lock before the
+            # additive migration, which keeps every pre-digest row.
+            db.execute("BEGIN IMMEDIATE")
+            columns = {row["name"] for row in
+                       db.execute("PRAGMA table_info(milestone_deliveries)")}
+            if "transport_key" not in columns:
+                db.execute("ALTER TABLE milestone_deliveries "
+                           "ADD COLUMN transport_key TEXT")
         self.path.chmod(0o600)
 
     @contextmanager
@@ -801,22 +883,29 @@ class MilestoneLedger:
             return dict(row) if row else None
 
     def claim(self, *, delivery_key: str, milestone_key: str, outcome: str,
-              attempted_at: str, intent: str) -> dict | None:
+              attempted_at: str, intent: str,
+              transport_key: str) -> dict | None:
         """Atomically claim one send, or return the row that already owns it.
 
         The claim is the INSERT itself: two concurrent observers cannot both
         win, because the delivery key is the primary key. A claimed row is
         ``IN_FLIGHT`` until ``finish``; a crash there is visible as UNKNOWN, not
         as permission to send again.
+
+        ``delivery_key`` is the full identity; ``transport_key`` is the
+        <=50-character digest the provider receives. Both live on the row so
+        the mapping can be audited.
         """
         try:
             with self._transaction() as db:
                 db.execute(
                     "INSERT INTO milestone_deliveries "
                     "(delivery_key, milestone_key, outcome, state, remote_id, "
-                    " attempted_at, why, intent) VALUES (?,?,?,?,NULL,?,?,?)",
+                    " attempted_at, why, intent, transport_key) "
+                    "VALUES (?,?,?,?,NULL,?,?,?,?)",
                     (delivery_key, milestone_key, outcome, IN_FLIGHT,
-                     attempted_at, "claimed for one send", intent))
+                     attempted_at, "claimed for one send", intent,
+                     transport_key))
             return None
         except sqlite3.IntegrityError:
             return self.get(delivery_key)
@@ -842,13 +931,22 @@ class MilestoneLedger:
             return cursor.rowcount > 0
 
     def resolve(self, *, delivery_key: str, state: str,
-                remote_id: str | None, attempted_at: str, why: str) -> bool:
+                remote_id: str | None, attempted_at: str, why: str,
+                transport_key: str | None = None) -> bool:
         """Move a non-DELIVERED row. DELIVERED is final and cannot be undone."""
         with self._transaction() as db:
-            cursor = db.execute(
-                "UPDATE milestone_deliveries SET state=?, remote_id=?, "
-                "attempted_at=?, why=? WHERE delivery_key=? AND state<>?",
-                (state, remote_id, attempted_at, why, delivery_key, DELIVERED))
+            if transport_key is None:
+                cursor = db.execute(
+                    "UPDATE milestone_deliveries SET state=?, remote_id=?, "
+                    "attempted_at=?, why=? WHERE delivery_key=? AND state<>?",
+                    (state, remote_id, attempted_at, why, delivery_key, DELIVERED))
+            else:
+                cursor = db.execute(
+                    "UPDATE milestone_deliveries SET state=?, remote_id=?, "
+                    "attempted_at=?, why=?, transport_key=? "
+                    "WHERE delivery_key=? AND state<>?",
+                    (state, remote_id, attempted_at, why, transport_key,
+                     delivery_key, DELIVERED))
             return cursor.rowcount > 0
 
 
@@ -862,23 +960,27 @@ class Observation:
     card_summary: str | None
     why: str
     delivered: bool
+    transport_key: str | None = None
 
 
 def _prior_observation(prior: dict, delivery_key: str) -> Observation:
     """What a replay may say about a delivery another observation owns."""
     outcome = prior["outcome"]
+    transport = prior.get("transport_key") or legacy_transport_key(
+        prior["delivery_key"])
     if prior["state"] == DELIVERED:
         return Observation(outcome, DUPLICATE, delivery_key, prior["remote_id"],
                            None, None,
-                           "already delivered; a replay does not resend", True)
+                           "already delivered; a replay does not resend", True,
+                           transport)
     if prior["state"] == IN_FLIGHT:
         return Observation(
             outcome, UNKNOWN_REPLAY, delivery_key, None, None, None,
             "another observation claimed this delivery and did not finish; its "
-            "send is UNKNOWN, not a reason to resend", False)
+            "send is UNKNOWN, not a reason to resend", False, transport)
     return Observation(outcome, UNKNOWN_REPLAY, delivery_key, None, None, None,
                        "previous delivery is UNKNOWN; a replay does not resend",
-                       False)
+                       False, transport)
 
 
 class MilestoneNotifier:
@@ -904,12 +1006,16 @@ class MilestoneNotifier:
         raise MilestoneRefused("clock must return datetime or epoch seconds")
 
     def _send(self, text: str,
-              delivery_key: str) -> tuple[str, str | None, str]:
-        """Hand the sentence to the injected provider after its own capability probe.
+              transport_key: str) -> tuple[str, str | None, str]:
+        """Hand the sentence to the injected provider after its capability probe.
 
-        This is the same gate `notifications.deliver` uses, without constructing
-        a §10 Event the contract has not declared a producer for.
+        `transport_key` is the <=50-character digest, not the full ledger
+        identity: `runtime/message_transport.py` truncates at 50 and the
+        service dedupes on what it receives. The length check here refuses a
+        regression back to the full key instead of letting the transport
+        silently cut it.
         """
+        key = _text(transport_key, "transport_key", TRANSPORT_KEY_LENGTH)
         notifications = _notifications()
         state, reason = notifications.capability_of(self.provider)
         if state != "SUPPORTED":
@@ -919,7 +1025,7 @@ class MilestoneNotifier:
         try:
             answer = self.provider.notify(
                 conversation_ref=self.conversation_ref, text=text,
-                idempotency_key=delivery_key)
+                idempotency_key=key)
         except Exception as exc:
             return UNKNOWN_DELIVERY, None, _scrub(
                 f"{type(exc).__name__}: {exc}")[:240]
@@ -948,19 +1054,28 @@ class MilestoneNotifier:
         # The key is a property of the fact, not of the sentence: compute it
         # before the summarizer so a replay does not spend a model call.
         key = delivery_key_for(decision)
+        raw_key = raw_delivery_key_for(decision)
+        if raw_key != key:
+            # A row written before NFC canonicalisation must not be resent
+            # under a new primary key.
+            legacy_prior = self.ledger.get(raw_key)
+            if legacy_prior is not None:
+                return _prior_observation(legacy_prior, raw_key)
+        transport = transport_key_for(key)
         claim_text = message(decision)
-        claim_intent = json.dumps({"text": claim_text}, ensure_ascii=False,
-                                  sort_keys=True)
+        claim_intent = json.dumps(
+            {"text": claim_text, "transport_key": transport},
+            ensure_ascii=False, sort_keys=True)
         prior = self.ledger.claim(
             delivery_key=key, milestone_key=evidence.key,
             outcome=decision.outcome, attempted_at=self._now().isoformat(),
-            intent=claim_intent)
+            intent=claim_intent, transport_key=transport)
         if prior is not None:
             return _prior_observation(prior, key)
 
         try:
             text = message(decision, summarizer=self.summarizer)
-            state, remote_id, why = self._send(text, key)
+            state, remote_id, why = self._send(text, transport)
         except Exception as exc:  # a claim must never be left IN_FLIGHT by a bug
             text = claim_text
             state, remote_id = UNKNOWN_DELIVERY, None
@@ -969,36 +1084,43 @@ class MilestoneNotifier:
         self.ledger.finish(
             delivery_key=key, state=state, remote_id=remote_id,
             attempted_at=self._now().isoformat(), why=why,
-            intent=json.dumps({"text": text}, ensure_ascii=False, sort_keys=True))
+            intent=json.dumps({"text": text, "transport_key": transport},
+                              ensure_ascii=False, sort_keys=True))
         row = self.ledger.get(key) or {"state": state, "remote_id": remote_id}
         if row["state"] == DELIVERED and state != DELIVERED:
             why = "another observation recorded the delivered receipt"
         return Observation(decision.outcome, row["state"], key,
                            row["remote_id"], text, None, why,
-                           row["state"] == DELIVERED)
+                           row["state"] == DELIVERED, transport)
 
     def observe_payload(self, source: str, payload: dict) -> Observation:
         return self.observe(normalize(source, payload))
 
     def reconcile(self, delivery_key: str) -> Observation:
-        """Re-ask the SAME call under the SAME key, inside the transport window.
+        """Re-ask the SAME call under the SAME transport key, inside the window.
 
         Outside the window a repeat would be a second message, so the answer is
-        UNKNOWN and no call is made. A DELIVERED entry is never re-sent.
+        UNKNOWN and no call is made. A DELIVERED entry is never re-sent. A row
+        written before the digest existed keeps its original `full[:50]` key so
+        a retry does not create a second message under a new key.
         """
         delivery_key = _text(delivery_key, "delivery_key", 512)
         prior = self.ledger.get(delivery_key)
         if prior is None:
             return Observation(UNKNOWN, "MISSING", delivery_key, None, None, None,
                                "no such delivery", False)
+        transport = prior.get("transport_key") or legacy_transport_key(
+            prior["delivery_key"])
+        transport = str(transport)[:TRANSPORT_KEY_LENGTH]
         if prior["state"] == DELIVERED:
             return Observation(prior["outcome"], DUPLICATE, delivery_key,
                                prior["remote_id"], None, None,
-                               "already delivered", True)
+                               "already delivered", True, transport)
         if prior["state"] not in (UNKNOWN_DELIVERY, IN_FLIGHT):
             return Observation(prior["outcome"], prior["state"], delivery_key,
                                prior["remote_id"], None, None,
-                               "this delivery is not reconcile-able", False)
+                               "this delivery is not reconcile-able", False,
+                               transport)
         attempted = _parse_iso(prior["attempted_at"])
         now = self._now()
         age = None if attempted is None else (now - attempted).total_seconds()
@@ -1006,24 +1128,33 @@ class MilestoneNotifier:
             return Observation(
                 prior["outcome"], UNKNOWN_DELIVERY, delivery_key, None, None, None,
                 "outside the transport's dedupe window; a repeat could be a second message",
-                False)
-        spec = json.loads(prior["intent"])
+                False, transport)
+        try:
+            spec = json.loads(prior["intent"])
+        except (TypeError, ValueError):
+            return Observation(prior["outcome"], UNKNOWN_DELIVERY, delivery_key,
+                               None, None, None, "stored intent is unreadable",
+                               False, transport)
         text = spec.get("text")
         if not isinstance(text, str) or not text.strip():
             return Observation(prior["outcome"], UNKNOWN_DELIVERY, delivery_key,
                                None, None, None, "stored intent has no text",
-                               False)
-        state, remote_id, why = self._send(text, delivery_key)
+                               False, transport)
+        state, remote_id, why = self._send(text, transport)
+        if not prior.get("transport_key"):
+            why = _scrub(
+                f"{why}; legacy full[:50] key: a dedupe echo cannot prove this "
+                f"row's own message existed")[:240]
         self.ledger.resolve(
             delivery_key=delivery_key, state=state, remote_id=remote_id,
-            attempted_at=now.isoformat(), why=why)
+            attempted_at=now.isoformat(), why=why, transport_key=transport)
         row = self.ledger.get(delivery_key) or {"state": state,
                                                 "remote_id": remote_id}
         if row["state"] == DELIVERED and state != DELIVERED:
             why = "another observation recorded the delivered receipt"
         return Observation(prior["outcome"], row["state"], delivery_key,
                            row["remote_id"], None, None, why,
-                           row["state"] == DELIVERED)
+                           row["state"] == DELIVERED, transport)
 
 
 # --------------------------------------------------------------------------- #
