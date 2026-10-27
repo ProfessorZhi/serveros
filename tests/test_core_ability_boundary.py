@@ -640,15 +640,31 @@ class TheDirectoryQuestionIsTopLevel(unittest.TestCase):
     def test_a_recorded_crossing_is_subtracted_on_every_host(self):
         """`str(Path)` is not a repository path outside POSIX.
 
-        On Windows the recorded edge and its measurement spelled the same file
-        differently, so the subtraction removed nothing and the table's own
-        entry was reported as an offender. Asserted as a property of the helper
-        rather than of this host, because a green run on Linux cannot see it.
+        The tables hold repository paths, spelled `/`. Measuring the same
+        edge with `str(Path)` gave `abilities\\resolver.py` on Windows, so
+        the subtraction matched nothing and the table's own entry came back
+        as an offender. `_key` is that comparison, and the assertions below
+        are ones both hosts make: the recorded spelling survives it.
+
+        The control on the OLD expression is guarded by `os.name`, and the
+        guard is the point of this docstring. An earlier version asserted,
+        without the guard, that `as_posix()` turns a backslash-spelled path
+        into the `/` spelling — false everywhere except Windows, because POSIX
+        gives a backslash no special meaning and `as_posix` returns it as it
+        found it.
+
+        The Linux runners found it; a green local run could not. The guard
+        is honest rather than a convenience: on POSIX `_key` and `str(Path)`
+        agree on these inputs, so there is no bug there to demonstrate, and
+        inventing one would be the same mistake again.
         """
-        self.assertEqual(Path("abilities\\resolver.py").as_posix(),
-                         "abilities/resolver.py")
+        recorded = "abilities/resolver.py"          # the tables' spelling
+        self.assertEqual(_key(recorded), recorded)
         self.assertEqual(_key(Path("runtime") / "daemon.py"),
                          "runtime/daemon.py")
+        if os.name == "nt":
+            # The one host where the old expression disagreed with the table.
+            self.assertNotEqual(str(Path(recorded)), recorded)
 
     def test_the_tables_are_named_for_top_level_directories(self):
         """The premise: every entry is a directory that exists at the root."""
