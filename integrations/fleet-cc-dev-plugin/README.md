@@ -76,6 +76,13 @@ others, and never read "the surface has six scopes" as "this client has six".
    holds, "accepted by this version's validator" would be a claim about a check
    that did not run. Runtime acceptance on 2.1.272 is **UNVERIFIED**.
 
+   *Later measurement, 2026-10-22 15:12 on this host:* Claude Code was upgraded
+   to **2.1.308**. `claude plugin validate` on the release adapter now accepts
+   its `icon` field instead of reporting `Unknown field 'icon'`, and adds
+   directory-level `README_MISSING` / `PRIVACY_URL_MISSING` checks. Whether
+   2.1.308 now reads `.mcp.json` was **not probed**; the two observations above
+   remain what was actually measured, on 2.1.272.
+
 ## Receipts
 
 Each is a separate fact, and none is discharged by another.
