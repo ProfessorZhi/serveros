@@ -56,7 +56,7 @@ _spec.loader.exec_module(cc)
 #: deliberate act: change the digest in the same commit as the text, and say in
 #: the message which source the new text was judged against.
 PINNED_SKILLS = {
-    "fleet-async-dispatch": "ad0e4d3e3a3e6073b6ca57c324ce80d07fe3863ba791c2ec4f3f765394b17a4b",
+    "fleet-async-dispatch": "cbea87e6ece68ae34a2b872b1e9fe897659997134f3ec5fdd5a0aa57f405b8b9",
     "fleet-commander-orchestration": "c1824434c24a02afbb6f77214a13672a6dc483d9cdd76749458287cb54a3c86b",
     "fleet-create-with-grants": "aad4d9474b0bad27c71948baba0ca1677dd35a2fbd911c3e7564e97ee2e4502f",
     "fleet-device-and-session-discovery": "b017e17cf41bf8fa368fa3ae6d72159a53222c66f50bb4d2180ac4f265abc02e",
