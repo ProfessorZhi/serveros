@@ -76,10 +76,13 @@ PR_ACCEPTED = "PR_ACCEPTED"
 TASK_COMPLETED = "TASK_COMPLETED"
 
 #: Delivery-ledger states. Only DELIVERED means a provider named a message.
+#: The value words are distinct from the milestone outcomes above so a caller
+#: can tell "the milestone outcome is unknown" from "the send is unknown".
 DELIVERED = "DELIVERED"
-UNKNOWN_DELIVERY = "UNKNOWN"
+UNKNOWN_DELIVERY = "DELIVERY_UNKNOWN"
+IN_FLIGHT = "IN_FLIGHT"
 CARD_ONLY = "CARD_ONLY"
-SILENT_STATE = "SILENT"
+SILENT_STATE = "NO_EVENT"
 DUPLICATE = "DUPLICATE"
 UNKNOWN_REPLAY = "UNKNOWN_REPLAY"
 
@@ -120,6 +123,8 @@ _PHASE_ENVELOPE = frozenset({
 _SECRET_PATTERNS = (
     re.compile(r"ghp_[A-Za-z0-9]{20,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"(?i)\baws_secret_access_key\s*[:=]\s*\S+"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"sk-[A-Za-z0-9]{20,}"),
     re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
@@ -574,6 +579,10 @@ def decide(evidence: Evidence) -> Decision:
     """
     if not isinstance(evidence, Evidence):
         raise MilestoneRefused("decide needs Evidence")
+    if not evidence.source_trusted:
+        # An unsigned/spoofed observation must not be able to raise an outbound
+        # alert. Trust is the first gate for every source and every outcome.
+        return _silent(evidence, "SOURCE_NOT_TRUSTED")
 
     if evidence.source == "cloudcli":
         if evidence.status == "RUNNING":
@@ -771,16 +780,56 @@ class MilestoneLedger:
                 (delivery_key,)).fetchone()
             return dict(row) if row else None
 
-    def record(self, *, delivery_key: str, milestone_key: str, outcome: str,
-               state: str, remote_id: str | None, attempted_at: str,
-               why: str, intent: str) -> None:
+    def claim(self, *, delivery_key: str, milestone_key: str, outcome: str,
+              attempted_at: str, intent: str) -> dict | None:
+        """Atomically claim one send, or return the row that already owns it.
+
+        The claim is the INSERT itself: two concurrent observers cannot both
+        win, because the delivery key is the primary key. A claimed row is
+        ``IN_FLIGHT`` until ``finish``; a crash there is visible as UNKNOWN, not
+        as permission to send again.
+        """
+        try:
+            with self._transaction() as db:
+                db.execute(
+                    "INSERT INTO milestone_deliveries "
+                    "(delivery_key, milestone_key, outcome, state, remote_id, "
+                    " attempted_at, why, intent) VALUES (?,?,?,?,NULL,?,?,?)",
+                    (delivery_key, milestone_key, outcome, IN_FLIGHT,
+                     attempted_at, "claimed for one send", intent))
+            return None
+        except sqlite3.IntegrityError:
+            return self.get(delivery_key)
+
+    def finish(self, *, delivery_key: str, state: str,
+               remote_id: str | None, attempted_at: str, why: str,
+               intent: str | None = None) -> bool:
+        """Finish a claim. Only an IN_FLIGHT row may move."""
         with self._transaction() as db:
-            db.execute(
-                "INSERT OR REPLACE INTO milestone_deliveries "
-                "(delivery_key, milestone_key, outcome, state, remote_id, "
-                " attempted_at, why, intent) VALUES (?,?,?,?,?,?,?,?)",
-                (delivery_key, milestone_key, outcome, state, remote_id,
-                 attempted_at, why, intent))
+            if intent is None:
+                cursor = db.execute(
+                    "UPDATE milestone_deliveries SET state=?, remote_id=?, "
+                    "attempted_at=?, why=? WHERE delivery_key=? AND state=?",
+                    (state, remote_id, attempted_at, why, delivery_key,
+                     IN_FLIGHT))
+            else:
+                cursor = db.execute(
+                    "UPDATE milestone_deliveries SET state=?, remote_id=?, "
+                    "attempted_at=?, why=?, intent=? "
+                    "WHERE delivery_key=? AND state=?",
+                    (state, remote_id, attempted_at, why, intent,
+                     delivery_key, IN_FLIGHT))
+            return cursor.rowcount > 0
+
+    def resolve(self, *, delivery_key: str, state: str,
+                remote_id: str | None, attempted_at: str, why: str) -> bool:
+        """Move a non-DELIVERED row. DELIVERED is final and cannot be undone."""
+        with self._transaction() as db:
+            cursor = db.execute(
+                "UPDATE milestone_deliveries SET state=?, remote_id=?, "
+                "attempted_at=?, why=? WHERE delivery_key=? AND state<>?",
+                (state, remote_id, attempted_at, why, delivery_key, DELIVERED))
+            return cursor.rowcount > 0
 
 
 @dataclass(frozen=True)
@@ -793,6 +842,23 @@ class Observation:
     card_summary: str | None
     why: str
     delivered: bool
+
+
+def _prior_observation(prior: dict, delivery_key: str) -> Observation:
+    """What a replay may say about a delivery another observation owns."""
+    outcome = prior["outcome"]
+    if prior["state"] == DELIVERED:
+        return Observation(outcome, DUPLICATE, delivery_key, prior["remote_id"],
+                           None, None,
+                           "already delivered; a replay does not resend", True)
+    if prior["state"] == IN_FLIGHT:
+        return Observation(
+            outcome, UNKNOWN_REPLAY, delivery_key, None, None, None,
+            "another observation claimed this delivery and did not finish; its "
+            "send is UNKNOWN, not a reason to resend", False)
+    return Observation(outcome, UNKNOWN_REPLAY, delivery_key, None, None, None,
+                       "previous delivery is UNKNOWN; a replay does not resend",
+                       False)
 
 
 class MilestoneNotifier:
@@ -823,7 +889,9 @@ class MilestoneNotifier:
             self.provider, event, conversation_ref=self.conversation_ref)
         answer = (delivery.detail or {}).get("provider_answer")
         remote = answer.get("remote_id") if isinstance(answer, dict) else None
-        provider_ok = isinstance(answer, dict) and answer.get("delivered") is not False
+        # Require an explicit True. A provider that returns only a remote id,
+        # or `delivered: 0`, has not made the delivery claim this ledger needs.
+        provider_ok = isinstance(answer, dict) and answer.get("delivered") is True
         if (delivery.delivered and provider_ok and isinstance(remote, str)
                 and remote.strip()):
             return DELIVERED, _scrub(remote.strip())[:256], "provider returned a message id"
@@ -846,31 +914,37 @@ class MilestoneNotifier:
         # replay does not spend a model call to discover it has nothing to do.
         key_event = _notifications().Event(**_event_spec(decision, decision.detail))
         delivery_key = key_event.idempotency_key()
-        prior = self.ledger.get(delivery_key)
-        if prior is not None:
-            if prior["state"] == DELIVERED:
-                return Observation(decision.outcome, DUPLICATE, delivery_key,
-                                   prior["remote_id"], None, None,
-                                   "already delivered; a replay does not resend", True)
-            return Observation(decision.outcome, UNKNOWN_REPLAY, delivery_key, None,
-                               None, None,
-                               "previous delivery is UNKNOWN; a replay does not resend",
-                               False)
-
-        message, event, spec = render(decision, summarizer=self.summarizer)
-        if event.idempotency_key() != delivery_key:
-            raise MilestoneRefused(
-                "the composer changed the event identity; detail must not do that")
-
-        state, remote_id, why = self._send(event)
-        attempted_at = self._now().isoformat()
-        self.ledger.record(
+        claim_intent = json.dumps(_event_spec(decision, decision.detail),
+                                  ensure_ascii=False, sort_keys=True)
+        prior = self.ledger.claim(
             delivery_key=delivery_key, milestone_key=evidence.key,
-            outcome=decision.outcome, state=state, remote_id=remote_id,
-            attempted_at=attempted_at, why=why,
+            outcome=decision.outcome, attempted_at=self._now().isoformat(),
+            intent=claim_intent)
+        if prior is not None:
+            return _prior_observation(prior, delivery_key)
+
+        try:
+            message, event, spec = render(decision, summarizer=self.summarizer)
+            if event.idempotency_key() != delivery_key:
+                raise MilestoneRefused(
+                    "the composer changed the event identity; detail must not do that")
+            state, remote_id, why = self._send(event)
+        except Exception as exc:  # a claim must never be left IN_FLIGHT by a bug
+            message, spec = None, json.loads(claim_intent)
+            state, remote_id = UNKNOWN_DELIVERY, None
+            why = _scrub(f"{type(exc).__name__}: {exc}")[:240]
+
+        self.ledger.finish(
+            delivery_key=delivery_key, state=state, remote_id=remote_id,
+            attempted_at=self._now().isoformat(), why=why,
             intent=json.dumps(spec, ensure_ascii=False, sort_keys=True))
-        return Observation(decision.outcome, state, delivery_key, remote_id, message,
-                           None, why, state == DELIVERED)
+        row = self.ledger.get(delivery_key) or {"state": state,
+                                                "remote_id": remote_id}
+        if row["state"] == DELIVERED and state != DELIVERED:
+            why = "another observation recorded the delivered receipt"
+        return Observation(decision.outcome, row["state"], delivery_key,
+                           row["remote_id"], message, None, why,
+                           row["state"] == DELIVERED)
 
     def observe_payload(self, source: str, payload: dict) -> Observation:
         return self.observe(normalize(source, payload))
@@ -890,7 +964,7 @@ class MilestoneNotifier:
             return Observation(prior["outcome"], DUPLICATE, delivery_key,
                                prior["remote_id"], None, None,
                                "already delivered", True)
-        if prior["state"] != UNKNOWN_DELIVERY:
+        if prior["state"] not in (UNKNOWN_DELIVERY, IN_FLIGHT):
             return Observation(prior["outcome"], prior["state"], delivery_key,
                                prior["remote_id"], None, None,
                                "this delivery is not reconcile-able", False)
@@ -905,12 +979,16 @@ class MilestoneNotifier:
         spec = json.loads(prior["intent"])
         event = _notifications().Event(**spec)
         state, remote_id, why = self._send(event)
-        self.ledger.record(
-            delivery_key=delivery_key, milestone_key=prior["milestone_key"],
-            outcome=prior["outcome"], state=state, remote_id=remote_id,
-            attempted_at=now.isoformat(), why=why, intent=prior["intent"])
-        return Observation(prior["outcome"], state, delivery_key, remote_id, None,
-                           None, why, state == DELIVERED)
+        self.ledger.resolve(
+            delivery_key=delivery_key, state=state, remote_id=remote_id,
+            attempted_at=now.isoformat(), why=why)
+        row = self.ledger.get(delivery_key) or {"state": state,
+                                                "remote_id": remote_id}
+        if row["state"] == DELIVERED and state != DELIVERED:
+            why = "another observation recorded the delivered receipt"
+        return Observation(prior["outcome"], row["state"], delivery_key,
+                           row["remote_id"], None, None, why,
+                           row["state"] == DELIVERED)
 
 
 # --------------------------------------------------------------------------- #

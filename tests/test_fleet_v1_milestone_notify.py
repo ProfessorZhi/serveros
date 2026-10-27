@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 import shutil
 import sqlite3
 import sys
@@ -298,9 +299,20 @@ class MilestoneNotifyTest(unittest.TestCase):
         payload = self.payload("github_actions", "ci-green")
         payload["workflow_run"]["status"] = "in_progress"
         payload["workflow_run"]["conclusion"] = None
+        evidence = m.normalize("github_actions", payload)
+        self.assertEqual(m.decide(evidence).outcome, m.SILENT)
         provider = FakeLark()
-        observation = self.notifier(provider).observe(
-            m.normalize("github_actions", payload))
+        observation = self.notifier(provider).observe(evidence)
+        self.assertEqual(observation.state, m.SILENT_STATE)
+        self.assertEqual(provider.calls, [])
+
+    def test_an_untrusted_source_cannot_raise_an_alert(self):
+        payload = self.payload("github_actions", "ci-action-required")
+        payload["source_trusted"] = False
+        evidence = m.normalize("github_actions", payload)
+        self.assertEqual(m.decide(evidence).outcome, m.SILENT)
+        provider = FakeLark()
+        observation = self.notifier(provider).observe(evidence)
         self.assertEqual(observation.state, m.SILENT_STATE)
         self.assertEqual(provider.calls, [])
 
@@ -364,6 +376,35 @@ class MilestoneNotifyTest(unittest.TestCase):
         self.assertEqual(decision.why, "REQUIRED_GATES_NOT_EVIDENCED")
 
     # -- delivery UNKNOWN and recovery ------------------------------------- #
+    def test_an_outcome_correction_is_a_new_delivery(self):
+        """UNKNOWN then VERIFIED_GREEN is a correction, not a duplicate.
+
+        The notification contract's identity includes the event word, so the
+        correction gets its own key and one message. Replaying either outcome
+        is still a DUPLICATE.
+        """
+        green = self.payload("cloudcli", "run-completed")
+        unknown = {
+            **green,
+            "run": {
+                **green["run"],
+                "lastAssistantMessage": None,
+                "note": "This run has ended, but the session has no readable "
+                        "assistant message.",
+            },
+        }
+        provider = FakeLark()
+        notifier = self.notifier(provider)
+        first = notifier.observe(m.normalize("cloudcli", unknown))
+        second = notifier.observe(m.normalize("cloudcli", green))
+        self.assertEqual(first.outcome, m.UNKNOWN)
+        self.assertEqual(second.outcome, m.VERIFIED_GREEN)
+        self.assertEqual(first.state, m.DELIVERED)
+        self.assertEqual(second.state, m.DELIVERED)
+        self.assertEqual(len(provider.calls), 2)
+        self.assertNotEqual(first.delivery_key, second.delivery_key)
+        self.assertIn("VERIFIED_GREEN", second.message)
+
     def test_provider_failure_is_unknown_not_delivered(self):
         evidence = self.evidence("cloudcli", "run-completed")
         provider = FakeLark(receipts=[RuntimeError("gateway 502")])
@@ -381,6 +422,65 @@ class MilestoneNotifyTest(unittest.TestCase):
         self.assertEqual(observation.state, m.UNKNOWN_DELIVERY)
         self.assertFalse(observation.delivered)
         self.assertEqual(provider.calls, [])
+
+    def test_a_receipt_without_an_explicit_delivered_flag_is_unknown(self):
+        provider = FakeLark(receipts=[{"remote_id": "om_x"}])
+        observation = self.notifier(provider).observe(
+            self.evidence("cloudcli", "run-completed"))
+        self.assertEqual(observation.state, m.UNKNOWN_DELIVERY)
+        self.assertFalse(observation.delivered)
+        self.assertIsNone(observation.remote_id)
+
+    def test_a_second_claim_loses_to_the_first(self):
+        ledger = m.MilestoneLedger(self.ledger)
+        first = ledger.claim(
+            delivery_key="one-key", milestone_key="m", outcome=m.VERIFIED_GREEN,
+            attempted_at="2026-10-27T10:00:00+00:00", intent="{}")
+        self.assertIsNone(first)
+        second = ledger.claim(
+            delivery_key="one-key", milestone_key="m", outcome=m.VERIFIED_GREEN,
+            attempted_at="2026-10-27T10:00:01+00:00", intent="{}")
+        self.assertIsNotNone(second)
+        self.assertEqual(second["state"], m.IN_FLIGHT)
+
+    def test_a_delivered_row_is_never_downgraded(self):
+        ledger = m.MilestoneLedger(self.ledger)
+        key = "test-delivered-row"
+        ledger.claim(delivery_key=key, milestone_key="milestone",
+                     outcome=m.VERIFIED_GREEN,
+                     attempted_at="2026-10-27T10:00:00+00:00", intent="{}")
+        self.assertTrue(ledger.finish(
+            delivery_key=key, state=m.DELIVERED, remote_id="om_1",
+            attempted_at="2026-10-27T10:00:01+00:00",
+            why="provider returned a message id"))
+        # A late UNKNOWN must not erase the delivered receipt.
+        self.assertFalse(ledger.resolve(
+            delivery_key=key, state=m.UNKNOWN_DELIVERY, remote_id=None,
+            attempted_at="2026-10-27T10:00:02+00:00", why="late unknown"))
+        row = ledger.get(key)
+        self.assertEqual(row["state"], m.DELIVERED)
+        self.assertEqual(row["remote_id"], "om_1")
+
+    def test_a_crashed_claim_is_unknown_replay_and_reconcile_recovers(self):
+        evidence = self.evidence("cloudcli", "run-completed")
+        decision = m.decide(evidence)
+        _text, event, spec = m.render(decision)
+        key = event.idempotency_key()
+        ledger = m.MilestoneLedger(self.ledger)
+        ledger.claim(
+            delivery_key=key, milestone_key=evidence.key,
+            outcome=decision.outcome,
+            attempted_at=datetime.now(timezone.utc).isoformat(),
+            intent=json.dumps(spec, ensure_ascii=False, sort_keys=True))
+
+        provider = FakeLark()
+        replay = self.notifier(provider).observe(evidence)
+        self.assertEqual(replay.state, m.UNKNOWN_REPLAY)
+        self.assertEqual(provider.calls, [])
+
+        recovered = self.notifier(provider).reconcile(key)
+        self.assertEqual(recovered.state, m.DELIVERED)
+        self.assertEqual(len(provider.calls), 1)
 
     def test_unknown_delivery_is_not_delivered_and_reconcile_recovers(self):
         evidence = self.evidence("cloudcli", "run-completed")
@@ -429,8 +529,12 @@ class MilestoneNotifyTest(unittest.TestCase):
         payload = self.payload("cloudcli", "run-completed")
         payload["summary"] = (
             "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 "
+            "AKIAIOSFODNN7EXAMPLE "
             "Bearer abc.def.ghi password=hunter2 "
             "-----BEGIN PRIVATE KEY-----\nMIIEsecret\n-----END PRIVATE KEY-----")
+        # The nested run is the source's verbatim result: only an allowlist of
+        # fields is read. `prompt` there is ignored, not refused; what matters
+        # is that it cannot reach the sentence or the ledger.
         payload["run"]["lastAssistantMessage"]["content"] = "PROMPT-LEAK-UNIQUE"
         payload["run"]["prompt"] = "PROMPT-FIELD-UNIQUE"
 
@@ -438,13 +542,13 @@ class MilestoneNotifyTest(unittest.TestCase):
         observation = self.notifier(provider).observe(
             m.normalize("cloudcli", payload))
         self.assertEqual(observation.state, m.DELIVERED)
-        for token in ("ghp_", "Bearer abc", "hunter2", "MIIEsecret",
-                      "PROMPT-LEAK-UNIQUE", "PROMPT-FIELD-UNIQUE"):
+        tokens = ("ghp_", "AKIAIOSFODNN7EXAMPLE", "Bearer abc", "hunter2",
+                  "MIIEsecret", "PROMPT-LEAK-UNIQUE", "PROMPT-FIELD-UNIQUE")
+        for token in tokens:
             self.assertNotIn(token, observation.message)
 
         intent = self.ledger_row(observation.delivery_key)["intent"]
-        for token in ("ghp_", "Bearer abc", "hunter2", "MIIEsecret",
-                      "PROMPT-LEAK-UNIQUE", "PROMPT-FIELD-UNIQUE"):
+        for token in tokens:
             self.assertNotIn(token, intent)
 
     def test_raw_fields_are_refused_at_the_closed_envelope(self):
@@ -479,6 +583,8 @@ class MilestoneNotifyTest(unittest.TestCase):
         source = MODULE_PATH.read_text(encoding="utf-8")
         self.assertNotIn("SERVEROS_ALERT_RECIPIENT", source)
         self.assertNotIn("getenv", source)
+        self.assertNotIn("__import__", source)
+        self.assertNotIn("importlib.import_module", source)
 
     def test_fixture_source_is_the_offline_source_seam(self):
         source = m.FixtureSource(FIXTURES)
