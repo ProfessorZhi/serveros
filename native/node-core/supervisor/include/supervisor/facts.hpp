@@ -94,15 +94,22 @@ struct FactsOptions {
 //: check rather than a rule one side remembers.
 inline constexpr const char* kOwnerMapSchema = "serveros/native-core-owner-map.v1";
 
-//: The reader's bounds, and they are the WRITER's bounds.
+//: This reader's bounds, and they are the OTHER READER's bounds.
 //:
-//: `runtime/native_core_facts.py` refuses a map with more than `MAX_SERVICES`
-//: entries and a unit id longer than `MAX_FACT_TEXT`; those are its 64 and 200.
-//: A reader that accepted a document its writer refuses would mean the two
-//: programs disagree about which units exist — and the whole point of one shared
-//: map is that they do not. The numbers are restated here rather than imported
-//: because C++ cannot import them; they are asserted equal by a test rather than
-//: left as a comment that is free to drift.
+//: `OwnerMap.load` in `runtime/native_core_facts.py` refuses a map with more
+//: than `MAX_SERVICES` entries and a unit id longer than `MAX_FACT_TEXT`; those
+//: are its 64 and 200. A reader that accepted a document the other reader
+//: refuses would mean the two programs disagree about which units exist — and
+//: the whole point of one shared map is that they do not.
+//:
+//: The Python WRITER (`build_owner_map`, `OwnerMap.write`) enforces neither
+//: number; it can emit a map that both readers reject. That is a gap on the
+//: writing side, stated in `serverosd/README.md` rather than papered over by
+//: calling these the writer's bounds.
+//:
+//: The numbers are restated here rather than imported because C++ cannot import
+//: them; a test asserts them equal to the Python reader's, so they cannot drift
+//: apart silently.
 inline constexpr std::size_t kMaxOwnerEntries = 64;
 inline constexpr std::size_t kMaxOwnerUnitBytes = 200;
 

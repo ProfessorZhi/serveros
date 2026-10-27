@@ -318,7 +318,7 @@ void an_owner_map_with_a_stray_field_is_refused() {
 // the same size. Each case sits exactly on a bound, with the accepting side
 // asserted too — a reader that refused everything would pass a one-sided test.
 
-void the_reader_bounds_are_the_writers_bounds() {
+void the_cpp_bounds_are_the_python_readers_bounds() {
     const std::string path =
         std::string(SUPERVISOR_SOURCE_DIR) + "/../../../runtime/native_core_facts.py";
     const std::string text = read_text(path);
@@ -469,7 +469,7 @@ int main() {
     an_owner_map_naming_another_schema_is_refused();
     an_absent_owner_map_is_not_usable();
     an_owner_map_with_a_stray_field_is_refused();
-    the_reader_bounds_are_the_writers_bounds();
+    the_cpp_bounds_are_the_python_readers_bounds();
     an_owner_map_at_the_entry_cap_is_accepted();
     an_owner_map_beyond_the_entry_cap_is_refused();
     an_owner_map_at_the_unit_length_bound_is_accepted();

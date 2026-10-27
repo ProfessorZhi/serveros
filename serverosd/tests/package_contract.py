@@ -36,6 +36,10 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Importing the two modules beside this file writes `serverosd/__pycache__/`
+# into the repository. It is gitignored, so nothing would show it — which is
+# exactly why it is switched off rather than relied on to stay invisible.
+sys.dont_write_bytecode = True
 
 import package_manifest  # noqa: E402
 import verify_native_runtime  # noqa: E402
@@ -65,10 +69,8 @@ def _good_manifest(package: Path, *, version: str = "0.2.0",
         real.mkdir(parents=True, exist_ok=True)
         bin_root.symlink_to(real)
         bin_root = real
-    for name, role in (
-        ("serveros-native-core", "actuator"),
-        ("serveros-node-resource-snapshot", "read-only"),
-    ):
+    for path_in_package, role in verify_native_runtime.EXPECTED_MEMBERS.items():
+        name = path_in_package[len("bin/"):]
         path = bin_root / name
         if name not in skip:
             if name in symlink:
@@ -174,6 +176,97 @@ class PackageVerifyTest(unittest.TestCase):
                                          symlink=frozenset({"serveros-node-resource-snapshot"})))
             self.assertTrue(any("is a regular file" in f for f in report.failures),
                             report.failures)
+
+    def test_a_member_path_that_escapes_bin_is_refused(self):
+        def mutate(manifest, package):
+            manifest["members"][1]["path"] = "bin/../bin/serveros-node-resource-snapshot"
+            manifest["members"][1]["legacy_path"] = manifest["members"][1]["path"]
+
+        with tempfile.TemporaryDirectory() as td:
+            report = _quiet_verify(_make(Path(td), mutate))
+            self.assertTrue(any("is one name under bin/" in f for f in report.failures),
+                            report.failures)
+
+    def test_a_duplicate_member_row_is_refused(self):
+        def mutate(manifest, package):
+            manifest["members"].append(dict(manifest["members"][1]))
+
+        with tempfile.TemporaryDirectory() as td:
+            report = _quiet_verify(_make(Path(td), mutate))
+            self.assertTrue(any("is declared once" in f for f in report.failures),
+                            report.failures)
+
+    def test_a_missing_member_row_is_refused(self):
+        def mutate(manifest, package):
+            manifest["members"].pop()
+
+        with tempfile.TemporaryDirectory() as td:
+            report = _quiet_verify(_make(Path(td), mutate))
+            self.assertTrue(any("every expected member is declared" in f
+                                for f in report.failures), report.failures)
+
+    def test_an_unexpected_member_row_is_refused(self):
+        def mutate(manifest, package):
+            _write(package / "bin/extra", b"#!/bin/sh\n")
+            row = dict(manifest["members"][1])
+            row.update(path="bin/extra", legacy_path="bin/extra", role="read-only",
+                       sha256=verify_native_runtime.sha256(package / "bin/extra"),
+                       bytes=(package / "bin/extra").stat().st_size)
+            manifest["members"].append(row)
+
+        with tempfile.TemporaryDirectory() as td:
+            report = _quiet_verify(_make(Path(td), mutate))
+            self.assertTrue(any("no member is declared that this package does not have" in f
+                                for f in report.failures), report.failures)
+
+    def test_a_renamed_read_only_member_is_refused(self):
+        """The manifest is self-consistent; only the reader's own table catches it."""
+        def mutate(manifest, package):
+            row = next(m for m in manifest["members"]
+                       if m["path"].endswith("node-resource-snapshot"))
+            source = package / row["path"]
+            renamed = package / "bin/renamed-snapshot"
+            _write(renamed, source.read_bytes())
+            row["path"] = "bin/renamed-snapshot"
+            row["legacy_path"] = "bin/renamed-snapshot"
+            row["sha256"] = verify_native_runtime.sha256(renamed)
+            row["bytes"] = renamed.stat().st_size
+
+        with tempfile.TemporaryDirectory() as td:
+            report = _quiet_verify(_make(Path(td), mutate))
+            self.assertTrue(any("every expected member is declared" in f
+                                for f in report.failures), report.failures)
+
+    def test_a_promoted_role_on_a_known_member_is_refused(self):
+        def mutate(manifest, package):
+            row = next(m for m in manifest["members"] if m["role"] == "read-only")
+            row["role"] = "actuator"
+            manifest["members"] = [m for m in manifest["members"]
+                                   if m["path"] != verify_native_runtime.ACTUATOR_PATH]
+
+        with tempfile.TemporaryDirectory() as td:
+            report = _quiet_verify(_make(Path(td), mutate))
+            self.assertTrue(any("keeps its role" in f for f in report.failures),
+                            report.failures)
+
+    def test_does_not_occupy_must_be_a_list_of_paths(self):
+        def mutate(manifest, package):
+            manifest["compatibility"]["does_not_occupy"] = \
+                "src/bin/serverosd and bin/serverosctl, honest"
+
+        with tempfile.TemporaryDirectory() as td:
+            report = _quiet_verify(_make(Path(td), mutate))
+            self.assertTrue(any("does_not_occupy is a list of paths" in f
+                                for f in report.failures), report.failures)
+
+    def test_a_declared_rename_is_refused(self):
+        def mutate(manifest, package):
+            manifest["compatibility"]["renames"] = ["bin/renamed"]
+
+        with tempfile.TemporaryDirectory() as td:
+            report = _quiet_verify(_make(Path(td), mutate))
+            self.assertTrue(any("manifest declares no renames" in f
+                                for f in report.failures), report.failures)
 
     def test_a_linked_bin_directory_is_refused(self):
         with tempfile.TemporaryDirectory() as td:
@@ -332,6 +425,12 @@ class RealTreeTest(unittest.TestCase):
     def test_the_writer_and_the_reader_agree_on_the_roles(self):
         declared = {role for role, _, _ in package_manifest.MEMBERS.values()}
         self.assertEqual(declared, set(verify_native_runtime.ROLES))
+
+    def test_the_writer_and_the_reader_agree_on_the_member_set(self):
+        """The reader pins the names independently, or a rename is invisible."""
+        written = {f"bin/{name}": role
+                   for name, (role, _, _) in package_manifest.MEMBERS.items()}
+        self.assertEqual(written, verify_native_runtime.EXPECTED_MEMBERS)
 
     def test_binary_names_are_unique_and_are_not_the_package_name(self):
         names = list(package_manifest.MEMBERS)

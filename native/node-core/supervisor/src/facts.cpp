@@ -244,10 +244,10 @@ OwnerMap load_owner_map(const char* text) {
             map.reason = "owner map names an empty unit";
             return map;
         }
-        // The writer's two bounds, restated. An unbounded map is not a bigger
-        // statement about this host; it is a document the Python daemon would
-        // refuse to write and therefore one whose meaning has no authority
-        // behind it.
+        // The Python READER's two bounds, restated. An unbounded map is not a
+        // bigger statement about this host; it is a document `OwnerMap.load`
+        // refuses, and a map one reader disbelieves has no authority behind the
+        // units the other one would act on.
         if (unit.size() > kMaxOwnerUnitBytes) {
             map.code = kFactsMalformed;
             map.reason = "owner map names a unit longer than " +

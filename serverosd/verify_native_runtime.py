@@ -42,9 +42,22 @@ PACKAGE_NAME = "serverosd"
 #: name rather than treated as "not an actuator".
 ROLES = ("actuator", "read-only")
 
-#: The one binary allowed to carry the actuator role. Named here as well as in
-#: the build so that a build which promoted a different binary is refused by the
-#: verifier instead of being verified into an installation.
+#: The package's members, pinned HERE as well as in the writer.
+#:
+#: The writer derives `path` and `legacy_path` from one name, so neither can
+#: detect a rename on its own — both are fields the same program wrote. A rename
+#: is only visible against a name this reader knows independently, and this is
+#: that table. It also makes the set exact: a package is four binaries, and a
+#: manifest with three of them verifies nothing about the fourth.
+EXPECTED_MEMBERS = {
+    "bin/serveros-native-core": "actuator",
+    "bin/serveros-node-resource-snapshot": "read-only",
+    "bin/core-lite-status": "read-only",
+    "bin/core-lite-profile-check": "read-only",
+}
+
+#: The one binary allowed to carry the actuator role, restated from the table
+#: above so a reader looking for "who may act" finds one line.
 ACTUATOR_PATH = "bin/serveros-native-core"
 
 #: Paths that belong to the Python node runtime artifact. See
@@ -135,15 +148,31 @@ def verify(package: Path, repo: Path | None = None) -> Report:
             report.fail("member is a shaped object", f"member entry is {member!r}")
             continue
         path = member["path"]
-        seen_paths.add(path)
-        if not report.require(path.startswith("bin/"), f"{path} is under bin/",
-                              "a packaged member outside bin/ is not this contract's"):
+        # ONE name under bin/, not a path that starts with it. `bin/../../../bin/true`
+        # satisfies a prefix check and resolves to a file outside the package —
+        # which this verifier would then hash and bless. A separator after the
+        # first `/` is refused, so `bin/../bin/x` and `bin/sub/x` are both
+        # unrepresentable rather than filtered.
+        if not report.require(path.startswith("bin/") and "/" not in path[4:]
+                              and path[4:] not in ("", ".", ".."),
+                              f"{path} is one name under bin/",
+                              "a member path must be exactly bin/<name>"):
             continue
+        if not report.require(path not in seen_paths, f"{path} is declared once",
+                              "duplicate member row; one row per binary"):
+            continue
+        seen_paths.add(path)
 
         absolute = package / path
         if not report.require(absolute.is_file() and not absolute.is_symlink(),
                               f"{path} is a regular file",
                               "missing, or a symlink (a link is not the artifact)"):
+            continue
+        # Belt as well as braces: after resolution the member must still live
+        # directly in this package's bin/.
+        if not report.require(absolute.resolve().parent == bin_dir.resolve(),
+                              f"{path} resolves inside the package",
+                              f"resolves to {absolute.resolve()}"):
             continue
 
         mode = stat.S_IMODE(absolute.stat().st_mode)
@@ -168,10 +197,26 @@ def verify(package: Path, repo: Path | None = None) -> Report:
                           f"role {role!r} is not one of {list(ROLES)}"):
             if role == "actuator":
                 actuators.append(path)
+            expected_role = EXPECTED_MEMBERS.get(path)
+            if expected_role is not None:
+                report.require(role == expected_role, f"{path} keeps its role",
+                               f"this package declares {path} as {expected_role!r}, the "
+                               f"manifest says {role!r}")
 
         report.require(member.get("legacy_path") == path, f"{path} keeps its shipped name",
-                       f"manifest records legacy_path {member.get('legacy_path')!r}; a "
-                       f"rename breaks every consumer that names this binary")
+                       f"manifest records legacy_path {member.get('legacy_path')!r}")
+
+    # --- the member set is exact --------------------------------------------
+    # Against the table this reader carries, not against the manifest's own
+    # fields. Without this, a rename is invisible: `path` and `legacy_path` are
+    # both written by the same program from the same name, so a hand-written
+    # manifest naming a binary something else is consistent with itself.
+    missing = sorted(set(EXPECTED_MEMBERS) - seen_paths)
+    unexpected = sorted(seen_paths - set(EXPECTED_MEMBERS))
+    report.require(not missing, "every expected member is declared",
+                   f"missing: {missing}")
+    report.require(not unexpected, "no member is declared that this package does not have",
+                   f"unexpected: {unexpected}")
 
     # --- the single-executor rule -------------------------------------------
     report.require(len(actuators) == 1, "exactly one actuator",
@@ -185,11 +230,28 @@ def verify(package: Path, repo: Path | None = None) -> Report:
     for reserved in RESERVED_PATHS:
         report.require(reserved not in seen_paths, f"{reserved} is not claimed",
                        "that path belongs to the `node-runtime` artifact")
-    compatibility = manifest.get("compatibility") or {}
-    declared = compatibility.get("does_not_occupy") or []
+    compatibility = manifest.get("compatibility")
+    if not report.require(isinstance(compatibility, dict), "compatibility is an object",
+                          f"is {type(compatibility).__name__}"):
+        compatibility = {}
+    declared = compatibility.get("does_not_occupy")
+    # A LIST of strings, not "anything containing the names". A single string
+    # `"bin/serverosd bin/serverosctl"` satisfies a substring test while
+    # declaring no such thing, and the reader would be agreeing with a document
+    # it had not understood.
+    report.require(isinstance(declared, list)
+                   and all(isinstance(entry, str) for entry in declared),
+                   "does_not_occupy is a list of paths", f"is {declared!r}")
+    declared = declared if isinstance(declared, list) else []
     report.require(all(path in declared for path in RESERVED_PATHS),
                    "manifest declares the paths it does not occupy",
                    f"compatibility.does_not_occupy is {declared!r}")
+    # `renames` is written by the build and never used to authorise anything: a
+    # rename is refused outright, so the field may only ever be empty. Checked
+    # rather than left as a field nobody reads, because a field nothing reads is
+    # free to start meaning something.
+    renames = compatibility.get("renames")
+    report.require(renames == [], "manifest declares no renames", f"is {renames!r}")
     # The declaration and the directory are two statements about one path. A
     # manifest that says it left `bin/serverosd` to the Python runtime while a
     # file of that name sits in the package is the defect this check exists for:

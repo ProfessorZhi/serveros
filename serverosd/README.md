@@ -43,7 +43,11 @@ units* that one actuator may act on.
 
 The CMake build in `native/node-core/` is the primary one and is unchanged. This
 recipe is the path for a host that has a C++20 compiler and nothing else. Both
-produce the same binaries from the same sources with the same flags.
+build the same sources into the same four binaries — but **not with the same
+flags**, and the difference is worth stating: CMake defaults to
+`CMAKE_BUILD_TYPE=Release` (`-O3 -DNDEBUG` here) while this recipe uses
+`-O2 -Wall -Wextra -Wpedantic`. The binaries are behaviourally the same build;
+they are not byte-identical, and a digest from one does not describe the other.
 
 ```sh
 # Build somewhere that is not the source tree; make refuses otherwise.
@@ -106,22 +110,25 @@ Core (`native/node-core/supervisor/src/facts.cpp`) and the Python daemon
 the C++ Core, and a unit it does not mention is refused too — "nobody said it was
 not mine" is not a grant.
 
-This round made the two readers agree about the *document itself*, which they did
-not before:
+This round made the two **readers** agree about the *document itself*, which they
+did not before:
 
-- The C++ reader now enforces the writer's two bounds — **64 units** and **200
-  bytes per unit id**. Python already refused more; C++ accepted it. A reader that
-  accepts a map its writer would refuse means the two programs disagree about
-  which units exist.
+- The C++ reader now enforces the same two bounds as `OwnerMap.load` — **64
+  units** and **200 bytes per unit id**. Python's reader already refused more;
+  C++ accepted it, so the two programs could disagree about which units exist.
+  These are the *reader's* bounds: the Python **writer** (`build_owner_map`,
+  `OwnerMap.write`) enforces neither, so it can still emit a map both readers
+  reject. That gap is on the writing side and is listed below, rather than
+  papered over by calling these "the writer's bounds".
 - A refused map now publishes **no owners at all**. `owner_of()` answers from the
   vector without consulting `usable`, so a map that failed on its 65th unit used
   to keep the first 64 and answer questions while claiming to be unusable. The
   parse now goes into a local and is published only on success, so "refused ⇒
   answers nothing" is structural rather than remembered.
-- A test asserts the C++ constants equal the Python ones
-  (`test_sup_facts.cpp`, `the_reader_bounds_are_the_writers_bounds`) by reading
-  `MAX_SERVICES` and `MAX_FACT_TEXT` out of `runtime/native_core_facts.py`. Two
-  numbers that must agree, checked against each other rather than against a
+- A test asserts the C++ constants equal the Python reader's
+  (`test_sup_facts.cpp`, `the_cpp_bounds_are_the_python_readers_bounds`) by
+  reading `MAX_SERVICES` and `MAX_FACT_TEXT` out of `runtime/native_core_facts.py`.
+  Two numbers that must agree, checked against each other rather than against a
   comment.
 - The manifest-vs-map gate was **extracted** from `main()` into
   `manifest_owner_refusals()` and is now asserted directly. It was the one
@@ -130,6 +137,12 @@ not before:
 
 `--serve --enable-actions` refuses to start without `--owner-map`: the map is a
 precondition of acting, not a hint.
+
+**This is the one observable behaviour change in the package.** Two owner-map
+shapes the C++ Core used to accept — a 65th unit, a unit id over 200 bytes — are
+now refused, matching the Python reader. No flag, default, write or exec path
+changed; the "refused map publishes no owners" change is not reachable through
+`main()`, which returns on an unusable map before it asks.
 
 ## Measured on this host (Dell, fjd, 2026-10-27)
 
@@ -141,7 +154,8 @@ precondition of acting, not a hint.
 | `nproc` / RAM | 20 / 31 GiB, shared with other lanes |
 | `pytest` (system python) | **not installed**; suites run under `unittest` |
 | build, 4 binaries, `-O2 -j2` | 25 s |
-| + 27 test executables + run them | 26 s more (incremental) |
+| + 27 test executables + run them | 45 s (clean) |
+| compiler warnings | **2, both pre-existing** — `core-lite/tests/test_status.cpp:105` (unused function) and `test_status_schema.cpp:510` (unused variable). This recipe compiles the test sources with `-Wall -Wextra -Wpedantic`; CMake does not apply those flags to the core-lite test targets, so CMake would not show them. The four shipped binaries build with zero warnings. |
 
 Because `cmake`/`ctest` are absent here, the CTest registration in
 `native/node-core/**/CMakeLists.txt` is **NOT_RUN on this host**. The same test
@@ -156,38 +170,47 @@ primary route.
 $ make -f serverosd/Makefile OUT=… -j2 run-tests
 PASS test_diff                      test_diff: 33 checks, 0 failures
 … 27 lines, all PASS …
-27 test executables, 0 failing
+PASS core_lite_shipped_profiles     46 checks, 0 failures
+27 test executables + 1 shipped-profile check, 0 failing
 ```
+
+The last line is not an executable: CTest registers one more *invocation* than
+there are test binaries — `test_profile` with the two shipped profiles — and a
+loop over executables would never run it, so the shipped profiles would go
+unvalidated.
 
 | suite group | suites | checks | failures |
 |---|---|---|---|
 | collector (`native/node-core/tests`) | 6 | 384 | 0 |
 | supervisor (`native/node-core/supervisor/tests`) | 15 | 1 192 | 0 |
 | core-lite (`native/node-core/core-lite/tests`) | 6 | 942 | 0 |
-| **total** | **27** | **2 518** | **0** |
+| shipped profiles (extra invocation) | 1 | 46 | 0 |
+| **total** | **28** | **2 564** | **0** |
 
 `test_sup_facts` is 98 checks, up from 65: the 12 new cases are the owner-map
 bounds, the duplicate-unit refusal, and six verdicts of the extracted gate.
 
 ```
 $ python3 serverosd/verify_native_runtime.py <build>
-48 checks, 0 failures
+65 checks, 0 failures
 $ python3 serverosd/tests/package_contract.py
-Ran 31 tests … OK
+Ran 40 tests … OK
 ```
 
-The 31 package tests are 16 negative cases against synthetic packages (two
-actuators, a promoted actuator, a wrong digest, a missing member, a symlinked
-member, a symlinked `bin/`, a non-0755 member, an undeclared file under `bin/`, a
-claimed `bin/serverosd`, a rename, an unknown role, a foreign schema, an empty
-member list, a missing manifest, unreadable JSON, a version that is not the
-binary's); 4 of the writer's own (digests it recorded, an indescribable file, a
-declared member never built, and provenance measured versus not measured); and 11
-about the real tree — the single actuator, the writer and reader agreeing on roles
-and reserved paths, the version source, every declared source existing, the recipe
-building every member, the two things its `OUT` guard needs, the writer refusing a
-symlinked path into the tree, and an AST assertion that none of these Python files
-runs a command.
+The 40 package tests are 24 negative cases against synthetic packages — two
+actuators (by count and by promotion), a role changed on a known member, a wrong
+digest, a missing member file, a missing member *row*, an unexpected row, a
+duplicate row, a path escaping `bin/`, a symlinked member, a symlinked `bin/`, a
+non-0755 member, an undeclared file under `bin/`, a claimed `bin/serverosd`, a
+self-consistent rename, an unknown role, a foreign schema, an empty member list, a
+missing manifest, unreadable JSON, a version that is not the binary's, a
+`does_not_occupy` that is not a list, and a declared rename; 4 of the writer's own
+(digests it recorded, an indescribable file, a declared member never built, and
+provenance measured versus not measured); and 12 about the real tree — the single
+actuator, the writer and reader agreeing on roles and reserved paths, the version
+source, every declared source existing, the recipe building every member, the two
+things its `OUT` guard needs, the writer refusing a symlinked path into the tree,
+and an AST assertion that none of these Python files runs a command.
 
 ## NOT_INSTALLED — what is not true today
 
@@ -206,6 +229,11 @@ Specifically, and these are all still true after this PR:
 - The built Core was executed only as `--help`, and once as
   `--serve --enable-actions --manifest /nonexistent` to observe that it refuses
   without an owner map. It has not been started as a service.
+- In `--serve --enable-actions`, link and agent state come from the per-tick
+  facts document (`--facts`), not from `--link-state`/`--agent-state`; those two
+  flags are required only in the **non-`--serve`** acting path. Both modes still
+  require `--owner-map`, and the action gate still refuses on unknown link or
+  agent state.
 - The built collector was executed once (`--interval-ms 0 --compact`) to confirm
   the binary runs. It read `/proc` and printed one document; it wrote nothing, and
   none of its output is reproduced here.
@@ -219,6 +247,7 @@ Specifically, and these are all still true after this PR:
 | gap | why it is not closed here |
 |---|---|
 | No `native-runtime` kind in `scripts/release.py` | that file is another lane's; this manifest is shaped to be adopted without a rewrite |
+| The owner map's Python **writer** enforces neither bound | `build_owner_map`/`OwnerMap.write` in `runtime/native_core_facts.py` can emit 65 units or a 201-byte id, which both readers now refuse. Closing it is a one-line change on the writing side, in a file this lane does not own |
 | Owner map read has no file-identity check on the C++ side | Python checks owner uid, link count, mode and a 1 MiB cap (`OwnerMap.load`); C++ takes a path and reads it. Bounded parsing is fixed here; bounded *reading* is a separate change |
 | `read_file()` in `main.cpp` is unbounded | it serves the manifest and facts documents too; bounding it is one change across three call sites and belongs with the manifest contract review |
 | No `--identity` flag on the binary | the package identifies members by digest and manifest, not by asking the binary. Cheaper, and it does not widen a resident binary's argv surface |

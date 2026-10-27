@@ -144,15 +144,21 @@ def build_manifest(out: Path, repo: Path, commit: str, dirty: str,
                  for entry in sorted(tests_dir.iterdir()) if entry.is_file()]
 
     # `dirty` is the COUNT of modified paths, not a flag. `0` is a measurement
-    # ("I asked git and it said nothing is modified"); an empty value means git
-    # did not answer, which is why it is paired with an empty commit rather than
-    # guessed at.
-    provenance = (
-        {"commit": commit, "dirty": dirty_count > 0, "dirty_paths": dirty_count}
-        if commit else
-        {"commit": None, "dirty": None, "dirty_paths": None,
-         "reason": "git was not available at build time; provenance was not measured"}
-    )
+    # ("I asked git and it said nothing is modified"). A non-numeric or empty
+    # value means git did not answer — and that is recorded as unmeasured rather
+    # than converted to 0, because "the tree is clean" and "I could not read the
+    # tree" are the two things this field exists to keep apart.
+    dirty_measured = dirty.strip().isdigit()
+    if commit and dirty_measured:
+        provenance = {"commit": commit, "dirty": dirty_count > 0, "dirty_paths": dirty_count}
+    elif commit:
+        provenance = {"commit": commit, "dirty": None, "dirty_paths": None,
+                      "reason": "git named a commit but not a work-tree status; "
+                                "dirty state was not measured"}
+    else:
+        provenance = {"commit": None, "dirty": None, "dirty_paths": None,
+                      "reason": "git was not available at build time; provenance "
+                                "was not measured"}
 
     return {
         "schema": PACKAGE_SCHEMA,

@@ -18,8 +18,8 @@
 # A build recipe is the same kind of artifact as the CMakeLists next door: it
 # declares *what* to run, and the operator's `make` runs it, exactly as their
 # `cmake --build` would. It is not new reachability in the product. That is why
-# this is a Makefile and why `package_manifest.py` — the only Python here — never
-# runs a command.
+# this is a Makefile — and why the Python beside it (`package_manifest.py`,
+# `verify_native_runtime.py`) records and verifies without running anything.
 #
 # WHERE OUTPUT GOES
 # -----------------
@@ -36,6 +36,9 @@
 # to not undo it.
 
 REPO := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
+# Canonicalised too: a checkout reached through a symlink would otherwise compare
+# an unresolved REPO against a resolved OUT and let the tree through.
+REPO_REAL := $(realpath $(REPO))
 
 OUT ?=
 CXX ?= g++
@@ -62,8 +65,13 @@ OUT_REAL := $(realpath $(OUT))
 ifeq ($(strip $(OUT_REAL)),)
 override OUT_REAL := $(realpath $(dir $(OUT)))/$(notdir $(OUT))
 endif
-ifneq ($(filter $(REPO)/%,$(OUT_REAL)),)
-$(error refusing to build inside the repository: $(OUT_REAL) is under $(REPO))
+# TWO patterns, and the bare one is not decoration: `$(filter $(REPO)/%,...)`
+# requires a literal slash after REPO, so `OUT=.`, `OUT=$(pwd)` and
+# `OUT=<repo>/` all passed it and then wrote `obj/`, `bin/` and PACKAGE.json into
+# the tree — linking the test binaries into the existing `tests/` directory.
+# Measured, before this line existed.
+ifneq ($(filter $(REPO_REAL) $(REPO_REAL)/%,$(OUT_REAL)),)
+$(error refusing to build inside the repository: $(OUT_REAL) is the repository or under it)
 endif
 
 CXXFLAGS ?= -std=c++20 -O2 -Wall -Wextra -Wpedantic
@@ -79,9 +87,16 @@ INCLUDES := \
 SOURCE_COMMIT := $(shell git -C $(REPO) rev-parse HEAD 2>/dev/null)
 # A COUNT, not the first character of porcelain output: the first character of a
 # modified file is a space, and a value that is stripped on its way through a
-# shell variable would then read as "clean". `0` is a measurement; empty means
-# git did not answer at all, which `source.commit` already distinguishes.
-SOURCE_DIRTY := $(shell git -C $(REPO) status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+# shell variable would then read as "clean".
+#
+# TWO invocations, and the first exists only for its exit status. `... | wc -l`
+# prints `0` whenever `wc` runs, including when `git status` failed, so a single
+# pipeline reports "clean" for a repository git could not read. Measured:
+# `git -C /nonexistent/repo status --porcelain | wc -l` -> 0. With the guard,
+# a failed status leaves this EMPTY, which `package_manifest.py` records as
+# unmeasured rather than as zero modified paths.
+SOURCE_DIRTY := $(shell git -C $(REPO) status --porcelain >/dev/null 2>&1 && \
+                   git -C $(REPO) status --porcelain 2>/dev/null | wc -l | tr -d ' ')
 # The compiler's own identity, asked here rather than by the manifest writer for
 # the same reason: a recorder must not grow reachability.
 CXX_VERSION := $(shell $(CXX) --version 2>/dev/null | head -n 1)
@@ -161,6 +176,15 @@ CORELITE_TESTS := $(wildcard $(REPO)/native/node-core/core-lite/tests/test_*.cpp
 # path that kept the source's directories would be a target that is never built.
 TEST_BINS := $(foreach t,$(COLLECTOR_TESTS) $(SUPERVISOR_TESTS) $(CORELITE_TESTS),$(OUT)/tests/$(notdir $(basename $(t))))
 
+# CTest registers ONE MORE invocation than there are executables: an extra
+# `add_test(NAME core_lite_shipped_profiles COMMAND test_core_lite_profile <two
+# shipped profiles>)` in `core-lite/CMakeLists.txt`. Running each executable once
+# with no arguments — which is all a loop over `TEST_BINS` can do — never
+# validates a shipped profile at all, so a profile that stopped parsing would
+# leave this green. It is run explicitly and counted separately.
+SHIPPED_PROFILES := $(REPO)/native/node-core/core-lite/profiles/tokyo-vince.profile.json \
+                    $(REPO)/native/node-core/core-lite/profiles/dell-fjd.profile.json
+
 .PHONY: all tests run-tests manifest verify clean
 .DEFAULT_GOAL := all
 
@@ -224,7 +248,13 @@ run-tests: $(TEST_BINS)
 	  if [ $$code -eq 0 ]; then status=PASS; else status=FAIL; fail=$$((fail+1)); fi; \
 	  printf '%s %-30s %s\n' "$$status" "$$(basename $$t)" "$$summary"; \
 	done; \
-	printf '\n%d test executables, %d failing\n' "$(words $(TEST_BINS))" "$$fail"; \
+	summary=$$(cd $(REPO) && "$(OUT)/tests/test_profile" $(SHIPPED_PROFILES) 2>&1); \
+	code=$$?; \
+	if [ $$code -eq 0 ]; then status=PASS; else status=FAIL; fail=$$((fail+1)); fi; \
+	printf '%s %-30s %s\n' "$$status" "core_lite_shipped_profiles" \
+	  "$$(printf '%s\n' "$$summary" | sed '/^[[:space:]]*$$/d' | tail -n 1)"; \
+	printf '\n%d test executables + 1 shipped-profile check, %d failing\n' \
+	  "$(words $(TEST_BINS))" "$$fail"; \
 	exit $$fail
 
 # --- the manifest ---------------------------------------------------------
