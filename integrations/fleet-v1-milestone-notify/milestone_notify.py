@@ -428,7 +428,6 @@ def normalize(source: str, payload: dict) -> Evidence:
 class Decision:
     outcome: str
     deliver: bool
-    event: str | None
     severity: str | None
     why: str
     milestone_kind: str
@@ -437,8 +436,8 @@ class Decision:
     device_ref: str
     observed_at: str
     subject: str
+    headline: str
     detail: str
-    reason_word: str | None
     action_required: bool
 
 
@@ -471,9 +470,30 @@ def _gate_state(evidence: Evidence, gate: str) -> str:
     return "PASS" if gate in evidence.gates_passed else "MISSING"
 
 
-def _detail(evidence: Evidence, kind: str, state_line: str,
-            next_action: str) -> str:
-    lines = [state_line, f"Kind: {kind}", f"Status: {evidence.status}"]
+def _severity(word: str | None) -> str | None:
+    """Validate against the contract's INFO/ATTENTION/ACTION axis.
+
+    The milestone trigger axis is deliberately separate from the §10 event
+    list. The contract declares the closest INFO event DECLARED_ABSENT (INFO is
+    not worth a message on its own), and a milestone is not an alert, so this
+    module uses the contract's severity vocabulary WITHOUT claiming an event
+    name the contract says nobody raises.
+    """
+    if word is None:
+        return None
+    values = set((_notifications().contract().get("events", {})
+                  .get("severity") or {}).values())
+    if word not in values:
+        raise MilestoneRefused(
+            f"{word!r} is not a contract severity; known={sorted(values)}")
+    return word
+
+
+def _detail(evidence: Evidence, kind: str, next_action: str,
+            severity: str | None) -> str:
+    lines = [f"Kind: {kind}", f"Status: {evidence.status}"]
+    if severity:
+        lines.append(f"Severity: {severity}")
     if evidence.gates_required:
         lines.append("Gates: " + ", ".join(
             f"{gate}={_gate_state(evidence, gate)}"
@@ -490,31 +510,32 @@ def _detail(evidence: Evidence, kind: str, state_line: str,
     return "\n".join(lines)
 
 
-def _make(evidence: Evidence, *, outcome: str, deliver: bool, event: str | None,
-          why: str, next_action: str, kind: str | None = None,
-          reason_word: str | None = None,
+def _make(evidence: Evidence, *, outcome: str, deliver: bool,
+          severity: str | None, why: str, next_action: str,
+          kind: str | None = None,
           action_required: bool = False) -> Decision:
     kind = kind or evidence.milestone_kind
     subject = _subject(evidence)
-    severity = _notifications().severity(event) if event else None
+    severity = _severity(severity)
     return Decision(
-        outcome=outcome, deliver=deliver, event=event, severity=severity, why=why,
+        outcome=outcome, deliver=deliver, severity=severity, why=why,
         milestone_kind=kind, key=evidence.key,
         source=evidence.source, device_ref=evidence.device_ref,
         observed_at=evidence.observed_at, subject=subject,
-        detail=_detail(evidence, kind, f"{outcome} · {kind} · {subject}",
-                       next_action),
-        reason_word=reason_word, action_required=action_required)
+        headline=f"{outcome} · {kind} · {subject} · {evidence.device_ref}",
+        detail=_detail(evidence, kind, next_action, severity),
+        action_required=action_required)
 
 
 def _silent(evidence: Evidence, why: str) -> Decision:
-    return _make(evidence, outcome=SILENT, deliver=False, event=None, why=why,
+    return _make(evidence, outcome=SILENT, deliver=False, severity=None,
+                 why=why,
                  next_action="No message: the source has not reached a terminal state.")
 
 
 def _ordinary_green(evidence: Evidence) -> Decision:
     return _make(
-        evidence, outcome=ORDINARY_GREEN, deliver=False, event="turn.completed",
+        evidence, outcome=ORDINARY_GREEN, deliver=False, severity="INFO",
         why="ORDINARY_GREEN",
         next_action="No out-of-band message; ordinary green is a card update.")
 
@@ -527,8 +548,8 @@ def _yellow(evidence: Evidence, why: str, next_action: str | None = None) -> Dec
     else:
         kind = None
     return _make(
-        evidence, outcome=YELLOW, deliver=False, event="provider.degraded",
-        why=why, reason_word="READINESS_UNKNOWN", kind=kind,
+        evidence, outcome=YELLOW, deliver=False, severity="ATTENTION",
+        why=why, kind=kind,
         next_action=next_action or
         "No out-of-band message; a recoverable warning updates the card/digest.")
 
@@ -542,9 +563,8 @@ def _red(evidence: Evidence, why: str, *, action_required: bool) -> Decision:
         kind = "PHASE_REJECTED"
     return _make(
         evidence, outcome=RED, deliver=True,
-        event="approval.required" if action_required else "turn.failed",
-        why=why, reason_word=None if action_required else "TURN_FAILED",
-        kind=kind, action_required=action_required,
+        severity="ACTION" if action_required else "ATTENTION",
+        why=why, kind=kind, action_required=action_required,
         next_action="Action required: inspect the failure and decide whether to retry or escalate.")
 
 
@@ -556,7 +576,7 @@ def _unknown(evidence: Evidence, why: str) -> Decision:
     else:
         kind = "PHASE_UNVERIFIED"
     return _make(
-        evidence, outcome=UNKNOWN, deliver=True, event="session.waiting_input",
+        evidence, outcome=UNKNOWN, deliver=True, severity="ACTION",
         why=why, kind=kind,
         next_action="Do not treat this as success. Inspect the native result and boot "
                     "identity; a person must decide.")
@@ -564,7 +584,7 @@ def _unknown(evidence: Evidence, why: str) -> Decision:
 
 def _verified_green(evidence: Evidence, why: str) -> Decision:
     return _make(
-        evidence, outcome=VERIFIED_GREEN, deliver=True, event="turn.completed",
+        evidence, outcome=VERIFIED_GREEN, deliver=True, severity="INFO",
         why=why,
         next_action="No action; this milestone is recorded once. Ordinary green stays "
                     "on the card.")
@@ -667,34 +687,29 @@ def compose(decision: Decision, *, summarizer: Callable[[dict], str] | None = No
     return detail
 
 
-def _event_spec(decision: Decision, detail: str) -> dict:
-    spec: dict = {
-        "event": decision.event,
-        "device_ref": decision.device_ref,
-        "at": decision.observed_at,
-        "correlation_id": decision.key,
-        "reason": decision.reason_word,
-        "detail": detail,
-    }
-    if decision.source == "phase":
-        spec["subject_ref"] = decision.subject
-    else:
-        spec["run_ref"] = decision.subject
-    return spec
+def delivery_key_for(decision: Decision) -> str:
+    """A stable key for one milestone outcome, derived from the fact.
 
-
-def render(decision: Decision, *, summarizer: Callable[[dict], str] | None = None):
-    """Return ``(text, event, spec)`` through the EXISTING notification contract.
-
-    The headline is authored by ``runtime/notifications.py`` from
-    ``runtime/notification-contract.yaml``; this module only appends the
-    milestone block. A success is an INFO ``turn.completed``, not an alert.
+    The sentence is not part of it. A correction from UNKNOWN to a terminal
+    outcome changes the outcome word and therefore the key; replaying the same
+    outcome does not.
     """
-    detail = compose(decision, summarizer=summarizer)
-    spec = _event_spec(decision, detail)
-    notifications = _notifications()
-    event = notifications.Event(**spec)
-    return notifications.render(event), event, spec
+    return _text(
+        f"milestone:{decision.source}:{decision.device_ref}:"
+        f"{decision.milestone_kind}:{decision.key}:{decision.outcome}",
+        "delivery_key", 512)
+
+
+def message(decision: Decision,
+            *, summarizer: Callable[[dict], str] | None = None) -> str:
+    """The sentence handed to the EXISTING provider.
+
+    ServerOS authors it here and the provider decides how it is carried. The
+    severity word is the contract's; no §10 event name is claimed, because the
+    contract declares the closest INFO event DECLARED_ABSENT and a milestone is
+    not an alert.
+    """
+    return f"{decision.headline}\n{compose(decision, summarizer=summarizer)}"
 
 
 # --------------------------------------------------------------------------- #
@@ -883,19 +898,34 @@ class MilestoneNotifier:
             return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
         raise MilestoneRefused("clock must return datetime or epoch seconds")
 
-    def _send(self, event) -> tuple[str, str | None, str]:
+    def _send(self, text: str,
+              delivery_key: str) -> tuple[str, str | None, str]:
+        """Hand the sentence to the injected provider after its own capability probe.
+
+        This is the same gate `notifications.deliver` uses, without constructing
+        a §10 Event the contract has not declared a producer for.
+        """
         notifications = _notifications()
-        delivery = notifications.deliver(
-            self.provider, event, conversation_ref=self.conversation_ref)
-        answer = (delivery.detail or {}).get("provider_answer")
+        state, reason = notifications.capability_of(self.provider)
+        if state != "SUPPORTED":
+            return UNKNOWN_DELIVERY, None, _scrub(
+                f"{state}: {reason or 'human.notification.transport is not SUPPORTED'}"
+            )[:240]
+        try:
+            answer = self.provider.notify(
+                conversation_ref=self.conversation_ref, text=text,
+                idempotency_key=delivery_key)
+        except Exception as exc:
+            return UNKNOWN_DELIVERY, None, _scrub(
+                f"{type(exc).__name__}: {exc}")[:240]
         remote = answer.get("remote_id") if isinstance(answer, dict) else None
         # Require an explicit True. A provider that returns only a remote id,
         # or `delivered: 0`, has not made the delivery claim this ledger needs.
-        provider_ok = isinstance(answer, dict) and answer.get("delivered") is True
-        if (delivery.delivered and provider_ok and isinstance(remote, str)
-                and remote.strip()):
+        if (isinstance(answer, dict) and answer.get("delivered") is True
+                and isinstance(remote, str) and remote.strip()):
             return DELIVERED, _scrub(remote.strip())[:256], "provider returned a message id"
-        why = delivery.reason or "provider returned no message id"
+        why = (answer.get("why") if isinstance(answer, dict) else None) or \
+            "provider returned no message id"
         return UNKNOWN_DELIVERY, None, _scrub(str(why))[:240]
 
     def observe(self, evidence: Evidence) -> Observation:
@@ -907,43 +937,39 @@ class MilestoneNotifier:
             # YELLOW and ordinary green exist so that "successful" does not
             # become an interruption, and "recoverable" does not become an alert.
             return Observation(decision.outcome, CARD_ONLY, None, None, None,
-                               decision.detail, decision.why, False)
+                               decision.headline + "\n" + decision.detail,
+                               decision.why, False)
 
         # The key is a property of the fact, not of the sentence: compute it
-        # from the deterministic block BEFORE calling the summarizer, so a
-        # replay does not spend a model call to discover it has nothing to do.
-        key_event = _notifications().Event(**_event_spec(decision, decision.detail))
-        delivery_key = key_event.idempotency_key()
-        claim_intent = json.dumps(_event_spec(decision, decision.detail),
-                                  ensure_ascii=False, sort_keys=True)
+        # before the summarizer so a replay does not spend a model call.
+        key = delivery_key_for(decision)
+        claim_text = message(decision)
+        claim_intent = json.dumps({"text": claim_text}, ensure_ascii=False,
+                                  sort_keys=True)
         prior = self.ledger.claim(
-            delivery_key=delivery_key, milestone_key=evidence.key,
+            delivery_key=key, milestone_key=evidence.key,
             outcome=decision.outcome, attempted_at=self._now().isoformat(),
             intent=claim_intent)
         if prior is not None:
-            return _prior_observation(prior, delivery_key)
+            return _prior_observation(prior, key)
 
         try:
-            message, event, spec = render(decision, summarizer=self.summarizer)
-            if event.idempotency_key() != delivery_key:
-                raise MilestoneRefused(
-                    "the composer changed the event identity; detail must not do that")
-            state, remote_id, why = self._send(event)
+            text = message(decision, summarizer=self.summarizer)
+            state, remote_id, why = self._send(text, key)
         except Exception as exc:  # a claim must never be left IN_FLIGHT by a bug
-            message, spec = None, json.loads(claim_intent)
+            text = claim_text
             state, remote_id = UNKNOWN_DELIVERY, None
             why = _scrub(f"{type(exc).__name__}: {exc}")[:240]
 
         self.ledger.finish(
-            delivery_key=delivery_key, state=state, remote_id=remote_id,
+            delivery_key=key, state=state, remote_id=remote_id,
             attempted_at=self._now().isoformat(), why=why,
-            intent=json.dumps(spec, ensure_ascii=False, sort_keys=True))
-        row = self.ledger.get(delivery_key) or {"state": state,
-                                                "remote_id": remote_id}
+            intent=json.dumps({"text": text}, ensure_ascii=False, sort_keys=True))
+        row = self.ledger.get(key) or {"state": state, "remote_id": remote_id}
         if row["state"] == DELIVERED and state != DELIVERED:
             why = "another observation recorded the delivered receipt"
-        return Observation(decision.outcome, row["state"], delivery_key,
-                           row["remote_id"], message, None, why,
+        return Observation(decision.outcome, row["state"], key,
+                           row["remote_id"], text, None, why,
                            row["state"] == DELIVERED)
 
     def observe_payload(self, source: str, payload: dict) -> Observation:
@@ -977,8 +1003,12 @@ class MilestoneNotifier:
                 "outside the transport's dedupe window; a repeat could be a second message",
                 False)
         spec = json.loads(prior["intent"])
-        event = _notifications().Event(**spec)
-        state, remote_id, why = self._send(event)
+        text = spec.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return Observation(prior["outcome"], UNKNOWN_DELIVERY, delivery_key,
+                               None, None, None, "stored intent has no text",
+                               False)
+        state, remote_id, why = self._send(text, delivery_key)
         self.ledger.resolve(
             delivery_key=delivery_key, state=state, remote_id=remote_id,
             attempted_at=now.isoformat(), why=why)

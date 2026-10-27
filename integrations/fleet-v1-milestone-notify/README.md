@@ -18,18 +18,27 @@
   晚到的 UNKNOWN 不能把它覆盖回未投递。
 - **不导入 #407 的在途实现**（`fleet_mcp/events.py`、`run_watcher.py`、
   `runtime/fleet_event_delivery.py`）。只复用 main 上已有的
-  `runtime/notification-contract.yaml` 词表与 `runtime/notifications.py#deliver`。
+  `runtime/notification-contract.yaml` 严重度轴（INFO / ATTENTION / ACTION）、
+  `runtime/notifications.py#capability_of` 与现有 outbound provider。
+
+### 为什么不冒充 §10 事件
+
+合同把 `turn.completed` / `session.waiting_input` / `approval.required` 等
+明确声明为 `DECLARED_ABSENT`（“INFO 本身不值得一条外发消息”）。里程碑触发与
+告警/事件列表在 #417 里本来就是两条轴；强行复用事件名会让仓库的 producer
+扫描多出一个“新生产者”，也会把成功塞进报警语义。因此本模块**只使用合同的
+严重度词**，消息由本模块按 ServerOS 事实撰写，再交给同一个 provider。
 
 ## 数据流
 
 ```
 CloudCLI run_get ─┐
-GitHub workflow_run ├─ normalize ──> decide ──> compose ──> notifications.deliver
-signed PHASE_ACCEPTED ┘   (facts)     (outcome)  (template (+ optional summarizer))
-                                                        │
-                                                injected provider
-                                                        │
-                                              receipt ledger (dedupe)
+GitHub workflow_run ├─ normalize ──> decide ──> compose ──> capability_of
+signed PHASE_ACCEPTED ┘   (facts)     (outcome)  (deterministic headline      │
+                                                 + optional summarizer)       │
+                                                                    injected provider.notify
+                                                                              │
+                                                                    receipt ledger
 ```
 
 `normalize` 的**顶层信封**是闭合的：`prompt` / `transcript` / `token` 这类顶层
@@ -41,12 +50,12 @@ signed PHASE_ACCEPTED ┘   (facts)     (outcome)  (template (+ optional summari
 
 | 输入 | 判定 | 外发？ |
 |---|---|---|
-| CloudCLI `completed` + 可信 native output + boot 匹配 + 必需 gate 全过 + `milestone` | `VERIFIED_GREEN` / `RUN_COMPLETED` | 是，一次，INFO `turn.completed` |
-| CloudCLI `completed` 但 native output 缺失/note 说无可读消息，或 boot 不匹配 | `UNKNOWN` | 是，ACTION `session.waiting_input`；**绝不报 success** |
-| CloudCLI `failed` / `cancelled` | `RED` | 是，`turn.failed` |
+| CloudCLI `completed` + 可信 native output + boot 匹配 + 必需 gate 全过 + `milestone` | `VERIFIED_GREEN` / `RUN_COMPLETED` | 是，一次，INFO |
+| CloudCLI `completed` 但 native output 缺失/note 说无可读消息，或 boot 不匹配 | `UNKNOWN` | 是，ACTION；**绝不报 success** |
+| CloudCLI `failed` / `cancelled` | `RED` | 是，ATTENTION |
 | CI `success` + 必需 gate 全过 + `milestone` | `VERIFIED_GREEN` / `CI_PASSED` | 是，一次，INFO；**不是 RELEASE/PHASE_ACCEPTED** |
-| CI `action_required` | `RED` | 是，ACTION `approval.required` |
-| CI `failure` / `timed_out` / `startup_failure` / `cancelled` | `RED` | 是 |
+| CI `action_required` | `RED` | 是，ACTION |
+| CI `failure` / `timed_out` / `startup_failure` / `cancelled` | `RED` | 是，ATTENTION |
 | CI `neutral` / `skipped`，或 phase 未签收 | `YELLOW` | 否，仅卡片/摘要 |
 | 普通绿色（`milestone=false`） | `ORDINARY_GREEN` | 否，仅卡片 |
 | 非终态（running / queued / in_progress） | `SILENT` | 否 |
@@ -57,14 +66,15 @@ signed PHASE_ACCEPTED ┘   (facts)     (outcome)  (template (+ optional summari
 **首次投递**时调用它一次；重放/重复 webhook 在调用模型之前就命中账本。
 summarizer 自身的超时与并发边界由调用方负责（本模块不并发调用它）。
 
-合同没有 CI 专用事件：CI 失败复用 `turn.failed`，里程碑块用
-`CI_FAILED` / `CI_ACTION_REQUIRED` 说清事实；`YELLOW` 从不外发，
-`provider.degraded` 只是卡片侧的 ATTENTION 标记，不会被渲染成红色报警。
+消息首行是判定事实（如 `VERIFIED_GREEN · CI_PASSED · ci:Tests:… · device:…`
+或 `ACTION REQUIRED · CI_ACTION_REQUIRED · …`），其后是确定性的
+`Kind / Status / Severity / Gates / Evidence / Summary / Next` 块。成功是
+INFO，不是红色报警；`YELLOW` 从不外发。
 
 ## 幂等与 UNKNOWN
 
-- delivery key 来自 `notifications.Event.idempotency_key()`：同一 milestone、
-  同一事件、同一设备/主语 → 同一 key。投递前用主键 `INSERT` 原子 `claim`；
+- delivery key 由事实派生：`milestone:<source>:<device>:<kind>:<key>:<outcome>`；
+  同一 milestone、同一 outcome → 同一 key。投递前用主键 `INSERT` 原子 `claim`；
   同进程重复观察、重复 webhook、进程重启后重放，都读到既有行：
   `DELIVERED` → `DUPLICATE`，`IN_FLIGHT` / `DELIVERY_UNKNOWN` → `UNKNOWN_REPLAY`，
   不再调用 provider。
@@ -76,8 +86,8 @@ summarizer 自身的超时与并发边界由调用方负责（本模块不并发
   `reconcile(key)` 只在 transport 自己的 `IDEMPOTENCY_WINDOW_SECONDS` 内、用
   **同一个 key** 再问一次；窗口外拒绝，因为重复会变成第二条消息。拿到
   `remote_id` 才升级为 `DELIVERED`，且 `DELIVERED` 不会被降级。
-- **纠正不是重复**：同一 milestone 从 `UNKNOWN` 变成终态属于新事实（合同事件
-  词不同，key 也不同），会作为一次纠正投递；同一事件的再次观察才是
+- **纠正不是重复**：同一 milestone 从 `UNKNOWN` 变成终态属于新事实（outcome
+  词不同，key 也不同），会作为一次纠正投递；同一 outcome 的再次观察才是
   `DUPLICATE`。两种情况都有测试。
 
 ## 唯一未接的生产接口

@@ -132,7 +132,6 @@ class MilestoneNotifyTest(unittest.TestCase):
         evidence = self.evidence("cloudcli", "run-completed")
         decision = m.decide(evidence)
         self.assertEqual(decision.outcome, m.VERIFIED_GREEN)
-        self.assertEqual(decision.event, "turn.completed")
         self.assertEqual(decision.severity, "INFO")
 
         provider = FakeLark()
@@ -246,8 +245,7 @@ class MilestoneNotifyTest(unittest.TestCase):
         self.assertEqual(decision.outcome, m.VERIFIED_GREEN)
         self.assertEqual(decision.why, m.CI_PASSED)
         self.assertEqual(decision.severity, "INFO")
-        text, event, _ = m.render(decision)
-        self.assertEqual(event.event, "turn.completed")
+        text = m.message(decision)
         self.assertIn("CI_PASSED", text)
         self.assertNotIn("RELEASE_ACCEPTED", text)
         self.assertNotIn("PHASE_ACCEPTED", text)
@@ -321,15 +319,13 @@ class MilestoneNotifyTest(unittest.TestCase):
         evidence = self.evidence("github_actions", "ci-action-required")
         decision = m.decide(evidence)
         self.assertEqual(decision.outcome, m.RED)
-        self.assertEqual(decision.event, "approval.required")
         self.assertEqual(decision.severity, "ACTION")
         self.assertTrue(decision.action_required)
 
         def down(_facts):
             raise RuntimeError("model down and no fallback in the caller")
 
-        text, event, _ = m.render(decision, summarizer=down)
-        self.assertEqual(event.event, "approval.required")
+        text = m.message(decision, summarizer=down)
         self.assertIn("Action required", text)
         self.assertIn("Next:", text)
         self.assertNotIn("model down", text)
@@ -346,7 +342,6 @@ class MilestoneNotifyTest(unittest.TestCase):
         evidence = self.evidence("cloudcli", "run-completed-no-output")
         decision = m.decide(evidence)
         self.assertEqual(decision.outcome, m.UNKNOWN)
-        self.assertEqual(decision.event, "session.waiting_input")
         self.assertEqual(decision.severity, "ACTION")
         self.assertEqual(decision.why, "RUN_COMPLETED_WITHOUT_NATIVE_OUTPUT")
 
@@ -464,14 +459,14 @@ class MilestoneNotifyTest(unittest.TestCase):
     def test_a_crashed_claim_is_unknown_replay_and_reconcile_recovers(self):
         evidence = self.evidence("cloudcli", "run-completed")
         decision = m.decide(evidence)
-        _text, event, spec = m.render(decision)
-        key = event.idempotency_key()
+        key = m.delivery_key_for(decision)
         ledger = m.MilestoneLedger(self.ledger)
         ledger.claim(
             delivery_key=key, milestone_key=evidence.key,
             outcome=decision.outcome,
             attempted_at=datetime.now(timezone.utc).isoformat(),
-            intent=json.dumps(spec, ensure_ascii=False, sort_keys=True))
+            intent=json.dumps({"text": m.message(decision)},
+                              ensure_ascii=False, sort_keys=True))
 
         provider = FakeLark()
         replay = self.notifier(provider).observe(evidence)
