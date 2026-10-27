@@ -99,9 +99,13 @@ std::vector<UnitClaim> claims_of(const Manifest& manifest, const OwnerMap& owner
 std::vector<std::string> doubly_claimed_units(const std::vector<UnitClaim>& a,
                                               const std::vector<UnitClaim>& b);
 
-//: Render one capability document. Keys are lexicographic and the bytes are
-//: canonical, because a reader compares two of these and `dump_compact()` is the
-//: form the Python core hashes.
+//: Render one capability document. Keys are lexicographic, so two documents built
+//: from the same inputs are byte-identical — which is what a comparison needs.
+//:
+//: It renders the pretty form (`Json::dump()`), not the compact one the Python
+//: core hashes. Nothing hashes this document today; if something starts to, it
+//: must use `dump_compact()` and this note is the reminder that the two are not
+//: interchangeable.
 std::string build_capability_json(const Manifest& manifest, const OwnerMap& owners,
                                   const CapabilityInfo& info);
 

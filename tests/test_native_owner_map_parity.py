@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -60,13 +62,23 @@ def cases() -> list[dict]:
     return json.loads(INDEX.read_text(encoding="utf-8"))["cases"]
 
 
-def verdict(path: Path) -> bool:
-    """Believed or refused, and nothing else — see the module docstring."""
+def verdict(path: Path) -> tuple[bool, str | None]:
+    """Believed, or refused and WHY.
+
+    The code matters, not just the boolean. `OwnerMap.load` refuses for two
+    unrelated reasons: the document is not one it will believe (`OWNER_UNKNOWN`),
+    or the file itself is not one it will read — a symlink, another uid, a
+    group-writable mode, a path that escapes its binding (`PATH_UNSAFE` and
+    friends). Returning the boolean alone meant a checkout with different file
+    modes could turn the two `usable: true` cases red for a harness reason while
+    the eight refusals kept matching, and the suite would look like it was
+    testing the document.
+    """
     try:
         facts.OwnerMap.load(path)
-        return True
-    except facts.FactsRefused:
-        return False
+        return True, None
+    except facts.FactsRefused as exc:
+        return False, exc.code
 
 
 class OwnerMapParityTest(unittest.TestCase):
@@ -87,14 +99,25 @@ class OwnerMapParityTest(unittest.TestCase):
             with self.subTest(case=case["file"]):
                 path = CORPUS / case["file"]
                 self.assertTrue(path.is_file(), f"{case['file']} is indexed but missing")
-                self.assertEqual(verdict(path), case["usable"],
+                usable, code = verdict(path)
+                self.assertEqual(usable, case["usable"],
                                  f"{case['file']}: {case['why']}")
+                if not usable:
+                    self.assertEqual(code, facts.OWNER_UNKNOWN,
+                                     f"{case['file']} was refused for a reason about the "
+                                     f"FILE, not the document; this case proves nothing")
 
     def test_every_fixture_on_disk_is_in_the_index(self):
-        on_disk = {p.name for p in CORPUS.glob("*.json") if p.name != INDEX.name}
-        indexed = {case["file"] for case in cases()}
+        """EVERY entry, not only the ones this glob would have read.
+
+        A fixture in a subdirectory, or named `X.JSON`, is invisible to both
+        completeness checks and unread by both suites — listed by nobody and
+        tested by nobody, with everything green.
+        """
+        on_disk = {p.name for p in CORPUS.iterdir()}
+        indexed = {case["file"] for case in cases()} | {INDEX.name}
         self.assertEqual(on_disk, indexed,
-                         "a fixture nobody indexed is a document neither reader is held to")
+                         "an entry nobody indexed is a document neither reader is held to")
 
     def test_the_two_readers_are_pointed_at_one_corpus(self):
         """The drift this prevents: each suite quietly testing its own copy."""
@@ -142,6 +165,135 @@ class OneWriterMechanismTest(unittest.TestCase):
             second.acquire()
             self.assertTrue(second.held)
             second.release()
+
+
+class SingleWriterRefusalTest(unittest.TestCase):
+    """The acting path, driven end to end through a FAKE service manager.
+
+    The property: a Core that acts must consult the shared owner map, and a unit
+    the map gives the Python daemon must not be touched. Proven here by running
+    the real binary with `--systemctl` pointing at a script that records its argv
+    and answers `show` with a failed unit — so an action is *attempted* and
+    nothing on this host is ever asked to change.
+
+    This is a regression test for a real gap. Before 2026-10-28 the one-shot
+    form (`--manifest M --enable-actions`, no `--serve`) could not even be GIVEN
+    an owner map — the flag was refused outside `--serve` — and the ownership
+    check only ran in the resident path. A single pass could therefore restart a
+    unit the map assigns to `serverosd`, while `--capability` reported
+    `NOT_MINE`. The gate is now `act`, in both modes.
+
+    Skipped when no binary is built, because a compiler is not a test dependency:
+    set SERVEROS_NATIVE_CORE_BIN, or run
+    `make -f serverosd/Makefile OUT=<dir> all` first.
+    """
+
+    BINARY_ENV = "SERVEROS_NATIVE_CORE_BIN"
+
+    def setUp(self):
+        raw = os.environ.get(self.BINARY_ENV)
+        if not raw or not Path(raw).is_file():
+            self.skipTest(f"no native binary; set {self.BINARY_ENV} to run this "
+                          f"(see the class docstring)")
+        self.binary = Path(raw)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    # -- fixtures ---------------------------------------------------------
+    def _manifest(self, unit: str) -> Path:
+        path = self.dir / "manifest.json"
+        path.write_text(json.dumps({
+            "schema": "serveros/desired-state.v1",
+            "node": "test-node", "principal": "test",
+            "observe_only": False, "generation": 1,
+            "services": [{
+                "id": "svc", "owner": "test", "unit": unit,
+                "desired": "running", "start_on_boot": False,
+                "recovery": {"allowed_verbs": ["restart"], "offline_recoverable": True},
+            }],
+        }), encoding="utf-8")
+        return path
+
+    def _map(self, unit: str, owner: str) -> Path:
+        path = self.dir / f"map-{owner}.json"
+        path.write_text(json.dumps({"schema": "serveros/native-core-owner-map.v1",
+                                    "units": {unit: owner}}), encoding="utf-8")
+        return path
+
+    def _fake_systemctl(self) -> tuple[Path, Path]:
+        """A service manager that records argv and reports one failed unit."""
+        log = self.dir / "calls.log"
+        script = self.dir / "systemctl"
+        script.write_text(
+            "#!/bin/sh\n"
+            f'printf \'%s\\n\' "$*" >> "{log}"\n'
+            "for a in \"$@\"; do\n"
+            "  case \"$a\" in\n"
+            "    show) printf 'LoadState=loaded\\nActiveState=failed\\nSubState=failed\\n'; exit 0 ;;\n"
+            "    restart|start|stop) exit 0 ;;\n"
+            "  esac\n"
+            "done\n"
+            "exit 0\n", encoding="utf-8")
+        script.chmod(0o755)
+        return script, log
+
+    def _run(self, manifest: Path, *extra: str) -> subprocess.CompletedProcess:
+        systemctl, _ = self._fake_systemctl()
+        return subprocess.run(
+            [str(self.binary), "--manifest", str(manifest), "--allow-unit", "theirs.service",
+             "--enable-actions", "--lease", str(self.dir / "lease"),
+             "--state", str(self.dir / "recovery.json"),
+             "--link-state", "up", "--agent-state", "idle",
+             "--systemctl", str(systemctl), *extra],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+
+    # -- the assertions ---------------------------------------------------
+    def test_acting_without_an_owner_map_is_refused(self):
+        proc = self._run(self._manifest("theirs.service"))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("--enable-actions requires --owner-map", proc.stderr)
+
+    def test_a_unit_the_map_gives_the_python_daemon_is_refused(self):
+        manifest = self._manifest("theirs.service")
+        proc = self._run(manifest, "--owner-map", str(self._map("theirs.service", "serverosd")))
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("is owned by serverosd in the shared owner map", proc.stderr)
+        # And nothing was asked of the service manager at all.
+        _, log = self._fake_systemctl()
+        self.assertEqual(log.read_text() if log.exists() else "", "",
+                         "the fake systemctl was called for a unit this Core does not own")
+
+    def test_the_same_unit_is_acted_on_when_the_map_gives_it_to_this_core(self):
+        """The control: the refusal above is about ownership, not about acting."""
+        manifest = self._manifest("theirs.service")
+        proc = self._run(manifest, "--owner-map", str(self._map("theirs.service", "native-core")))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertNotIn("is owned by", proc.stderr)
+        # It reached the service manager — the FAKE one.
+        _, log = self._fake_systemctl()
+        calls = log.read_text() if log.exists() else ""
+        self.assertIn("restart", calls)
+
+    def test_the_capability_document_agrees_with_the_refusal(self):
+        """The document and the acting path are the same verdict, or this fails."""
+        manifest = self._manifest("theirs.service")
+        owner_map = self._map("theirs.service", "serverosd")
+        document = subprocess.run(
+            [str(self.binary), "--manifest", str(manifest),
+             "--owner-map", str(owner_map), "--capability"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+        self.assertEqual(document.returncode, 0, document.stderr)
+        parsed = json.loads(document.stdout)
+        (claim,) = parsed["claims"]
+        self.assertEqual(claim["verdict"], "NOT_MINE")
+        self.assertFalse(claim["this_core_may_act"])
+
+        acting = self._run(manifest, "--owner-map", str(owner_map))
+        self.assertEqual(acting.returncode, 2,
+                         "the document says NOT_MINE and the acting path acted anyway")
 
 
 if __name__ == "__main__":

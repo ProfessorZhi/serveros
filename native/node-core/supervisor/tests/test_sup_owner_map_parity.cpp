@@ -128,6 +128,16 @@ void every_fixture_on_disk_is_in_the_index() {
     std::error_code ec;
     std::set<std::string> on_disk;
     for (const auto& entry : std::filesystem::directory_iterator(corpus_dir(), ec)) {
+        // A subdirectory is an entry this suite cannot read and the index does
+        // not name — the same blind spot a `.json`-only glob has. Refused rather
+        // than skipped, because a corpus file nobody reads is a fixture nobody
+        // is held to.
+        if (entry.is_directory()) {
+            check::fail(__FILE__, __LINE__,
+                        entry.path().filename().string() +
+                            " is a directory inside the corpus; neither suite reads it");
+            continue;
+        }
         if (!entry.is_regular_file()) continue;
         const std::string name = entry.path().filename().string();
         if (name.size() > 5 && name.compare(name.size() - 5, 5, ".json") == 0 &&

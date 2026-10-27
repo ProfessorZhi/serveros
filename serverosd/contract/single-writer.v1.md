@@ -49,6 +49,28 @@ Shared documents, and who reads them:
 | `serveros/native-core-facts.v1` | C++ `facts.cpp` (written by Python) |
 | `serveros/native-core-capability.v1` | none yet — emitted one-shot by the C++ Core, for inventory and comparison |
 
+## 2a. The gate is now uniform — and it was not, until review
+
+The first version of this document claimed the capability document and the acting
+path "cannot disagree". An independent review found that they could, because the
+owner map was only consulted on the **resident** path:
+
+- `--owner-map` was *required* only when `serve && act`;
+- it was *refused* outside `serve && act` — so the one-shot form
+  (`--manifest M --enable-actions …`) could not be given a map at all;
+- the check itself ran only under `serve && act`.
+
+So a single-pass Core could restart a unit the shared map assigns to `serverosd`,
+while `--capability` on the same manifest printed `NOT_MINE`. Pre-existing
+behaviour, but these documents asserted it away.
+
+**Fixed in this PR**: the map is required and consulted whenever `act` is set, in
+both modes; the toy harness supplies a map; and `tests/test_native_owner_map_parity.py`
+now drives the real binary against a fake `systemctl` to assert the three cases —
+no map refuses, `serverosd`-owned refuses with nothing sent to the service
+manager, `native-core`-owned proceeds (through the fake). The gate is a property
+of acting, not of being resident.
+
 ## 3. The one-writer mechanism, stated accurately
 
 Both writers use `flock(LOCK_EX | LOCK_NB)` on one file. The kernel releases it
@@ -112,7 +134,8 @@ same reason.
 
 It is a report, not an authority: the acting path still refuses through
 `manifest_owner_refusals`, and the document is derived from that function so the
-two cannot disagree.
+two cannot disagree — a claim that only became true once §2a's gate was made
+uniform, and one that a test now drives end to end rather than asserting in prose.
 
 ## 6. What is actually installed — 2026-10-28, read-only
 
@@ -173,7 +196,12 @@ A directory rename is not the question. These are:
    produces the node-runtime composition and nothing named `serverosd`.
 4. **The Python recovery path is gone or delegated**, with the tests that prove
    it — including the ones that today assert the daemon's own retry budget.
-5. **`layers.yaml` registers the directory once**, without `split: true`.
+5. **`docs/architecture/layers.yaml` registers the directory once**, without
+   `split: true`. That file is owned by PR #414 and is present on `main`, but this
+   branch's base predates its merge — so this condition is checked against `main`,
+   not from this worktree. It is deliberately not a fact `ConsumerMatrixTest`
+   asserts, because a test that reads a file absent from its own base would be red
+   for a reason that has nothing to do with this change.
 
 None of the five is true today. That is the honest status of D8/D9.
 

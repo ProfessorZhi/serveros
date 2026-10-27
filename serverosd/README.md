@@ -219,7 +219,7 @@ changed; the "refused map publishes no owners" change is not reachable through
 | `nproc` / RAM | 20 / 31 GiB, shared with other lanes |
 | `pytest` (system python) | **not installed**; suites run under `unittest` |
 | build, 4 binaries, `-O2 -j2` | 25 s |
-| + 27 test executables + run them | 45 s (clean) |
+| + 29 test executables + run them | 46 s (clean) |
 | compiler warnings | **2, both pre-existing** — `core-lite/tests/test_status.cpp:105` (unused function) and `test_status_schema.cpp:510` (unused variable). This recipe compiles the test sources with `-Wall -Wextra -Wpedantic`; CMake does not apply those flags to the core-lite test targets, so CMake would not show them. The four shipped binaries build with zero warnings. |
 
 Because `cmake`/`ctest` are absent here, the CTest registration in
@@ -234,9 +234,9 @@ primary route.
 ```
 $ make -f serverosd/Makefile OUT=… -j2 run-tests
 PASS test_diff                      test_diff: 33 checks, 0 failures
-… 27 lines, all PASS …
+… 29 lines, all PASS …
 PASS core_lite_shipped_profiles     46 checks, 0 failures
-27 test executables + 1 shipped-profile check, 0 failing
+29 test executables + 1 shipped-profile check, 0 failing
 ```
 
 The last line is not an executable: CTest registers one more *invocation* than
@@ -247,10 +247,10 @@ unvalidated.
 | suite group | suites | checks | failures |
 |---|---|---|---|
 | collector (`native/node-core/tests`) | 6 | 384 | 0 |
-| supervisor (`native/node-core/supervisor/tests`) | 15 | 1 192 | 0 |
+| supervisor (`native/node-core/supervisor/tests`) | 17 | 1 286 | 0 |
 | core-lite (`native/node-core/core-lite/tests`) | 6 | 942 | 0 |
 | shipped profiles (extra invocation) | 1 | 46 | 0 |
-| **total** | **28** | **2 564** | **0** |
+| **total** | **30** | **2 658** | **0** |
 
 `test_sup_facts` is 98 checks, up from 65: the 12 new cases are the owner-map
 bounds, the duplicate-unit refusal, and six verdicts of the extracted gate.
@@ -259,10 +259,10 @@ bounds, the duplicate-unit refusal, and six verdicts of the extracted gate.
 $ python3 serverosd/verify_native_runtime.py <build>
 65 checks, 0 failures
 $ python3 serverosd/tests/package_contract.py
-Ran 40 tests … OK
+Ran 46 tests … OK
 ```
 
-The 40 package tests are 24 negative cases against synthetic packages — two
+The 46 package tests are 24 negative cases against synthetic packages — two
 actuators (by count and by promotion), a role changed on a known member, a wrong
 digest, a missing member file, a missing member *row*, an unexpected row, a
 duplicate row, a path escaping `bin/`, a symlinked member, a symlinked `bin/`, a

@@ -2,12 +2,14 @@
   "schema": "serveros/native-core-consumers.v1",
   "observed_at": "2026-10-28",
   "note": "The programs that can observe this host or change it, and what each one is allowed to touch. This half holds only claims that can be checked against THIS repository, so `serverosd/tests/package_contract.py` can fail when it goes stale. Dated device evidence (what is actually installed and running) is a separate record and lives in contract/single-writer.v1.md, because an installed digest is a fact about a machine and not about a tree.",
-
   "writers": [
     {
       "id": "serveros-native-core",
       "language": "c++",
-      "entry": {"kind": "build_product", "package_member": "bin/serveros-native-core"},
+      "entry": {
+        "kind": "build_product",
+        "package_member": "bin/serveros-native-core"
+      },
       "mutates": "systemctl --user start/restart/stop, for units the shared owner map assigns to native-core",
       "gate_sources": [
         "native/node-core/supervisor/src/facts.cpp",
@@ -20,12 +22,15 @@
         "default_path": null,
         "note": "--lease FILE is required with --serve --enable-actions and has no default; the path is whatever the operator passed."
       },
-      "default_mode": "observe-only; acting needs --serve --enable-actions plus --owner-map, --facts, --lease, --link-state and --agent-state"
+      "default_mode": "observe-only; acting requires --enable-actions together with --owner-map, --lease and --state, and link/agent facts — from --facts when resident (--serve), from --link-state/--agent-state in the one-shot form. Since 2026-10-28 the owner map is required by EVERY acting path, not only the resident one."
     },
     {
       "id": "serverosd",
       "language": "python",
-      "entry": {"kind": "repo_path", "path": "bin/serverosd"},
+      "entry": {
+        "kind": "repo_path",
+        "path": "bin/serverosd"
+      },
       "mutates": "systemctl --user start/restart/stop, for units the shared owner map assigns to serverosd",
       "gate_sources": [
         "runtime/daemon.py",
@@ -39,14 +44,41 @@
       "default_mode": "observe-only unless --enable-reconcile"
     }
   ],
-
   "read_only": [
-    {"id": "serveros-node-resource-snapshot", "language": "c++", "entry": {"kind": "build_product", "package_member": "bin/serveros-node-resource-snapshot"}},
-    {"id": "core-lite-status", "language": "c++", "entry": {"kind": "build_product", "package_member": "bin/core-lite-status"}},
-    {"id": "core-lite-profile-check", "language": "c++", "entry": {"kind": "build_product", "package_member": "bin/core-lite-profile-check"}},
-    {"id": "serverosctl", "language": "python", "entry": {"kind": "repo_path", "path": "bin/serverosctl"}}
+    {
+      "id": "serveros-node-resource-snapshot",
+      "language": "c++",
+      "entry": {
+        "kind": "build_product",
+        "package_member": "bin/serveros-node-resource-snapshot"
+      }
+    },
+    {
+      "id": "core-lite-status",
+      "language": "c++",
+      "entry": {
+        "kind": "build_product",
+        "package_member": "bin/core-lite-status"
+      }
+    },
+    {
+      "id": "core-lite-profile-check",
+      "language": "c++",
+      "entry": {
+        "kind": "build_product",
+        "package_member": "bin/core-lite-profile-check"
+      }
+    },
+    {
+      "id": "serverosctl",
+      "language": "python",
+      "entry": {
+        "kind": "repo_path",
+        "path": "bin/serverosctl"
+      },
+      "note": "`serverosctl test-run` calls `systemctl --user stop`/`reset-failed`, but only on the transient scope it created itself (runtime/constrained_runner.py). It is not a writer of managed units and takes no owner map; recorded here so the 'read-only' column is not read as 'runs nothing'."
+    }
   ],
-
   "shared_documents": [
     {
       "schema": "serveros/native-core-owner-map.v1",
@@ -60,7 +92,9 @@
     {
       "schema": "serveros/native-core-facts.v1",
       "purpose": "per-tick link and agent facts for a resident acting Core",
-      "read_by": ["native/node-core/supervisor/src/facts.cpp"],
+      "read_by": [
+        "native/node-core/supervisor/src/facts.cpp"
+      ],
       "written_by": "runtime/native_core_facts.py"
     },
     {
@@ -70,21 +104,20 @@
       "written_by": "native/node-core/supervisor/src/capability.cpp (--capability, stdout, one shot)"
     }
   ],
-
   "single_writer": {
     "mechanism": "flock(LOCK_EX|LOCK_NB) on one file per host scope; the kernel releases it when the holder exits",
     "python_default_lease": "$XDG_RUNTIME_DIR/serveros/native-core.lease",
     "native_default_lease": null,
     "shared_by_declaration": false,
     "why_not": "Both programs flock a path, but only the Python daemon defaults that path. The native Core takes whatever --lease names and checks nothing about it, so 'they contend on one file' is true only when the operator passed the daemon's default explicitly. runtime/daemon.py:963 asserts the stronger claim ('contend on one file by construction'); that sentence is false of the C++ binary as it stands.",
-    "next_pr": "Give --lease the canonical default, or make the acting path refuse a lease path that is not the one the shared declaration names."
+    "next_pr": "Give --lease the canonical default, or make the acting path refuse a lease path that is not the one the shared declaration names.",
+    "rename_owner": "docs/architecture/layers.yaml (owned by PR #414)"
   },
-
   "rename_complete_when": [
     "There is one binary named serverosd that performs bounded recovery, and no second program does — today bin/serverosd is Python and bin/serveros-native-core is C++, and both act.",
     "The owner map still names exactly two owners; retiring one means retiring its gate sources with it, not renaming a directory.",
     "scripts/build.py and scripts/release.py emit and verify the native payload as their own artifact kind (done for the release path in the native-runtime kind; the build face is not).",
     "The Python daemon's bounded-recovery path is either gone or is a thin caller of the native one, with the tests that prove it.",
-    "layers.yaml registers the directory once, without split: true."
+    "docs/architecture/layers.yaml registers the directory once, without split: true (that file is owned by PR #414 and is on main, but this branch's base predates it, so the condition is checked against main rather than from this tree)."
   ]
 }

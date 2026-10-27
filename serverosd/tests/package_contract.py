@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -586,24 +587,33 @@ class ConsumerMatrixTest(unittest.TestCase):
 
         The Python daemon defaults its lease path; the native Core has none. The
         matrix says so with `native_default_lease: null`, and this asserts the
-        reason is still real: the canonical lease filename appears in the Python
-        daemon and nowhere in the native tree. The day someone gives `--lease` a
-        default, this fails and the matrix has to be updated with it — which is
-        the whole point of recording a gap rather than a plan.
+        reason is still real — by looking for an ASSIGNMENT, not for a filename.
+
+        An earlier version of this test grepped one literal token out of
+        `native/**` and its commit message claimed that "the day someone gives
+        --lease a default, this fails". It did not: a default named `core.lease`,
+        or written as two adjacent string literals, or set in a unit file, would
+        all have passed. What is checked now is the property itself — every
+        assignment to `lease_path` comes from `argv`.
         """
         single = self.matrix["single_writer"]
         self.assertIsNone(single["native_default_lease"])
         self.assertFalse(single["shared_by_declaration"])
-        token = "native-core.lease"
+
         daemon = (REPO_ROOT / "runtime" / "daemon.py").read_text(encoding="utf-8")
-        self.assertIn(token, daemon,
+        self.assertIn("native-core.lease", daemon,
                       "the daemon no longer defaults this path; the matrix is stale")
-        for path in (REPO_ROOT / "native").rglob("*"):
-            if not path.is_file() or path.suffix not in {".cpp", ".hpp", ".txt", ".md"}:
-                continue
-            self.assertNotIn(token, path.read_text(encoding="utf-8", errors="replace"),
-                             f"{path} now names the canonical lease; give the matrix "
-                             f"its default and say whether the two programs share it")
+
+        main_cpp = (REPO_ROOT / "native/node-core/supervisor/src/main.cpp"
+                    ).read_text(encoding="utf-8")
+        assignments = [line.strip() for line in main_cpp.splitlines()
+                       if re.search(r"\blease_path\s*=(?!=)", line)]
+        self.assertTrue(assignments, "lease_path is never assigned; the code moved")
+        for line in assignments:
+            self.assertEqual(line, "lease_path = argv[++i];",
+                             "the native Core now derives a lease path from something "
+                             "other than argv; update the matrix with its default and "
+                             "say whether the two programs share it")
 
 
 
