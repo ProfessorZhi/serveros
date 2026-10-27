@@ -265,6 +265,40 @@ class TheChainDeliversAfterTheChatIsGone(Base):
         self.assertEqual(len(self.provider.calls), 1)
 
 
+    def test_completed_without_native_output_is_unknown_never_a_success(self) -> None:
+        """The anti-false-completion rule, exercised through the real chain.
+
+        A device can report `completed` and still have produced nothing the owner
+        asked for. #426 derives a `native-output` gate from the run itself, and
+        #423 refuses to call a completion without it a success.
+
+        The rule is *not* "stay silent": an owner who dispatched work and gets
+        nothing cannot tell a quiet success from a dropout. The message that goes
+        out says `RUN_OUTCOME_UNKNOWN` with ACTION severity and tells the reader
+        not to treat it as success — which is the honest outcome, and is checked
+        here rather than assumed.
+        """
+        adapter = self.cloudcli_adapter(
+            answers=[raw_run(status="completed", with_output=False)])
+        report = self.observer_for(adapter).run_once()
+
+        self.assertEqual(len(self.provider.calls), 1,
+                         "an ambiguous completion is actionable, so it is sent "
+                         "once — silence would be indistinguishable from success")
+        text = self.provider.calls[0]["text"]
+        self.assertIn("RUN_OUTCOME_UNKNOWN", text)
+        self.assertIn("UNKNOWN", text)
+        self.assertNotIn("VERIFIED_GREEN", text)
+        self.assertIn("not treat this as success", text.lower())
+        self.assertIn("native-output=MISSING", text)
+
+        row = report["rows"][0]
+        # `state` is the DELIVERY state: the actionable message did reach the
+        # provider. `outcome` is the milestone's, and it must not be a success.
+        self.assertEqual(row["outcome"], "UNKNOWN")
+        self.assertEqual(row["state"], "DELIVERED")
+
+
 class TheChainStaysOffline(Base):
     """The composition must not acquire an exit no test injected."""
 
