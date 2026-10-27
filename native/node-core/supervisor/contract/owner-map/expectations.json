@@ -1,0 +1,56 @@
+{
+  "schema": "serveros/owner-map-parity-corpus.v1",
+  "note": "One corpus, two readers. The C++ Core (native/node-core/supervisor/src/facts.cpp) and the Python core (runtime/native_core_facts.py) each read every file listed here and must reach the SAME verdict. Parity is asserted on `usable` only, deliberately: the two implementations use different refusal vocabularies (FACTS_MALFORMED vs OWNER_UNKNOWN), and the fact that decides who may act on a unit is whether the map is believed, not which word each side chose for disbelieving it. Each `why` names what would go wrong if the verdict went the other way.",
+  "cases": [
+    {
+      "file": "mixed-owners.json",
+      "usable": true,
+      "why": "The ordinary case: two units, one per owner. Both readers must accept it, or the shared map stops working."
+    },
+    {
+      "file": "empty-units.json",
+      "usable": true,
+      "why": "A map that declares nothing is USABLE and declares nothing. It is not the same fact as an unreadable map, and conflating them would let 'every unit is undeclared' read as 'no map to check against'."
+    },
+    {
+      "file": "unknown-owner.json",
+      "usable": false,
+      "why": "The owner vocabulary is closed. A third name is not a reason to guess which program holds the pen."
+    },
+    {
+      "file": "wrong-schema.json",
+      "usable": false,
+      "why": "A differently-shaped document would be parsed as if its fields meant the same thing."
+    },
+    {
+      "file": "stray-field.json",
+      "usable": false,
+      "why": "An unread field is refused rather than ignored; a typo'd key that is silently dropped is a rule nobody applied."
+    },
+    {
+      "file": "empty-unit-name.json",
+      "usable": false,
+      "why": "An empty unit id names nothing, and a map that assigns nothing an owner is not a map."
+    },
+    {
+      "file": "not-an-object.json",
+      "usable": false,
+      "why": "Valid JSON that is not an object has no units, no schema and no owner: it is malformed, not empty."
+    },
+    {
+      "file": "duplicate-unit.json",
+      "usable": false,
+      "why": "The same unit twice is the one document where a reader that 'keeps the first' and a reader that 'keeps the last' would each hand the pen to a different program. RFC 8259 leaves it undefined, so both readers refuse it."
+    },
+    {
+      "file": "too-many-units.json",
+      "usable": false,
+      "why": "65 units exceeds both readers' bound of 64. A reader that accepted it would accept a document its counterpart refuses, and the two would disagree about which units exist."
+    },
+    {
+      "file": "long-unit.json",
+      "usable": false,
+      "why": "A 201-byte unit id exceeds both readers' bound of 200 bytes."
+    }
+  ]
+}

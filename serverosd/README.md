@@ -137,6 +137,35 @@ Three things about that are deliberate:
   the displaced revision to `previous`. All of it is under the host-level runtime
   root.
 
+## One writer — the consumer matrix
+
+[`contract/single-writer.v1.md`](contract/single-writer.v1.md) records which
+programs can observe or change a host, what gates each one, and — the part that
+was missing — **which shared document each of them reads**. Its machine-checkable
+half is [`consumers.v1.json`](consumers.v1.json), held to this repository by
+`tests/package_contract.py`.
+
+Two findings there are worth knowing before reading anything else:
+
+- **The lease path is not shared by construction.** Both writers `flock` a file;
+  only the Python daemon *defaults* that path. `--lease` on the C++ side has no
+  default, so the daemon's "they contend on one file by construction" is false of
+  the C++ binary as it stands.
+- **L1 is `NOT_INSTALLED` on Dell/fjd.** The two services running there are L2,
+  started from source checkouts — one of them from a commit that exists on no
+  remote. The dated evidence is §6 of that contract.
+
+The C++ Core can now say what it is:
+
+```sh
+serveros-native-core --manifest M --owner-map O --capability
+```
+
+It prints `serveros/native-core-capability.v1` — program, version, mode,
+manifest digest, the owner map's own verdict, and one row per unit
+(`OWNED` / `NOT_MINE` / `UNDECLARED`) — then exits. It takes no lease, touches no
+service and writes nothing, so it is safe on a live host.
+
 ## The single executor: one owner map, two readers
 
 `serveros/native-core-owner-map.v1` is the document that says which program owns

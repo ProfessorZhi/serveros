@@ -24,6 +24,8 @@ set(supervisor_cases
   test_sup_probe
   test_sup_lease
   test_sup_facts
+  test_sup_capability
+  test_sup_owner_map_parity
 )
 
 foreach(case IN ITEMS ${supervisor_cases})

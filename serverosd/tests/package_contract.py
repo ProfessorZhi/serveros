@@ -517,5 +517,104 @@ class RealTreeTest(unittest.TestCase):
                     self.assertNotIn(dotted, forbidden, f"{name} calls {dotted}")
 
 
+class ConsumerMatrixTest(unittest.TestCase):
+    """The consumer matrix, checked against the repository it describes.
+
+    `consumers.v1.json` is a claim about which programs can observe or change
+    this host and what gates them. A matrix nobody checks is a diagram: it says
+    what was true on the day somebody drew it. These tests hold the repo half of
+    it — every path it names, every gate source, every schema — so the day the
+    code moves is the day the matrix goes red.
+    """
+
+    def setUp(self):
+        self.matrix = json.loads(
+            (REPO_ROOT / "serverosd" / "consumers.v1.json").read_text(encoding="utf-8"))
+
+    def test_the_schema_and_shape(self):
+        self.assertEqual(self.matrix["schema"], "serveros/native-core-consumers.v1")
+        ids = [w["id"] for w in self.matrix["writers"]]
+        self.assertEqual(sorted(ids), ["serveros-native-core", "serverosd"],
+                         "there are exactly two programs that can mutate a unit")
+        self.assertTrue(all(w["lease"]["required"] for w in self.matrix["writers"]),
+                        "a writer without a lease is the split-lock this file exists for")
+
+    def test_every_named_path_exists(self):
+        for writer in self.matrix["writers"] + self.matrix["read_only"]:
+            entry = writer["entry"]
+            if entry["kind"] == "repo_path":
+                self.assertTrue((REPO_ROOT / entry["path"]).is_file(),
+                                f"{writer['id']}: {entry['path']}")
+            elif entry["kind"] == "build_product":
+                # MEMBERS is keyed by bare name; the package path is `bin/<name>`.
+                name = entry["package_member"].removeprefix("bin/")
+                self.assertIn(name, package_manifest.MEMBERS,
+                              f"{writer['id']} names a member the package does not build")
+            else:
+                self.fail(f"{writer['id']} has an unknown entry kind {entry['kind']!r}")
+        for writer in self.matrix["writers"]:
+            for source in writer["gate_sources"]:
+                self.assertTrue((REPO_ROOT / source).is_file(),
+                                f"{writer['id']}: gate source {source} is gone")
+
+    def test_the_shared_documents_are_read_by_files_that_exist(self):
+        for document in self.matrix["shared_documents"]:
+            for reader in document["read_by"]:
+                self.assertTrue((REPO_ROOT / reader).is_file(),
+                                f"{document['schema']}: reader {reader} is gone")
+            self.assertTrue(document["written_by"], document["schema"])
+
+    def test_the_owner_map_schema_is_the_one_both_readers_implement(self):
+        declared = next(d for d in self.matrix["shared_documents"]
+                        if d["schema"] == "serveros/native-core-owner-map.v1")["schema"]
+        cpp = (REPO_ROOT / "native/node-core/supervisor/include/supervisor/facts.hpp"
+               ).read_text(encoding="utf-8")
+        self.assertIn(f'"{declared}"', cpp, "the C++ reader names another schema")
+        facts = _load_module(REPO_ROOT / "runtime" / "native_core_facts.py",
+                             "native_core_facts_matrix")
+        self.assertEqual(facts.OWNER_MAP_SCHEMA, declared)
+
+    def test_the_capability_schema_matches_the_cpp_constant(self):
+        declared = next(d for d in self.matrix["shared_documents"]
+                        if d["schema"] == "serveros/native-core-capability.v1")["schema"]
+        header = (REPO_ROOT / "native/node-core/supervisor/include/supervisor/capability.hpp"
+                  ).read_text(encoding="utf-8")
+        self.assertIn(f'kCapabilitySchema = "{declared}"', header)
+
+    def test_the_lease_gap_is_recorded_and_still_true(self):
+        """The matrix's sharpest claim, held to the code it is about.
+
+        The Python daemon defaults its lease path; the native Core has none. The
+        matrix says so with `native_default_lease: null`, and this asserts the
+        reason is still real: the canonical lease filename appears in the Python
+        daemon and nowhere in the native tree. The day someone gives `--lease` a
+        default, this fails and the matrix has to be updated with it — which is
+        the whole point of recording a gap rather than a plan.
+        """
+        single = self.matrix["single_writer"]
+        self.assertIsNone(single["native_default_lease"])
+        self.assertFalse(single["shared_by_declaration"])
+        token = "native-core.lease"
+        daemon = (REPO_ROOT / "runtime" / "daemon.py").read_text(encoding="utf-8")
+        self.assertIn(token, daemon,
+                      "the daemon no longer defaults this path; the matrix is stale")
+        for path in (REPO_ROOT / "native").rglob("*"):
+            if not path.is_file() or path.suffix not in {".cpp", ".hpp", ".txt", ".md"}:
+                continue
+            self.assertNotIn(token, path.read_text(encoding="utf-8", errors="replace"),
+                             f"{path} now names the canonical lease; give the matrix "
+                             f"its default and say whether the two programs share it")
+
+
+
+def _load_module(path: Path, name: str):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 if __name__ == "__main__":
     unittest.main()
