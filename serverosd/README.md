@@ -101,6 +101,37 @@ Output layout:
 The manifest contract, including every refusal and why it exists, is
 [`contract/package.v1.md`](contract/package.v1.md).
 
+### The release payload
+
+`<out>` is a build directory; it is not a releasable artifact. `make dist`
+assembles the payload and nothing else:
+
+```
+<out>/dist/ARTIFACT.json   # kinds: ["native-runtime"] — what release.py dispatches on
+<out>/dist/PACKAGE.json    # the members, their digests, the one actuator
+<out>/dist/bin/            # the four binaries
+```
+
+```sh
+make -f serverosd/Makefile OUT=/path/to/build/serverosd dist
+python3 scripts/release.py promote --artifact /path/to/build/serverosd/dist \
+    --revision <sha> --runtime-root <root> --composition <name> --no-reload
+```
+
+Three things about that are deliberate:
+
+- **`obj/` and `tests/` are not in the payload.** The release path stages a
+  directory into an immutable revision and refuses any file the package did not
+  declare, so pointing it at the build root is refused rather than cleaned up
+  afterwards. A revision cannot be edited once it is staged.
+- **`ARTIFACT.json` is what makes the kind a declaration rather than a guess.**
+  Without it `release.py` would fall back to "which verifier's required members
+  does this directory happen to satisfy", which is documented as the path for
+  revisions staged before kinds were recorded.
+- **Nothing is installed.** This kind writes no unit, no CLI shim, and never asks
+  systemd for a reload. `promote` swaps two symlinks under the host-level
+  runtime root and writes a receipt; `rollback` swaps them back.
+
 ## The single executor: one owner map, two readers
 
 `serveros/native-core-owner-map.v1` is the document that says which program owns
