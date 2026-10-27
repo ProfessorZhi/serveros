@@ -1008,6 +1008,15 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
         else:
             safe_listed.append(name)
 
+    # A symlink is not a member. `is_file()` follows it, so a payload could
+    # "carry" a required member that lives outside the artifact entirely — and
+    # the digest would match, because the bytes are the bytes. The native
+    # verifier refuses a linked member for the same reason.
+    linked = sorted(str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*")
+                    if p.is_symlink())
+    for name in linked:
+        problems.append(f"{name} is a symlink; a member must be a file in the payload")
+
     on_disk = {str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*") if p.is_file()}
     on_disk.discard(ARTIFACT_MANIFEST)
     on_disk.discard(TREE_MANIFEST)
@@ -1033,8 +1042,23 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
 
     tree_digest = _l2_tree_digest([{"path": name, "sha256": recorded.get(name, "")}
                                    for name in safe_listed])
-    if (manifest.get("source") or {}).get("tree_sha256") != tree_digest:
+    source_block = manifest.get("source")
+    if source_block is not None and not isinstance(source_block, dict):
+        problems.append(f"source is a {type(source_block).__name__}, not an object")
+        source_block = {}
+    if (source_block or {}).get("tree_sha256") != tree_digest:
         problems.append("source.tree_sha256 does not describe this member list")
+
+    # --- required members, here as well as in the shared precheck -------------
+    # The shared loop in `verify_revision` already enforces this for the release
+    # path, and HANDOFF §6.3 says so. It is repeated because `verify_l2_layer` is
+    # also a public entry point (PR #431's parity test calls it directly), and a
+    # verifier that checks less when called directly is the failure this whole
+    # module is about. The peer's `verify` checks it internally for the same
+    # reason.
+    for required in REQUIRED_MEMBERS[kind]:
+        if required not in files:
+            problems.append(f"{kind} artifact is missing its required member {required}")
 
     # --- separation, dependencies, platforms ---------------------------------
     problems.extend(_l2_layer_problems(kind, set(safe_listed)))
@@ -1057,8 +1081,16 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
                             f"provider forwards the running CLI's schema and must not "
                             f"ship a copy that can disagree with it")
 
-    l2 = manifest.get("l2") or {}
-    declared = set((l2.get("requires") or {}).get("modules") or [])
+    l2 = manifest.get("l2")
+    if not isinstance(l2, dict):
+        problems.append(f"l2 is a {type(l2).__name__}, not an object; an artifact "
+                        f"with no l2 block is not one of these kinds")
+        l2 = {}
+    requires = l2.get("requires")
+    if requires is not None and not isinstance(requires, dict):
+        problems.append("l2.requires is not an object")
+        requires = {}
+    declared = set((requires or {}).get("modules") or [])
     external = set(l2.get("external_in_repo") or [])
     try:
         imported = _l2_declared_modules(files)
@@ -1110,9 +1142,17 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
             "external_in_repo": sorted(external)}
 
 
-def _refuse_if_not_installable(report: dict, revision: str) -> bool:
-    """True when the caller must stop. The release path's own fail-closed point."""
-    if report.get("installable", True):
+def _refuse_if_not_installable(report: dict, revision: str, *, kind: str) -> bool:
+    """True when the caller must stop. The release path's own fail-closed point.
+
+    Fail-closed means the ABSENCE of a verdict is a refusal, for the kinds that
+    have one. It is scoped by `kind` rather than defaulted globally, because the
+    three kinds that predate this verdict never carry the field and must keep
+    promoting exactly as they did.
+    """
+    if kind not in L2_KINDS:
+        return False
+    if report.get("installable") is True:
         return False
     reasons = report.get("standalone_reasons") or []
     detail = reasons[0] if reasons else "the artifact is not installable on its own"
@@ -1649,7 +1689,7 @@ def cmd_promote(args) -> int:
             return 1
         # A dry run that answered "would promote" for a payload the real run
         # will refuse would be the same lie in a cheaper place.
-        if _refuse_if_not_installable(report, args.revision):
+        if _refuse_if_not_installable(report, args.revision, kind=kind):
             return 1
         print(f"would promote  {args.revision}  kind={kind} ({basis})  "
               f"tree={report['tree_hash']}")
@@ -1663,7 +1703,7 @@ def cmd_promote(args) -> int:
             print(f"REFUSED {problem}", file=sys.stderr)
         print(f"staged but NOT promoted: {rev_dir}", file=sys.stderr)
         return 1
-    if _refuse_if_not_installable(report, args.revision):
+    if _refuse_if_not_installable(report, args.revision, kind=kind):
         print(f"staged but NOT promoted: {rev_dir}", file=sys.stderr)
         return 1
 
@@ -1747,7 +1787,7 @@ def cmd_rollback(args) -> int:
         return 1
     # The target is verified BEFORE `current` moves, and a target that cannot run
     # on its own is not a rollback — it is a second outage.
-    if _refuse_if_not_installable(report, rev.name):
+    if _refuse_if_not_installable(report, rev.name, kind=kind):
         return 1
 
     unit_text = None

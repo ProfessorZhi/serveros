@@ -70,7 +70,7 @@ NAMES = {"l2-node": "fleet-l2-node", "l2-hub": "fleet-l2-hub"}
 
 def make_l2(base: Path, kind: str, *, version: str = "1.4.0+n20261028a",
             standalone: bool = True, external_in_repo=(), files=None,
-            mutate=None) -> Path:
+            mutate=None, reseal: bool = False) -> Path:
     """A staged L2 payload in the shape #431's `manifest_for` produces."""
     payload = dict(files if files is not None else BASE_FILES[kind])
     art = base / f"{kind}-{abs(hash((kind, version, standalone))) % 10000}"
@@ -107,6 +107,10 @@ def make_l2(base: Path, kind: str, *, version: str = "1.4.0+n20261028a",
     }
     if mutate is not None:
         mutate(manifest, art)
+    if reseal:
+        # Opt-in, and deliberately NOT the default. A mutation that silently
+        # recomputes the digests it is supposed to contradict turns every future
+        # digest test green, and the repair is invisible in the test body.
         manifest["members"] = sorted(set(manifest["members"]))
         manifest["member_sha256"] = {
             name: hashlib.sha256((art / name).read_bytes()).hexdigest()
@@ -217,17 +221,95 @@ class L2VerificationTest(unittest.TestCase):
             path = art / "fleet_mcp/tools.schema.json"
             path.write_text('{"tools": [{"name": "run_get", "inputSchema": {}}]}')
             manifest["members"] = manifest["members"] + ["fleet_mcp/tools.schema.json"]
-        art = make_l2(self.base, "l2-hub", mutate=vendor)
+        art = make_l2(self.base, "l2-hub", mutate=vendor, reseal=True)
         report = release.verify_l2_layer(art, kind="l2-hub")
         self.assertFalse(report["ok"])
         self.assertIn("vendored CloudCLI tool schema", " ".join(report["problems"]))
+
+    def test_a_symlinked_member_is_refused(self):
+        """A link is not a member: the bytes match, and the payload lacks the file."""
+        art = make_l2(self.base, "l2-hub")
+        outside = self.base / "outside.py"
+        outside.write_text('"""fleet_mcp."""\n')     # same bytes as the real member
+        real = art / "fleet_mcp/__init__.py"
+        real.unlink()
+        real.symlink_to(outside)
+        report = release.verify_l2_layer(art, kind="l2-hub")
+        self.assertFalse(report["ok"])
+        self.assertIn("is a symlink", " ".join(report["problems"]))
+
+    def test_a_duplicated_member_is_refused(self):
+        art = make_l2(self.base, "l2-node")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["members"] = manifest["members"] + [manifest["members"][0]]
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("more than once", " ".join(report["problems"]))
+
+    def test_an_absolute_member_path_is_refused(self):
+        art = make_l2(self.base, "l2-node")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["members"] = manifest["members"] + ["/etc/passwd"]
+        manifest["member_sha256"]["/etc/passwd"] = "0" * 64
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("not a relative path", " ".join(report["problems"]))
+
+    def test_a_required_member_missing_is_refused_even_on_a_direct_call(self):
+        """`verify_revision` prechecks this too; a direct caller must not get less."""
+        art = make_l2(self.base, "l2-hub")
+        (art / "fleet_mcp/server.py").unlink()
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["members"] = [name for name in manifest["members"]
+                               if name != "fleet_mcp/server.py"]
+        manifest["member_sha256"].pop("fleet_mcp/server.py", None)
+        manifest["source"]["tree_sha256"] = tree_digest(
+            [{"path": name, "sha256": manifest["member_sha256"][name]}
+             for name in manifest["members"]])
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+
+        report = release.verify_l2_layer(art, kind="l2-hub")
+        self.assertFalse(report["ok"])
+        self.assertIn("missing its required member fleet_mcp/server.py",
+                      " ".join(report["problems"]))
+
+    def test_a_tree_digest_over_a_subset_is_refused(self):
+        art = make_l2(self.base, "l2-node")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        first = manifest["members"][0]
+        manifest["source"]["tree_sha256"] = tree_digest(
+            [{"path": first, "sha256": manifest["member_sha256"][first]}])
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("does not describe this member list", " ".join(report["problems"]))
+
+    def test_a_manifest_with_another_schema_is_refused(self):
+        art = make_l2(self.base, "l2-node")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["schema"] = "serveros/something-else"
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("schema", " ".join(report["problems"]))
+
+    def test_a_payload_with_no_l2_block_is_refused(self):
+        art = make_l2(self.base, "l2-node")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["l2"] = "not an object"
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("is not one of these kinds", " ".join(report["problems"]))
 
     # ------------------------------------------------------------ separation
     def test_a_node_artifact_carrying_the_hub_ingress_is_refused(self):
         def leak(manifest, art):
             (art / "fleet_mcp/server.py").write_text("x = 1\n")
             manifest["members"] = manifest["members"] + ["fleet_mcp/server.py"]
-        art = make_l2(self.base, "l2-node", mutate=leak)
+        art = make_l2(self.base, "l2-node", mutate=leak, reseal=True)
         report = release.verify_l2_layer(art, kind="l2-node")
         self.assertFalse(report["ok"])
         self.assertIn("must not carry hub-side", " ".join(report["problems"]))
@@ -237,7 +319,7 @@ class L2VerificationTest(unittest.TestCase):
             (art / "fleet_mcp/node/connector.py").parent.mkdir(parents=True)
             (art / "fleet_mcp/node/connector.py").write_text("x = 1\n")
             manifest["members"] = manifest["members"] + ["fleet_mcp/node/connector.py"]
-        art = make_l2(self.base, "l2-hub", mutate=leak)
+        art = make_l2(self.base, "l2-hub", mutate=leak, reseal=True)
         report = release.verify_l2_layer(art, kind="l2-hub")
         self.assertFalse(report["ok"])
         self.assertIn("must not carry device-side", " ".join(report["problems"]))
@@ -247,7 +329,7 @@ class L2VerificationTest(unittest.TestCase):
             (art / "bindings").mkdir(parents=True)
             (art / "bindings" / "dell.yaml").write_text("device: dell\n")
             manifest["members"] = manifest["members"] + ["bindings/dell.yaml"]
-        art = make_l2(self.base, "l2-hub", mutate=bind)
+        art = make_l2(self.base, "l2-hub", mutate=bind, reseal=True)
         report = release.verify_l2_layer(art, kind="l2-hub")
         self.assertFalse(report["ok"])
         self.assertIn("machine-specific", " ".join(report["problems"]))
@@ -256,7 +338,7 @@ class L2VerificationTest(unittest.TestCase):
         def secret(manifest, art):
             (art / "tokens.json").write_text("{}\n")
             manifest["members"] = manifest["members"] + ["tokens.json"]
-        art = make_l2(self.base, "l2-hub", mutate=secret)
+        art = make_l2(self.base, "l2-hub", mutate=secret, reseal=True)
         report = release.verify_l2_layer(art, kind="l2-hub")
         self.assertFalse(report["ok"])
         self.assertIn("credential-shaped", " ".join(report["problems"]))
@@ -264,7 +346,7 @@ class L2VerificationTest(unittest.TestCase):
     def test_an_undeclared_third_party_import_is_refused(self):
         def need_yaml(manifest, art):
             (art / "fleet_mcp/config.py").write_text("import yaml\n")
-        art = make_l2(self.base, "l2-node", mutate=need_yaml)
+        art = make_l2(self.base, "l2-node", mutate=need_yaml, reseal=True)
         report = release.verify_l2_layer(art, kind="l2-node")
         self.assertFalse(report["ok"])
         self.assertIn("does not declare", " ".join(report["problems"]))
@@ -273,7 +355,7 @@ class L2VerificationTest(unittest.TestCase):
         def need_yaml(manifest, art):
             (art / "fleet_mcp/config.py").write_text("import yaml\n")
             manifest["l2"]["requires"]["modules"] = ["yaml"]
-        art = make_l2(self.base, "l2-node", mutate=need_yaml)
+        art = make_l2(self.base, "l2-node", mutate=need_yaml, reseal=True)
         report = release.verify_l2_layer(art, kind="l2-node")
         self.assertTrue(report["ok"], report["problems"])
 
@@ -444,21 +526,35 @@ class ExistingKindsAreUnchangedTest(unittest.TestCase):
         self.assertEqual(release.REQUIRED_MEMBERS["native-runtime"],
                          ("PACKAGE.json", "bin/serveros-native-core"))
 
-    def test_no_directory_can_satisfy_two_kinds(self):
-        """`resolve_kind`'s structural fallback needs exactly one fit.
+    def test_a_directory_holding_both_l2_halves_is_refused_as_ambiguous(self):
+        """#431's HANDOFF §5 says the two member lists are disjoint. They are not.
 
-        The two L2 lists SHARE `fleet_mcp/__init__.py` — HANDOFF-419 §5 says they
-        are disjoint, and that is not quite true. It does not matter, and this
-        asserts the property that does: a directory holding one kind's complete
-        list never holds another's, so the fallback still has exactly one answer.
+        A directory can hold `fleet_mcp/server.py` AND `fleet_mcp/node/connector.py`
+        and satisfy both complete lists. What keeps `resolve_kind` single-valued is
+        not disjointness — it is the refusal below: two fits is an error, not a
+        first-match. This asserts the actual property rather than the claim.
         """
-        kinds = list(release.REQUIRED_MEMBERS)
-        for kind in kinds:
-            present = set(release.REQUIRED_MEMBERS[kind])
-            fits = [other for other in kinds
-                    if set(release.REQUIRED_MEMBERS[other]) <= present]
-            self.assertEqual(fits, [kind],
-                             f"a {kind} directory also satisfies {fits}")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for rel in (release.REQUIRED_MEMBERS["l2-node"]
+                        + release.REQUIRED_MEMBERS["l2-hub"]):
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("x\n")
+            with self.assertRaises(SystemExit) as caught:
+                release.resolve_kind(root)
+            self.assertIn("cannot tell what kind of artifact this is",
+                          str(caught.exception))
+
+    def test_each_l2_kind_on_its_own_still_fits_exactly_one(self):
+        for kind in ("l2-node", "l2-hub"):
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                for rel in release.REQUIRED_MEMBERS[kind]:
+                    path = root / rel
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text("x\n")
+                self.assertEqual(release.resolve_kind(root), (kind, "structural"))
 
     def test_a_node_shaped_directory_still_resolves_to_node_runtime(self):
         with tempfile.TemporaryDirectory() as td:
