@@ -15,6 +15,7 @@ The provider is `runtime/direct_lark_notify.py`; the transport under it is
 """
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import sys
@@ -54,6 +55,19 @@ DEVICE = "device:tokyo-shared-dev-01"
 def _cap_state(entry):
     """A capability entry's state, whether it is a bare word or {state, reason}."""
     return entry if isinstance(entry, str) else str(entry.get("state"))
+
+
+def _sent_at_hours_ago(hours: float) -> str:
+    """A `sent_at` placed relative to now, not to the day this file was written.
+
+    The service's 14-day card-update window is measured against the clock at the
+    moment `update` runs, so a fixture pinned to a calendar date silently ages
+    out of it and turns «a card sent a moment ago» into «a card past the
+    window». Relative is what the test means: the card is patchable because it
+    was just sent.
+    """
+    return (datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(hours=hours)).isoformat()
 
 
 def fake_run_factory(seen, *, message_id="om_real_1", fail=None):
@@ -255,7 +269,7 @@ class CardCreateThenPatchTest(unittest.TestCase):
         self.assertEqual(json.loads(content)["schema"], "2.0")
 
         patched = sender.update({"message_id": remote_id,
-                                 "sent_at": "2026-10-13T06:00:00Z", "card": card})
+                                 "sent_at": _sent_at_hours_ago(1), "card": card})
         self.assertEqual(patched["state"], "DELIVERED")
         argv = self.seen[1]
         self.assertEqual(argv[1:3], ["im", "messages"])
@@ -281,6 +295,23 @@ class CardCreateThenPatchTest(unittest.TestCase):
                                 "sent_at": "2020-01-01T00:00:00+00:00",
                                 "card": {"schema": "2.0"}})
         self.assertEqual(answer["state"], "FAILED")
+        self.assertEqual(self.seen, [])
+
+    def test_a_patch_just_outside_the_window_refuses_and_does_not_send(self):
+        """Making «just sent» relative must not widen the window.
+
+        A card one hour past the service's 14 days is still refused, and the
+        refusal still does not fall back to sending: the second card that would
+        appear is the caller's decision, not this transport's.
+        """
+        mt.run = self._run
+        sender = mt.sender(RECIPIENT)
+        answer = sender.update({
+            "message_id": "om_card_1",
+            "sent_at": _sent_at_hours_ago(14 * 24 + 1),
+            "card": {"schema": "2.0"}})
+        self.assertEqual(answer["state"], "FAILED")
+        self.assertIn("14 天", answer["why"])
         self.assertEqual(self.seen, [])
 
 
