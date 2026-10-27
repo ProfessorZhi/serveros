@@ -185,10 +185,27 @@ TEST_BINS := $(foreach t,$(COLLECTOR_TESTS) $(SUPERVISOR_TESTS) $(CORELITE_TESTS
 SHIPPED_PROFILES := $(REPO)/native/node-core/core-lite/profiles/tokyo-vince.profile.json \
                     $(REPO)/native/node-core/core-lite/profiles/dell-fjd.profile.json
 
-.PHONY: all tests run-tests manifest verify clean
+.PHONY: all tests run-tests manifest verify dist clean
 .DEFAULT_GOAL := all
 
 all: $(BINARIES) manifest
+
+# THE RELEASE PAYLOAD. `release.py promote --artifact` copies a directory into an
+# immutable `revisions/<revision>`, and the native verifier refuses any file the
+# package did not declare — so the artifact handed to it is `bin/` plus
+# `PACKAGE.json`, not this build root, which also carries `obj/` and `tests/`.
+# Pointing the release path at the build root is how a revision ends up holding
+# files nobody declared, and a revision cannot be edited after it is staged.
+#
+# The manifest is copied byte-for-byte: its digests are over `bin/`'s bytes, so a
+# re-generated one would describe a different build.
+dist: all
+	@rm -rf $(OUT)/dist
+	@mkdir -p $(OUT)/dist/bin
+	@cp -p $(BINARIES) $(OUT)/dist/bin/
+	@cp -p $(OUT)/PACKAGE.json $(OUT)/dist/
+	@cp -p $(OUT)/ARTIFACT.json $(OUT)/dist/
+	@echo "payload: $(OUT)/dist  (release.py promote --artifact $(OUT)/dist)"
 
 # --- directories -----------------------------------------------------------
 $(OUT)/obj $(OUT)/bin $(OUT)/tests:
