@@ -1,0 +1,651 @@
+{
+  "schema": "serveros/cloudcli-v1-roundtrips-capture.v1",
+  "captured_at_utc": "2026-10-27T08:24:00Z",
+  "captured_from": "http://127.0.0.1:3001/mcp tools/call, scratch sessions only (project D:/tmp); ids/timestamps kept, unrelated user content removed",
+  "cloudcli_package_version": "1.41.0",
+  "device": {
+    "hostname": "FJ-NJ-CL-250028",
+    "windows_build": "10.0.19045"
+  },
+  "notes": [
+    "Every call ran on a session this lane created; no existing user session was sent, interrupted, reconfigured or closed.",
+    "Session/run identifiers are replaced with <...> tokens; the shapes and error codes are verbatim.",
+    "No credential, token or environment value is recorded here."
+  ],
+  "cases": {
+    "create_no_message_claude_per_run": {
+      "tool": "session_create",
+      "arguments": {
+        "project": "<project-ref>",
+        "provider": "claude",
+        "lifecycleMode": "per-run"
+      },
+      "isError": false,
+      "result": {
+        "sessionId": "<session-claude-per-run>"
+      }
+    },
+    "create_no_message_codex_per_run": {
+      "tool": "session_create",
+      "arguments": {
+        "project": "<project-ref>",
+        "provider": "codex",
+        "lifecycleMode": "per-run"
+      },
+      "isError": false,
+      "result": {
+        "sessionId": "<session-codex-per-run>"
+      }
+    },
+    "create_with_message_claude_per_run": {
+      "tool": "session_create",
+      "arguments": {
+        "project": "<project-ref>",
+        "provider": "claude",
+        "lifecycleMode": "per-run",
+        "permissionMode": "default",
+        "message": "Compatibility probe. Reply with exactly the token COMPAT-OK and nothing else.",
+        "correlationId": "compat-probe-20261027"
+      },
+      "isError": false,
+      "result": {
+        "sessionId": "<session-claude-per-run>",
+        "deliveryId": null,
+        "runId": "<run-1>"
+      }
+    },
+    "send_per_run": {
+      "tool": "session_send",
+      "arguments": {
+        "session": "<session-claude-per-run>",
+        "message": "Reply with exactly COMPAT-SEND-OK and nothing else."
+      },
+      "isError": false,
+      "result": {
+        "deliveryId": null,
+        "runId": "58d8178b-3cf1-429d-a4f6-a122b6d5a866",
+        "queued": false,
+        "queuedMessageUuid": null,
+        "source": "mcp",
+        "blockedBy": null
+      }
+    },
+    "send_busy_per_run": {
+      "tool": "session_send",
+      "arguments": {
+        "session": "<session-claude-per-run>",
+        "message": "<second message>"
+      },
+      "isError": true,
+      "result": {
+        "code": "SESSION_BUSY",
+        "message": "Session \"676632e0-630a-4ad3-8fab-6e977aa19e9a\" already has a run in progress.",
+        "retryable": true,
+        "details": {
+          "runId": "58d8178b-3cf1-429d-a4f6-a122b6d5a866",
+          "hint": "This session already has a run in progress; use run_get to follow it, or retry later."
+        }
+      }
+    },
+    "send_resident_first": {
+      "tool": "session_send",
+      "arguments": {
+        "session": "<session-resident>",
+        "message": "<long counting prompt>"
+      },
+      "isError": false,
+      "result": {
+        "deliveryId": null,
+        "runId": "9df02da3-f595-4fd4-8a1b-58caa52f43dc",
+        "queued": false,
+        "queuedMessageUuid": null,
+        "source": "mcp",
+        "blockedBy": null
+      }
+    },
+    "send_resident_queued": {
+      "tool": "session_send",
+      "arguments": {
+        "session": "<session-resident>",
+        "message": "<queued probe>"
+      },
+      "isError": false,
+      "result": {
+        "deliveryId": "f484d317-523d-4f4e-87f6-13e5ca0beee8",
+        "runId": "84f39389-4c18-4892-98a9-c9c7f1f9a6a0",
+        "queued": true,
+        "queuedMessageUuid": "f484d317-523d-4f4e-87f6-13e5ca0beee8",
+        "source": "mcp",
+        "blockedBy": null
+      }
+    },
+    "run_get_hit_completed": {
+      "tool": "run_get",
+      "arguments": {
+        "runId": "<run-1>",
+        "waitSeconds": 20
+      },
+      "isError": false,
+      "result": {
+        "idKind": "run",
+        "runId": "a1b1c184-ea82-4079-8da9-a96bd3568cc3",
+        "deliveryId": null,
+        "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+        "source": "mcp",
+        "status": "completed",
+        "phase": null,
+        "toolName": null,
+        "activityNote": "This session has no activity record.",
+        "startedAt": {
+          "relative": "just now",
+          "iso": "2026-10-27T08:16:21.201Z"
+        },
+        "completedAt": {
+          "relative": "just now",
+          "iso": "2026-10-27T08:16:31.734Z"
+        },
+        "elapsedMs": 10615,
+        "bootId": "a6d0f308-81df-4edb-8811-66400b51870e",
+        "outcome": "settled",
+        "reason": null,
+        "lastAssistantMessage": {
+          "id": "45dee66c-1e85-45ac-96b9-ec35b1a74af7_0",
+          "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+          "timestamp": "2026-10-27T08:16:31.167Z",
+          "provider": "claude",
+          "kind": "text",
+          "role": "assistant",
+          "content": "COMPAT-OK",
+          "forkAnchorId": "45dee66c-1e85-45ac-96b9-ec35b1a74af7"
+        },
+        "note": null,
+        "explanation": null
+      }
+    },
+    "run_get_hit_aborted": {
+      "tool": "run_get",
+      "arguments": {
+        "runId": "<run-3>",
+        "waitSeconds": 5
+      },
+      "isError": false,
+      "result": {
+        "idKind": "run",
+        "runId": "c92408ea-80c3-4dd3-9968-5e3810f61f09",
+        "deliveryId": null,
+        "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+        "source": "mcp",
+        "status": "aborted",
+        "phase": null,
+        "toolName": null,
+        "activityNote": "This session has no activity record.",
+        "startedAt": {
+          "relative": "just now",
+          "iso": "2026-10-27T08:17:21.333Z"
+        },
+        "completedAt": {
+          "relative": "just now",
+          "iso": "2026-10-27T08:17:25.879Z"
+        },
+        "elapsedMs": 13152,
+        "bootId": "a6d0f308-81df-4edb-8811-66400b51870e",
+        "outcome": "settled",
+        "reason": null,
+        "lastAssistantMessage": {
+          "id": "685a8bc3-398d-4783-bbf0-e18785603a99_0",
+          "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+          "timestamp": "2026-10-27T08:16:56.562Z",
+          "provider": "claude",
+          "kind": "text",
+          "role": "assistant",
+          "content": "COMPAT-SEND-OK",
+          "forkAnchorId": "685a8bc3-398d-4783-bbf0-e18785603a99"
+        },
+        "note": null,
+        "explanation": null
+      }
+    },
+    "run_get_delivery_miss": {
+      "tool": "run_get",
+      "arguments": {
+        "deliveryId": "<queued-delivery>"
+      },
+      "isError": true,
+      "result": {
+        "code": "RUN_NOT_FOUND",
+        "message": "This deliveryId was never issued.",
+        "retryable": false,
+        "details": {
+          "idKind": "delivery",
+          "runId": null,
+          "deliveryId": "f484d317-523d-4f4e-87f6-13e5ca0beee8",
+          "reason": "never_issued",
+          "bootId": "a6d0f308-81df-4edb-8811-66400b51870e",
+          "fallback": {
+            "session": null,
+            "messages": [],
+            "note": "No session can be determined, so there is nothing to fall back to."
+          }
+        }
+      }
+    },
+    "run_get_run_hit_from_queued_send": {
+      "tool": "run_get",
+      "arguments": {
+        "runId": "<run-2>"
+      },
+      "isError": false,
+      "result": {
+        "idKind": "run",
+        "runId": "6c86b701-bc3a-4b67-86cc-fec38fd8d52a",
+        "deliveryId": null,
+        "sessionId": "e940fb48-0df6-4b80-aa8d-6a7e44540572",
+        "source": "mcp",
+        "status": "running",
+        "phase": null,
+        "toolName": null,
+        "activityNote": "This session has no activity record.",
+        "startedAt": {
+          "relative": "just now",
+          "iso": "2026-10-27T08:23:49.311Z"
+        },
+        "completedAt": null,
+        "elapsedMs": 44,
+        "bootId": "a6d0f308-81df-4edb-8811-66400b51870e",
+        "reason": null,
+        "lastAssistantMessage": null,
+        "note": null,
+        "explanation": null
+      }
+    },
+    "run_get_both_ids": {
+      "tool": "run_get",
+      "arguments": {
+        "runId": "a",
+        "deliveryId": "b"
+      },
+      "isError": true,
+      "result": {
+        "code": "INVALID_ARGUMENT",
+        "message": "Name only one of \"runId\" and \"deliveryId\"; they address different id spaces and cannot be combined.",
+        "retryable": false,
+        "details": {
+          "fields": [
+            {
+              "path": "deliveryId",
+              "problem": "cannot be combined with \"runId\""
+            }
+          ]
+        }
+      }
+    },
+    "run_get_neither_id": {
+      "tool": "run_get",
+      "arguments": {},
+      "isError": true,
+      "result": {
+        "code": "INVALID_ARGUMENT",
+        "message": "One of \"runId\" or \"deliveryId\" is required and must be a non-empty string.",
+        "retryable": false,
+        "details": {
+          "fields": [
+            {
+              "path": "runId",
+              "problem": "required"
+            }
+          ]
+        }
+      }
+    },
+    "run_get_legacy_aliases_accepted_run_expired": {
+      "tool": "run_get",
+      "arguments": {
+        "runId": "<run-1>",
+        "session": "<session-claude-per-run>",
+        "wait": false
+      },
+      "isError": true,
+      "result": {
+        "code": "RUN_NOT_FOUND",
+        "message": "This run existed but is past its retention window; its result can no longer be retrieved.",
+        "retryable": false,
+        "details": {
+          "idKind": "run",
+          "runId": "a1b1c184-ea82-4079-8da9-a96bd3568cc3",
+          "deliveryId": null,
+          "reason": "expired",
+          "bootId": "a6d0f308-81df-4edb-8811-66400b51870e",
+          "fallback": {
+            "session": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+            "messages": [
+              {
+                "id": "d097930e-0bff-42c3-bd3b-0e7d0a64dfa5",
+                "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+                "timestamp": "2026-10-27T08:16:25.888Z",
+                "provider": "claude",
+                "kind": "text",
+                "role": "user",
+                "content": "Compatibility probe. Reply with exactly the token COMPAT-OK and nothing else.",
+                "transcriptAnchorId": "d097930e-0bff-42c3-bd3b-0e7d0a64dfa5"
+              },
+              {
+                "id": "4392a528-e3d8-4032-acd8-5a53d68639ba_0",
+                "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+                "timestamp": "2026-10-27T08:16:31.163Z",
+                "provider": "claude",
+                "kind": "thinking",
+                "content": "The user asks for exactly the token COMPAT-OK and nothing else. But there's a language instruction saying respond in Chinese. The explicit user request overrides: reply with exactly \"COMPAT-OK\". Also the superpowers skill says invoke skills, but no skill applies to a compatibility probe. Reply exactly."
+              },
+              {
+                "id": "45dee66c-1e85-45ac-96b9-ec35b1a74af7_0",
+                "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+                "timestamp": "2026-10-27T08:16:31.167Z",
+                "provider": "claude",
+                "kind": "text",
+                "role": "assistant",
+                "content": "COMPAT-OK",
+                "forkAnchorId": "45dee66c-1e85-45ac-96b9-ec35b1a74af7"
+              },
+              {
+                "id": "ac2a1e31-8825-4c00-be7e-2c7d45c708cd",
+                "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+                "timestamp": "2026-10-27T08:16:52.179Z",
+                "provider": "claude",
+                "kind": "text",
+                "role": "user",
+                "content": "Reply with exactly COMPAT-SEND-OK and nothing else.",
+                "transcriptAnchorId": "ac2a1e31-8825-4c00-be7e-2c7d45c708cd"
+              },
+              {
+                "id": "685a8bc3-398d-4783-bbf0-e18785603a99_0",
+                "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+                "timestamp": "2026-10-27T08:16:56.562Z",
+                "provider": "claude",
+                "kind": "text",
+                "role": "assistant",
+                "content": "COMPAT-SEND-OK",
+                "forkAnchorId": "685a8bc3-398d-4783-bbf0-e18785603a99"
+              },
+              {
+                "id": "b2edbd79-bcd0-43ca-850b-e00331dba802",
+                "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+                "timestamp": "2026-10-27T08:17:22.842Z",
+                "provider": "claude",
+                "kind": "text",
+                "role": "user",
+                "content": "Write out the numbers 1 to 900, one per line, with no commentary. Take your time.",
+                "transcriptAnchorId": "b2edbd79-bcd0-43ca-850b-e00331dba802"
+              }
+            ],
+            "note": null
+          }
+        }
+      }
+    },
+    "interrupt_running": {
+      "tool": "session_interrupt",
+      "arguments": {
+        "session": "<session-claude-per-run>"
+      },
+      "isError": false,
+      "result": {
+        "aborted": true
+      }
+    },
+    "interrupt_idle": {
+      "tool": "session_interrupt",
+      "arguments": {
+        "session": "<session-claude-per-run>"
+      },
+      "isError": false,
+      "result": {
+        "aborted": false,
+        "message": "This session currently has no run in flight, so there is no run to abort."
+      }
+    },
+    "close_per_run_refused": {
+      "tool": "session_close",
+      "arguments": {
+        "session": "<session-claude-per-run>",
+        "force": false
+      },
+      "isError": true,
+      "result": {
+        "code": "LIFECYCLE_MODE_NOT_RESIDENT"
+      }
+    },
+    "close_resident": {
+      "tool": "session_close",
+      "arguments": {
+        "session": "<session-resident>",
+        "force": false
+      },
+      "isError": false,
+      "result": {
+        "hostId": "host-a5699ed9-e36e-4586-9c76-597715b788e7",
+        "sessionId": "e940fb48-0df6-4b80-aa8d-6a7e44540572",
+        "mode": "resident",
+        "closeReason": "user",
+        "leases": [
+          {
+            "kind": "resident-policy"
+          },
+          {
+            "kind": "turn",
+            "runId": "turn-5"
+          }
+        ]
+      }
+    },
+    "session_get_idle_no_host": {
+      "tool": "session_get",
+      "arguments": {
+        "session": "<session-codex-historical>"
+      },
+      "isError": false,
+      "result": {
+        "session": "<session-codex-historical>",
+        "pendingInteraction": null,
+        "host": null,
+        "run": null,
+        "hostNote": "No host: this session currently has no host process (per-invocation process mode and not running)."
+      }
+    },
+    "session_get_resident_host": {
+      "tool": "session_get",
+      "arguments": {
+        "session": "<session-resident>"
+      },
+      "isError": false,
+      "result": {
+        "host": {
+          "mode": "resident",
+          "state": "idle",
+          "pid": 5492,
+          "peerName": "tmp-15",
+          "leases": [
+            {
+              "kind": "resident-policy"
+            }
+          ]
+        },
+        "run": null,
+        "hostNote": null
+      }
+    },
+    "session_read_latest": {
+      "tool": "session_read",
+      "arguments": {
+        "session": "<session-claude-per-run>",
+        "mode": "latest",
+        "limit": 4
+      },
+      "isError": false,
+      "result": {
+        "session": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+        "mode": "latest",
+        "content": "[2026-10-27T08:16:31.167Z] assistant: COMPAT-OK\n[2026-10-27T08:16:52.179Z] user: Reply with exactly COMPAT-SEND-OK and nothing else.\n[2026-10-27T08:16:56.562Z] assistant: COMPAT-SEND-OK\n[2026-10-27T08:17:22.842Z] user: Write out the numbers 1 to 900, one per line, with no commentary. Take your time."
+      }
+    },
+    "session_read_outline": {
+      "tool": "session_read",
+      "arguments": {
+        "session": "<session-claude-per-run>",
+        "mode": "outline",
+        "limit": 5
+      },
+      "isError": false,
+      "result": {
+        "session": "<session-claude-per-run>",
+        "mode": "outline",
+        "content": "[2026-10-27T08:16:25.888Z] #0 d097930e-0bff-42c3-bd3b-0e7d0a64dfa5: Compatibility probe. Reply with exactly the token COMPAT-OK and nothing else.\n[2026-10-27T08:16:52.179Z] #3 ac2a1e31-8825-4c00-be7e-2c7d45c708cd: Reply with exactly COMPAT-SEND-OK and nothing else.\n[2026-10-27T08:17:22.842Z] #5 b2edbd79-bcd0-43ca-850b-e00331dba802: Write out the numbers 1 to 900, one per line, with no commentary. Take your time"
+      }
+    },
+    "session_read_around_unknown": {
+      "tool": "session_read",
+      "arguments": {
+        "session": "<session-claude-per-run>",
+        "mode": "around",
+        "aroundId": "bogus-id"
+      },
+      "isError": true,
+      "result": {
+        "code": "INTERNAL_ERROR",
+        "message": "No message with id \"bogus-id\" was found in session \"<session-claude-per-run>\".",
+        "retryable": false
+      }
+    },
+    "reconfigure_unsupported_mode": {
+      "tool": "session_reconfigure",
+      "arguments": {
+        "session": "<session-claude-per-run>",
+        "permissionMode": "compat-invalid"
+      },
+      "isError": true,
+      "result": {
+        "code": "UNSUPPORTED_PERMISSION_MODE",
+        "message": "Provider \"claude\" does not support permission mode \"compat-invalid\"; supported: default, auto, acceptEdits, bypassPermissions, plan.",
+        "retryable": false,
+        "details": {
+          "supported": [
+            "default",
+            "auto",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan"
+          ]
+        }
+      }
+    },
+    "reconfigure_supported_mode": {
+      "tool": "session_reconfigure",
+      "arguments": {
+        "session": "<session-claude-per-run>",
+        "permissionMode": "acceptEdits"
+      },
+      "isError": false,
+      "result": {
+        "ok": true,
+        "session": "<session-claude-per-run>",
+        "stored": {
+          "permissionMode": "acceptEdits"
+        },
+        "applied": "next-turn",
+        "liveSupported": true,
+        "message": "This provider was not reconfigured live (no live host was available); the change takes effect next turn."
+      }
+    },
+    "create_project_path_with_backslashes": {
+      "tool": "session_create",
+      "arguments": {
+        "project": "D:\\\\tmp",
+        "provider": "claude",
+        "lifecycleMode": "per-run",
+        "permissionMode": "compat-invalid"
+      },
+      "isError": true,
+      "result": {
+        "code": "PROJECT_NOT_FOUND",
+        "message": "No project has a title containing \"D:\\tmp\".",
+        "retryable": false,
+        "details": {
+          "query": "D:\\tmp",
+          "kind": "project",
+          "candidates": []
+        }
+      }
+    },
+    "create_project_path_with_forward_slashes": {
+      "tool": "session_create",
+      "arguments": {
+        "project": "D:/tmp",
+        "provider": "claude",
+        "lifecycleMode": "per-run",
+        "permissionMode": "compat-invalid"
+      },
+      "isError": true,
+      "result": {
+        "code": "UNSUPPORTED_PERMISSION_MODE",
+        "message": "Provider \"claude\" does not support permission mode \"compat-invalid\"; supported: default, auto, acceptEdits, bypassPermissions, plan.",
+        "retryable": false,
+        "details": {
+          "supported": [
+            "default",
+            "auto",
+            "acceptEdits",
+            "bypassPermissions",
+            "plan"
+          ]
+        }
+      }
+    },
+    "codex_run_completed_without_message": {
+      "tool": "run_get",
+      "arguments": {
+        "runId": "<codex-run>",
+        "waitSeconds": 25
+      },
+      "isError": false,
+      "result": {
+        "idKind": "run",
+        "runId": "6d0aaa3b-7cfa-4dea-bf12-09746727a212",
+        "deliveryId": null,
+        "sessionId": "094e49af-7547-409a-b32b-c945203d9d14",
+        "source": "mcp",
+        "status": "completed",
+        "phase": null,
+        "toolName": null,
+        "activityNote": "This session has no activity record.",
+        "startedAt": {
+          "relative": "just now",
+          "iso": "2026-10-27T08:20:15.738Z"
+        },
+        "completedAt": {
+          "relative": "just now",
+          "iso": "2026-10-27T08:20:26.174Z"
+        },
+        "elapsedMs": 10506,
+        "bootId": "a6d0f308-81df-4edb-8811-66400b51870e",
+        "outcome": "settled",
+        "reason": null,
+        "lastAssistantMessage": null,
+        "note": "This run has ended, but the session has no readable assistant message.",
+        "explanation": null
+      }
+    },
+    "codex_session_read_outline": {
+      "tool": "session_read",
+      "arguments": {
+        "session": "<session-codex-historical>",
+        "mode": "outline",
+        "limit": 3
+      },
+      "isError": false,
+      "result": {
+        "session": "<session-codex-historical>",
+        "mode": "outline",
+        "content": "[2026-10-26T16:00:26.743Z] #0 01a178f0-f423-7160-9576-2233edb4bbf9: <user turn text omitted in fixture>\n[2026-10-26T16:00:59.610Z] #5 codex_62dcb5ed-e550-41bc-82df-8ef3789a2ed0: <user turn text omitted in fixture>\n[2026-10-26T16:07:30.010Z] #21 01a178f7-8218-7ae3-8f52-944b92b7c2b1: <user turn text omitted in fixture>"
+      }
+    }
+  }
+}
