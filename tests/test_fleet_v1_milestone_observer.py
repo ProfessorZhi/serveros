@@ -564,14 +564,31 @@ class RecoveryScopeAndBadState(Base):
         instance = self.make([self.run_watch()], source)
         key = self.row(instance.run_once())["delivery_key"]
         self.assertEqual(len(self.provider.calls), 1)
+        # The ledger keeps the FULL identity; the provider receives the <=50
+        # transport digest #423 derives from it. Conflating the two is the
+        # regression this assertion used to encode.
+        self.assertIsInstance(key, str)
+        self.assertTrue(key.startswith("milestone:cloudcli:"),
+                        "the ledger row carries the full delivery identity")
+        self.assertGreater(len(key), 50,
+                           "the full identity is longer than the transport ceiling")
+        transport = m.transport_key_for(key)
+        self.assertRegex(transport, r"^ms1:[0-9a-f]{46}$")
+        self.assertEqual(len(transport), 50)
+        self.assertNotEqual(transport, key)
 
         self.clock.advance(60)  # inside the transport's dedupe window
         second = instance.run_once()
         self.assertEqual(self.row(second)["state"], observer.DELIVERED)
+        self.assertEqual(self.row(second)["delivery_key"], key,
+                         "recovery keeps the full ledger identity")
         self.assertEqual(len(self.provider.calls), 2)
-        self.assertEqual(self.provider.calls[0]["idempotency_key"], key)
-        self.assertEqual(self.provider.calls[1]["idempotency_key"], key,
+        self.assertEqual(self.provider.calls[0]["idempotency_key"], transport)
+        self.assertEqual(self.provider.calls[1]["idempotency_key"], transport,
                          "a recovery re-asks the SAME key, never a new message")
+        receipt = m.MilestoneLedger(self.ledger).get(key)
+        self.assertEqual(receipt["transport_key"], transport,
+                         "the ledger maps the full identity to the short key")
 
     def test_a_permission_refusal_is_terminal_not_retried_forever(self):
         source = ScriptedSource({"cloudcli:run_demo_1": SourceRefused("PERMISSION_DENIED")})
