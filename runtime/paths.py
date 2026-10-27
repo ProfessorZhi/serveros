@@ -407,7 +407,7 @@ FORBIDDEN_SUFFIXES = ("legacy", "legacy-artifacts", "old-artifacts",
 HOME_DOT_SERVEROS_FILES = ("node.yaml", "targets.yaml", "controller.yaml")
 # Host-level declarations this root CARRIES that `node.py` does not open. Two,
 # and both were already being read from this directory by modules that ship in
-# this tree before either had a name here: `runtime/business_calendar.py` reads
+# this tree before either had a name here: `runtime/reports/business_calendar.py` reads
 # `business-calendar.yaml` (the calendar this host's broadcasts are scheduled
 # by) and `runtime/card_source.py` reads `service-bindings.yaml` (where this
 # host's card deliveries point).

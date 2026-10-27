@@ -129,7 +129,8 @@ def _owner_or_placeholder() -> str:
 
 
 def _current_period(at):
-    calendar = _load("serveros_runtime_business_calendar", _HERE / "business_calendar.py")
+    calendar = _load("serveros_runtime_business_calendar",
+                     _HERE / "reports" / "business_calendar.py")
     card_period = _load("serveros_runtime_card_period", _HERE / "card_period.py")
     try:
         reading = calendar.read_declaration()

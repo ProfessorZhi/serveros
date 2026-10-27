@@ -98,7 +98,7 @@ def _load(name: str, filename: str):
 
 
 business_calendar = _load("serveros_runtime_business_calendar",
-                          "business_calendar.py")
+                          "reports/business_calendar.py")
 
 #: Where the instance's business-calendar declaration lives: the same
 #: `~/.serveros/` the binding lives in, one directory for what this node

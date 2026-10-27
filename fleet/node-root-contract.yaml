@@ -140,7 +140,7 @@ files:
 # a person's decision.
 declarations:
   business-calendar.yaml:
-    opened_by: runtime/business_calendar.py
+    opened_by: runtime/reports/business_calendar.py
     holds: >-
       the business-day calendar this host's broadcasts are scheduled by —
       which days are workdays, which are rest days, and which year the
