@@ -1,0 +1,84 @@
+# 仓库分层登记表：每个顶层目录属于哪一层。
+#
+# 说明见 FLEET-FOUR-LAYERS.md。tests/test_repository_layers.py 守着它：
+#   - 每个被 git 跟踪的顶层目录都必须在 `directories` 里登记，且只登记一次；
+#   - 登记的目录必须真实存在；
+#   - plugins/ 下每个插件都必须在 `plugins` 里登记并写明是哪一侧；
+#   - `rules` 里的依赖方向当前成立（测试逐条检查）。
+#
+# 新增一个顶层目录时先在这里登记，再写代码。`split` 表示这个目录目前跨层，
+# `parts` 写清楚每一部分属于哪一层；拆分计划见 FLEET-FOUR-LAYERS.md §5。
+schema: serveros/repository-layers.v1
+
+layers:
+  L0: 权威：设备身份与拓扑、工作状态、能力目录。四层都读它，它不依赖四层。
+  L1: 设备运行底座：每台设备常驻的 serverosd 与 Native Core，资源/服务/网络观测与受控自愈。
+  L2: 接入与枢纽：设备侧 Node Connector 接 CloudCLI，东京中心把各设备包成一个 Fleet MCP。
+  L3: 设备能力家族：每台设备装的 ability / skill / plugin 组合，以及对实际安装情况的观测。
+  L4: 指挥侧：给 Claude Code / Codex / ChatGPT 指挥端用的插件与 Operator Skills。
+  product: ServerOS 信息循环（飞书、理解、记忆、卡片、日报），不属于 Fleet 四层。
+  shared: 构建、发布、测试、文档等所有层共用的工具与资料。
+
+directories:
+  native: L1
+  bin: shared        # 各层入口脚本：serverosd(L1)、serveros-fleet-owned(L2)、serverosctl(工具)
+  runtime:
+    split: true
+    parts:
+      L1: 节点守护与自愈、监控（daemon, health, probes, desired, inventory, resource_*, anomaly,
+          attribution, containers, network_*, native_core_facts, native_reader, lease_store, paths,
+          state_root, protection, managed_mutation, serverosd.service 等）
+      L0: 代理/工作控制的持久记录（agent_control_store, coordination, continuation*, dispatch_attempts,
+          approval, owner_policy, agent_sessions）
+      L2: 枢纽装配（fleet_mcp_owner, fleet_core_bridge, fleet_monitor_*, fleet_recovery_events, fleet_audience）
+      product: 卡片、日报、告警投递与工作台（cards*, card_*, daily_report, report_*, alert_*, notifications,
+          direct_lark_notify, live_sender, workbench*, presentation, business_calendar）
+  fleet:
+    split: true
+    parts:
+      L0: 设备身份与拓扑（registry.yaml, profiles.yaml, transport.py, view.py 与各 *-contract.yaml）
+      L2: 旧控制面，待退役或降为适配层（controller.py, agent_control_router.py, node.py, interfaces.py,
+          remote_desktop_commander.py）
+  fleet_mcp:
+    split: true
+    parts:
+      L2-hub: 东京中心 Fleet MCP（fleet.py, tools.py, http_transport.py, oauth.py, human_auth.py,
+          cloudcli_native.py, providers/, deploy/）
+      L2-node: 每台设备的 Node Connector（node/）
+  mcp: L2            # 旧的每会话 MCP 适配器（node_mcp, agent_mcp, 各 provider），与 fleet_mcp 并存
+  workengine: L0
+  abilities: L3
+  plugin: L3         # 设备侧插件组合：bundle.yaml + profiles/<profile>.yaml
+  skills: L3         # 设备侧 serveros skill 源
+  plugins: L4        # 生成好的可安装插件，见下方 `plugins`
+  .claude-plugin: L4 # 仓库根 marketplace 清单
+  context: product
+  intake: product
+  memory: product
+  space: product
+  relations: product
+  documents: product
+  research-exchange: product
+  workbench: product
+  deploy: product    # V13 监控卡片的部署描述
+  integration: shared
+  integrations: shared   # 各条交付线的构建器、验收与证据；插件的源在 fleet-v1-first-install/plugin
+  releases: shared
+  scripts: shared
+  docs: shared
+  tests: shared
+  .github: shared
+
+plugins:
+  serveros-fleet-ingress:
+    layer: L4
+    side: commander
+    source: integrations/fleet-v1-first-install/plugin   # 改这里，然后 scripts/fleet_plugin.py build
+
+rules:
+  - id: hub-does-not-reach-into-runtime-or-mcp
+    text: fleet_mcp/ 不加载 runtime/ 或 mcp/ 的代码；需要持久账本时由 runtime/fleet_mcp_owner.py 从外面注入。
+  - id: commander-plugins-carry-no-code
+    text: plugins/ 下只有生成的清单、Skill 与资源，没有可执行代码。
+  - id: identity-does-not-depend-on-the-hub
+    text: fleet/ 的身份层不加载 fleet_mcp/；枢纽依赖身份层，反过来不行。
