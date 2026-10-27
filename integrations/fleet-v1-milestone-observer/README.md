@@ -61,6 +61,12 @@ The boot check has two halves: the *payload's binding* must equal the watch's
 boot (above), and the *run's own* `bootId` must equal that binding — the second
 is #423's classifier, which yields `RUN_OUTCOME_UNKNOWN` rather than success.
 
+For a CI watch, `device_ref` is the **source's** stable identity (for example
+`device:ci-<owner>-<repo>`), not the observing host. It is part of #423's
+delivery key, so two Tokyo replicas watching the same workflow produce one
+delivered message and one `DUPLICATE`; using each observer's host id instead
+would make the same green a distinct milestone per replica.
+
 ## Reads, retries and bounds
 
 * **Backoff** for reads that can clear (`RUN_NOT_FOUND` while a run is still
