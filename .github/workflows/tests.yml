@@ -44,6 +44,7 @@ jobs:
         run: >
           python3 -m pytest -q -p no:cacheprovider
           tests/test_fleet_plugin_marketplace.py tests/test_fleet_operator_skills.py
+          tests/test_fleet_plugin_independence.py
           tests/test_fleet_cc_dev_plugin_client_e2e_gate.py tests/test_fleet_cc_release_adapter.py
           tests/test_fleet_v1_first_install.py
 
