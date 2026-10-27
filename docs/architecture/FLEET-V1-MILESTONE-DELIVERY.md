@@ -111,10 +111,14 @@ L2 观察者 ──候选事实──▶ product 投递者 ──▶ 东京唯�
 product ──事件──▶ L3 摘要 ──可选──▶ product（缺席则走确定性模板）
 ```
 
-也就是：`product` 依赖 `L3` 的是**可选**的被调用方；`L3` 反过来不依赖 `product` 的事实产生路径。**唯一被禁止的方向**（负向对照，写下来是为了能被核查）是：
+也就是：`product` 依赖 `L3` 的是**可选**的被调用方；`L3` 反过来不依赖 `product` 的事实产生路径。
+
+**注意图中没有 `L1 → L3` 这条箭头。** L1 只产本机事实（并与 L0 对账），**不直接激活 L3**；L3 由 product 侧的事件激活。这与 §3.1 说 L3「被事件激活、**不观测**」是同一件事——上一版把它画成 `L1 ──观测──▶ L3`，与 §3.1 矛盾，已删。
+
+**唯一被禁止的方向**（负向对照，写下来是为了能被核查）：
 
 ```text
-L1 ──✗──▶ L2 / L3 / product / 东京出口     （本机自愈必须断网可用，不等 Agent）
+L1 ──不依赖──▶ L2 / L3 / product / 东京出口     （本机自愈必须断网可用，不等 Agent）
 ```
 
 ### 3.3 「签名依赖」的定义
@@ -516,7 +520,7 @@ delivery_key = "milestone:" + source + ":" + device_ref + ":" + milestone_kind
 
 | PR | 边界 |
 |---|---|
-| **#423**（投递器 + 判定器，`86e49992`） | **本合同 §5 的三根轴以它的常量为准**；它是 Draft、未合并、未部署。本合同不改它的源码，只描述它 |
+| **#423**（投递器 + 判定器，`86e49992`） | **本合同 §5 的三根轴以它的常量为准**；它是 Draft、未合并、未部署。本合同不改它的源码，只描述它。**双向引用缺口**：审查实测 #423 的 README 与代码对本合同 **0 引用**；补齐由 [#417 词表同步](https://github.com/ProfessorZhi/serveros/issues/417#issuecomment-6449735069) 推动，不在本 PR 内改它的文件 |
 | **#426**（真源适配器，`6781b3aa`） | 提供 CloudCLI / GitHub Actions 两个只读适配器；**凭据/传输由外部注入**，因此「真实 `SourceRead` 注入」仍未接线（§15） |
 | **#428**（观察器 tick，`b4a62092`） | `run_periodic(interval_seconds, sleep, max_ticks)` 只是**有界入口**，调用方拥有循环；**常驻调度、重启策略不在 #428 里**，也不在 RC #427 里 |
 | #407 / #416（L2 交付链） | 不并入本链条的实现；`fleet_mcp/` 的 `events.py` / `run_watcher.py` 在 `main` 上**不存在**，本合同只按「候选」引用 |
@@ -601,7 +605,7 @@ delivery_key = "milestone:" + source + ":" + device_ref + ":" + milestone_kind
 | Hosted CI 收集到这些测试 | RC **#427 `a55f09e9`** | **`HOSTED_CI`（#423、#426）**；#428 **不在该 RC** | RC 的 7 个检查 **7/7 pass**，其中 `Suite (shard 4/4)` pass；RC 合并清单里没有 #428，所以 **#428 的 hosted CI 尚无干净证据** |
 | 各 Draft 自己的 CI | #422 / #423 / #426 / #428 | `shard 4/4` 红 | **归因继承**：`test_direct_lark_notify::CardCreateThenPatchTest::test_create_returns_an_id_and_patch_names_it`（2026-10-13 墙钟窗口过期），修复在 #415，尚未合并；shard 1–3 在我观察到的那次 run 里 pass（#423 目前在整套重跑，未再核对）。**不写 known-failures，不重跑求绿** |
 | 真实 `SourceRead` 注入（生产接线） | #426 / #428 | **`NOT_RUN`** | #423 模块 docstring 自己写着「THE ONE MISSING PRODUCTION SEAM」：`SourceRead` 只有 `FixtureSource`；#426 的适配器**凭据与传输由外部注入**，没有人调用它们 |
-| 常驻调度 / 重启策略 | #428 | **`NOT_RUN`** | `run_periodic(interval_seconds, sleep, max_ticks)` 只是**有界入口**，注释明写「The caller owns the loop… Starting it, unit rendering and restart policy are a separate release」 |
+| 独立定时 observer（有界、可恢复、无 LLM） | #428 | **`NOT_RUN`** | **有界 tick 有了**（`run_periodic(interval_seconds, sleep, max_ticks)`，Draft），但**常驻进程不存在**：注释明写「The caller owns the loop… Starting it, unit rendering and restart policy are a separate release」，`main` 上没有该进程，也没有 unit/重启策略 |
 | 单次真实飞书送达 + 回执回读（`CLIENT_E2E`） | 全部 | `NOT_RUN` | **未授权**；本波只用 mock |
 | 三设备只读清单 | 全部 | **`NOT_COLLECTED`** | P 线回填（§13.3） |
 | 真机 E2E（`REAL_DEVICE`） | 全部 | `NOT_RUN` | 未授权；且没有产物可装 |
