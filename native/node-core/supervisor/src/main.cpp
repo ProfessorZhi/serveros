@@ -516,24 +516,25 @@ int main(int argc, char** argv) {
                          owners.code.c_str(), owners.reason.c_str());
             return 2;
         }
-        bool misowned = false;
-        for (const nodecore::supervisor::ServiceDesired& service : manifest.services) {
-            const std::string* owner = owners.owner_of(service.unit);
-            if (owner == nullptr) {
+        // The decision is `manifest_owner_refusals`; only the wording lives
+        // here. Keeping the two apart is what lets a test assert the verdict
+        // without standing up a service manager or capturing stderr.
+        const std::vector<nodecore::supervisor::OwnerRefusal> misowned =
+            nodecore::supervisor::manifest_owner_refusals(manifest, owners);
+        for (const nodecore::supervisor::OwnerRefusal& refusal : misowned) {
+            if (refusal.owner.empty()) {
                 std::fprintf(stderr,
                              "manifest unit %s has no entry in the owner map; an undeclared "
                              "unit is not this Core's to act on\n",
-                             service.unit.c_str());
-                misowned = true;
-            } else if (*owner != "native-core") {
+                             refusal.unit.c_str());
+            } else {
                 std::fprintf(stderr,
                              "manifest unit %s is owned by %s in the shared owner map; this "
                              "Core may not act on it\n",
-                             service.unit.c_str(), owner->c_str());
-                misowned = true;
+                             refusal.unit.c_str(), refusal.owner.c_str());
             }
         }
-        if (misowned) {
+        if (!misowned.empty()) {
             return 2;
         }
     }
