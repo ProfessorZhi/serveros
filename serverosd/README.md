@@ -171,22 +171,23 @@ bounds, the duplicate-unit refusal, and six verdicts of the extracted gate.
 
 ```
 $ python3 serverosd/verify_native_runtime.py <build>
-47 checks, 0 failures
+48 checks, 0 failures
 $ python3 serverosd/tests/package_contract.py
-Ran 29 tests … OK
+Ran 31 tests … OK
 ```
 
-The 29 package tests are 15 negative cases against synthetic packages (two
-actuators, a promoted actuator, a wrong digest, a missing member, a symlink, a
-non-0755 member, an undeclared file under `bin/`, a claimed `bin/serverosd`, a
-rename, an unknown role, a foreign schema, an empty member list, a missing
-manifest, unreadable JSON, a version that is not the binary's); 4 of the writer's
-own (digests it recorded, an indescribable file, a declared member never built,
-and provenance measured versus not measured); and 10 about the real tree — the
-single actuator, the writer and reader agreeing on roles and reserved paths, the
-version source, every declared source existing, the recipe building every member,
-the in-repo refusal, and an AST assertion that none of these Python files runs a
-command.
+The 31 package tests are 16 negative cases against synthetic packages (two
+actuators, a promoted actuator, a wrong digest, a missing member, a symlinked
+member, a symlinked `bin/`, a non-0755 member, an undeclared file under `bin/`, a
+claimed `bin/serverosd`, a rename, an unknown role, a foreign schema, an empty
+member list, a missing manifest, unreadable JSON, a version that is not the
+binary's); 4 of the writer's own (digests it recorded, an indescribable file, a
+declared member never built, and provenance measured versus not measured); and 11
+about the real tree — the single actuator, the writer and reader agreeing on roles
+and reserved paths, the version source, every declared source existing, the recipe
+building every member, the two things its `OUT` guard needs, the writer refusing a
+symlinked path into the tree, and an AST assertion that none of these Python files
+runs a command.
 
 ## NOT_INSTALLED — what is not true today
 
