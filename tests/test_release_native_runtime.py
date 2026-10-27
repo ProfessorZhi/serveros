@@ -34,6 +34,11 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = ROOT / "scripts" / "release.py"
 
+# Loading the payload's writer by path writes `serverosd/__pycache__/` into the
+# repository. It is gitignored, so nothing would show it, which is exactly why it
+# is switched off rather than relied on to stay invisible.
+sys.dont_write_bytecode = True
+
 
 def _load(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
@@ -190,8 +195,14 @@ class NativeRuntimeReleaseTests(unittest.TestCase):
         self.assertEqual(unit.read_text(), "# untouched sentinel\n")
         self.assertEqual(shim.read_text(), "# untouched sentinel\n")
 
-    def test_a_native_promote_runs_no_subprocess_at_all(self):
-        """Not "no reload flag": no process. The flag is a caller's promise."""
+    def test_a_native_promote_runs_no_command_through_subprocess(self):
+        """Not "no reload flag": no command. The flag is a caller's promise.
+
+        Scoped honestly: this intercepts `subprocess.run`, which is the only way
+        this file starts a process. It does not prove there is no `os.system` or
+        `os.spawn*` — by inspection there is none on this path, and this test is
+        the part a machine checks.
+        """
         art = make_native_artifact(self.base, "one")
         args = mock.Mock()
         args.runtime_root = self.runtime_root
@@ -225,8 +236,9 @@ class NativeRuntimeReleaseTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("rolled back    rev-2 -> rev-1", proc.stdout)
         self.assertEqual(self.current(), "rev-1")
-        # And the rollback learned the kind from rev-1's own receipt rather than
-        # falling back to the default verifier.
+        # And the rollback learned the kind from rev-1 itself — its own
+        # ARTIFACT.json here, its receipt when the artifact declared several —
+        # rather than falling back to the default node verifier.
         self.assertEqual(previous.resolve().name, "rev-2")
         self.assertFalse(self.unit_dir.exists())
 
@@ -305,6 +317,38 @@ class NativeRuntimeReleaseTests(unittest.TestCase):
                       proc.stderr)
         self.assertIsNone(self.current())
 
+    def test_an_empty_undeclared_directory_is_refused(self):
+        """A file-only sweep cannot see this, and `copytree` keeps empty dirs."""
+        art = make_native_artifact(self.base, "one")
+        (art / "obj").mkdir()
+        proc = self.promote(art, "rev-1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("directory present that the package did not declare: obj",
+                      proc.stderr)
+        self.assertIsNone(self.current())
+
+    def test_a_manifest_that_is_not_an_object_is_refused_rather_than_crashing(self):
+        def replace_with_list(art: Path) -> None:
+            (art / package_manifest.PACKAGE_MANIFEST).write_text("[]\n")
+
+        art = make_native_artifact(self.base, "one", mutate=replace_with_list)
+        proc = self.promote(art, "rev-1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("is a JSON list, not an object", proc.stderr)
+        self.assertIsNone(self.current())
+
+    def test_an_undecodable_manifest_is_refused_rather_than_crashing(self):
+        def garbage(art: Path) -> None:
+            (art / package_manifest.PACKAGE_MANIFEST).write_bytes(b"\xff\xfe\xff")
+
+        art = make_native_artifact(self.base, "one", mutate=garbage)
+        proc = self.promote(art, "rev-1")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertIn("is not readable JSON", proc.stderr)
+        self.assertIsNone(self.current())
+
     def test_the_wrong_kind_is_refused(self):
         art = make_native_artifact(self.base, "one")
         proc = self.promote(art, "rev-1", "--kind", "node-runtime")
@@ -337,6 +381,32 @@ class NativeRuntimeReleaseTests(unittest.TestCase):
         self.assertIn("matches its digest", proc.stderr)
         self.assertEqual(self.current(), "rev-2",
                          "a refused rollback moved `current` anyway")
+
+    def test_a_multi_kind_revision_must_be_narrowed_again_to_roll_back(self):
+        """Pre-existing behaviour, pinned rather than left to be discovered.
+
+        `stage()` copies `ARTIFACT.json` into the revision and `resolve_kind`
+        reads that BEFORE the receipt, so a revision whose artifact declared two
+        kinds needs `--kind` again on rollback even though `RELEASE.json` already
+        recorded the one that was chosen. This is true of every kind; it is
+        asserted here because the native fixture is the first one that can
+        declare two without a second composition.
+        """
+        first = make_native_artifact(self.base, "one",
+                                     kinds=("node-runtime", "native-runtime"))
+        second = make_native_artifact(self.base, "two")
+        self.assertEqual(
+            self.promote(first, "rev-1", "--kind", "native-runtime").returncode, 0)
+        self.assertEqual(self.promote(second, "rev-2").returncode, 0)
+
+        blind = self.rollback()
+        self.assertNotEqual(blind.returncode, 0)
+        self.assertIn("declares more than one kind", blind.stderr)
+        self.assertEqual(self.current(), "rev-2")
+
+        narrowed = self.rollback("--kind", "native-runtime")
+        self.assertEqual(narrowed.returncode, 0, narrowed.stderr)
+        self.assertEqual(self.current(), "rev-1")
 
     # ------------------------------------------------- the other kinds' routing
 

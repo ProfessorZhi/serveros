@@ -803,7 +803,17 @@ def _native_package_verifier():
     # raises `AttributeError: 'NoneType' object has no attribute '__dict__'`
     # when the entry is absent. Caught by the first promote this path ran.
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    # Loading a source module writes a `.pyc` beside it unless told not to. That
+    # is a write outside the runtime root, performed by the release tool, and
+    # this file's own rule is that a native release touches nothing outside its
+    # revision directory. Benign individually; not something to leave true by
+    # accident.
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
     return module
 
 
@@ -827,15 +837,38 @@ def verify_native_runtime(rev_dir: Path) -> dict:
     CLI shim and no state root: nothing outside the revision directory is
     installed, so nothing outside it can be checked — and `cmd_promote` never
     renders a unit or calls `daemon-reload` for this kind.
+
+    One asymmetry worth stating rather than discovering. `stage()` copies with
+    `copytree(..., symlinks=False)`, so a symlink in the ARTIFACT becomes a
+    regular file before this function ever runs. A `--dry-run` therefore refuses
+    a linked member that a real promote accepts — with the same bytes, because
+    the link was dereferenced. The promoted content is the same either way, but
+    the two invocations do not agree, and that is `stage()`'s behaviour for
+    every kind rather than something this clause introduces.
     """
     problems: list[str] = []
 
     manifest_path = rev_dir / PACKAGE_MANIFEST
     package = None
     try:
-        package = json.loads(manifest_path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+        # `encoding="utf-8"` explicitly, because the default is the locale's and
+        # a payload built on one host must read the same on another. `ValueError`
+        # rather than `json.JSONDecodeError`, because undecodable bytes raise
+        # `UnicodeDecodeError` — a `ValueError` that is NOT a `JSONDecodeError`,
+        # so the narrower except would let it escape as a traceback instead of a
+        # refusal. Both were reachable: a `PACKAGE.json` containing `[]` or a
+        # stray byte killed `promote` with a stack trace.
+        package = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
         problems.append(f"{PACKAGE_MANIFEST} is not readable JSON: {exc}")
+    if package is not None and not isinstance(package, dict):
+        # Refused here rather than handed to the delegate: the delegate has its
+        # own "is an object" check, but this function reads `schema` before it
+        # gets there, and a verifier that crashes on a malformed input reports
+        # nothing about it.
+        problems.append(
+            f"{PACKAGE_MANIFEST} is a JSON {type(package).__name__}, not an object")
+        package = None
 
     if package is not None:
         declared_schema = package.get("schema")
@@ -877,10 +910,26 @@ def verify_native_runtime(rev_dir: Path) -> dict:
             for row in members:
                 if isinstance(row, dict) and isinstance(row.get("path"), str):
                     declared.add(row["path"])
-            actual = {str(p.relative_to(rev_dir))
-                      for p in rev_dir.rglob("*") if p.is_file()}
-            for rel in sorted(actual - declared):
+            # Directories a declared path lives under are implied by it; any
+            # other entry present is not declared. A FILE-only sweep cannot see
+            # an empty directory, and `stage()` copies one — `copytree` keeps
+            # empty directories — straight into a revision that cannot be
+            # edited afterwards.
+            implied_dirs: set[str] = set()
+            for rel in declared:
+                parts = rel.split("/")[:-1]
+                for depth in range(1, len(parts) + 1):
+                    implied_dirs.add("/".join(parts[:depth]))
+            files: set[str] = set()
+            directories: set[str] = set()
+            for entry in rev_dir.rglob("*"):
+                relative = str(entry.relative_to(rev_dir))
+                (directories if entry.is_dir() else files).add(relative)
+            for rel in sorted(files - declared):
                 problems.append(f"file present that the package did not declare: {rel}")
+            for rel in sorted(directories - implied_dirs):
+                problems.append(
+                    f"directory present that the package did not declare: {rel}")
 
     return {"ok": not problems, "problems": problems,
             "tree_hash": fingerprint(rev_dir) if not problems else None}

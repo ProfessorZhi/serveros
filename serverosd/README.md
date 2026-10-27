@@ -93,7 +93,8 @@ Output layout:
 <out>/bin/serveros-node-resource-snapshot
 <out>/bin/core-lite-status
 <out>/bin/core-lite-profile-check
-<out>/PACKAGE.json          # serveros/native-runtime-package.v1
+<out>/PACKAGE.json          # serveros/native-runtime-package.v1 — the members
+<out>/ARTIFACT.json         # serveros/artifact.v1 — kinds: ["native-runtime"]
 <out>/obj/                  # intermediates; not members
 <out>/tests/                # only with `make tests` / `run-tests`; not members
 ```
@@ -121,16 +122,20 @@ python3 scripts/release.py promote --artifact /path/to/build/serverosd/dist \
 Three things about that are deliberate:
 
 - **`obj/` and `tests/` are not in the payload.** The release path stages a
-  directory into an immutable revision and refuses any file the package did not
-  declare, so pointing it at the build root is refused rather than cleaned up
+  directory into an immutable revision and refuses any entry the package did not
+  declare — a file, and now an empty directory too, which a file-only sweep
+  cannot see. Pointing it at the build root is refused rather than cleaned up
   afterwards. A revision cannot be edited once it is staged.
 - **`ARTIFACT.json` is what makes the kind a declaration rather than a guess.**
   Without it `release.py` would fall back to "which verifier's required members
   does this directory happen to satisfy", which is documented as the path for
   revisions staged before kinds were recorded.
 - **Nothing is installed.** This kind writes no unit, no CLI shim, and never asks
-  systemd for a reload. `promote` swaps two symlinks under the host-level
-  runtime root and writes a receipt; `rollback` swaps them back.
+  systemd for a reload. `promote` points `current` at the new revision, moves
+  `previous` to the one it displaced (there is nothing to move on the first
+  promotion) and writes a receipt; `rollback` points `current` back and returns
+  the displaced revision to `previous`. All of it is under the host-level runtime
+  root.
 
 ## The single executor: one owner map, two readers
 
