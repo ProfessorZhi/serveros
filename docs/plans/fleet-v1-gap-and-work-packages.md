@@ -125,10 +125,11 @@
 - **验收**：Skill 测试与哈希重新固定；`scripts/fleet_plugin.py check` 通过。
 - **依赖**：F1、F5。
 
-### F7 里程碑播报（跨层，窄范围）　〔`SPEC_PROPOSED`〕
+### F7 里程碑播报（跨层，窄范围）　〔`SPEC_PROPOSED` · 代码见 Draft #423 / #426 / #428（`CODE` + 单元测试，未合并、未部署）〕
 
 - **设计**：[FLEET-V1-MILESTONE-DELIVERY.md](../architecture/FLEET-V1-MILESTONE-DELIVERY.md)（owner 2026-10-27 决定；实现权在 #417，进度在 #409，跨设备/CI 一致性在 #418）。
-- **范围**：`integrations/fleet-v1-milestone-notify/` 下的判定与投递适配器 + `tests/test_fleet_v1_milestone_notify.py`；复用 `runtime/notification-contract.yaml`、`runtime/alerting.py`、`runtime/direct_lark_notify.py`、`runtime/message_transport.py`，东京唯一出口。**不新增顶层目录，不改 `layers.yaml`**。
+- **范围**：`integrations/fleet-v1-milestone-notify/`（判定与投递，#423）· `integrations/fleet-v1-milestone-sources/`（CloudCLI / GitHub Actions 只读真源，#426）· `integrations/fleet-v1-milestone-observer/`（有界观察器 tick，#428），各有同名 `tests/`；复用 `runtime/notification-contract.yaml`、`runtime/alerting.py`、`runtime/direct_lark_notify.py`、`runtime/message_transport.py`，东京唯一出口。**不新增顶层目录，不改 `layers.yaml`**。三个 Draft 的单元测试分别为 31 / 30 / 31 个用例；`main` 上仍不存在，三台设备上也没有。
+- **仍未成立**：真实 `SourceRead` 注入（生产接线）、常驻调度与重启策略、单次真实 Feishu 送达与回执回读。这四项在合同 §15 里逐条记为 `NOT_RUN`。
 - **只做**：重要绿发一次、红立即发且保持开启、黄与普通变化只进卡片、`UNKNOWN` 永不当绿、确定性模板兜底、`delivery_key` 幂等、`provider_receipt`/`delivery_state` 与实际情况一致。
 - **不做**：总管唤醒（F4）、抢占（F5）、凭据分发、常驻 LLM 轮询、飞书入站决策。
 - **验收**：mock CloudCLI + mock GitHub 下正/负/重复 webhook/重复观察/重启重放/红升级/黄静默/投递 UNKNOWN/恢复全部有测试，且被 CI 真正收集；真实飞书 E2E 单独授权、单独回执。
