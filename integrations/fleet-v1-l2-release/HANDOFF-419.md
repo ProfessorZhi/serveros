@@ -66,13 +66,17 @@ unit rendering on `kind == NODE_RUNTIME`.
 ## 5. The invariant on `REQUIRED_MEMBERS`
 
 `resolve_kind`'s structural fallback (`540-547`) accepts a kind only when its
-required members fit and **exactly one** kind fits. So the two new member lists
-must stay disjoint from each other and from the existing two — which they are:
-an L2 node directory has `fleet_mcp/node/connector.py` and no
-`fleet_mcp/server.py`; an L2 hub directory has the reverse; neither has
-`bin/serverosd` or `.claude-plugin/plugin.json`. A directory that somehow has
-both `connector.py` and `server.py` will be refused as ambiguous, which is the
-right answer.
+required members fit and **exactly one** kind fits. The two lists are **not
+disjoint** — both require `fleet_mcp/__init__.py`, which is what makes them both
+L2 artifacts. (An earlier version of this handoff said "disjoint"; the #433
+implementer found the mistake by testing it, and the correction is theirs.)
+
+The property that actually makes the fallback single-valued is that **no
+directory satisfies two complete lists**: an L2 node directory has
+`fleet_mcp/node/connector.py` and no `fleet_mcp/server.py`; an L2 hub directory
+has the reverse; neither has `bin/serverosd` or `.claude-plugin/plugin.json`. A
+directory that somehow holds both `connector.py` and `server.py` is refused as
+ambiguous, which is the right answer.
 
 ## 6. What `verify_l2_layer(rev_dir, *, kind)` must check
 
@@ -133,6 +137,33 @@ No new lifecycle, no new directory layout, no change to `stage`/`promote`/
 `ARTIFACT_MANIFEST_SCHEMA` (`l2_release.py` asserts both against your module, so
 a rename there fails our build by name). Nothing in this handoff installs,
 starts, or restarts anything.
+
+## 8. What changed in #431 after `001eb7c` — re-read this if you copied then
+
+PR #433 documents copying these tables from #431 at **head `001eb7c`**. The next
+commit (`2469ec5`) changed the payload in four ways that a copied verifier will
+now disagree with. None of them changes the six checks; all of them change what a
+correct payload looks like.
+
+1. **`members` now lists `ARTIFACT.json`** (as `scripts/build.py` writes it), and
+   the digest map covers every member *except* it. A verifier that compares
+   `members` against `on_disk − ARTIFACT.json` will now report the manifest as a
+   missing member; a tree digest computed over all of `members` will disagree.
+   Compute both over `members − {ARTIFACT.json}`.
+2. **Member names are canonicalised**: `PurePosixPath(name).as_posix() == name`
+   is required, and `..`, backslashes, control characters, duplicates, links and
+   directories are refused at read. `fleet_mcp/./node/connector.py` passes a
+   `..`-and-absolute-prefix check and resolves to the real file, so a layer guard
+   written against string prefixes lets it through.
+3. **Bytecode is refused** (`.pyc`/`.pyo`). `_l2_module_of` that returns `""` for
+   anything but `.py` makes `fleet_mcp/server.pyc` invisible to the deny-list,
+   although Python imports it.
+4. **`VERSION_RE` accepts a prerelease** (`1.4.0-rc.1`), because a release
+   candidate is a version; and `depends_on` accepts a package
+   (`fleet_mcp/__init__.py`), not only a module.
+
+Nothing here is a request to copy more code. Item 1 is the one that would turn a
+correct artifact red today.
 
 ## State after each side
 
