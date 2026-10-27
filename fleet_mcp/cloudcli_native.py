@@ -396,11 +396,16 @@ NATIVE_INPUT_SCHEMAS: dict[str, dict[str, Any]] = {
     }, ["session"]),
     # AC-386, installed 1.41.0 mcp-run-get.js, SHA256 eb8e8c12ceeda3a449a5bfd189b5924a458b6a4379270ea78f0c2046dabbb38a.
     # Exactly one namespace; device support is checked from its own live schema.
+    # `run` and `wait` are the 1.40-era spellings 1.41 still declares and
+    # accepts (Windows 1.41.0 capture, #411): omitting them would refuse, as an
+    # unknown parameter, an argument set the device honours.
     "run_get": _s({
         "runId": {"type": "string", "minLength": 1},
         "deliveryId": {"type": "string", "minLength": 1},
         "waitSeconds": {"type": "number"},
         "session": {"type": "string"},
+        "run": {"type": "string", "minLength": 1},
+        "wait": {"type": "boolean"},
     }, []),
     "quay_snapshot": _s({"project": {"type": "string"},
                          "refresh": {"type": "boolean"}}, []),
@@ -1004,11 +1009,20 @@ def validate_arguments(arguments, schema) -> list[str]:
     if not isinstance(arguments, dict):
         return ["arguments must be an object"]
     declared = set(schema.get("properties") or {})
+    # 1.41's `run` is the 1.40 spelling of `runId`, not a second namespace:
+    # it satisfies the same alternative. Naming BOTH is an ambiguity (which id
+    # did the caller mean?), so it is refused rather than resolved by precedence.
+    alias: dict[str, Any] = {}
+    if "run" in declared and "run" in arguments:
+        if "runId" in arguments:
+            problems.append("runId and run name the same identifier and cannot be combined")
+        alias["runId"] = arguments["run"]
     if "oneOf" in schema:
-        matches = sum(not validate_arguments(arguments, branch) for branch in schema["oneOf"])
+        matches = sum(not validate_arguments({**arguments, **alias}, branch)
+                      for branch in schema["oneOf"])
         if matches != 1:
             problems.append("arguments must satisfy exactly one identifier alternative")
-    for name in ("runId", "deliveryId"):
+    for name in ("runId", "deliveryId", "run"):
         if name in declared and name in arguments:
             value = arguments[name]
             if (not isinstance(value, str) or not value.strip() or len(value) > 512

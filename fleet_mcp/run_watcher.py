@@ -9,14 +9,29 @@ import threading
 import time
 
 from .events import validate_event
-from .errors import FleetRefusal
+from .errors import RUN_NOT_FOUND, FleetRefusal
 from .identity import SessionKey
 from .cloudcli_native import validate_delivery
 
 _BACKOFF = (10, 30, 120, 600)
+_NO_READABLE_OUTPUT = "no readable assistant message"
 _TERMINAL = {"completed": "COMPLETED", "succeeded": "COMPLETED",
              "failed": "FAILED", "cancelled": "CANCELLED", "canceled": "CANCELLED",
              "aborted": "CANCELLED"}
+
+
+def _no_readable_output(payload) -> bool:
+    """True when the device says it ended the turn with no assistant message.
+
+    CloudCLI 1.41 answers this for a run whose model call failed at the provider
+    (Windows 1.41.0, #411: a codex usage-limit failure read `completed` /
+    `settled` with `lastAssistantMessage: null` and this note). The note is the
+    device's own statement, so the guard keys on it rather than on "no message":
+    a tool-only turn that carries no note is left alone.
+    """
+    note = payload.get("note")
+    return (payload.get("lastAssistantMessage") is None
+            and isinstance(note, str) and _NO_READABLE_OUTPUT in note)
 
 
 class RunWatcher:
@@ -125,25 +140,42 @@ class RunWatcher:
         if delivery_id is not None:
             family = (self.service.config.session_binding(key).family
                       if key.provider not in {"claude", "codex"} else key.provider)
-            payload = validate_delivery(provider.get_delivery(key, delivery_id), key, delivery_id, family=family)
-            if payload.get("provider") is not None:
-                binding = self.service.config.session_binding(key)
-                if payload["provider"] not in {key.provider, binding.family}:
-                    raise ValueError("delivery family mismatch")
-            bound = payload.get("runId")
-            if run_id is not None and bound is not None and run_id != bound:
-                raise ValueError("delivery contradicts acknowledged Run")
-            if watch.get("bound_run_id") is not None and bound != watch["bound_run_id"]:
-                raise ValueError("delivery binding changed")
-            if bound is not None:
-                boot_id = payload.get("bootId")
-                self.events.bind_delivery(watch["watch_id"], bound, boot_id)
-                run_id = bound
-                watch["resolved_run_id"] = bound
-            if payload.get("status") == "cancelled":
-                return "CANCELLED"
-            if bound is None:
-                return None
+            try:
+                answered = provider.get_delivery(key, delivery_id)
+            except FleetRefusal as exc:
+                # 1.41 hands a queued send a deliveryId and then answers
+                # RUN_NOT_FOUND / never_issued for it while that send's runId is
+                # readable (Windows 1.41.0, #411). The delivery is UNSETTLED, not
+                # a transport failure: keep it unresolved, do not resend, and
+                # read the Run the ACK itself named. Any other refusal is still
+                # an error, because it says something we do not understand.
+                if exc.code != RUN_NOT_FOUND:
+                    raise
+                if run_id is None:
+                    return None
+                answered = None
+            if answered is None:
+                bound = None
+            else:
+                payload = validate_delivery(answered, key, delivery_id, family=family)
+                if payload.get("provider") is not None:
+                    binding = self.service.config.session_binding(key)
+                    if payload["provider"] not in {key.provider, binding.family}:
+                        raise ValueError("delivery family mismatch")
+                bound = payload.get("runId")
+                if run_id is not None and bound is not None and run_id != bound:
+                    raise ValueError("delivery contradicts acknowledged Run")
+                if watch.get("bound_run_id") is not None and bound != watch["bound_run_id"]:
+                    raise ValueError("delivery binding changed")
+                if bound is not None:
+                    boot_id = payload.get("bootId")
+                    self.events.bind_delivery(watch["watch_id"], bound, boot_id)
+                    run_id = bound
+                    watch["resolved_run_id"] = bound
+                if payload.get("status") == "cancelled":
+                    return "CANCELLED"
+                if bound is None:
+                    return None
         payload = provider.get_run(key, run_id, wait=False, wait_seconds=0)
         if not isinstance(payload, dict):
             raise ValueError("unsupported run response")
@@ -188,6 +220,12 @@ class RunWatcher:
                         failed |= value != 0
             if failed:
                 status = "FAILED"
+            elif _no_readable_output(payload):
+                # The device itself says this turn ended with nothing to read
+                # (codex provider failure under 1.41). "completed" answers "did
+                # the process end", not "did it produce a result", so it settles
+                # as UNKNOWN rather than COMPLETED.
+                status = "UNKNOWN"
         return status
 
     def tick(self) -> dict:
@@ -210,15 +248,27 @@ class RunWatcher:
                 unknown = False
                 if status is not None:
                     event = json.loads(watch["payload"])
-                    event.update(event_id=watch["watch_id"] + ":terminal:" + status,
-                                 kind="run.corrected" if watch["unknown_emitted"] else "run." + status.lower(),
-                                 level="decide" if status == "FAILED" else "notify", occurred_at=now,
-                                 summary={"status": status})
+                    # An UNKNOWN settlement is a decision to make, not a
+                    # notification that something finished: the run ended and
+                    # the device could not say what came of it.
+                    if status == "UNKNOWN":
+                        kind = "run.unknown"
+                    elif watch["unknown_emitted"]:
+                        kind = "run.corrected"
+                    else:
+                        kind = "run." + status.lower()
+                    event.update(event_id=watch["watch_id"] + ":terminal:" + status, kind=kind,
+                                 level="decide" if status in {"FAILED", "UNKNOWN"} else "notify",
+                                 occurred_at=now, summary={"status": status})
                     if "resolved_run_id" in watch:
                         event["run_id"] = watch["resolved_run_id"]
-                    if watch["unknown_emitted"]:
+                    if watch["unknown_emitted"] and status != "UNKNOWN":
                         event["summary"]["previous_status"] = "UNKNOWN"
-                    result["terminal"] += 1
+                    if status == "UNKNOWN":
+                        unknown = True
+                        result["unknown"] += 1
+                    else:
+                        result["terminal"] += 1
                 elif now - watch["first_seen"] >= 86400 and not watch["unknown_emitted"]:
                     event = json.loads(watch["payload"])
                     event["occurred_at"] = now
