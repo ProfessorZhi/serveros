@@ -1576,12 +1576,15 @@ def cmd_status(args) -> int:
             # A healthy L2 revision is still not installable while it depends on
             # this checkout. Reporting AGREE here would be the "recognised the
             # kind, called it ready" failure the handoff warns about.
+            # Fail closed: a receipt that does not say the revision is
+            # installable does not mean it is. A revision staged before this
+            # verdict existed was never assessed, and "never assessed" must not
+            # print as "yes".
             receipt = root / "revisions" / cur / TREE_MANIFEST if cur else None
-            installable = True
+            installable = False
             if receipt is not None and receipt.is_file():
                 try:
-                    staged = json.loads(receipt.read_text())
-                    installable = bool((staged.get("installable", True)))
+                    installable = json.loads(receipt.read_text()).get("installable") is True
                 except (OSError, ValueError):
                     installable = False
             print(f"installable       {'yes' if installable else 'NOT_STANDALONE'}")

@@ -412,6 +412,20 @@ class L2LifecycleTest(unittest.TestCase):
         self.assertIn("installable       yes", proc.stdout)
 
 
+    def test_status_does_not_assume_a_revision_it_never_assessed(self):
+        """A receipt with no `installable` key was never judged; it is not a yes."""
+        art = make_l2(self.base, "l2-node")
+        self.assertEqual(self.promote(art, "rev-1").returncode, 0)
+        receipt_path = self.comp_root / "revisions" / "rev-1" / release.TREE_MANIFEST
+        receipt = json.loads(receipt_path.read_text())
+        receipt.pop("installable", None)
+        receipt_path.write_text(json.dumps(receipt))
+
+        proc = self.run_release(["status", *self.common()])
+        self.assertIn("installable       NOT_STANDALONE", proc.stdout,
+                      "a revision nobody assessed printed as installable")
+
+
 class ExistingKindsAreUnchangedTest(unittest.TestCase):
     """Adding two kinds must not move the three that were there."""
 
