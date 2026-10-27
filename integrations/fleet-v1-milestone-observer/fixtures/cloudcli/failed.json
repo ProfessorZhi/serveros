@@ -1,0 +1,17 @@
+{
+  "device_ref": "device:tokyo-shared-dev-01",
+  "session_ref": "session:dev:observer-1",
+  "observed_at": "2026-10-27T10:05:00Z",
+  "bound_boot_id": "boot-A",
+  "source_trusted": true,
+  "milestone": true,
+  "gates_required": [],
+  "gates_passed": [],
+  "refs": ["loop:observer-demo"],
+  "run": {
+    "runId": "run_demo_1",
+    "status": "failed",
+    "bootId": "boot-A",
+    "sessionId": "session:dev:observer-1"
+  }
+}
