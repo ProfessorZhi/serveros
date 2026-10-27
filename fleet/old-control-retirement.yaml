@@ -1,0 +1,362 @@
+# D5/D6 (#429) — what the old control plane is, and why none of it may be
+# deleted yet.
+#
+# This file is DATA the guard test reads
+# (`tests/test_fleet_old_control_retirement.py`), not a second opinion about the
+# architecture. It exists because D6's third step is "delete, and add the rule
+# that L2 has exactly one control plane", and the honest finding of the
+# consumer census is that step 2 has nothing to stand on: `fleet_mcp/` is the
+# Tokyo hub's remote device/session plane, and the local `agent.*` surface is
+# the device's own admission plane over `serverosd`. They are not two spellings
+# of one capability.
+#
+# The rule the guard enforces, in both directions:
+#   * RETIRED requires a `fleet_mcp` replacement that exists AS A TOOL, at least
+#     one evidence test that exists, and no live consumer left;
+#   * RETAIN_* requires `replacement.kind: none`, a named gap, and an unblock
+#     condition — so a path cannot be kept by silence.
+#
+# Nothing is deleted in this change. `git rm` would make the tree look converged
+# while breaking the plugin bundle (`serveros-agent`), the router's refusal
+# semantics and #407's `fleet_mcp/registry.py -> fleet/transport.py` dependency.
+schema: serveros/fleet-old-control-retirement.v1
+decision: BLOCKED_KEEP_AND_GUARD
+recorded_at: "2026-10-28"
+base_sha: e69fc0337ae5d33000478e3d5162077f525bc8cc
+issue: https://github.com/ProfessorZhi/serveros/issues/429
+plan: docs/plans/fleet-v1-gap-and-work-packages.md#d5-fleet-只留身份与拓扑
+
+principle:
+  - >-
+    A path is retired only when a Fleet MCP replacement exists as a served
+    tool, has negative tests for its authority/refusal semantics, and has no
+    live consumer left. Until then it is retained and this file says why.
+  - >-
+    Identity is not control: `fleet/registry.yaml` and `fleet/profiles.yaml`
+    are L0 authority and are never entries of this table.
+
+identity_authority:
+  paths:
+    - fleet/registry.yaml
+    - fleet/profiles.yaml
+  rule: >-
+    L0 identity/topology authority. Not migrated, not modified, not listed as
+    retirable. `fleet/node.py` reads a binding and then asks this registry what
+    the device IS; the asymmetry is the design.
+
+layers:
+  file: docs/architecture/layers.yaml
+  # While any entry below exists, layers.yaml must still describe fleet/ as a
+  # split with these files in the L2 part. Removing the split is D5 and depends
+  # on D6; doing it early would be a documentation claim the tree does not keep.
+  fleet_must_be_split: true
+  fleet_l2_members:
+    - controller.py
+    - agent_control_router.py
+    - node.py
+    - interfaces.py
+    - remote_desktop_commander.py
+  mcp_layer: L2
+
+entries:
+  - path: mcp/agent_mcp.py
+    layer: L2
+    role: local device Agent MCP surface (stdio) over serverosd admission
+    disposition: RETAIN_ACTIVE
+    replacement:
+      kind: none
+      fleet_mcp_tools: []
+    why_not_retired: >-
+      `fleet_mcp/` serves remote hub tools named `fleet_*` through a
+      connector/OAuth plane: 11 first-class tools in `tool_names()` and 44
+      served definitions once the CloudCLI native/mirror verbs are counted
+      (`SERVED_TOOLS`). It does not serve the local `agent.*` /
+      `device.*` tools, and it has no equivalent for `agent.action.admit`,
+      the Work-store context binding, or the per-session admission the plugin
+      declares as `serveros-agent`. Deleting it would break the current
+      production plugin bundle.
+    consumers:
+      code:
+        - mcp/bin/serveros-agent-mcp
+        - scripts/live_closure.py
+        - tests/test_agent_mcp.py
+        - tests/test_approval.py
+        - tests/test_handoff_daemon_bindings.py
+        - tests/test_live_closure.py
+        - tests/test_fleet_old_control_retirement.py
+      plugin:
+        - plugin/bundle.yaml
+        - mcp/bin/serveros-agent-mcp
+      docs:
+        - docs/architecture/FLEET-FOUR-LAYERS.md
+        - docs/architecture/FLEET-V1-V2-ARCHITECTURE.md
+        - docs/plans/fleet-v1-gap-and-work-packages.md
+        - docs/s1-handoff-daemon-bindings.md
+    authority:
+      - "control actions are forwarded to `agent.action.admit` on serverosd"
+      - "the node surface (`serveros-node`) stays read-only and separate"
+    unblock: >-
+      A device-local Fleet MCP surface (or an explicit connector delegation)
+      that serves `agent.*` with the same admission proof, a bundle migration
+      for `serveros-agent`, and negative tests for unauthorized send.
+
+  - path: fleet/agent_control_router.py
+    layer: L2
+    role: local agent-control router (resolution, refusal, loopback/node transport)
+    disposition: RETAIN_ACTIVE
+    replacement:
+      kind: none
+      fleet_mcp_tools: []
+    why_not_retired: >-
+      The router is the local resolution/admission path behind `mcp/agent_mcp.py`,
+      including the closed reason vocabulary, the server-side `handoff` closure,
+      the in-process idempotency guard and the NodeControl transport. `fleet_mcp`
+      routes to remote providers through its own connector; it does not resolve
+      a local device's target/approval/context, and no served tool replaces
+      `route()`.
+    consumers:
+      code:
+        - mcp/agent_mcp.py
+        - integrations/fleet-v1-qa/probe/qa_probe_r2_handoff.py
+        - integrations/fleet-v1-qa/probe/qa_probe_r3_idempotency_restart.py
+        - integrations/fleet-v1-qa/probe/qa_probe_r3_preclaim_failure.py
+        - integrations/fleet-v1-qa/probe/qa_probe.py
+        - integrations/fleet-v1-qa/probe/qa_probe_f2b.py
+        - integrations/fleet-v1-qa/probe/qa_probe_j_268.py
+        - tests/test_agent_control_router.py
+        - tests/test_fleet_view.py
+        - tests/test_v1_lease_authority_gate.py
+        - tests/test_fleet_old_control_retirement.py
+      plugin:
+        - plugin/bundle.yaml
+      docs:
+        - docs/architecture/FLEET-FOUR-LAYERS.md
+        - docs/architecture/FLEET-V1-V2-ARCHITECTURE.md
+        - docs/agent-runtime-model.md
+        - docs/plans/fleet-v1-gap-and-work-packages.md
+    authority:
+      - "unknown actions are malformed, not a refusal"
+      - "a server-side action is refused with ACTION_UNSUPPORTED and names handoff()"
+      - "a mutation without a trusted context_ref is refused INVALID_CONTEXT"
+    unblock: >-
+      A local router replacement registered under the Fleet device plane with
+      the same refusal vocabulary and negative tests, or an explicit #407
+      handoff that preserves the local admission/context binding.
+
+  - path: fleet/controller.py
+    layer: L2
+    role: controller boundary — a published description and a refusal, never a client
+    disposition: RETAIN_ADAPTER
+    replacement:
+      kind: none
+      fleet_mcp_tools: []
+    why_not_retired: >-
+      This is an adapter that refuses when no human-authorized controller is
+      declared. It holds no token, opens no connection and returns a
+      description rather than a handle. `fleet_mcp`'s CloudCLI native tools are a
+      different upstream plane, so they are not a replacement for the
+      desktop-commander controller boundary.
+    consumers:
+      code:
+        - fleet/node.py
+        - fleet/remote_desktop_commander.py
+        - tests/test_fleet_controller.py
+        - tests/test_fleet_old_control_retirement.py
+      plugin: []
+      docs:
+        - docs/fleet-controller-adapter.md
+        - docs/architecture/FLEET-FOUR-LAYERS.md
+    authority:
+      - "`ControllerNotExposed` when no declaration exists"
+      - "no credential field exists on the boundary"
+    unblock: >-
+      A governed controller integration with the same refusal semantics, or an
+      owner decision that the boundary is out of V1 scope. Either needs its
+      tests moved with it.
+
+  - path: fleet/remote_desktop_commander.py
+    layer: L2
+    role: controller transport adapter (refuses instead of inventing a device list)
+    disposition: RETAIN_ADAPTER
+    replacement:
+      kind: none
+      fleet_mcp_tools: []
+    why_not_retired: >-
+      Not reachable from the production load chain today (only its tests load
+      it), but it is the documented transport behind the controller boundary and
+      its refusal semantics are proposed for the future adapter. Deleting it
+      means editing `tests/test_fleet_controller.py` and
+      `tests/test_fleet_transport.py`, which this work package does not own.
+    consumers:
+      code:
+        - tests/test_fleet_controller.py
+        - tests/test_fleet_transport.py
+        - tests/test_fleet_old_control_retirement.py
+      plugin: []
+      docs:
+        - docs/fleet-controller-adapter.md
+        - integrations/fleet-v1-network-health/README.md
+    authority:
+      - "`ControllerNotExposed` rather than an empty device list"
+    unblock: >-
+      A follow-up that moves the two test modules and the adapter together,
+      or a controller integration that supersedes the transport.
+
+  - path: fleet/node.py
+    layer: L2
+    role: local control-root binding reader (device id, targets, controller declaration)
+    disposition: RETAIN_ACTIVE
+    replacement:
+      kind: none
+      fleet_mcp_tools: []
+    why_not_retired: >-
+      Loaded by `fleet/interfaces.py`, which `fleet/view.py` uses, which
+      `mcp/agent_mcp.py` serves. It binds which device this host is and reads
+      every attribute from the L0 registry; `fleet_mcp`'s device list is a
+      remote provider enumeration, not this host's binding. Retiring it would
+      break `device.show`/`path.resolve` and the view behind the local agent
+      surface.
+    consumers:
+      code:
+        - fleet/interfaces.py
+        - tests/test_fleet_node.py
+      plugin: []
+      docs:
+        - docs/plans/fleet-v1-gap-and-work-packages.md
+    authority:
+      - "binds, never declares: attributes come from fleet/registry.yaml"
+    unblock: >-
+      A local binding reader owned by the L0 identity authority, with the same
+      file contract and consumer tests.
+
+  - path: fleet/interfaces.py
+    layer: L2
+    role: nine read-only node/fleet interfaces (device.show, path.resolve, ...)
+    disposition: RETAIN_ACTIVE
+    replacement:
+      kind: none
+      fleet_mcp_tools: []
+    why_not_retired: >-
+      Loaded by `fleet/view.py`, which the local agent surface serves. The
+      interfaces answer locally without a controller and name absence
+      (`NOT_EXPOSED`, `OBSERVATION_UNAVAILABLE`) instead of returning empty
+      lists. No `fleet_*` tool provides those local reads.
+    consumers:
+      code:
+        - fleet/view.py
+        - tests/test_fleet_node.py
+      plugin: []
+      docs:
+        - docs/plans/fleet-v1-gap-and-work-packages.md
+    authority:
+      - "absence has a name; no empty list means unknown"
+    unblock: >-
+      A local read-interface owner in the post-retirement layer with the same
+      names and refusal vocabulary.
+
+l0_dependencies:
+  - path: fleet/view.py
+    layer: L0
+    disposition: RETAIN_L0
+    why: >-
+      Registered L0 identity/topology in layers.yaml, not part of the D6
+      retirement set. It is loaded by the local agent surface and must not be
+      swept into a control-plane deletion.
+    consumers:
+      code:
+        - mcp/agent_mcp.py
+        - tests/test_fleet_view.py
+
+production_closure:
+  source: tests/loader_graph.py
+  entries:
+    - mcp/agent_mcp.py
+  # `production_closure()` follows the shipped entries. Five of the six D6
+  # paths are in it, so deleting any of them breaks `test_build.py`'s
+  # loader-closure gate even though no file "imports" them in the ordinary
+  # sense. `fleet/remote_desktop_commander.py` is not in the closure today.
+  members:
+    - mcp/agent_mcp.py
+    - fleet/controller.py
+    - fleet/agent_control_router.py
+    - fleet/node.py
+    - fleet/interfaces.py
+  excluded:
+    - fleet/remote_desktop_commander.py
+
+matcher_limits:
+  - >-
+    The live-consumer matcher follows static `*load*(`/`*blob*(` calls whose
+    arguments name the file, and `import fleet.<module>`. A path assembled in
+    a variable, read from config or built by f-string is not followed, and a
+    one-argument `load("path")` helper is not counted (every loader here takes
+    name+path) — the same declared limit as `tests/loader_graph.py`. The
+    inventory lists the graph closure separately so that gap is covered for the
+    shipped entries.
+
+cross_layer_dependencies:
+  - from: fleet_mcp/registry.py
+    to: fleet/transport.py
+    owner: "#407"
+    kind: import
+    why: >-
+      The hub-side registry imports the L0 transport types. This is a live
+      dependency on a file this work package does not own; retiring or moving
+      `fleet/transport.py` without #407's handoff would break the hub import.
+      The guard re-checks that the import still exists so the inventory cannot
+      silently go stale.
+
+equivalence:
+  - old: "agent.session.send (mcp/agent_mcp.py)"
+    new: "fleet_send_to_session (fleet_mcp/tools.py)"
+    equivalent: false
+    why: >-
+      The first is a local serverosd-admitted session verb bound to a trusted
+      context/Work item; the second sends to a CloudCLI session through the
+      Tokyo hub's connector and OAuth plane. Same English words, different
+      authority and transport.
+  - old: "agent.session.list/result, agent.console"
+    new: "fleet_read_session / fleet_get_run"
+    equivalent: false
+    why: >-
+      Local Session store and run readback versus remote provider readback.
+      Neither settles the other's source of truth.
+  - old: "device.list / device.inspect (agent), device.show (node)"
+    new: "fleet_list_devices"
+    equivalent: false
+    why: >-
+      This host's binding plus the L0 registry versus the hub's remote provider
+      enumeration.
+  - old: "fleet/agent_control_router.route/handoff"
+    new: "fleet_create_session / fleet_interrupt_session"
+    equivalent: false
+    why: >-
+      Local resolution, approval and idempotency versus remote session control.
+  - old: "fleet/controller.py, fleet/remote_desktop_commander.py"
+    new: "cloudcli native tools"
+    equivalent: false
+    why: >-
+      Desktop-commander controller plane versus CloudCLI native tools. Different
+      upstream; neither is a migration target for the other.
+
+blocked:
+  - id: D6_DELETE_AGENT_MCP
+    reason: >-
+      `serveros-agent` in the production plugin bundle is this surface; there is
+      no Fleet MCP replacement for `agent.*` admission semantics.
+  - id: D6_DELETE_ROUTER
+    reason: >-
+      Local resolution/refusal/context binding has no served `fleet_*` tool.
+  - id: D6_DELETE_NODE_INTERFACES
+    reason: >-
+      `fleet/view.py` (L0) and the local agent surface load them; the hub cannot
+      answer this host's binding.
+  - id: D6_DELETE_CONTROLLER_ADAPTERS
+    reason: >-
+      Refusal-only boundary with no replacement plane; removal requires moving
+      tests this work package does not own.
+  - id: D5_REMOVE_FLEET_SPLIT
+    reason: >-
+      D5 depends on D6. `layers.yaml` is owned by #414 (Draft); this work
+      package does not edit it. The guard fails if the split is removed while
+      the files still exist.
