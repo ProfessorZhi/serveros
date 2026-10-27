@@ -193,10 +193,17 @@ cat > "$SCRATCH/offline.json" <<JSON
 }
 JSON
 
+# The shared owner map. Since 2026-10-28 EVERY acting path requires one: the
+# one-shot form used to act with no map at all, so it could restart a unit the
+# map gives the Python daemon. This toy unit is this Core's.
+cat > "$SCRATCH/owner-map.json" <<JSON
+{"schema": "serveros/native-core-owner-map.v1", "units": {"$UNIT": "native-core"}}
+JSON
+
 # 4. LINK DOWN, link-dependent, unit FAILED: REFUSED, and no verb runs — the
 #    unit must still be failed afterwards.
 out="$("$BIN" --manifest "$SCRATCH/link_dependent_act.json" --allow-unit "$UNIT" \
-        --enable-actions --lease "$LEASE" --state "$STATE" --link-state down --agent-state idle \
+        --enable-actions --owner-map "$SCRATCH/owner-map.json" --lease "$LEASE" --state "$STATE" --link-state down --agent-state idle \
         --trigger tick 2>&1)"
 expect "link-down-refuses-link-dependent" 'LINK_DOWN' "$out"
 expect_not "refusal-ran-no-verb" '"verb"' "$out"
@@ -207,7 +214,7 @@ if [ "$(state_of "$UNIT")" = "failed" ]; then ok "unit-untouched-by-refusal" "st
 #    command is gone cannot come back — and that failure is recorded, which is
 #    the whole point of reprobing rather than trusting an exit code.
 out="$("$BIN" --manifest "$SCRATCH/offline.json" --allow-unit "$UNIT" \
-        --enable-actions --lease "$LEASE" --state "$STATE" --link-state down --agent-state idle \
+        --enable-actions --owner-map "$SCRATCH/owner-map.json" --lease "$LEASE" --state "$STATE" --link-state down --agent-state idle \
         --trigger tick 2>&1)"
 expect_not "offline-recovery-skips-link-gate" 'LINK_DOWN' "$out"
 expect "offline-recovery-attempted-the-verb" '"verb"' "$out"
@@ -216,7 +223,7 @@ expect "offline-recovery-attempted-the-verb" '"verb"' "$out"
 #    there is an action for the gate to consider.
 if make_failed_toy; then ok "fault-injected-again"; else bad "fault-injected-again" "state=$(state_of "$UNIT")"; fi
 out="$("$BIN" --manifest "$SCRATCH/offline.json" --allow-unit "$UNIT" \
-        --enable-actions --lease "$LEASE" --state "$STATE" --link-state up --agent-state idle \
+        --enable-actions --owner-map "$SCRATCH/owner-map.json" --lease "$LEASE" --state "$STATE" --link-state up --agent-state idle \
         --service-runtime needs-login --trigger tick 2>&1)"
 expect "needs-login-refused" 'NEEDS_LOGIN' "$out"
 expect_not "needs-login-ran-no-verb" '"verb"' "$out"

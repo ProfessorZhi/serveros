@@ -1,0 +1,7 @@
+{
+  "schema": "serveros/native-core-owner-map.v1",
+  "units": {
+    "core.service": "native-core",
+    "daemon.service": "serverosd"
+  }
+}

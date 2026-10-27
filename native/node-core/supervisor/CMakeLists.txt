@@ -31,6 +31,9 @@ add_library(nodecore_supervisor STATIC
   src/receipt.cpp
   src/status.cpp
   src/serve.cpp
+  # What this program says it is and which units the shared map gives it. A
+  # one-shot report; it takes no lease and writes nothing.
+  src/capability.cpp
   src/status_socket.cpp
 )
 target_include_directories(nodecore_supervisor PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")

@@ -40,6 +40,7 @@
 #include "supervisor/action_gate.hpp"
 #include "supervisor/action_journal.hpp"
 #include "supervisor/admission.hpp"
+#include "supervisor/capability.hpp"
 #include "supervisor/facts.hpp"
 #include "supervisor/state_directory.hpp"
 #include "supervisor/lease.hpp"
@@ -108,8 +109,15 @@ void print_usage(std::FILE* out) {
                  "                         agent unknown, which refuses rather than assumes.\n"
                  "  --facts-max-age-seconds N  how old the facts document may be (default 90).\n"
                  "  --owner-map FILE       the shared owner map (serveros/native-core-owner-map.v1).\n"
-                 "                         REQUIRED with --serve --enable-actions: a manifest unit\n"
-                 "                         the map assigns to another program is refused.\n"
+                 "                         REQUIRED whenever --enable-actions is given, one-shot\n"
+                 "                         or resident: a manifest unit the map assigns to another\n"
+                 "                         program is refused. Also accepted with --capability,\n"
+                 "                         which reports the same verdict without acting.\n"
+                 "  --capability           print serveros/native-core-capability.v1 and exit.\n"
+                 "                         One shot: no lease, no service, no write. Reports what\n"
+                 "                         this program is and which units the shared map gives\n"
+                 "                         it. With --owner-map the map is read; without one the\n"
+                 "                         document says no map was readable.\n"
                  "  --lease FILE           single-writer lease. Taken with flock, never\n"
                  "                         waited for, and released when this process exits.\n"
                  "  --link-state up|down|unknown\n"
@@ -239,6 +247,10 @@ int main(int argc, char** argv) {
     bool act = false;
     bool serve = false;
     bool no_status_socket = false;
+    // One-shot: print what this program says it is and which units the shared
+    // owner map gives it, then exit. Reads only — it takes no lease, touches no
+    // service and writes no file, so it is safe to run on a live host.
+    bool capability = false;
     long interval_seconds = 60;
     long max_ticks = -1;
     nodecore::supervisor::Trigger trigger = nodecore::supervisor::Trigger::Tick;
@@ -324,6 +336,10 @@ int main(int argc, char** argv) {
             no_status_socket = true;
             continue;
         }
+        if (flag == "--capability") {
+            capability = true;
+            continue;
+        }
         if (!has_value) {
             std::fprintf(stderr, "%s needs a value\n", flag.c_str());
             return 2;
@@ -378,19 +394,59 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "--manifest is required\n");
         return 2;
     }
-    if (serve && act && owner_map_path.empty()) {
+    // The capability check comes FIRST, so the combination it owns reports its
+    // own reason rather than tripping the owner-map rule below.
+    if (capability && (serve || act)) {
+        std::fprintf(stderr, "--capability is a one-shot report and cannot be combined "
+                             "with --serve or --enable-actions\n");
+        return 2;
+    }
+    //: EVERY acting path, not only the resident one. The one-shot form
+    //: (`--manifest M --enable-actions`) used to act with no owner map at all —
+    //: the flag was refused outside `--serve`, so the gate could not run, and a
+    //: single pass could restart a unit the shared map gives the Python daemon.
+    //: "One writer" is a property of the map, so a path that acts without one is
+    //: a second writer by construction.
+    //: Flags that only mean something during a run are REFUSED in report mode
+    //: rather than ignored. The file's own rule is "refused rather than ignored:
+    //: a caller who passed --facts believes the loop is using it" — a caller who
+    //: passes --lease to a report believes a lease was taken, and no lease was.
+    if (capability) {
+        const std::string* offending = nullptr;
+        if (!facts_path.empty()) offending = &facts_path;
+        else if (!lease_path.empty()) offending = &lease_path;
+        else if (!state_path.empty()) offending = &state_path;
+        else if (!receipt_path.empty()) offending = &receipt_path;
+        else if (!status_socket_override.empty()) offending = &status_socket_override;
+        if (offending != nullptr) {
+            std::fprintf(stderr,
+                         "--capability is a report and takes no lease, no state and no socket; "
+                         "a run-time flag was given and would otherwise be ignored\n");
+            return 2;
+        }
+        if (no_status_socket) {
+            std::fprintf(stderr, "--capability has no status socket; --no-status-socket is "
+                                 "meaningless here\n");
+            return 2;
+        }
+    }
+    if (act && owner_map_path.empty()) {
         // The owner map is how "this unit is mine" stops being a review rule.
         // Both programs read the same file, so a manifest that silently claims
         // another program's unit is refused here rather than discovered at the
         // first restart of somebody else's service.
         std::fprintf(stderr,
-                     "--serve and --enable-actions require --owner-map FILE: without it this "
-                     "Core cannot show that the units it would act on are its own, and the "
+                     "--enable-actions requires --owner-map FILE: without it this Core "
+                     "cannot show that the units it would act on are its own, and the "
                      "Python daemon may own them\n");
         return 2;
     }
-    if (!owner_map_path.empty() && !(serve && act)) {
-        std::fprintf(stderr, "--owner-map only applies to --serve --enable-actions\n");
+    if (!owner_map_path.empty() && !act && !capability) {
+        // `--capability` is the third reader of this map, and the first whose
+        // whole job is to REPORT it. Refusing the flag there would make the one
+        // command an inventory run needs the one command the guard forbids.
+        std::fprintf(stderr, "--owner-map only applies to --enable-actions "
+                             "or --capability\n");
         return 2;
     }
     if (serve && act) {
@@ -502,11 +558,37 @@ int main(int argc, char** argv) {
     }
     const nodecore::supervisor::Manifest& manifest = parsed.manifest;
 
+    // ------------------------------------------------------- capability report
+    //
+    // One document, one instant, no side effects. This is the answer to "which
+    // program said this, about which map?", which is the question a device
+    // inventory and a second writer both need and neither could ask before.
+    if (capability) {
+        std::string map_text;
+        const bool map_readable =
+            !owner_map_path.empty() && read_file(owner_map_path, map_text);
+        const nodecore::supervisor::OwnerMap owners =
+            nodecore::supervisor::load_owner_map(map_readable ? map_text.c_str() : nullptr);
+        nodecore::supervisor::CapabilityInfo info;
+        info.version = kVersion;
+        info.mode = act ? nodecore::supervisor::kCapabilityModeAct
+                        : nodecore::supervisor::kCapabilityModeObserve;
+        info.manifest_sha256 = manifest.sha256;
+        // Printed as one document on stdout and nothing else, so a caller can
+        // pipe it. The owner map's own verdict travels inside the document; an
+        // unusable map is reported rather than escalated, because "I could not
+        // read the map" is a fact about this run and the reader can act on it.
+        std::fputs(nodecore::supervisor::build_capability_json(manifest, owners, info).c_str(),
+                   stdout);
+        std::fputc('\n', stdout);
+        return 0;
+    }
+
     //: The SAME owner map the Python daemon reads. A manifest unit that the map
     //: assigns to `serverosd`, or does not mention at all, is refused: "this
     //: unit is mine" is a fact two programs agree on, not a comment in a
     //: manifest nobody re-checks.
-    if (serve && act && !owner_map_path.empty()) {
+    if (act && !owner_map_path.empty()) {
         std::string owner_text;
         const bool readable = read_file(owner_map_path, owner_text);
         const nodecore::supervisor::OwnerMap owners =

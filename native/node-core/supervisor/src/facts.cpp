@@ -208,9 +208,19 @@ OwnerMap load_owner_map(const char* text) {
     Json root;
     std::string error;
     detail::Reader reader(document);
-    if (!reader.parse(root, error) || !root.is_object()) {
+    if (!reader.parse(root, error)) {
         map.code = kFactsMalformed;
-        map.reason = "owner map is not a JSON object: " + error;
+        // "Could not be parsed" and "parsed, but is not an object" are different
+        // facts, and this reason is copied verbatim into the capability document
+        // an operator reads. `[]` is valid JSON and is NOT a parse failure; a
+        // duplicate key IS one. Saying "not an object: duplicate key" was both
+        // wrong about the document and empty about `[]`.
+        map.reason = "owner map could not be parsed: " + error;
+        return map;
+    }
+    if (!root.is_object()) {
+        map.code = kFactsMalformed;
+        map.reason = "owner map is not a JSON object";
         return map;
     }
     if (!allowed_only(root, {"schema", "units"}, "owner map", error)) {
