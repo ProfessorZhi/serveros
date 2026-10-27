@@ -97,11 +97,22 @@ hand, and nothing checked that they did.
 **Closed 2026-10-28, without editing `runtime/daemon.py`.** The C++ Core now
 derives the same path when `--lease` is absent:
 
-- `$XDG_RUNTIME_DIR/serveros/native-core.lease` — the daemon's default, byte for
-  byte;
+- `$XDG_RUNTIME_DIR/serveros/native-core.lease` — the path the daemon derives
+  from `XDG_RUNTIME_DIR`. **Not byte-identical in one branch**: when
+  `XDG_RUNTIME_DIR` is unset the daemon falls back to its state root, and this
+  Core has no equivalent root, so it refuses rather than invent one. The
+  invariant survives; the string does not, and saying "byte for byte" without
+  that qualifier would be a claim the code does not keep;
 - **and it refuses to default at all** when `XDG_RUNTIME_DIR` is unset or not
   absolute. A default invented from nothing is a lease at a path no other program
-  knows, which is precisely the split-lock the lease exists to prevent.
+  knows, which is precisely the split-lock the lease exists to prevent;
+- **and it refuses when `$XDG_RUNTIME_DIR/serveros` does not exist.** The Core
+  never creates that directory — `WriterLease` opens relative to an existing
+  parent, while the Python daemon's `SafeLease` does create it for its status
+  socket. Left to fail inside the action gate, a fresh runtime directory produced
+  "every unit skipped for NO_LEASE" and a one-shot that still **exited 0**;
+  indistinguishable from success at a terminal. It is refused up front now, with
+  both remedies named.
 
 An explicit `--lease` still wins. The daemon's sentence is now true as written, so
 **#407 has nothing to change** — the handoff on that PR can be closed as "the C++

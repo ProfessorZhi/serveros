@@ -111,7 +111,7 @@
     "shared_by_declaration": true,
     "next_pr": "Nothing pending from this lane. If #407 ever changes its default, this matrix and the C++ derivation move in the same PR; tests/test_native_lease_default.py compares the two sources.",
     "rename_owner": "docs/architecture/layers.yaml (owned by PR #414)",
-    "closed": "Closed 2026-10-28 without editing runtime/daemon.py. The C++ Core derives the daemon's path when --lease is absent, and refuses to derive one when XDG_RUNTIME_DIR is unset or relative — a default from nothing is a lease at a path no other program knows, which is the split-lock the lease exists to prevent. The daemon's 'by construction' sentence is now true as written, so #407 has no change to make."
+    "closed": "Closed 2026-10-28 without editing runtime/daemon.py. When --lease is absent the C++ Core derives $XDG_RUNTIME_DIR/serveros/native-core.lease — the same path the daemon derives from XDG_RUNTIME_DIR. It is NOT byte-identical in the branch where the daemon falls back to its state root because XDG_RUNTIME_DIR is unset: there this Core has no equivalent root and REFUSES instead of inventing one, which preserves the invariant rather than the string. It also refuses when $XDG_RUNTIME_DIR/serveros does not exist: the Core never creates it (the daemon does, for its status socket), so a fresh runtime directory is a loud refusal rather than a pass in which every unit is skipped for NO_LEASE. #407 has no change to make."
   },
   "rename_complete_when": [
     "There is one binary named serverosd that performs bounded recovery, and no second program does — today bin/serverosd is Python and bin/serveros-native-core is C++, and both act.",

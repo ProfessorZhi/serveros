@@ -40,16 +40,30 @@ class TheSourcesAgreeTest(unittest.TestCase):
 
     def test_the_core_derives_the_same_path(self):
         text = CORE_MAIN.read_text(encoding="utf-8")
-        self.assertIn(f'"/{CANONICAL}"', text,
+        # The path is assembled in two pieces (`base + "/serveros"`, then
+        # `+ "/native-core.lease"`), so the assertion is on the pieces rather
+        # than on a concatenation the source never contains.
+        self.assertIn('+ "/serveros"', text,
                       "the C++ default and the daemon's default have drifted apart")
+        self.assertIn('"/native-core.lease"', text)
 
     def test_the_core_refuses_to_default_without_a_runtime_directory(self):
+        """Assert the CODE, not the help text that happens to say the same thing.
+
+        An earlier version of this test looked for "XDG_RUNTIME_DIR" and "no
+        default" — both of which appear in the usage block — so it would have
+        passed with the whole function deleted.
+        """
         text = CORE_MAIN.read_text(encoding="utf-8")
-        # The refusal is the part that matters: a default invented from nothing
-        # is a lease at a path no other program knows, which is the split-lock
-        # the lease exists to prevent.
-        self.assertIn("XDG_RUNTIME_DIR", text)
-        self.assertIn("no default", text)
+        self.assertIn("bool default_lease_path(std::string& out, std::string& why)",
+                      text, "the derivation function is gone")
+        self.assertIn("runtime_dir[0] != '/'", text,
+                      "the absolute-XDG check is gone; a default would be derived "
+                      "from a relative path")
+        self.assertIn("default_lease_path(lease_path, why)", text,
+                      "the acting path no longer calls the derivation")
+        self.assertIn("does not exist or is not", text,
+                      "the missing-enclosure refusal is gone")
 
 
 class TheCoreTakesItThereTest(unittest.TestCase):
@@ -66,11 +80,12 @@ class TheCoreTakesItThereTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _fixtures(self, runtime_dir: Path) -> list[str]:
-        (runtime_dir / "serveros").mkdir(parents=True, exist_ok=True)
+    def _fixtures(self, runtime_dir: Path, *, enclosure: bool = True) -> list[str]:
+        if enclosure:
+            (runtime_dir / "serveros").mkdir(parents=True, exist_ok=True)
         manifest = self.dir / "manifest.json"
         manifest.write_text(json.dumps({
-            "schema": "serveros/desired-state.v1", "node": "n", "principal": "p",
+            "schema": "serveros/desired-state.v1", "node": "test-node", "principal": "p",
             "observe_only": False, "generation": 1,
             "services": [{"id": "s", "owner": "p", "unit": "s.service",
                           "desired": "running", "start_on_boot": False,
@@ -119,13 +134,32 @@ class TheCoreTakesItThereTest(unittest.TestCase):
         self.assertIn("no default", proc.stderr)
         self.assertFalse((xdg / CANONICAL).exists())
 
+    def test_a_missing_enclosure_is_refused_loudly_not_silently_skipped(self):
+        """The daemon creates `$XDG_RUNTIME_DIR/serveros`; this Core does not.
+
+        Left to fail inside the action gate, a fresh runtime directory produced
+        "every unit refused for NO_LEASE" and a one-shot that still exited 0 —
+        indistinguishable from success at the terminal.
+        """
+        xdg = self.dir / "xdg"
+        xdg.mkdir()
+        proc = self._run(self._fixtures(xdg, enclosure=False), runtime_dir=xdg)
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("does not exist or is not a directory", proc.stderr)
+        self.assertNotIn("stopped: ticks", proc.stdout)
+
     def test_the_lease_lands_where_the_daemon_would_put_it(self):
         xdg = self.dir / "xdg"
         proc = self._run(self._fixtures(xdg), runtime_dir=xdg)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertTrue((xdg / CANONICAL).exists(),
+        lease = xdg / CANONICAL
+        self.assertTrue(lease.exists(),
                         f"the Core did not take {CANONICAL}; the daemon's "
                         f"'by construction' would still be false")
+        # Not merely "a file appeared": `acquire` writes the holder's identity on
+        # the first line — the manifest's node when it names one — so its presence
+        # proves the pen was taken rather than that a path was opened.
+        self.assertEqual(lease.read_text(encoding="utf-8").strip(), "test-node")
 
     def test_an_explicit_lease_wins_and_the_canonical_path_stays_free(self):
         xdg = self.dir / "xdg"

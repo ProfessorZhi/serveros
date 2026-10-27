@@ -602,8 +602,11 @@ class ConsumerMatrixTest(unittest.TestCase):
 
         main_cpp = (REPO_ROOT / "native/node-core/supervisor/src/main.cpp"
                     ).read_text(encoding="utf-8")
-        self.assertIn('"/serveros/native-core.lease"', main_cpp,
+        # Assembled from two pieces (`base + "/serveros"`, then
+        # `+ "/native-core.lease"`), so the assertion is on the pieces.
+        self.assertIn('+ "/serveros"', main_cpp,
                       "the C++ default and the daemon's default have drifted apart")
+        self.assertIn('"/native-core.lease"', main_cpp)
         self.assertIn("default_lease_path(lease_path", main_cpp,
                       "the Core no longer derives the lease path")
         # The refusal is the part that keeps a default from being a guess.
