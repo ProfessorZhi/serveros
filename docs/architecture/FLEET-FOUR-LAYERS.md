@@ -117,6 +117,8 @@ product ──▶ L0（读）               shared ──▶ 任意层（构建/
 
 其余方向目前只写在这里，靠评审守；§5 每完成一步就把对应方向加进测试。
 
+**V1 里程碑投递链**（观察 → 判定 → 投递）的方向与归属见 [FLEET-V1-MILESTONE-DELIVERY.md](FLEET-V1-MILESTONE-DELIVERY.md) §3：L2 观察者只产候选事实、product 只渲染与投递、L3 只写摘要且可缺席、L1 不依赖网络与 Agent。那条链**不新增依赖方向**，只是把上面这张图具体化；其中需要「签名」的三条目前均未登记。
+
 ## 5. 现在哪里耦合着，按什么顺序解开
 
 实测（2026-10-26，main `3f5ec20`）的几处耦合，按收益/风险排序：
@@ -166,3 +168,4 @@ owner 决定：本地监控与自愈只有一个程序、一个名字——serve
 2. 放进那一层已有的目录。没有合适目录时，新建顶层目录并在 [layers.yaml](layers.yaml) 登记，否则 `tests/test_repository_layers.py` 不通过。
 3. 只沿 §4 的方向依赖。需要反方向时，从外面注入，参考 `runtime/fleet_mcp_owner.py` 给 `FleetService` 注入账本的做法。
 4. 新插件放 `plugins/` 前在 `layers.yaml` 的 `plugins` 下写明 `side`。
+5. 跨层的薄适配器（例如 V1 里程碑播报）优先放进已登记的 `integrations/`（`shared`），不新开顶层目录：守卫只检查顶层目录，子目录不需要改 `layers.yaml`。见 [FLEET-V1-MILESTONE-DELIVERY.md](FLEET-V1-MILESTONE-DELIVERY.md) §12。

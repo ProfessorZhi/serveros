@@ -3,6 +3,8 @@
 > **这篇回答什么：** 对照 [FLEET-V1-V2-ARCHITECTURE.md](../architecture/FLEET-V1-V2-ARCHITECTURE.md)（需求与设计）和 [FLEET-FOUR-LAYERS.md](../architecture/FLEET-FOUR-LAYERS.md)（分层与目录），V1 现在还差什么；把差距拆成可以交给本地 Codex / Claude Code 独立完成的工作包，每个都写明范围、步骤、验收与依赖。
 >
 > **状态：** 计划，2026-10-26，基于 main `3f5ec20` 的实测。工作包完成后在本文对应行标注 PR 号；不另建第二份进度表。
+>
+> **补充（2026-10-27）：** 里程碑播报的语义、字段、红黄灰处置与降级规则已收进一份正式合同 [FLEET-V1-MILESTONE-DELIVERY.md](../architecture/FLEET-V1-MILESTONE-DELIVERY.md)，对应下面的工作包 F7。那份合同是判定的唯一权威，本文只记录它落到哪个包。
 
 ## 0. 给执行 Agent 的规则（每个工作包都适用）
 
@@ -44,6 +46,7 @@
 ```
 
 - 同一泳道串行，不同泳道可并行。
+- **F7（里程碑播报）跨泳道**：判定与投递适配器在 `integrations/`（`shared`），不占上面任何泳道的文件；只依赖 F1 的事件游标，可与 F2–F6 并行。见 [FLEET-V1-MILESTONE-DELIVERY.md](../architecture/FLEET-V1-MILESTONE-DELIVERY.md)。
 - 两组文件冲突要避开：
   - F1 与 D2 都碰 `runtime/fleet_mcp_owner.py`：F1 先合并，D2 再做；
   - D3 与 F2 都碰 `notifications.py`、`direct_lark_notify.py`：F2 先合并，D3 再搬。
@@ -121,6 +124,15 @@
 - **范围**：`integrations/fleet-v1-first-install/plugin/skills/` 增加「派完就走、用 `fleet_inbox` 收结果、用 `fleet_directive` 改方向」的写法；重新生成 `plugins/`。
 - **验收**：Skill 测试与哈希重新固定；`scripts/fleet_plugin.py check` 通过。
 - **依赖**：F1、F5。
+
+### F7 里程碑播报（跨层，窄范围）　〔`SPEC_PROPOSED`〕
+
+- **设计**：[FLEET-V1-MILESTONE-DELIVERY.md](../architecture/FLEET-V1-MILESTONE-DELIVERY.md)（owner 2026-10-27 决定；实现权在 #417，进度在 #409，跨设备/CI 一致性在 #418）。
+- **范围**：`integrations/fleet-v1-milestone-notify/` 下的判定与投递适配器 + `tests/test_fleet_v1_milestone_notify.py`；复用 `runtime/notification-contract.yaml`、`runtime/alerting.py`、`runtime/direct_lark_notify.py`、`runtime/message_transport.py`，东京唯一出口。**不新增顶层目录，不改 `layers.yaml`**。
+- **只做**：重要绿发一次、红立即发且保持开启、黄与普通变化只进卡片、`UNKNOWN` 永不当绿、确定性模板兜底、`delivery_key` 幂等、`provider_receipt`/`delivery_state` 与实际情况一致。
+- **不做**：总管唤醒（F4）、抢占（F5）、凭据分发、常驻 LLM 轮询、飞书入站决策。
+- **验收**：mock CloudCLI + mock GitHub 下正/负/重复 webhook/重复观察/重启重放/红升级/黄静默/投递 UNKNOWN/恢复全部有测试，且被 CI 真正收集；真实飞书 E2E 单独授权、单独回执。
+- **依赖**：F1（观察者与事件游标）。
 
 ## 4. 解耦与目录工作包
 
