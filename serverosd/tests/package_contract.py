@@ -338,9 +338,30 @@ class RealTreeTest(unittest.TestCase):
             self.assertIn(source, recipe, f"{name}'s source is not in the Makefile")
             self.assertIn(f"bin/{name}", recipe, f"{name} is not linked by the Makefile")
 
-    def test_the_recipe_refuses_to_build_inside_the_repository(self):
+    def test_the_recipe_overrides_out_and_resolves_symlinks(self):
+        """The two things the guard needs, because either alone is inert.
+
+        A command-line variable beats a makefile assignment, so `OUT := ...`
+        without `override` does nothing at all; and `abspath` does not follow a
+        symlink, so a link into the repository passes a check made with it. Both
+        were measured failing before this assertion existed, which is why it
+        names the mechanism rather than the message.
+        """
         recipe = MAKEFILE.read_text(encoding="utf-8")
         self.assertIn("refusing to build inside the repository", recipe)
+        self.assertIn("override OUT := $(abspath $(OUT))", recipe)
+        self.assertIn("OUT_REAL := $(realpath $(OUT))", recipe)
+
+    def test_the_writer_refuses_an_output_directory_inside_the_repository(self):
+        with tempfile.TemporaryDirectory() as td:
+            # A symlink pointing into the repository: the case `abspath` cannot
+            # see and `resolve()` can.
+            link = Path(td) / "into-repo"
+            link.symlink_to(REPO_ROOT)
+            with self.assertRaises(SystemExit) as caught:
+                package_manifest.build_manifest(link / "serverosd" / "build", REPO_ROOT,
+                                                "a" * 40, "0")
+            self.assertIn("inside the repository", str(caught.exception))
 
     def test_the_build_version_is_the_binarys_version(self):
         self.assertEqual(package_manifest.version_from_source(REPO_ROOT),

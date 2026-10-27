@@ -45,9 +45,25 @@ ifeq ($(strip $(OUT)),)
 $(error OUT is required: make OUT=/some/path/outside/the/repository)
 endif
 
-OUT := $(abspath $(OUT))
-ifneq ($(filter $(REPO)/%,$(OUT)),)
-$(error refusing to build inside the repository: $(OUT) is under $(REPO))
+# `override` IS THE GUARD. A variable given on the command line beats a
+# makefile assignment, so a plain `OUT := $(abspath $(OUT))` here silently does
+# nothing: measured, `OUT=build` passed the check below and then created
+# `build/obj` inside the tree, and `OUT=/tmp/../home/fjd/projects/serveros/x`
+# reached the compiler with its `..` intact. The check looked right and was
+# inert, which is worse than absent.
+override OUT := $(abspath $(OUT))
+
+# `abspath` normalises `..` but does not follow symlinks, so resolve the deepest
+# part of the path that exists. A path whose parent does not exist yet cannot be
+# resolved here; `package_manifest.py` repeats the check with `Path.resolve`
+# after the build, so the manifest cannot certify a package written into the
+# tree even if the compiler got that far.
+OUT_REAL := $(realpath $(OUT))
+ifeq ($(strip $(OUT_REAL)),)
+override OUT_REAL := $(realpath $(dir $(OUT)))/$(notdir $(OUT))
+endif
+ifneq ($(filter $(REPO)/%,$(OUT_REAL)),)
+$(error refusing to build inside the repository: $(OUT_REAL) is under $(REPO))
 endif
 
 CXXFLAGS ?= -std=c++20 -O2 -Wall -Wextra -Wpedantic

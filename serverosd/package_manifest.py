@@ -83,9 +83,26 @@ def version_from_source(repo: Path) -> str:
     return found.group(1)
 
 
+def inside(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
 def build_manifest(out: Path, repo: Path, commit: str, dirty: str,
                    cxx: str = "", cxx_version: str = "",
                    cxxflags: str = "") -> dict:
+    # The Makefile refuses this too, but it can only normalise `..` and the
+    # deepest existing parent; `resolve()` follows every symlink in a path that
+    # already exists. This is the version that is checked by a test, so the
+    # manifest cannot certify a package written into the source tree.
+    if inside(out.resolve(), repo.resolve()):
+        raise SystemExit(
+            f"refusing to write a package manifest inside the repository: "
+            f"{out.resolve()} is under {repo.resolve()}"
+        )
     dirty_count = int(dirty) if dirty.strip().isdigit() else 0
     bin_dir = out / "bin"
     if not bin_dir.is_dir():
