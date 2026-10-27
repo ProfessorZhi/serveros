@@ -26,7 +26,17 @@ reads them back without extracting them, and refuses the ways a package can lie:
 * a `depends_on` entry naming a module the payload does not carry;
 * a vendored copy of the CloudCLI tool schema (the provider forwards the live
   schema; a copy is the thing that goes stale silently);
-* a platform the payload claims but the kind does not support.
+* a platform the payload claims but the kind does not support, or one it fails to
+  claim although the kind ships there;
+* an intra-package import the payload does not carry (`from .report import x`
+  with no `fleet_mcp/report.py`);
+* an `l2` block that contradicts the payload — a node claiming the hub's
+  provides, a hub listing a shared surface, a `standalone` flag disagreeing with
+  its own dependency lists;
+* a member name with a second spelling (`fleet_mcp/./node/connector.py`), a
+  duplicate name, a link, or bytecode;
+* a pin entry the closure no longer reaches, so `NODE_SHARED_SURFACE` cannot rot
+  into a list nobody checks.
 
 It does not install anything, start anything, talk to anything, or read a
 credential. `pair()` and `rollback_target()` describe a rollback; they perform
@@ -35,12 +45,13 @@ none.
 What it does NOT claim
 ----------------------
 The split is not real yet, and this module says so with numbers rather than with
-a disclaimer. On `main` today the node connector's import closure is **29**
-`fleet_mcp` modules and the hub's is **30** — they differ by `server.py`/
-`tools.py` on one side and `node/connector.py` on the other. The node drags in
-`fleet`, `audit`, `registry`, `dispatch`, `privacy`, `scopes`, `session_detail`,
-`feishu_sso`, `providers/fleet_node` and more because of three import edges that
-live in files #407 owns:
+a disclaimer. On `main` today both closures are **30 files** and they differ by
+two modules on each side (`node/{__init__,connector}.py` versus
+`{server,tools}.py`), so **28 modules are in both** — the `fleet_mcp` package is
+the release surface, not a shared subset of it. The node additionally drags in
+`fleet` (the repository root), `registry`, `audit`, `dispatch`, `privacy`,
+`scopes`, `session_detail`, `feishu_sso`, `providers/fleet_node` and more,
+because of three import edges that live in files #407 owns:
 
     fleet_mcp/node/connector.py  ->  ..fleet, ..config, ..providers.cloudcli
     fleet_mcp/providers/__init__ ->  providers.fleet_node
@@ -50,15 +61,17 @@ live in files #407 owns:
 Cutting those edges is a source change in files this package may not write. So
 this module PINS the shared surface (`NODE_SHARED_SURFACE`) instead of pretending
 it is zero: today's shape is legal and recorded, tomorrow's new coupling is a
-build failure that names the module. Shrinking the pin is always allowed. See
-HANDOFF-407.md for the exact edges.
+build failure that names the module. Shrinking the pin is always allowed — and a
+pin entry the closure no longer reaches is also a build failure, so the list
+cannot rot into a claim nobody checks. See HANDOFF-407.md for the exact edges.
 
-The manifest is `serveros/artifact.v1`, the same schema `scripts/release.py`
-reads and `scripts/build.py` writes. The two kinds are new, so the release tool
-refuses them by name today — deliberately, because its verifier dispatcher falls
-through to the node verifier for any kind it does not know. HANDOFF-419.md is the
-eight-line change that closes that hole; until it lands, an L2 artifact cannot be
-promoted by accident.
+The manifest is `serveros/artifact.v1`: `scripts/build.py` writes it,
+`scripts/release.py` reads it. The two kinds are new, so the release tool refuses
+them by name today. The risk on the other side of registration is that
+`verify_revision` falls through to `verify_node_runtime` for any *registered*
+kind it does not name — an unknown kind is refused before dispatch
+(`release.py:620`), a registered one is not. HANDOFF-419.md is the change that
+closes that hole; until it lands, an L2 artifact cannot be promoted by accident.
 """
 from __future__ import annotations
 
@@ -73,7 +86,7 @@ import sys
 import tarfile
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 #: The manifest file name and schema, byte for byte what `scripts/release.py`
 #: reads (`ARTIFACT_MANIFEST`, `ARTIFACT_MANIFEST_SCHEMA`). They are repeated
@@ -105,6 +118,12 @@ REQUIRED_MEMBERS = {
 #: refused, because "it packaged on Windows" is not "it runs there".
 PLATFORMS = {L2_NODE: ("linux", "windows"), L2_HUB: ("linux",)}
 
+#: What each kind is for. Stated once because the manifest writes it and the
+#: verifier compares it: a payload cannot describe itself as providing something
+#: the other kind provides.
+PROVIDES = {L2_NODE: {"node-connector": True},
+            L2_HUB: {"hub-ingress": True, "mcp-tools": True}}
+
 #: Never in a node artifact, whatever the closure says: these are the hub's own
 #: ingress and its operator face. The connector must not be able to start an MCP
 #: server, serve tools, or run OAuth because it was imported.
@@ -116,11 +135,21 @@ NODE_DENIED_MODULES = (
 )
 NODE_DENIED_PREFIXES = ("fleet_mcp/deploy/", "fleet_mcp/bin/")
 
+#: Anything under this package belongs to the node and needs no pin: a new
+#: node-private module is the node's own business, not evidence of hub coupling.
+NODE_PUBLIC_PREFIX = "fleet_mcp.node"
+
+#: Bytecode is build output, not source: a sourceless `fleet_mcp/server.pyc` is
+#: importable, so a rule about `server.py` that ignores `server.pyc` is a rule
+#: with a documented way around it.
+FORBIDDEN_SUFFIXES = (".pyc", ".pyo")
+
 #: The measured shared surface, frozen. These modules are in the node's closure
 #: today because the three edges in the module docstring pull them in. They are
-#: legal; a module NOT in this tuple is new coupling and fails the build. When an
-#: edge is cut, delete the entry here in the same PR — the build also reports the
-#: entries that are no longer reached, so this list cannot rot silently.
+#: legal; a module NOT in this tuple — and not under `NODE_PUBLIC_PREFIX` — is
+#: new coupling and fails the build. When an edge is cut, delete the entry here in
+#: the same change: an entry the closure no longer reaches is *also* a build
+#: failure, so this list cannot rot into a claim nobody checks.
 NODE_SHARED_SURFACE = (
     "fleet_mcp.audit",
     "fleet_mcp.cloudcli_native",
@@ -155,7 +184,8 @@ HUB_DENIED_PATTERNS = (
 #: with "token" in its name an argument with this guard instead of a decision.
 HUB_SECRET_PATTERNS = ("*credential*", "*token*")
 
-VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$")
+VERSION_RE = re.compile(
+    r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.\-]*)?(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$")
 
 #: A file that is a copy of the CloudCLI tool schema rather than a forwarder of
 #: it. The provider asks the running CLI; a payload that answers from a baked copy
@@ -178,13 +208,6 @@ class Closure:
     third_party: tuple[str, ...]
     external_in_repo: tuple[str, ...] = ()
     edges: dict[str, tuple[str, ...]] | None = None   # package -> importers
-
-
-def _module_name(path: Path, root: Path) -> str:
-    parts = path.relative_to(root).with_suffix("").parts
-    if parts and parts[-1] == "__init__":
-        parts = parts[:-1]
-    return ".".join(parts)
 
 
 def _resolve(dotted: str, root: Path) -> Path | None:
@@ -310,11 +333,23 @@ def manifest_for(kind: str, version: str, *, root: Path,
         raise Refused(f"version {version!r} is not <major>.<minor>.<patch>[+<cachebuster>]")
 
     found = closure(ENTRY[kind], root)
+    if not found.files:
+        raise Refused(
+            f"{kind}'s entrypoint {ENTRY[kind]!r} does not resolve under {root}; a "
+            f"closure of zero modules would build an artifact of nothing and call "
+            f"it a release")
     members: dict[str, bytes] = {}
     for module, path in found.files.items():
         rel = path.relative_to(root).as_posix()
         data = path.read_bytes()
         members[rel] = data
+
+    absent = [rel for rel in REQUIRED_MEMBERS[kind] if rel not in members]
+    if absent:
+        raise Refused(
+            f"the {kind} closure of {ENTRY[kind]!r} does not contain its required "
+            f"member(s) {absent}; the kind is defined by the file it exists for and "
+            f"a payload without it is not that kind however it is named")
 
     _refuse_cross_layer(kind, members)
     _refuse_vendored_schema(members)
@@ -335,10 +370,27 @@ def manifest_for(kind: str, version: str, *, root: Path,
     if unsupported:
         raise Refused(f"{kind} does not run on {unsupported}; it ships to "
                       f"{list(PLATFORMS[kind])}")
+    # The verifier requires every platform the kind supports, so a build that
+    # narrowed the list would produce an artifact its own verifier refuses. A
+    # build that can emit what the release path rejects is a build nobody can
+    # use; the rule lives in both places on purpose and is checked here first.
+    if not set(PLATFORMS[kind]) <= set(declared_platforms):
+        raise Refused(
+            f"{kind} must declare every platform it ships to, "
+            f"{list(PLATFORMS[kind])}; {list(declared_platforms)} would build a "
+            f"release that claims less than the kind does")
 
-    members_list = sorted(members)
-    member_sha256 = {rel: _sha(members[rel]) for rel in members_list}
-    entries = [{"path": rel, "sha256": member_sha256[rel]} for rel in members_list]
+    # `members` names the manifest itself, exactly as `scripts/build.py` does
+    # (`members = ... | {ARTIFACT_MANIFEST_NAME}`): a list of what was written
+    # that omitted one of the things written would be a false statement, and
+    # `scripts/release.py:739` compares this list against the files on disk with
+    # only `RELEASE.json` exempted — so an unlisted `ARTIFACT.json` would be
+    # reported as "present that the build did not produce". It carries no digest
+    # of its own, because a file cannot contain its own.
+    digests = sorted(members)
+    member_sha256 = {rel: _sha(members[rel]) for rel in digests}
+    entries = [{"path": rel, "sha256": member_sha256[rel]} for rel in digests]
+    members_list = sorted(set(digests) | {ARTIFACT_MANIFEST})
 
     manifest = {
         "schema": ARTIFACT_MANIFEST_SCHEMA,
@@ -363,7 +415,7 @@ def manifest_for(kind: str, version: str, *, root: Path,
         "member_sha256": member_sha256,
         "source": {
             "entry": ENTRY[kind],
-            "module_count": len(members_list),
+            "module_count": len(member_sha256),
             "tree_sha256": _tree_digest(entries),
         },
         "l2": {
@@ -382,15 +434,14 @@ def manifest_for(kind: str, version: str, *, root: Path,
             "external_in_repo": list(found.external_in_repo),
             "standalone": not found.external_in_repo and not depends_on,
             "shared_surface": (list(NODE_SHARED_SURFACE) if kind == L2_NODE else []),
-            "provides": {"node-connector": True} if kind == L2_NODE
-                        else {"hub-ingress": True, "mcp-tools": True},
+            "provides": dict(PROVIDES[kind]),
         },
     }
     return manifest, members
 
 
 def _refuse_node_members(names) -> None:
-    """The node half of D7: no hub ingress, no unpinned coupling.
+    """The node half of D7: no hub ingress, no unpinned coupling, no stale pin.
 
     Takes MEMBER NAMES rather than a `Closure` because the build and the verifier
     must apply the same rule to the same thing. They used to hold two copies of
@@ -398,6 +449,7 @@ def _refuse_node_members(names) -> None:
     copies of a guard is a build that passes and a release that refuses, or the
     reverse.
     """
+    _refuse_bytecode(names, L2_NODE)
     denied = sorted({name for name in names
                      if _module_of(name) in NODE_DENIED_MODULES
                      or name.startswith(NODE_DENIED_PREFIXES)})
@@ -406,18 +458,47 @@ def _refuse_node_members(names) -> None:
             f"the node artifact reaches hub-side module(s) {denied}; the connector "
             f"must not import the hub's ingress. Cut the edge or move the import "
             f"behind a handoff.")
-    modules = {_module_of(name) for name in names}
-    unpinned = sorted((modules - set(NODE_EXCLUSIVE) - set(NODE_SHARED_SURFACE)) - {""})
+    modules = {_module_of(name) for name in names} - {""}
+    private = {module for module in modules
+               if module == NODE_PUBLIC_PREFIX
+               or module.startswith(NODE_PUBLIC_PREFIX + ".")}
+    unpinned = sorted(modules - private - set(NODE_EXCLUSIVE)
+                      - set(NODE_SHARED_SURFACE))
     if unpinned:
         raise Refused(
             f"new hub coupling in the node artifact: {unpinned}. The shared "
             f"surface is pinned because it is what makes the two artifacts one "
             f"release; a reviewed change adds the module to NODE_SHARED_SURFACE "
-            f"with the reason.")
+            f"with the reason, or puts it under {NODE_PUBLIC_PREFIX}/ if it is the "
+            f"node's own.")
+    unreached = sorted(set(NODE_SHARED_SURFACE) - modules)
+    if unreached:
+        raise Refused(
+            f"the pin lists module(s) the closure no longer reaches: {unreached}. "
+            f"An edge was cut and the pin was not trimmed with it; delete the "
+            f"entry in the same change, so the pin stays a measurement instead of "
+            f"a claim.")
+
+
+def _refuse_bytecode(names, kind: str) -> None:
+    """Sources ship, bytecode does not.
+
+    A sourceless `.pyc` is importable (`importlib.machinery.BYTECODE_SUFFIXES` is
+    `['.pyc']`), so on the hub side `fleet_mcp/server.pyc` would carry the
+    connector's counterpart past a deny-list written against `.py`, and on the
+    node side it would carry code the manifest's dependency check never parsed.
+    """
+    found = sorted(name for name in names if name.endswith(FORBIDDEN_SUFFIXES))
+    if found:
+        raise Refused(
+            f"the {kind} artifact ships bytecode {found}; bytecode is build output "
+            f"and it is importable without its source, so a payload that carries "
+            f"it can be something this build never checked.")
 
 
 def _refuse_hub_members(names) -> None:
     """The hub half: the hub is software, the device's state is not."""
+    _refuse_bytecode(names, L2_HUB)
     leaked = sorted(name for name in names if name.startswith(HUB_DENIED_PREFIXES))
     if leaked:
         raise Refused(
@@ -488,30 +569,79 @@ def _refuse_vendored_schema(members: dict[str, bytes]) -> None:
 # --------------------------------------------------------------------------- #
 # deterministic archive
 # --------------------------------------------------------------------------- #
+def _refuse_unsafe_names(names) -> None:
+    """One canonical spelling per member, or no release.
+
+    `fleet_mcp/./node/connector.py` is the same file as
+    `fleet_mcp/node/connector.py` to every filesystem and a different string to
+    every guard that compares strings — which is how a deny-list written against
+    `fleet_mcp/node/` gets walked past. So the rule is not "reject the traversal
+    parts"; it is "accept exactly the canonical spelling and refuse the rest".
+    """
+    problems: list[str] = []
+    for name in names:
+        if not name or any(char in name for char in ("\0", "\n", "\r")):
+            problems.append(repr(name))
+        elif "\\" in name:
+            # A Windows separator inside a POSIX archive is at best a name no
+            # extractor agrees on, and at worst a second spelling of one file.
+            problems.append(name)
+        else:
+            path = PurePosixPath(name)
+            if path.is_absolute() or ".." in path.parts or path.as_posix() != name:
+                problems.append(name)
+    if problems:
+        raise Refused(
+            f"unsafe or non-canonical member name(s) {sorted(problems)}; a member "
+            f"name is a path inside the payload and it has exactly one spelling, so "
+            f"the guard and the filesystem are never looking at two names")
+
+
+def _refuse_duplicate_names(names, where: str) -> None:
+    duplicated = sorted({name for name in names if names.count(name) > 1}) \
+        if len(names) != len(set(names)) else []
+    if duplicated:
+        raise Refused(
+            f"{where} carries {duplicated} more than once; two members with one "
+            f"name means the payload's contents depend on which one wins, and a "
+            f"release whose contents depend on an extraction order is not the "
+            f"release that was verified")
+
+
 def write_artifact(manifest: dict, members: dict[str, bytes], output: Path) -> Path:
     """Write one `.tar.gz` whose bytes depend only on the manifest and members.
 
     No timestamp, no uid/gid, no hostile-to-diff metadata: two builds of the same
     tree produce the same file, so "did this artifact change" is a byte
-    comparison and not a conversation. The manifest is a member but is not listed
-    in `members` — a file cannot contain its own digest, and the release tool's
-    own tree hash has the same shape for the same reason.
+    comparison and not a conversation. The manifest is a member but carries no
+    digest — a file cannot contain its own, and `scripts/build.py` lists it in
+    `members` for the same reason `scripts/release.py` exempts only `RELEASE.json`
+    from its undeclared-file check.
     """
     payload = dict(members)
     payload[ARTIFACT_MANIFEST] = json.dumps(
         manifest, indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8") + b"\n"
+    _refuse_unsafe_names(payload)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw,
-                           mtime=0, compresslevel=9) as gz:
-            with tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as tar:
-                for name in sorted(payload):
-                    data = payload[name]
-                    info = tarfile.TarInfo(name)
-                    info.size, info.mtime, info.mode = len(data), 0, 0o644
-                    info.uid = info.gid = 0
-                    info.uname = info.gname = ""
-                    tar.addfile(info, io.BytesIO(data))
+    try:
+        with output.open("wb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw,
+                               mtime=0, compresslevel=9) as gz:
+                with tarfile.open(fileobj=gz, mode="w",
+                                  format=tarfile.USTAR_FORMAT) as tar:
+                    for name in sorted(payload):
+                        data = payload[name]
+                        info = tarfile.TarInfo(name)
+                        info.size, info.mtime, info.mode = len(data), 0, 0o644
+                        info.uid = info.gid = 0
+                        info.uname = info.gname = ""
+                        tar.addfile(info, io.BytesIO(data))
+    except ValueError as exc:
+        # USTAR is the deterministic format and it has a 100-byte name field;
+        # a deeply nested member overruns it. That is a refusal with a reason,
+        # not a traceback out of the packaging tool.
+        output.unlink(missing_ok=True)
+        raise Refused(f"cannot write {output} as a USTAR archive: {exc}") from exc
     return output
 
 
@@ -540,20 +670,32 @@ def read_artifact(path: Path) -> Artifact:
     """
     try:
         with tarfile.open(path, "r:gz") as tar:
-            names = tar.getnames()
-            for name in names:
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise Refused(f"{path} contains unsafe member name {name!r}")
+            infos = tar.getmembers()
+            names = [info.name for info in infos]
+            _refuse_unsafe_names(names)
+            _refuse_duplicate_names(names, str(path))
+            # A directory, a symlink or a device node is not a member: the
+            # manifest describes file bytes and nothing else, so a payload that
+            # carries a link would be verified as the thing it points at and
+            # installed as the link.
+            other = sorted(info.name for info in infos if not info.isfile())
+            if other:
+                raise Refused(
+                    f"{path} carries member(s) that are not regular files "
+                    f"{other}; an artifact is a set of file bytes, and a link or a "
+                    f"directory is something the manifest cannot describe")
             if ARTIFACT_MANIFEST not in names:
                 raise Refused(f"{path} carries no {ARTIFACT_MANIFEST}")
             raw = tar.extractfile(ARTIFACT_MANIFEST).read()
             manifest = json.loads(raw)
             members = {name: tar.extractfile(name).read()
                        for name in names if name != ARTIFACT_MANIFEST}
-    except (tarfile.TarError, OSError, json.JSONDecodeError) as exc:
+    except (tarfile.TarError, OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise Refused(f"{path} is not a readable artifact: {exc}") from exc
 
-    recorded = manifest.get("member_sha256") or {}
+    recorded = manifest.get("member_sha256")
+    if not isinstance(recorded, dict):
+        recorded = {}      # a shape `verify` refuses; reading must not crash on it
     for name, data in members.items():
         if name not in recorded:
             continue          # an undeclared file is a `verify` problem, not a read one
@@ -613,38 +755,120 @@ def verify(artifact: Artifact, *, expect_kind: str | None = None,
     if len(listed) != len(set(listed)):
         duplicated = sorted({item for item in listed if listed.count(item) > 1})
         raise Refused(f"the manifest lists {duplicated} more than once")
-    missing = sorted(set(listed) - set(artifact.members))
-    extra = sorted(set(artifact.members) - set(listed))
+    if ARTIFACT_MANIFEST not in listed:
+        raise Refused(
+            f"the member list omits {ARTIFACT_MANIFEST} itself; `scripts/release.py` "
+            f"compares this list against the files on disk and exempts only "
+            f"RELEASE.json, so a release staged from this payload would report its "
+            f"own manifest as a file the build did not produce")
+    # The manifest describes every member including itself; it is the one member
+    # that cannot carry a digest of its own.
+    digests = [name for name in listed if name != ARTIFACT_MANIFEST]
+    payload = set(artifact.members) | {ARTIFACT_MANIFEST}
+    missing = sorted(set(listed) - payload)
+    extra = sorted(payload - set(listed))
     if missing or extra:
         raise Refused(f"member list does not match the payload: missing {missing}, "
                       f"undeclared {extra}")
+    if sorted(recorded) != sorted(digests):
+        raise Refused(
+            f"member_sha256 covers {sorted(set(recorded) - set(digests)) or 'nothing'} "
+            f"extra and omits {sorted(set(digests) - set(recorded)) or 'nothing'}; "
+            f"every member except {ARTIFACT_MANIFEST} has exactly one digest")
 
-    for name in listed:
-        if _sha(artifact.members[name]) != recorded.get(name):
+    for name in digests:
+        if _sha(artifact.members[name]) != recorded[name]:
             raise Refused(f"{name} does not match the manifest entry")
 
-    if _tree_digest([{"path": name, "sha256": recorded.get(name, "")}
-                     for name in listed]) != manifest.get("source", {}).get("tree_sha256"):
+    if _tree_digest([{"path": name, "sha256": recorded[name]}
+                     for name in digests]) != manifest.get("source", {}).get("tree_sha256"):
         raise Refused("source.tree_sha256 does not describe this member list")
+    if manifest.get("source", {}).get("module_count") != len(digests):
+        raise Refused(
+            f"source.module_count says {manifest.get('source', {}).get('module_count')!r} "
+            f"and the member list carries {len(digests)}; a count that disagrees "
+            f"with the list it describes is a manifest written by hand")
 
     for required in REQUIRED_MEMBERS[kind]:
         if required not in artifact.members:
             raise Refused(f"{kind} artifact is missing its required member {required}")
 
+    block = _verify_l2_block(kind, manifest)
     _verify_layer(kind, artifact)
     _verify_dependencies(manifest, artifact)
     _refuse_vendored_schema(artifact.members)
 
-    platforms = list(manifest.get("l2", {}).get("platforms") or [])
+    return {"ok": True, "kind": kind, "version": version,
+            "members": len(listed), "digest": artifact.digest,
+            "standalone": bool(block.get("standalone"))}
+
+
+def _verify_l2_block(kind: str, manifest: dict) -> dict:
+    """The `l2` block, checked against what the code says the kind is.
+
+    A block that restates the top level is not redundant if it is compared: the
+    top level is what other readers use, this is what this kind means, and the
+    failure mode being closed here is a manifest that says two things at once —
+    a hub listing the node's shared surface, a node claiming to run where it does
+    not, a payload whose `standalone` contradicts its own dependency lists.
+    """
+    block = manifest.get("l2")
+    if not isinstance(block, dict):
+        raise Refused("the manifest carries no l2 block; this is an L2 artifact and "
+                      "a payload that does not describe itself as one cannot be "
+                      "released as one")
+
+    if block.get("kind") != kind:
+        raise Refused(f"the l2 block says {block.get('kind')!r} and the kinds "
+                      f"list says {kind!r}")
+    if block.get("entrypoint") != ENTRY[kind]:
+        raise Refused(f"the l2 block names entrypoint {block.get('entrypoint')!r}; "
+                      f"{kind} is {ENTRY[kind]!r}")
+
+    platforms = list(block.get("platforms") or [])
     unsupported = sorted(set(platforms) - set(PLATFORMS[kind]))
     if unsupported:
         raise Refused(f"{kind} declares unsupported platform(s) {unsupported}")
-    if not set(PLATFORMS[kind]) <= set(platforms):
+    absent = sorted(set(PLATFORMS[kind]) - set(platforms))
+    if absent:
         raise Refused(f"{kind} must declare {list(PLATFORMS[kind])}, "
-                      f"declared {platforms}")
+                      f"declared {platforms} (missing {absent}); a payload that "
+                      f"claims fewer platforms than its kind ships to would install "
+                      f"on a machine its release does not describe")
 
-    return {"ok": True, "kind": kind, "version": version,
-            "members": len(recorded), "digest": artifact.digest}
+    external = list(block.get("external_in_repo") or [])
+    depends_on = list(block.get("depends_on") or [])
+    standalone = not external and not depends_on
+    if bool(block.get("standalone")) != standalone:
+        raise Refused(
+            f"the l2 block says standalone={block.get('standalone')!r} while "
+            f"external_in_repo={external} and depends_on={depends_on} say "
+            f"otherwise; the one thing a verifier exists for is a payload that "
+            f"describes itself two ways")
+
+    provides = block.get("provides")
+    if provides != PROVIDES[kind]:
+        raise Refused(f"{kind} must provide exactly {PROVIDES[kind]}, "
+                      f"declares {provides!r}")
+
+    shared = sorted(block.get("shared_surface") or [])
+    if kind == L2_NODE:
+        if shared != sorted(NODE_SHARED_SURFACE):
+            raise Refused(
+                f"the node artifact lists shared surface {shared}; this build's pin "
+                f"is {sorted(NODE_SHARED_SURFACE)}. An artifact is released against "
+                f"the pin it was built with, and a manifest that records a "
+                f"different one is describing a different release")
+    elif shared:
+        raise Refused(
+            f"the hub artifact lists a shared surface {shared}; the pin is the "
+            f"node's measurement of what it borrows from the hub, not the hub's")
+
+    requires = block.get("requires")
+    if not isinstance(requires, dict) or not isinstance(requires.get("modules"), list):
+        raise Refused("the l2 block declares no requires.modules; the dependency "
+                      "check has nothing to compare the payload's imports against")
+    return block
 
 
 def _verify_layer(kind: str, artifact: Artifact) -> None:
@@ -653,17 +877,28 @@ def _verify_layer(kind: str, artifact: Artifact) -> None:
 
 
 def _module_of(name: str) -> str:
-    if not name.endswith(".py"):
+    """The dotted module a member would import as, or "" for a data file.
+
+    Sources and bytecode both count: `importlib.machinery.BYTECODE_SUFFIXES` is
+    `['.pyc']`, so a sourceless `fleet_mcp/server.pyc` imports as
+    `fleet_mcp.server`. A deny-list that reads only `.py` has a way around it.
+    """
+    for suffix in (".py", ".pyc", ".pyo", ".pyi"):
+        if name.endswith(suffix):
+            break
+    else:
         return ""
-    parts = name[:-3].split("/")
+    parts = name[: -len(suffix)].split("/")
     if parts[-1] == "__init__":
         parts = parts[:-1]
     return ".".join(parts)
 
 
 def _verify_dependencies(manifest: dict, artifact: Artifact) -> None:
-    declared = set(manifest.get("l2", {}).get("requires", {}).get("modules") or [])
+    block = manifest.get("l2", {})
+    declared = set(block.get("requires", {}).get("modules") or [])
     measured: set[str] = set()
+    internal: set[str] = set()
     stdlib = set(getattr(sys, "stdlib_module_names", frozenset()))
     for name, data in artifact.members.items():
         if not name.endswith(".py"):
@@ -685,23 +920,40 @@ def _verify_dependencies(manifest: dict, artifact: Artifact) -> None:
                     modules = [node.module or ""]
             for module in modules:
                 top = module.split(".")[0]
-                if module.startswith("fleet_mcp") or not top:
+                if not top:
+                    continue
+                if module.startswith("fleet_mcp"):
+                    # An intra-package import is not a dependency, it is a claim
+                    # about the payload: `from .report import x` promises that
+                    # `fleet_mcp/report.py` is in this artifact. Nothing else
+                    # checks that — the member list only says what IS here.
+                    internal.add(module.rstrip("."))
                     continue
                 if top in stdlib or top == "__future__":
                     continue
                 measured.add(top)
-    external = set(manifest.get("l2", {}).get("external_in_repo") or [])
+    present = {_module_of(name) for name in artifact.members} - {""}
+    absent = sorted(module for module in internal if module not in present)
+    if absent:
+        raise Refused(
+            f"the payload imports {absent} from its own package but does not carry "
+            f"it; an artifact that names a module it does not contain imports into "
+            f"an ImportError on the machine, not in the build")
+
+    external = set(block.get("external_in_repo") or [])
     missing = sorted(measured - declared - external)
     if missing:
         raise Refused(f"artifact imports {missing} but its manifest declares only "
                       f"{sorted(declared)}; an artifact that does not name its "
                       f"dependencies installs into an ImportError")
 
-    for dependency in manifest.get("l2", {}).get("depends_on") or []:
-        wanted = f"{str(dependency).replace('.', '/')}.py"
-        if wanted not in artifact.members:
-            raise Refused(f"depends_on names {dependency!r}, which this payload "
-                          f"does not carry")
+    for dependency in block.get("depends_on") or []:
+        wanted = str(dependency).replace(".", "/")
+        if (f"{wanted}.py" in artifact.members
+                or f"{wanted}/__init__.py" in artifact.members):
+            continue
+        raise Refused(f"depends_on names {dependency!r}, which this payload "
+                      f"does not carry")
 
 
 # --------------------------------------------------------------------------- #
@@ -716,9 +968,12 @@ def pair(previous: Path, current: Path, *, kind: str | None = None) -> dict:
     and installs nothing.
     """
     old, new = read_artifact(previous), read_artifact(current)
-    if kind is not None:
-        verify(old, expect_kind=kind)
-        verify(new, expect_kind=kind)
+    # Both are verified whether or not a kind was named: "the previous artifact is
+    # still readable and still verifies" is the entire property a rollback claim
+    # rests on, and reporting a rollback to an artifact this build refuses would
+    # be a rollback to something that was never a release.
+    verify(old, expect_kind=kind)
+    verify(new, expect_kind=kind)
     if old.kind != new.kind:
         raise Refused(f"cannot roll a {new.kind} back to a {old.kind}")
     return {
@@ -728,6 +983,31 @@ def pair(previous: Path, current: Path, *, kind: str | None = None) -> dict:
         "rollback_to": old.version,
         "rollback_available": True,
     }
+
+
+def extract(artifact: Path, destination: Path) -> Path:
+    """Lay an artifact out as a directory, which is the shape `release.py` stages.
+
+    `scripts/release.py` copies a *directory* (`shutil.copytree`), not an archive,
+    so an artifact has to become one before it can be released. Extraction happens
+    only after `read_artifact` has refused unsafe names, duplicates, links and
+    tampered bytes: a reader that extracted first would have already written the
+    file it was about to reject.
+    """
+    read = read_artifact(artifact)
+    if destination.exists() and any(destination.iterdir()):
+        raise Refused(f"{destination} already has contents; an extracted artifact "
+                      f"is written into an empty directory so nothing of the last "
+                      f"one is mistaken for part of this one")
+    destination.mkdir(parents=True, exist_ok=True)
+    for name, data in read.members.items():
+        path = destination / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    (destination / ARTIFACT_MANIFEST).write_text(
+        json.dumps(read.manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8")
+    return destination
 
 
 def rollback_target(previous: Path, *, kind: str) -> Artifact:
@@ -767,6 +1047,10 @@ def main(argv: list[str] | None = None) -> int:
     both.add_argument("current", type=Path)
     both.add_argument("--kind", required=True, choices=L2_KINDS)
 
+    unpack = sub.add_parser("extract", help="write an artifact out as a directory")
+    unpack.add_argument("artifact", type=Path)
+    unpack.add_argument("destination", type=Path)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
@@ -785,6 +1069,9 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(verify(read_artifact(args.artifact),
                                     expect_kind=args.kind,
                                     expect_version=args.version), indent=2))
+        elif args.command == "extract":
+            path = extract(args.artifact, args.destination)
+            print(json.dumps({"ok": True, "directory": str(path)}, indent=2))
         else:
             print(json.dumps(pair(args.previous, args.current, kind=args.kind), indent=2))
     except Refused as exc:

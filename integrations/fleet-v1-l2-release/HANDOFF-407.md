@@ -17,10 +17,16 @@ python integrations/fleet-v1-l2-release/l2_release.py build \
 
 `l2-node` and `l2-hub` are both 30 files today. Node-only:
 `fleet_mcp/node/{__init__,connector}.py`. Hub-only:
-`fleet_mcp/{server,tools}.py`. **17 modules are in both**, and the connector's
-closure leaves the `fleet_mcp` package entirely and needs the repository-root
-`fleet/` namespace package. So the node artifact cannot be installed without a
-checkout of this repository — i.e. it is not yet a device release.
+`fleet_mcp/{server,tools}.py`. **28 modules are in both** — the package is the
+release surface, not a shared corner of it. Of those 28, 11 are declared node
+leaves and 17 are the pinned shared surface (`NODE_SHARED_SURFACE`); the pin is
+smaller than the intersection because a module the node already declares as its
+own needs no pin to be legal.
+
+The connector's closure also leaves the `fleet_mcp` package entirely and needs
+the repository-root `fleet/` namespace package. So the node artifact cannot be
+installed without a checkout of this repository — i.e. it is not yet a device
+release.
 
 ## The four edges
 
@@ -48,18 +54,31 @@ node closure reaches `registry`.
 
 ## What each cut buys, measured
 
-| scenario | files in `l2-node` | needs repo-root `fleet/` | shared modules |
-|---|---|---|---|
-| as-is | 30 | **yes** | 17 |
-| cut A | 25 | no | 12 |
-| cut A + B | 21 | no | 8 |
-| cut A + B + C | **17** | no | **4** |
+Each row was measured by copying `fleet_mcp/` and `fleet/` to a temporary
+directory, deleting the `ImportFrom` statements the edge consists of (whole
+statement, via `ast` `lineno`/`end_lineno`, so the file still parses), and
+re-running `closure()` on the copy. Nothing in this working tree was modified:
+
+| scenario | files in `l2-node` | needs repo-root `fleet/` | modules in both | pinned modules left |
+|---|---|---|---|---|
+| as-is | 30 | **yes** | 28 | 17 |
+| cut A | 25 | no | 23 | 12 |
+| cut A + B | 21 | no | 18 | 8 |
+| cut A + B + C | **17** | no | **14** | **4** |
+
+The last column is the pin; the one before it is the intersection with the hub's
+payload. They differ because 13 of the node's modules are declared node leaves
+and never needed a pin.
 
 After A+B+C the node artifact is 17 files, `standalone: true`, and the four
-remaining shared modules are ones it genuinely uses: `cloudcli_native`
+remaining **pinned** modules are ones it genuinely uses: `cloudcli_native`
 (`connector.py:975`, `1059`, and `providers/cloudcli.py`), `owner_access`
 (`connector.py:331`, `710`, `1266`, `1316`), `mcp_http` and `disclosure` (via
 `providers/cloudcli.py`).
+
+One side effect worth knowing before choosing an order: B and C shrink the **hub**
+as well (30 → 28 → 27 files), because `fleet_mcp/providers/__init__.py` and
+`fleet_mcp/config.py` are hub modules too. A changes only the node's payload.
 
 A alone is worth doing first: it is one file, it removes the repository-root
 dependency, and it makes "the node artifact installs on a device" a true sentence

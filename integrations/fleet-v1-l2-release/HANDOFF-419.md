@@ -81,28 +81,50 @@ and can be shared:
 
 1. `ARTIFACT.json` present and its `kinds` is exactly `[kind]`
    (`read_artifact_manifest` already does this once the kinds are registered);
-2. `set(manifest["members"])` equals the files on disk minus `ARTIFACT_MANIFEST`
-   and `RELEASE.json` — note that **`members` is a list of paths**, which is what
-   makes `set(recorded)` at line 734 work; the L2 manifest also carries an
-   additive `member_sha256` map and a payload whose bytes do not match it must be
-   refused;
+2. `set(manifest["members"])` equals the files on disk minus `RELEASE.json` —
+   note that **`members` is a list of paths**, which is what makes
+   `set(recorded)` at line 739 work, **and that it includes `ARTIFACT.json`
+   itself**, exactly as `scripts/build.py:1011-1013` writes it: line 739 exempts
+   only `RELEASE.json`, so an unlisted manifest would be reported as a file the
+   build did not produce. The L2 manifest carries an additive `member_sha256` map
+   covering every member *except* the manifest (a file cannot hold its own
+   digest), and a payload whose bytes do not match it must be refused;
 3. required members present (the shared loop at `622-625` already does this);
 4. layer separation — `L2_NODE` must not contain `fleet_mcp/server.py`,
    `fleet_mcp/tools.py`, `fleet_mcp/oauth.py`, `fleet_mcp/owner_setup.py`,
-   `fleet_mcp/deploy/**`, `fleet_mcp/bin/**`, or any `fleet_mcp.*` module outside
-   the pinned shared surface; `L2_HUB` must not contain `fleet_mcp/node/**` or any
-   machine-specific file (`*.local.y*ml`, `bindings/*`, `*.service`, `*.timer`,
-   `*.ps1`, `*.vbs`, `*.pem`, `*.key`, `.env`, `*credential*`, `*token*`);
-5. declared third-party modules equal the modules the payload imports (a manifest
-   that does not name `yaml` installs into an `ImportError`);
-6. declared platforms are a subset of `PLATFORMS[kind]`, and `l2-hub` never
-   declares `windows`.
+   `fleet_mcp/deploy/**`, `fleet_mcp/bin/**`, or any `fleet_mcp.*` module that is
+   neither under `fleet_mcp.node` nor in
+   `NODE_EXCLUSIVE ∪ NODE_SHARED_SURFACE` — **both sets**, not the pin alone: 13
+   of the node's modules (`fleet_mcp`, `config`, `providers`, `providers.base`,
+   `providers.cloudcli`, `node_protocol`, `errors`, `identity`, `local_roots`,
+   `runtime_identity`, `version`, `fleet_mcp.node`, `fleet_mcp.node.connector`)
+   are declared node leaves and are not in the pin, so a check against the pin
+   alone refuses the connector's own payload. A pin entry the payload no longer
+   contains is also a failure (a cut edge must delete its entry);
+   `L2_HUB` must not contain `fleet_mcp/node/**` or any machine-specific file
+   (`*.local.y*ml`, `bindings/*`, `*.service`, `*.timer`, `*.ps1`, `*.vbs`,
+   `*.pem`, `*.key`, `.env`), and — **for non-source files only** — `*credential*`
+   / `*token*`: a `token_cache.py` is code, a `tokens.json` is a credential;
+5. the declared third-party modules are a **superset** of what the payload
+   imports (a manifest that does not name `yaml` installs into an `ImportError`;
+   naming an extra module is a smaller sin than hiding one), and every
+   `fleet_mcp.*` module the payload imports is a module it carries;
+6. `PLATFORMS[kind]` is a **subset of** the declared platforms — the payload must
+   claim every platform its kind ships to, and no platform outside it, so
+   `l2-hub` never declares `windows` and `l2-node` always declares both.
 
-`integrations/fleet-v1-l2-release/l2_release.py` implements exactly these six and
-is the reference; `verify_l2_layer` does not have to import it (an integration
-directory is not a library), but the two must agree. A parity test is already
-staged in `tests/test_fleet_l2_release_separation.py` and skips until the kinds
-are registered.
+A payload that carries bytecode (`.pyc`/`.pyo`), a member name with a second
+spelling (`fleet_mcp/./node/connector.py`), a duplicate name, or a link/directory
+member should be refused too; those are one-line checks and the reference
+implementation has them.
+
+`integrations/fleet-v1-l2-release/l2_release.py` implements these six and is the
+reference; `verify_l2_layer` does not have to import it (an integration directory
+is not a library), but the two must agree on the six — the extra checks there
+(digests, `l2`-block consistency, name canonicalisation) are this build's own and
+are not a request. A parity test is already staged in
+`tests/test_fleet_l2_release_separation.py` and skips until the kinds are
+registered.
 
 ## 7. What is not being asked
 
@@ -117,5 +139,5 @@ starts, or restarts anything.
 | | today | after this lands |
 |---|---|---|
 | `release.py` reads our manifest | refuses kinds by name | verifies both kinds |
-| `l2_release.py` verifies our manifest | **REAL** (39 tests) | unchanged, plus parity test stops skipping |
+| `l2_release.py` verifies our manifest | **REAL** (56 tests: 55 pass, 1 skip) | unchanged, plus parity test stops skipping |
 | our manifest shape matches yours | **REAL** (asserted) | unchanged |
