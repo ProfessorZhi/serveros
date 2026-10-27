@@ -5,7 +5,11 @@
 // that is the only thing standing between a stale file and a restart spent on a
 // network fault. So most cases here assert the safe degradation, not the refusal
 // code: a document that is stale must not still report `link.up == true`.
+#include <cstddef>
+#include <fstream>
+#include <sstream>
 #include <string>
+#include <vector>
 
 #include "check.hpp"
 #include "supervisor/facts.hpp"
@@ -15,6 +19,68 @@ using namespace nodecore::supervisor;
 namespace {
 
 constexpr long kNow = 1'800'000'000;
+
+// The shared owner map has TWO readers, and this file is where their agreement
+// is asserted. Python's `OwnerMap.load` refuses more than `MAX_SERVICES` entries
+// and a unit id longer than `MAX_FACT_TEXT`; these helpers build documents on
+// either side of the same two numbers so the C++ reader cannot accept a map its
+// writer would have refused.
+std::string owner_map_naming(const std::vector<std::string>& units, const char* owner) {
+    std::string text = R"({"schema":"serveros/native-core-owner-map.v1","units":{)";
+    for (std::size_t i = 0; i < units.size(); ++i) {
+        if (i != 0) text += ",";
+        text += "\"" + units[i] + "\":\"" + owner + "\"";
+    }
+    text += "}}";
+    return text;
+}
+
+Manifest manifest_naming(const std::vector<std::string>& units) {
+    Manifest manifest;
+    for (std::size_t i = 0; i < units.size(); ++i) {
+        ServiceDesired service;
+        service.id = "svc-" + std::to_string(i);
+        service.unit = units[i];
+        service.owner = "fjd";
+        manifest.services.push_back(service);
+    }
+    return manifest;
+}
+
+std::string read_text(const std::string& path) {
+    std::ifstream stream(path);
+    if (!stream.good()) {
+        return std::string();
+    }
+    std::ostringstream buffer;
+    buffer << stream.rdbuf();
+    return buffer.str();
+}
+
+// Read `<name> = <digits>` out of the Python writer, so the two constants are
+// compared rather than trusted. A missing assignment is a failure, not a skip:
+// the file is in this repository, and a test that quietly passes when it cannot
+// find its subject is the kind of green run this suite exists to refuse.
+bool python_integer(const std::string& text, const std::string& name, std::size_t& out) {
+    const std::string needle = "\n" + name + " = ";
+    const std::size_t at = text.find(needle);
+    if (at == std::string::npos) {
+        return false;
+    }
+    std::size_t index = at + needle.size();
+    std::size_t value = 0;
+    bool any = false;
+    while (index < text.size() && text[index] >= '0' && text[index] <= '9') {
+        value = value * 10 + static_cast<std::size_t>(text[index] - '0');
+        ++index;
+        any = true;
+    }
+    if (!any) {
+        return false;
+    }
+    out = value;
+    return true;
+}
 
 std::string good_document() {
     return R"({
@@ -246,6 +312,139 @@ void an_owner_map_with_a_stray_field_is_refused() {
     CHECK(!map.usable);
 }
 
+// ---------------------------------------------------------------- the bounds
+//
+// One owner per unit is only a fact if both programs read the same document as
+// the same size. Each case sits exactly on a bound, with the accepting side
+// asserted too — a reader that refused everything would pass a one-sided test.
+
+void the_reader_bounds_are_the_writers_bounds() {
+    const std::string path =
+        std::string(SUPERVISOR_SOURCE_DIR) + "/../../../runtime/native_core_facts.py";
+    const std::string text = read_text(path);
+    CHECK(!text.empty());
+    std::size_t services = 0;
+    std::size_t fact_text = 0;
+    CHECK(python_integer(text, "MAX_SERVICES", services));
+    CHECK(python_integer(text, "MAX_FACT_TEXT", fact_text));
+    CHECK_EQ(kMaxOwnerEntries, services);
+    CHECK_EQ(kMaxOwnerUnitBytes, fact_text);
+}
+
+void an_owner_map_at_the_entry_cap_is_accepted() {
+    std::vector<std::string> units;
+    for (std::size_t i = 0; i < kMaxOwnerEntries; ++i) {
+        units.push_back("svc" + std::to_string(i) + ".service");
+    }
+    const OwnerMap map = load_owner_map(owner_map_naming(units, kNativeCoreOwner).c_str());
+    CHECK(map.usable);
+    CHECK_EQ(map.owners.size(), kMaxOwnerEntries);
+}
+
+void an_owner_map_beyond_the_entry_cap_is_refused() {
+    std::vector<std::string> units;
+    for (std::size_t i = 0; i <= kMaxOwnerEntries; ++i) {
+        units.push_back("svc" + std::to_string(i) + ".service");
+    }
+    const OwnerMap map = load_owner_map(owner_map_naming(units, kNativeCoreOwner).c_str());
+    CHECK(!map.usable);
+    CHECK_EQ(map.code, std::string(kFactsMalformed));
+    // Refused WHOLE, not truncated to the first 64: a reader that kept a prefix
+    // would report a map that is not the document it was given.
+    CHECK_EQ(map.owners.size(), std::size_t{0});
+}
+
+void an_owner_map_at_the_unit_length_bound_is_accepted() {
+    const std::string unit(kMaxOwnerUnitBytes, 'a');
+    const OwnerMap map = load_owner_map(owner_map_naming({unit}, kNativeCoreOwner).c_str());
+    CHECK(map.usable);
+    CHECK(map.owner_of(unit) != nullptr);
+}
+
+void an_owner_map_with_an_over_long_unit_is_refused() {
+    const std::string unit(kMaxOwnerUnitBytes + 1, 'a');
+    const OwnerMap map = load_owner_map(owner_map_naming({unit}, kNativeCoreOwner).c_str());
+    CHECK(!map.usable);
+    CHECK_EQ(map.code, std::string(kFactsMalformed));
+}
+
+void an_owner_map_naming_one_unit_twice_is_refused() {
+    // Python refuses this with `object_pairs_hook`; the C++ reader refuses it as
+    // a duplicate key. The same document is malformed to both, which is the
+    // property that matters — a map that resolved differently on each side would
+    // be a map that assigned a unit to two programs at once.
+    const OwnerMap map = load_owner_map(
+        R"({"schema":"serveros/native-core-owner-map.v1",
+            "units":{"toy.service":"native-core","toy.service":"serverosd"}})");
+    CHECK(!map.usable);
+    CHECK(!map.owner_of("toy.service"));
+}
+
+// ------------------------------------------------------- the executor gate
+
+void a_manifest_the_map_assigns_to_this_core_has_no_refusals() {
+    const OwnerMap owners = load_owner_map(
+        owner_map_naming({"a.service", "b.service"}, kNativeCoreOwner).c_str());
+    CHECK(owners.usable);
+    CHECK(manifest_owner_refusals(manifest_naming({"a.service", "b.service"}), owners).empty());
+}
+
+void a_manifest_with_no_services_has_no_refusals() {
+    const OwnerMap owners = load_owner_map(
+        R"({"schema":"serveros/native-core-owner-map.v1","units":{}})");
+    CHECK(owners.usable);
+    CHECK(manifest_owner_refusals(Manifest{}, owners).empty());
+}
+
+void a_unit_the_map_gives_to_the_python_daemon_is_refused() {
+    const OwnerMap owners = load_owner_map(
+        R"({"schema":"serveros/native-core-owner-map.v1","units":{"toy.service":"serverosd"}})");
+    const std::vector<OwnerRefusal> refusals =
+        manifest_owner_refusals(manifest_naming({"toy.service"}), owners);
+    CHECK_EQ(refusals.size(), std::size_t{1});
+    if (!refusals.empty()) {
+        CHECK_EQ(refusals[0].unit, std::string("toy.service"));
+        CHECK_EQ(refusals[0].owner, std::string("serverosd"));
+    }
+}
+
+void an_undeclared_unit_is_refused_with_no_owner() {
+    const OwnerMap owners = load_owner_map(
+        R"({"schema":"serveros/native-core-owner-map.v1","units":{"mine.service":"native-core"}})");
+    const std::vector<OwnerRefusal> refusals =
+        manifest_owner_refusals(manifest_naming({"someone-elses.service"}), owners);
+    CHECK_EQ(refusals.size(), std::size_t{1});
+    if (!refusals.empty()) {
+        CHECK_EQ(refusals[0].unit, std::string("someone-elses.service"));
+        // Empty, not "unknown": an undeclared unit has NO owner, and a caller
+        // that printed a made-up one would be inventing a fact.
+        CHECK(refusals[0].owner.empty());
+    }
+}
+
+void only_the_units_the_map_withholds_are_refused() {
+    const OwnerMap owners = load_owner_map(
+        R"({"schema":"serveros/native-core-owner-map.v1",
+            "units":{"mine.service":"native-core","theirs.service":"serverosd"}})");
+    const std::vector<OwnerRefusal> refusals = manifest_owner_refusals(
+        manifest_naming({"mine.service", "theirs.service", "unlisted.service"}), owners);
+    CHECK_EQ(refusals.size(), std::size_t{2});
+    for (const OwnerRefusal& refusal : refusals) {
+        CHECK(refusal.unit != "mine.service");
+    }
+}
+
+void an_unusable_map_refuses_every_unit() {
+    const OwnerMap owners = load_owner_map(nullptr);
+    CHECK(!owners.usable);
+    const std::vector<OwnerRefusal> refusals =
+        manifest_owner_refusals(manifest_naming({"a.service", "b.service"}), owners);
+    CHECK_EQ(refusals.size(), std::size_t{2});
+    for (const OwnerRefusal& refusal : refusals) {
+        CHECK(refusal.owner.empty());
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -270,5 +469,17 @@ int main() {
     an_owner_map_naming_another_schema_is_refused();
     an_absent_owner_map_is_not_usable();
     an_owner_map_with_a_stray_field_is_refused();
+    the_reader_bounds_are_the_writers_bounds();
+    an_owner_map_at_the_entry_cap_is_accepted();
+    an_owner_map_beyond_the_entry_cap_is_refused();
+    an_owner_map_at_the_unit_length_bound_is_accepted();
+    an_owner_map_with_an_over_long_unit_is_refused();
+    an_owner_map_naming_one_unit_twice_is_refused();
+    a_manifest_the_map_assigns_to_this_core_has_no_refusals();
+    a_manifest_with_no_services_has_no_refusals();
+    a_unit_the_map_gives_to_the_python_daemon_is_refused();
+    an_undeclared_unit_is_refused_with_no_owner();
+    only_the_units_the_map_withholds_are_refused();
+    an_unusable_map_refuses_every_unit();
     return check::report("test_sup_facts");
 }

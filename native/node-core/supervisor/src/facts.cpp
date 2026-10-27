@@ -230,6 +230,12 @@ OwnerMap load_owner_map(const char* text) {
         map.reason = "owner map has no \"units\" object";
         return map;
     }
+    // Parsed into a LOCAL, and only published to `map` once the whole document
+    // is accepted. `owner_of` answers from `owners` without consulting `usable`,
+    // so a refused map that still carried a prefix would answer questions while
+    // claiming to be unusable — two statements about one document, and a caller
+    // that asked the wrong one would act on a map the reader disbelieved.
+    std::vector<std::pair<std::string, std::string>> owners;
     for (const auto& member : units->members) {
         const std::string& unit = member.first;
         const Json& owner = member.second;
@@ -238,18 +244,59 @@ OwnerMap load_owner_map(const char* text) {
             map.reason = "owner map names an empty unit";
             return map;
         }
-        if (!owner.is_string() || (owner.text != "native-core" && owner.text != "serverosd")) {
+        // The writer's two bounds, restated. An unbounded map is not a bigger
+        // statement about this host; it is a document the Python daemon would
+        // refuse to write and therefore one whose meaning has no authority
+        // behind it.
+        if (unit.size() > kMaxOwnerUnitBytes) {
+            map.code = kFactsMalformed;
+            map.reason = "owner map names a unit longer than " +
+                         std::to_string(kMaxOwnerUnitBytes) + " bytes";
+            return map;
+        }
+        if (owners.size() >= kMaxOwnerEntries) {
+            map.code = kFactsMalformed;
+            map.reason = "owner map names more than " + std::to_string(kMaxOwnerEntries) +
+                         " units";
+            return map;
+        }
+        if (!owner.is_string() || (owner.text != kNativeCoreOwner && owner.text != "serverosd")) {
             // A closed vocabulary: an owner this Core does not know is not a
             // reason to guess which program should act.
             map.code = kFactsMalformed;
             map.reason = "owner map names an unknown owner for \"" + unit + "\"";
             return map;
         }
-        map.owners.emplace_back(unit, owner.text);
+        owners.emplace_back(unit, owner.text);
     }
+    map.owners = std::move(owners);
     map.usable = true;
     map.code = kFactsOk;
     return map;
+}
+
+std::vector<OwnerRefusal> manifest_owner_refusals(const Manifest& manifest,
+                                                  const OwnerMap& owners) {
+    std::vector<OwnerRefusal> refusals;
+    // An unusable map is not "nobody objected". Every unit becomes a refusal,
+    // because the map is the only fact that says a unit is this Core's, and a
+    // map the reader disbelieved says nothing at all. The caller has already
+    // stopped on the map's own reason; this keeps a direct caller from reaching
+    // the opposite conclusion by asking a second question.
+    if (!owners.usable) {
+        for (const ServiceDesired& service : manifest.services) {
+            refusals.push_back(OwnerRefusal{service.unit, std::string()});
+        }
+        return refusals;
+    }
+    for (const ServiceDesired& service : manifest.services) {
+        const std::string* owner = owners.owner_of(service.unit);
+        if (owner == nullptr || *owner != kNativeCoreOwner) {
+            refusals.push_back(OwnerRefusal{
+                service.unit, owner == nullptr ? std::string() : *owner});
+        }
+    }
+    return refusals;
 }
 
 HostFacts load_host_facts(const char* text, long now_epoch, const FactsOptions& options) {

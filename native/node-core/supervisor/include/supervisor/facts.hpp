@@ -25,6 +25,7 @@
 // default this contract exists to remove.
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -93,6 +94,23 @@ struct FactsOptions {
 //: check rather than a rule one side remembers.
 inline constexpr const char* kOwnerMapSchema = "serveros/native-core-owner-map.v1";
 
+//: The reader's bounds, and they are the WRITER's bounds.
+//:
+//: `runtime/native_core_facts.py` refuses a map with more than `MAX_SERVICES`
+//: entries and a unit id longer than `MAX_FACT_TEXT`; those are its 64 and 200.
+//: A reader that accepted a document its writer refuses would mean the two
+//: programs disagree about which units exist — and the whole point of one shared
+//: map is that they do not. The numbers are restated here rather than imported
+//: because C++ cannot import them; they are asserted equal by a test rather than
+//: left as a comment that is free to drift.
+inline constexpr std::size_t kMaxOwnerEntries = 64;
+inline constexpr std::size_t kMaxOwnerUnitBytes = 200;
+
+//: The one owner this Core may act for. Every other name in the closed
+//: vocabulary (`serverosd`) belongs to the Python daemon; a unit assigned to it
+//: is refused rather than queued behind it.
+inline constexpr const char* kNativeCoreOwner = "native-core";
+
 struct OwnerMap {
     bool usable = false;
     std::string code;
@@ -107,6 +125,27 @@ struct OwnerMap {
 
 //: Parse one owner map. `text` is null when the file could not be read.
 OwnerMap load_owner_map(const char* text);
+
+//: One manifest unit this Core may not act on, and why.
+//:
+//: `owner` is empty when the map does not declare the unit at all, which is a
+//: different reason with the same verdict: an undeclared unit has no verified
+//: owner, and "nobody said it was not mine" is not a grant.
+struct OwnerRefusal {
+    std::string unit;
+    std::string owner;
+};
+
+//: Every unit in `manifest` that the shared owner map does not assign to this
+//: Core. Empty means the whole manifest is this Core's to act on.
+//:
+//: This is the single-executor gate, extracted from the resident loop so it can
+//: be asserted directly: it was the one refusal standing between a mis-authored
+//: manifest and a verb issued for a unit the Python daemon owns. It reads only
+//: its two arguments — no clock, no file, no service manager — so a test states
+//: a manifest and a map rather than standing up a host.
+std::vector<OwnerRefusal> manifest_owner_refusals(const Manifest& manifest,
+                                                  const OwnerMap& owners);
 
 //: Parse and age one facts document.
 //:
