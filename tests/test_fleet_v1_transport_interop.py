@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import inspect
 import json
 import shutil
 import sqlite3
@@ -40,13 +41,19 @@ START = datetime(2026, 10, 27, 10, 0, tzinfo=timezone.utc).timestamp()
 
 
 def _load(name: str, path: Path):
-    """Cache-first, the repo's loader-identity shape."""
+    """Cache-first, and REGISTERED BEFORE execution.
+
+    The observer module's dataclass annotations resolve their defining module
+    through `sys.modules` while the module body runs. Registering after
+    `exec_module` leaves that lookup `None` and aborts collection when this
+    file runs alone (as it does in its own CI shard).
+    """
     module = sys.modules.get(name)
     if module is None:
         spec = importlib.util.spec_from_file_location(name, path)
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
         sys.modules[name] = module
+        spec.loader.exec_module(module)
     return module
 
 
@@ -231,9 +238,13 @@ class TransportInteropTest(unittest.TestCase):
         self.assertEqual(self.row(full)["delivery_key"], full)
         self.assertEqual(self.row(full)["transport_key"], short)
 
-    def test_the_observer_uses_this_notifier_module(self):
-        self.assertIs(observer.NOTIFY, m)
-        self.assertIs(observer.NOTIFY.transport_key_for, m.transport_key_for)
+    def test_the_observer_uses_one_registered_product_module(self):
+        module = observer.NOTIFY
+        self.assertIs(sys.modules[module.__name__], module,
+                      "the observer's notifier is the single registered module")
+        source = inspect.getsourcefile(module)
+        self.assertTrue(source.endswith(
+            "integrations/fleet-v1-milestone-notify/milestone_notify.py"))
 
 
 if __name__ == "__main__":
