@@ -10,8 +10,9 @@ entry, copied recursively), so no packaging list has to learn a new name.
 
 WHY A FACADE HERE, WHEN THE AUDIENCE MODULE DELIBERATELY HAS NONE
 -----------------------------------------------------------------
-`runtime/fleet_audience.py` has no forwarder, because a verdict is an HMAC over
-a per-import key and a second copy would issue verdicts the readers refuse.
+The audience rule (`fleet_hub/fleet_audience.py`, moved by D2) has no
+forwarder, because a verdict is an HMAC over a per-import key and a second copy
+would issue verdicts the readers refuse.
 This module has no such state: it is constants and pure functions over a
 declaration document, and two objects would be interchangeable.
 
