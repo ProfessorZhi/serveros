@@ -52,14 +52,24 @@ def _write(path: Path, data: bytes, mode: int = 0o755) -> None:
 
 def _good_manifest(package: Path, *, version: str = "0.2.0",
                    skip: frozenset[str] = frozenset(),
-                   symlink: frozenset[str] = frozenset()) -> dict:
+                   symlink: frozenset[str] = frozenset(),
+                   linked_bin: bool = False) -> dict:
     """A package that PASSES, with named defects available for the negative cases."""
     members = []
+    bin_root = package / "bin"
+    if linked_bin:
+        # `bin` is a symlink to a sibling directory. Digests are computed THROUGH
+        # it, so this package is correct in every respect except that its `bin/`
+        # is not part of it.
+        real = package / "real-bin"
+        real.mkdir(parents=True, exist_ok=True)
+        bin_root.symlink_to(real)
+        bin_root = real
     for name, role in (
         ("serveros-native-core", "actuator"),
         ("serveros-node-resource-snapshot", "read-only"),
     ):
-        path = package / "bin" / name
+        path = bin_root / name
         if name not in skip:
             if name in symlink:
                 target = package / "elsewhere" / name
@@ -163,6 +173,12 @@ class PackageVerifyTest(unittest.TestCase):
             report = _quiet_verify(_make(Path(td),
                                          symlink=frozenset({"serveros-node-resource-snapshot"})))
             self.assertTrue(any("is a regular file" in f for f in report.failures),
+                            report.failures)
+
+    def test_a_linked_bin_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as td:
+            report = _quiet_verify(_make(Path(td), linked_bin=True))
+            self.assertTrue(any("bin/ is a real directory" in f for f in report.failures),
                             report.failures)
 
     def test_a_non_executable_member_is_refused(self):

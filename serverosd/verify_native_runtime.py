@@ -120,6 +120,14 @@ def verify(package: Path, repo: Path | None = None) -> Report:
                           "`members` is missing or empty"):
         return report
 
+    # `bin/` itself, before anything inside it. `Path.is_symlink()` on a member
+    # only looks at the last component, so a `bin` that is a link to some other
+    # directory would launder every file under it.
+    bin_dir = package / "bin"
+    report.require(bin_dir.is_dir() and not bin_dir.is_symlink(), "bin/ is a real directory",
+                   "missing, or a symlink; a linked bin/ makes every member's own "
+                   "check look at a file this package does not contain")
+
     seen_paths: set[str] = set()
     actuators: list[str] = []
     for member in members:
@@ -193,7 +201,6 @@ def verify(package: Path, repo: Path | None = None) -> Report:
                            "the manifest says this package does not occupy it")
 
     # --- nothing undeclared --------------------------------------------------
-    bin_dir = package / "bin"
     actual_members = sorted(
         f"bin/{entry.name}" for entry in bin_dir.iterdir()
     ) if bin_dir.is_dir() else []
