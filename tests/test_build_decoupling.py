@@ -468,11 +468,16 @@ class TheNodeFaceNeedsNoAbilityCheckout(unittest.TestCase):
     def _run(self, *extra: str):
         out = self.base / "payload"
         market = self.base / ".agents" / "plugins" / "marketplace.json"
+        # `--ability-repo` defaults to `SERVEROS_ABILITY_REPO`, and a CI runner
+        # exports it. An empty value is falsy, so the default is None and this
+        # test asks the same question on every host instead of depending on
+        # which checkout the runner happened to bind.
+        env = {**os.environ, "SERVEROS_ABILITY_REPO": ""}
         return subprocess.run(
             [sys.executable, str(BUILDER), "--write",
              "--bundle", str(BUNDLE), "--output", str(out),
              "--marketplace-path", str(market), *extra],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
 
     def test_the_node_face_builds_with_no_ability_repo_and_no_pin(self):
         result = self._run("--face", "node-runtime")
