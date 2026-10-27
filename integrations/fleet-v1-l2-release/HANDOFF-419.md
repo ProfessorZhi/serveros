@@ -117,5 +117,5 @@ starts, or restarts anything.
 | | today | after this lands |
 |---|---|---|
 | `release.py` reads our manifest | refuses kinds by name | verifies both kinds |
-| `l2_release.py` verifies our manifest | **REAL** (35 tests) | unchanged, plus parity test stops skipping |
+| `l2_release.py` verifies our manifest | **REAL** (39 tests) | unchanged, plus parity test stops skipping |
 | our manifest shape matches yours | **REAL** (asserted) | unchanged |

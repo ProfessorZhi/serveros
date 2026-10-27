@@ -147,9 +147,13 @@ NODE_SHARED_SURFACE = (
 HUB_DENIED_PREFIXES = ("fleet_mcp/node/",)
 HUB_DENIED_PATTERNS = (
     "*.local.yaml", "*.local.yml", "bindings/*", "*.service", "*.timer",
-    "*.service.in", "*.ps1", "*.vbs", "*.pem", "*.key", ".env", "*credential*",
-    "*token*",
+    "*.service.in", "*.ps1", "*.vbs", "*.pem", "*.key", ".env",
 )
+
+#: Applied to non-source files only: a `token_cache.py` is code, a `tokens.json`
+#: is a credential. Letting these match module names would make every future file
+#: with "token" in its name an argument with this guard instead of a decision.
+HUB_SECRET_PATTERNS = ("*credential*", "*token*")
 
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$")
 
@@ -312,7 +316,7 @@ def manifest_for(kind: str, version: str, *, root: Path,
         data = path.read_bytes()
         members[rel] = data
 
-    _refuse_cross_layer(kind, found, members, root)
+    _refuse_cross_layer(kind, members)
     _refuse_vendored_schema(members)
 
     undeclared = sorted(set(found.external_in_repo) - set(allow_external_in_repo))
@@ -385,41 +389,66 @@ def manifest_for(kind: str, version: str, *, root: Path,
     return manifest, members
 
 
-def _refuse_cross_layer(kind: str, found: Closure, members: dict[str, bytes],
-                        root: Path) -> None:
+def _refuse_node_members(names) -> None:
+    """The node half of D7: no hub ingress, no unpinned coupling.
+
+    Takes MEMBER NAMES rather than a `Closure` because the build and the verifier
+    must apply the same rule to the same thing. They used to hold two copies of
+    it — one over the closure's modules, one over the archive's names — and two
+    copies of a guard is a build that passes and a release that refuses, or the
+    reverse.
+    """
+    denied = sorted({name for name in names
+                     if _module_of(name) in NODE_DENIED_MODULES
+                     or name.startswith(NODE_DENIED_PREFIXES)})
+    if denied:
+        raise Refused(
+            f"the node artifact reaches hub-side module(s) {denied}; the connector "
+            f"must not import the hub's ingress. Cut the edge or move the import "
+            f"behind a handoff.")
+    modules = {_module_of(name) for name in names}
+    unpinned = sorted((modules - set(NODE_EXCLUSIVE) - set(NODE_SHARED_SURFACE)) - {""})
+    if unpinned:
+        raise Refused(
+            f"new hub coupling in the node artifact: {unpinned}. The shared "
+            f"surface is pinned because it is what makes the two artifacts one "
+            f"release; a reviewed change adds the module to NODE_SHARED_SURFACE "
+            f"with the reason.")
+
+
+def _refuse_hub_members(names) -> None:
+    """The hub half: the hub is software, the device's state is not."""
+    leaked = sorted(name for name in names if name.startswith(HUB_DENIED_PREFIXES))
+    if leaked:
+        raise Refused(
+            f"the hub artifact carries device-side file(s) {leaked}; a hub release "
+            f"must not be able to install a node.")
+    forbidden = sorted(name for name in names
+                       if any(_matches(name, pattern) for pattern in HUB_DENIED_PATTERNS))
+    if forbidden:
+        raise Refused(
+            f"the hub artifact carries machine-specific file(s) {forbidden}; "
+            f"bindings, units and launchers belong to the device that has them, "
+            f"not to the software.")
+    # `*token*` / `*credential*` are about DATA, not module names: a source file
+    # called `token_cache.py` is software, while a `tokens.json` beside it is a
+    # credential. Restricting these two patterns to non-source files keeps the
+    # guard from turning into an argument about renaming a module.
+    secrets = sorted(name for name in names
+                     if not name.endswith((".py", ".pyi"))
+                     and any(_matches(name, pattern) for pattern in HUB_SECRET_PATTERNS))
+    if secrets:
+        raise Refused(
+            f"the hub artifact carries credential-shaped file(s) {secrets}; a "
+            f"release is not the place a machine's secrets travel in.")
+
+
+def _refuse_cross_layer(kind: str, members) -> None:
     """The one check that is the whole point of D7, per kind."""
     if kind == L2_NODE:
-        denied = [module for module in found.modules if module in NODE_DENIED_MODULES]
-        denied += [path.relative_to(root).as_posix()
-                   for path in found.files.values()
-                   if path.relative_to(root).as_posix().startswith(NODE_DENIED_PREFIXES)]
-        if denied:
-            raise Refused(
-                f"the node artifact's closure reaches hub-side module(s) "
-                f"{sorted(set(denied))}; the connector must not import the hub's "
-                f"ingress. Cut the edge or move the import behind a handoff.")
-        shared = {module for module in found.modules
-                  if module not in NODE_EXCLUSIVE}
-        unpinned = sorted(shared - set(NODE_SHARED_SURFACE))
-        if unpinned:
-            raise Refused(
-                f"new hub coupling in the node artifact: {unpinned}. The shared "
-                f"surface is pinned because it is what makes the two artifacts "
-                f"one release; a reviewed change adds the module to "
-                f"NODE_SHARED_SURFACE with the reason.")
+        _refuse_node_members(members)
     else:
-        leaked = sorted(path for path in members if path.startswith(HUB_DENIED_PREFIXES))
-        if leaked:
-            raise Refused(
-                f"the hub artifact carries device-side file(s) {leaked}; a hub "
-                f"release must not be able to install a node.")
-        forbidden = sorted(path for path in members
-                           if any(_matches(path, pattern) for pattern in HUB_DENIED_PATTERNS))
-        if forbidden:
-            raise Refused(
-                f"the hub artifact carries machine-specific file(s) {forbidden}; "
-                f"credentials, bindings, units and launchers belong to the device "
-                f"that has them, not to the software.")
+        _refuse_hub_members(members)
 
 
 #: Modules the node artifact may contain that are not dragged in from the hub:
@@ -619,26 +648,8 @@ def verify(artifact: Artifact, *, expect_kind: str | None = None,
 
 
 def _verify_layer(kind: str, artifact: Artifact) -> None:
-    names = set(artifact.members)
-    if kind == L2_NODE:
-        denied = sorted(name for name in names
-                        if _module_of(name) in NODE_DENIED_MODULES
-                        or name.startswith(NODE_DENIED_PREFIXES))
-        if denied:
-            raise Refused(f"node artifact carries hub-side member(s) {denied}")
-        modules = {_module_of(name) for name in names if name.endswith(".py")}
-        shared = {module for module in modules if module not in NODE_EXCLUSIVE}
-        unpinned = sorted(shared - set(NODE_SHARED_SURFACE))
-        if unpinned:
-            raise Refused(f"node artifact carries unpinned hub module(s) {unpinned}")
-    else:
-        leaked = sorted(name for name in names if name.startswith(HUB_DENIED_PREFIXES))
-        if leaked:
-            raise Refused(f"hub artifact carries device-side member(s) {leaked}")
-        forbidden = sorted(name for name in names
-                           if any(_matches(name, pattern) for pattern in HUB_DENIED_PATTERNS))
-        if forbidden:
-            raise Refused(f"hub artifact carries machine-specific member(s) {forbidden}")
+    """The same two functions the build calls, so the two cannot disagree."""
+    _refuse_cross_layer(kind, set(artifact.members))
 
 
 def _module_of(name: str) -> str:

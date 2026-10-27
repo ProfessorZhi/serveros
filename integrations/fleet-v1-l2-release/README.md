@@ -15,7 +15,7 @@ install anything, start anything, or connect anything.
 | entrypoint | `fleet_mcp.node.connector` | `fleet_mcp.server` |
 | runs on | `linux`, `windows` | `linux` |
 | required members | `fleet_mcp/__init__.py`, `fleet_mcp/node/__init__.py`, `fleet_mcp/node/connector.py` | `fleet_mcp/__init__.py`, `fleet_mcp/server.py` |
-| must not carry | `server.py`, `tools.py`, `oauth.py`, `owner_setup.py`, `deploy/**`, `bin/**` | `fleet_mcp/node/**`, `*.local.y*ml`, `bindings/*`, `*.service`, `*.timer`, `*.ps1`, `*.vbs`, `*.pem`, `*.key`, `.env`, `*credential*`, `*token*` |
+| must not carry | `server.py`, `tools.py`, `oauth.py`, `owner_setup.py`, `deploy/**`, `bin/**` | `fleet_mcp/node/**`, `*.local.y*ml`, `bindings/*`, `*.service`, `*.timer`, `*.ps1`, `*.vbs`, `*.pem`, `*.key`, `.env`; and, **for non-source files only**, `*credential*`, `*token*` (a `token_cache.py` is code, a `tokens.json` is a credential) |
 | provides | `node-connector` | `hub-ingress`, `mcp-tools` |
 | version | independent | independent |
 
@@ -83,7 +83,11 @@ change" is a comparison and not a conversation.
 
 ## The refusals
 
-Each one is a test, and each names the thing it refused:
+Each one is a test, and each names the thing it refused. The build and the
+verifier call **the same two functions** (`_refuse_node_members`,
+`_refuse_hub_members`); a second copy of the rule would be a build that passes
+and a release that refuses, and a test asserts the call count so a copy cannot
+appear quietly.
 
 - a node payload carrying `server.py` / `tools.py` / `oauth.py` / `owner_setup.py`
   / `deploy/**` / `bin/**`, or a hub module that is not on the pinned list;
@@ -106,7 +110,7 @@ Each one is a test, and each names the thing it refused:
 
 | claim | status |
 |---|---|
-| builds, reads back, verifies, refuses — both kinds | **REAL**, 35 tests, offline |
+| builds, reads back, verifies, refuses — both kinds | **REAL**, 39 tests, offline |
 | byte-identical rebuild | **REAL** (two builds compared) |
 | member list is the shape `release.py` consumes | **REAL** (`test_the_member_list_is_the_shape_the_release_reader_consumes`) |
 | `release.py` verifies `l2-node`/`l2-hub` | **NOT DONE** — needs `HANDOFF-419.md`; today it refuses our kinds by name |

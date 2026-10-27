@@ -175,19 +175,36 @@ def test_the_shared_surface_is_pinned_and_exact(tmp_path):
 def test_a_new_hub_import_is_refused_by_name():
     """The pin has teeth: a module the connector does not need today is refused.
 
-    Simulated on a synthetic tree so the test does not depend on the real
-    connector growing the edge that would make it fail for the right reason and
-    the wrong reason at once.
+    Called with names, which is what both the build and the verifier pass, so the
+    test cannot pass against one copy of the guard and miss the other.
     """
-    synthetic = l2.Closure(("fleet_mcp", "fleet_mcp.node", "fleet_mcp.node.connector",
-                            "fleet_mcp.oauth"),
-                           {"fleet_mcp/__init__.py": ROOT / "fleet_mcp/__init__.py",
-                            "fleet_mcp/node/__init__.py": ROOT / "fleet_mcp/node/__init__.py",
-                            "fleet_mcp/node/connector.py": ROOT / "fleet_mcp/node/connector.py",
-                            "fleet_mcp/oauth.py": ROOT / "fleet_mcp/oauth.py"},
-                           (), ("fleet",), {})
+    with pytest.raises(l2.Refused, match="new hub coupling"):
+        l2._refuse_node_members({"fleet_mcp/__init__.py",
+                                 "fleet_mcp/node/__init__.py",
+                                 "fleet_mcp/report.py"})
+
+
+def test_a_hub_module_in_the_node_artifact_is_refused_by_name():
     with pytest.raises(l2.Refused, match="hub-side module"):
-        l2._refuse_cross_layer(l2.L2_NODE, synthetic, {}, ROOT)
+        l2._refuse_node_members({"fleet_mcp/__init__.py", "fleet_mcp/server.py"})
+
+
+def test_the_build_and_the_verifier_apply_one_guard():
+    """Two copies of this rule would be a build that passes and a release that
+    refuses. `_verify_layer` must be the same call, not a second implementation."""
+    source = (PACKAGE / "l2_release.py").read_text(encoding="utf-8")
+    assert source.count("_refuse_hub_members(") == 2, (
+        "one definition, one call from _refuse_cross_layer — a third would be a "
+        "second implementation")
+    assert source.count("_refuse_node_members(") == 2
+
+
+def test_a_token_named_module_is_software_and_a_token_file_is_not():
+    with pytest.raises(l2.Refused, match="credential-shaped"):
+        l2._refuse_hub_members({"fleet_mcp/tokens.json"})
+    l2._refuse_hub_members({"fleet_mcp/token_cache.py"})       # software, allowed
+    with pytest.raises(l2.Refused, match="machine-specific"):
+        l2._refuse_hub_members({"fleet_mcp/fleet.local.yaml"})
 
 
 # --------------------------------------------------------------------------- #
