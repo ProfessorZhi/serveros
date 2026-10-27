@@ -1,0 +1,663 @@
+{
+ ".claude-plugin/marketplace.json": [
+  410
+ ],
+ ".github/workflows/tests.yml": [
+  427,
+  410
+ ],
+ "ARCHITECTURE.md": [
+  427,
+  422
+ ],
+ "README.md": [
+  407
+ ],
+ "docs/architecture/FLEET-FOUR-LAYERS.md": [
+  427,
+  422
+ ],
+ "docs/architecture/FLEET-V1-MILESTONE-DELIVERY.md": [
+  427,
+  422
+ ],
+ "docs/architecture/FLEET-V1-V2-ARCHITECTURE.md": [
+  427,
+  422
+ ],
+ "docs/architecture/layers.yaml": [
+  427,
+  414
+ ],
+ "docs/compat/README.md": [
+  427,
+  411
+ ],
+ "docs/compat/capture_cloudcli_tools_list.py": [
+  427,
+  411
+ ],
+ "docs/compat/cloudcli-windows-1.41.0.md": [
+  427,
+  411
+ ],
+ "docs/fleet-next-candidate.md": [
+  407
+ ],
+ "docs/fleet-old-control-retirement.md": [
+  432,
+  427
+ ],
+ "docs/integration/FLEET-V1-RC-20261027.md": [
+  427
+ ],
+ "docs/integration/FLEET-V1-RC-RUNBOOK.md": [
+  427
+ ],
+ "docs/plans/fleet-v1-gap-and-work-packages.md": [
+  427,
+  422
+ ],
+ "docs/superpowers/plans/2026-10-27-fleet-v1-delivery.md": [
+  407
+ ],
+ "docs/superpowers/specs/2026-10-27-fleet-v1-completion-design.md": [
+  407
+ ],
+ "fleet/README.md": [
+  432,
+  427
+ ],
+ "fleet/fleet-mcp-contract.yaml": [
+  407
+ ],
+ "fleet/old-control-retirement.yaml": [
+  432,
+  427
+ ],
+ "fleet_mcp/cloudcli_native.py": [
+  416,
+  407
+ ],
+ "fleet_mcp/config.py": [
+  407
+ ],
+ "fleet_mcp/disclosure.py": [
+  407
+ ],
+ "fleet_mcp/dispatch.py": [
+  407
+ ],
+ "fleet_mcp/events.py": [
+  407
+ ],
+ "fleet_mcp/fleet.py": [
+  407
+ ],
+ "fleet_mcp/http_transport.py": [
+  407
+ ],
+ "fleet_mcp/node/README.md": [
+  407
+ ],
+ "fleet_mcp/node/connector.py": [
+  407
+ ],
+ "fleet_mcp/principals.py": [
+  407
+ ],
+ "fleet_mcp/providers/base.py": [
+  407
+ ],
+ "fleet_mcp/providers/cloudcli.py": [
+  407
+ ],
+ "fleet_mcp/providers/fleet_node.py": [
+  407
+ ],
+ "fleet_mcp/run_watcher.py": [
+  416,
+  407
+ ],
+ "fleet_mcp/runtime.py": [
+  407
+ ],
+ "fleet_mcp/tools.py": [
+  407
+ ],
+ "fleet_mcp/version.py": [
+  407
+ ],
+ "integrations/chatgpt-fleet-next/PACKAGING.md": [
+  407
+ ],
+ "integrations/fleet-cc-dev-plugin/README.md": [
+  427,
+  410
+ ],
+ "integrations/fleet-v1-first-install/plugin/README.md": [
+  410
+ ],
+ "integrations/fleet-v1-first-install/plugin/plugin.json": [
+  410
+ ],
+ "integrations/fleet-v1-l2-release/HANDOFF-407.md": [
+  431,
+  427
+ ],
+ "integrations/fleet-v1-l2-release/HANDOFF-419.md": [
+  431,
+  427
+ ],
+ "integrations/fleet-v1-l2-release/README.md": [
+  431,
+  427
+ ],
+ "integrations/fleet-v1-l2-release/l2_release.py": [
+  431,
+  427
+ ],
+ "integrations/fleet-v1-mcp-conformance/AUTH-MATRIX.md": [
+  407
+ ],
+ "integrations/fleet-v1-mcp-conformance/authority_matrix.py": [
+  407
+ ],
+ "integrations/fleet-v1-mcp-conformance/selftest.py": [
+  407
+ ],
+ "integrations/fleet-v1-milestone-notify/README.md": [
+  427,
+  423
+ ],
+ "integrations/fleet-v1-milestone-notify/fixtures/cloudcli/run-completed-no-output.json": [
+  427,
+  423
+ ],
+ "integrations/fleet-v1-milestone-notify/fixtures/cloudcli/run-completed.json": [
+  427,
+  423
+ ],
+ "integrations/fleet-v1-milestone-notify/fixtures/github_actions/ci-action-required.json": [
+  427,
+  423
+ ],
+ "integrations/fleet-v1-milestone-notify/fixtures/github_actions/ci-green.json": [
+  427,
+  423
+ ],
+ "integrations/fleet-v1-milestone-notify/fixtures/phase/accepted.json": [
+  427,
+  423
+ ],
+ "integrations/fleet-v1-milestone-notify/milestone_notify.py": [
+  427,
+  423
+ ],
+ "integrations/fleet-v1-milestone-observer/README.md": [
+  428,
+  427
+ ],
+ "integrations/fleet-v1-milestone-observer/fixtures/cloudcli/completed-no-output.json": [
+  428,
+  427
+ ],
+ "integrations/fleet-v1-milestone-observer/fixtures/cloudcli/completed.json": [
+  428,
+  427
+ ],
+ "integrations/fleet-v1-milestone-observer/fixtures/cloudcli/failed.json": [
+  428,
+  427
+ ],
+ "integrations/fleet-v1-milestone-observer/fixtures/cloudcli/running.json": [
+  428,
+  427
+ ],
+ "integrations/fleet-v1-milestone-observer/fixtures/github_actions/action-required.json": [
+  428,
+  427
+ ],
+ "integrations/fleet-v1-milestone-observer/fixtures/github_actions/green-other-sha.json": [
+  428,
+  427
+ ],
+ "integrations/fleet-v1-milestone-observer/fixtures/github_actions/green.json": [
+  428,
+  427
+ ],
+ "integrations/fleet-v1-milestone-observer/fixtures/github_actions/neutral.json": [
+  428,
+  427
+ ],
+ "integrations/fleet-v1-milestone-observer/observer.py": [
+  428,
+  427
+ ],
+ "integrations/fleet-v1-milestone-sources/README.md": [
+  427,
+  426
+ ],
+ "integrations/fleet-v1-milestone-sources/milestone_sources.py": [
+  427,
+  426
+ ],
+ "integrations/fleet-v1-owner/owner_server.py": [
+  407
+ ],
+ "native/node-core/supervisor/CMakeLists.txt": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/duplicate-unit.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/empty-unit-name.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/empty-units.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/expectations.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/long-unit.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/mixed-owners.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/not-an-object.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/stray-field.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/too-many-units.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/unknown-owner.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/contract/owner-map/wrong-schema.json": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/include/supervisor/capability.hpp": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/include/supervisor/facts.hpp": [
+  427,
+  412
+ ],
+ "native/node-core/supervisor/src/capability.cpp": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/src/facts.cpp": [
+  430,
+  427,
+  412
+ ],
+ "native/node-core/supervisor/src/main.cpp": [
+  430,
+  427,
+  412
+ ],
+ "native/node-core/supervisor/tests/CMakeLists.txt": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/tests/test_sup_capability.cpp": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/tests/test_sup_facts.cpp": [
+  427,
+  412
+ ],
+ "native/node-core/supervisor/tests/test_sup_owner_map_parity.cpp": [
+  430,
+  427
+ ],
+ "native/node-core/supervisor/tests/toy/service_recovery_toy.sh": [
+  430,
+  427
+ ],
+ "plugins/serveros-fleet-ingress/.claude-plugin/plugin.json": [
+  410
+ ],
+ "plugins/serveros-fleet-ingress/README.md": [
+  410
+ ],
+ "runtime/agent_control_store.py": [
+  407
+ ],
+ "runtime/daemon.py": [
+  407
+ ],
+ "runtime/document_transport.py": [
+  407
+ ],
+ "runtime/fleet-event-delivery-contract.yaml": [
+  407
+ ],
+ "runtime/fleet_event_delivery.py": [
+  407
+ ],
+ "runtime/fleet_mcp_owner.py": [
+  407
+ ],
+ "runtime/live_sender.py": [
+  407
+ ],
+ "runtime/message_transport.py": [
+  407
+ ],
+ "runtime/owner_operations.py": [
+  407
+ ],
+ "runtime/owner_policy.py": [
+  407
+ ],
+ "scripts/build.py": [
+  427,
+  413
+ ],
+ "scripts/release.py": [
+  433,
+  427,
+  419
+ ],
+ "scripts/runtime_truth.py": [
+  427,
+  421
+ ],
+ "serverosd/Makefile": [
+  430,
+  427,
+  419,
+  412
+ ],
+ "serverosd/README.md": [
+  430,
+  427,
+  419,
+  412
+ ],
+ "serverosd/consumers.v1.json": [
+  430,
+  427
+ ],
+ "serverosd/contract/package.v1.md": [
+  427,
+  412
+ ],
+ "serverosd/contract/single-writer.v1.md": [
+  430,
+  427
+ ],
+ "serverosd/package_manifest.py": [
+  427,
+  419,
+  412
+ ],
+ "serverosd/tests/package_contract.py": [
+  430,
+  427,
+  412
+ ],
+ "serverosd/verify_native_runtime.py": [
+  427,
+  412
+ ],
+ "tests/data/capture-cloudcli-1.41.0-tools-list-2026-10-27.json": [
+  427,
+  411
+ ],
+ "tests/data/capture-cloudcli-1.41.0-v1-roundtrips-2026-10-27.json": [
+  427,
+  411
+ ],
+ "tests/fixtures/fleet_next/release_evidence.candidate.json": [
+  407
+ ],
+ "tests/fixtures/fleet_release_acceptance/component-record.example.json": [
+  427,
+  420
+ ],
+ "tests/test_build_decoupling.py": [
+  427,
+  413
+ ],
+ "tests/test_cloudcli_1_41_run_get_compat.py": [
+  416
+ ],
+ "tests/test_cloudcli_windows_compat.py": [
+  427,
+  411
+ ],
+ "tests/test_direct_lark_notify.py": [
+  427,
+  415
+ ],
+ "tests/test_document_transport.py": [
+  407
+ ],
+ "tests/test_fleet_cc_dev_plugin_cc_client.py": [
+  407
+ ],
+ "tests/test_fleet_cc_dev_plugin_offline_stack.py": [
+  407
+ ],
+ "tests/test_fleet_cloudcli_full_inheritance.py": [
+  407
+ ],
+ "tests/test_fleet_core_lite_readback.py": [
+  407
+ ],
+ "tests/test_fleet_core_lite_source.py": [
+  407
+ ],
+ "tests/test_fleet_core_lite_transport.py": [
+  407
+ ],
+ "tests/test_fleet_create_project.py": [
+  407
+ ],
+ "tests/test_fleet_create_session.py": [
+  407
+ ],
+ "tests/test_fleet_delivery_correlation.py": [
+  407
+ ],
+ "tests/test_fleet_event_delivery.py": [
+  407
+ ],
+ "tests/test_fleet_events.py": [
+  407
+ ],
+ "tests/test_fleet_inbox.py": [
+  407
+ ],
+ "tests/test_fleet_interrupt_session.py": [
+  407
+ ],
+ "tests/test_fleet_l2_release_separation.py": [
+  431,
+  427
+ ],
+ "tests/test_fleet_mcp_contract.py": [
+  407
+ ],
+ "tests/test_fleet_mcp_surface.py": [
+  407
+ ],
+ "tests/test_fleet_mcp_transport.py": [
+  407
+ ],
+ "tests/test_fleet_milestone_architecture_contract.py": [
+  427,
+  420
+ ],
+ "tests/test_fleet_milestone_chain_integration.py": [
+  427
+ ],
+ "tests/test_fleet_mirror_runtime_addressing.py": [
+  407
+ ],
+ "tests/test_fleet_multi_runtime_routing.py": [
+  407
+ ],
+ "tests/test_fleet_next_release_gate.py": [
+  407
+ ],
+ "tests/test_fleet_old_control_retirement.py": [
+  432,
+  427
+ ],
+ "tests/test_fleet_operator_skills.py": [
+  427,
+  410
+ ],
+ "tests/test_fleet_owner_grant.py": [
+  407
+ ],
+ "tests/test_fleet_owner_setup.py": [
+  407
+ ],
+ "tests/test_fleet_plugin_client_smoke.py": [
+  410
+ ],
+ "tests/test_fleet_plugin_independence.py": [
+  427,
+  410
+ ],
+ "tests/test_fleet_plugin_release_lifecycle.py": [
+  410
+ ],
+ "tests/test_fleet_principal_context.py": [
+  407
+ ],
+ "tests/test_fleet_rc_integration_negatives.py": [
+  427
+ ],
+ "tests/test_fleet_refusal_audit.py": [
+  407
+ ],
+ "tests/test_fleet_release_plan.py": [
+  407
+ ],
+ "tests/test_fleet_run_watcher.py": [
+  407
+ ],
+ "tests/test_fleet_v1_first_install.py": [
+  410
+ ],
+ "tests/test_fleet_v1_milestone_notify.py": [
+  427,
+  423
+ ],
+ "tests/test_fleet_v1_milestone_observer.py": [
+  428,
+  427
+ ],
+ "tests/test_fleet_v1_milestone_sources.py": [
+  427,
+  426
+ ],
+ "tests/test_native_owner_map_parity.py": [
+  430,
+  427
+ ],
+ "tests/test_owner_atomic_operations.py": [
+  407
+ ],
+ "tests/test_owner_client_binding.py": [
+  407
+ ],
+ "tests/test_owner_git_measurement.py": [
+  407
+ ],
+ "tests/test_owner_lifecycle_interlocks.py": [
+  407
+ ],
+ "tests/test_owner_lifecycle_socket.py": [
+  407
+ ],
+ "tests/test_owner_migration_exdev.py": [
+  407
+ ],
+ "tests/test_owner_policy_issuer.py": [
+  407
+ ],
+ "tests/test_owner_work_store_fence.py": [
+  407
+ ],
+ "tests/test_release_l2_layers.py": [
+  433
+ ],
+ "tests/test_release_native_runtime.py": [
+  433,
+  427,
+  419
+ ],
+ "tests/test_runtime_truth.py": [
+  427,
+  413
+ ],
+ "tests/test_runtime_truth_face.py": [
+  427,
+  421
+ ],
+ "workengine/archive_restore.py": [
+  407
+ ],
+ "workengine/cli.py": [
+  407
+ ],
+ "workengine/engine.py": [
+  407
+ ],
+ "workengine/federation.py": [
+  407
+ ],
+ "workengine/mcp.py": [
+  407
+ ],
+ "workengine/migration.py": [
+  407
+ ],
+ "workengine/migration_lock.py": [
+  407
+ ],
+ "workengine/owner_artifacts.py": [
+  407
+ ],
+ "workengine/owner_client.py": [
+  407
+ ],
+ "workengine/owner_context.py": [
+  407
+ ],
+ "workengine/owner_fence.py": [
+  407
+ ],
+ "workengine/serveros_authority.py": [
+  407
+ ],
+ "workengine/store.py": [
+  407
+ ]
+}
