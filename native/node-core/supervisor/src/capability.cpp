@@ -60,7 +60,7 @@ std::string build_capability_json(const Manifest& manifest, const OwnerMap& owne
                                   const CapabilityInfo& info) {
     nodecore::Json root = nodecore::Json::object();
     root.set("schema", nodecore::Json::string(kCapabilitySchema));
-    root.set("program", nodecore::Json::string("serveros-native-core"));
+    root.set("program", nodecore::Json::string(kCapabilityProgram));
     root.set("version", nodecore::Json::string(info.version));
     root.set("mode", nodecore::Json::string(info.mode));
     // The owner this program would act under. A constant of the closed

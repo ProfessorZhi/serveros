@@ -46,6 +46,12 @@ namespace nodecore::supervisor {
 //: The document this module emits. Bumped if a field's meaning changes.
 inline constexpr const char* kCapabilitySchema = "serveros/native-core-capability.v1";
 
+//: The program this document describes. A constant rather than a literal in the
+//: writer, because a reader that compares two documents has to be able to tell
+//: WHICH two programs it compared, and a name typed twice is a name free to
+//: differ by a character.
+inline constexpr const char* kCapabilityProgram = "serveros-native-core";
+
 //: The two modes a Core runs in. `observe` is the default everywhere; `act` is
 //: reachable only through `--serve --enable-actions` and its preconditions.
 inline constexpr const char* kCapabilityModeObserve = "observe";
