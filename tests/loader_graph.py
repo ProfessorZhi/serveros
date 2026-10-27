@@ -43,6 +43,7 @@ gates built on it assert the first thing.
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -128,9 +129,24 @@ def module_refs(path: Path) -> set[Path]:
         if target.is_file():
             found.add(target.relative_to(REPO))
             return
-        beside = path.parent / Path(candidate).name
-        if beside.is_file():
-            found.add(beside.relative_to(REPO))
+        # Beside the caller, and the WHOLE relative candidate before its
+        # basename. `_HERE / "x.py"` needs only the basename; a nested sibling
+        # such as `_HERE / "fleet_hub" / "x.py"` resolves to a different file
+        # (or, once `runtime/x.py` is gone, to nothing) if the subdirectory is
+        # dropped. Measured on the D2 move: with the basename-only fallback the
+        # `fleet_audience` edge disappeared from both monitor modules' closures,
+        # which would have let an artifact omit a module its callers load.
+        for beside in (path.parent / candidate, path.parent / Path(candidate).name):
+            if not beside.is_file():
+                continue
+            # `..` in a candidate makes the joined path non-canonical
+            # (`tests/../fleet/transport.py`), and a candidate that climbs out of
+            # the repo makes `relative_to` raise. Normalise for the first and
+            # refuse for the second, so a recorded edge is always a repo path.
+            normalized = Path(os.path.normpath(beside))
+            if normalized.is_relative_to(REPO):
+                found.add(normalized.relative_to(REPO))
+                return
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
