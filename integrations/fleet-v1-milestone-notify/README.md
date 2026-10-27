@@ -112,6 +112,13 @@ this section closes.
   `DELIVERY_UNKNOWN` row uses its original `full[:50]` key only in an explicit
   `reconcile`, so the retry cannot create a second message under a new key. New
   rows never use the legacy truncation.
+- **Pre-NFC rows**: the observer checks the raw (un-normalised) identity before
+  claiming the canonical key, so a row written before NFC canonicalisation is
+  matched and not resent once.
+- **Legacy reconcile residual**: two pre-fix rows that shared `full[:50]` cannot
+  be told apart retroactively. An explicit `reconcile` of one reuses the old key
+  and trusts the provider's dedupe echo; the stored `why` says so. This is the
+  pre-fix trade-off, confined to legacy rows; new rows never use it.
 
 ## 词表：milestone_kind vs delivery_state/lifecycle（冻结提案）
 
@@ -131,6 +138,7 @@ this section closes.
 我们的两轴封闭且不相交：
 
 - `milestone_kind`（事实）：`RUN_COMPLETED` · `CI_PASSED` · `PHASE_ACCEPTED` · `PR_ACCEPTED` · `TASK_COMPLETED`
+  （代码中的显式封闭集合 `MILESTONE_KINDS`）
 - `delivery_state`（生命周期）：`IN_FLIGHT` · `DELIVERED` · `DELIVERY_UNKNOWN` · `CARD_ONLY` · `NO_EVENT` · `DUPLICATE` · `UNKNOWN_REPLAY`
 
 `DISPATCH_ACK` / `FEISHU_DELIVERED` **不是** `milestone_kind`；测试
@@ -161,7 +169,7 @@ python3 -m unittest -v tests.test_fleet_v1_milestone_notify
 ## 证据分级
 
 - **CODE**：本目录。
-- **UNIT**：`tests/test_fleet_v1_milestone_notify.py`（37 项，含一项驱动真实
+- **UNIT**：`tests/test_fleet_v1_milestone_notify.py`（39 项，含一项驱动真实
   `direct_lark_notify` provider 的 monkeypatch 集成测试）。
 - **HOSTED_CI**：PR 的 `Tests` 工作流。
 - **REAL_FEISHU_DELIVERY**：**未声称**。只有真实 provider receipt + Owner

@@ -114,6 +114,14 @@ _GITHUB_TERMINAL = frozenset({
     "neutral", "skipped", "stale", "startup_failure",
 })
 _PHASE_KINDS = frozenset({PHASE_ACCEPTED, PR_ACCEPTED, TASK_COMPLETED})
+
+#: The positive milestone kinds #423 offers to the #417/#422 vocabulary freeze.
+#: This is the evidence axis; it is not a delivery lifecycle. The set is
+#: explicit so a new kind cannot be added without changing this declaration
+#: and the contract tests that pin it.
+MILESTONE_KINDS = frozenset({
+    RUN_COMPLETED, CI_PASSED, PHASE_ACCEPTED, PR_ACCEPTED, TASK_COMPLETED,
+})
 _SOURCES = frozenset({"cloudcli", "github_actions", "phase"})
 
 _CLOUDCLI_ENVELOPE = frozenset({
@@ -700,7 +708,24 @@ def _canonical_identity(value: str) -> str:
     Case is NOT folded. `RunA` and `runa` are different milestones; the
     contract's kind/key words are case-sensitive identifiers.
     """
-    return unicodedata.normalize("NFC", str(value))
+    if not isinstance(value, str):
+        raise MilestoneRefused("a delivery identity must be text")
+    return unicodedata.normalize("NFC", value)
+
+
+def _identity_text(decision: Decision) -> str:
+    return (f"milestone:{decision.source}:{decision.device_ref}:"
+            f"{decision.milestone_kind}:{decision.key}:{decision.outcome}")
+
+
+def raw_delivery_key_for(decision: Decision) -> str:
+    """The pre-NFC identity, used only to find a row written before NFC.
+
+    A ledger written by the previous revision may hold a decomposed identity.
+    The observer checks this value before claiming the canonical key, so such
+    a row is not resent once.
+    """
+    return _text(_identity_text(decision), "delivery_key", 512)
 
 
 def delivery_key_for(decision: Decision) -> str:
@@ -710,9 +735,8 @@ def delivery_key_for(decision: Decision) -> str:
     summary and a caretaker sentence do not change it. This full value is what
     the ledger stores and what `reconcile` accepts.
     """
-    identity = (f"milestone:{decision.source}:{decision.device_ref}:"
-                f"{decision.milestone_kind}:{decision.key}:{decision.outcome}")
-    return _text(_canonical_identity(identity), "delivery_key", 512)
+    return _text(_canonical_identity(_identity_text(decision)),
+                 "delivery_key", 512)
 
 
 def transport_key_for(full_identity: str) -> str:
@@ -727,6 +751,8 @@ def transport_key_for(full_identity: str) -> str:
     digest, not a zero-collision proof. The full identity remains the ledger
     key and is stored next to the short key.
     """
+    if not isinstance(full_identity, str):
+        raise MilestoneRefused("a delivery identity must be text")
     full = _text(_canonical_identity(full_identity), "delivery_key", 512)
     digest = hashlib.sha256(full.encode("utf-8")).hexdigest()
     key = TRANSPORT_KEY_PREFIX + digest[
@@ -742,8 +768,14 @@ def legacy_transport_key(full_identity: str) -> str:
     Used ONLY to reconcile a row written before the digest existed, so a retry
     uses the same key its original attempt used. New rows never take this path,
     and a legacy DELIVERED row is never replayed.
+
+    A legacy reconcile cannot retroactively distinguish two pre-fix rows that
+    shared this 50-character prefix; it trusts the provider's dedupe echo. That
+    trade-off is confined to rows written before the digest.
     """
-    return str(full_identity)[:TRANSPORT_KEY_LENGTH]
+    if not isinstance(full_identity, str):
+        raise MilestoneRefused("a delivery identity must be text")
+    return full_identity[:TRANSPORT_KEY_LENGTH]
 
 
 def message(decision: Decision,
@@ -934,7 +966,8 @@ class Observation:
 def _prior_observation(prior: dict, delivery_key: str) -> Observation:
     """What a replay may say about a delivery another observation owns."""
     outcome = prior["outcome"]
-    transport = prior.get("transport_key")
+    transport = prior.get("transport_key") or legacy_transport_key(
+        prior["delivery_key"])
     if prior["state"] == DELIVERED:
         return Observation(outcome, DUPLICATE, delivery_key, prior["remote_id"],
                            None, None,
@@ -1021,6 +1054,13 @@ class MilestoneNotifier:
         # The key is a property of the fact, not of the sentence: compute it
         # before the summarizer so a replay does not spend a model call.
         key = delivery_key_for(decision)
+        raw_key = raw_delivery_key_for(decision)
+        if raw_key != key:
+            # A row written before NFC canonicalisation must not be resent
+            # under a new primary key.
+            legacy_prior = self.ledger.get(raw_key)
+            if legacy_prior is not None:
+                return _prior_observation(legacy_prior, raw_key)
         transport = transport_key_for(key)
         claim_text = message(decision)
         claim_intent = json.dumps(
@@ -1101,6 +1141,10 @@ class MilestoneNotifier:
                                None, None, None, "stored intent has no text",
                                False, transport)
         state, remote_id, why = self._send(text, transport)
+        if not prior.get("transport_key"):
+            why = _scrub(
+                f"{why}; legacy full[:50] key: a dedupe echo cannot prove this "
+                f"row's own message existed")[:240]
         self.ledger.resolve(
             delivery_key=delivery_key, state=state, remote_id=remote_id,
             attempted_at=now.isoformat(), why=why, transport_key=transport)

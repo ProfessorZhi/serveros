@@ -233,19 +233,16 @@ class MilestoneNotifyTest(unittest.TestCase):
         `FEISHU_DELIVERED` are positions on the delivery chain and must never
         appear as a milestone kind.
         """
-        milestone_kinds = {
-            m.RUN_COMPLETED, m.CI_PASSED, m.PHASE_ACCEPTED,
-            m.PR_ACCEPTED, m.TASK_COMPLETED,
-        }
+        milestone_kinds = set(m.MILESTONE_KINDS)
         delivery_states = {
             m.DELIVERED, m.UNKNOWN_DELIVERY, m.IN_FLIGHT, m.CARD_ONLY,
             m.SILENT_STATE, m.DUPLICATE, m.UNKNOWN_REPLAY,
         }
         self.assertEqual(milestone_kinds & delivery_states, set())
-        for lifecycle in ("DISPATCH_ACK", "FEISHU_DELIVERED"):
-            self.assertNotIn(lifecycle, milestone_kinds)
+        self.assertFalse(hasattr(m, "DISPATCH_ACK"))
+        self.assertFalse(hasattr(m, "FEISHU_DELIVERED"))
         self.assertEqual(
-            milestone_kinds,
+            m.MILESTONE_KINDS,
             {"RUN_COMPLETED", "CI_PASSED", "PHASE_ACCEPTED",
              "PR_ACCEPTED", "TASK_COMPLETED"})
 
@@ -331,6 +328,10 @@ class MilestoneNotifyTest(unittest.TestCase):
             m.transport_key_for(m.delivery_key_for(composed_decision)),
             m.transport_key_for(m.delivery_key_for(upper_decision)))
         self.assertEqual(m.transport_key_for("stable"), m.transport_key_for("stable"))
+        with self.assertRaises(m.MilestoneRefused):
+            m.transport_key_for({"not": "text"})
+        with self.assertRaises(m.MilestoneRefused):
+            m.legacy_transport_key(123)
 
     def test_an_old_ledger_schema_is_migrated_without_losing_rows(self):
         db = sqlite3.connect(self.ledger)
@@ -393,6 +394,62 @@ class MilestoneNotifyTest(unittest.TestCase):
         self.assertEqual(provider.calls[0]["idempotency_key"], legacy)
         self.assertEqual(len(provider.calls[0]["idempotency_key"]), 50)
         self.assertEqual(self.ledger_row(full)["transport_key"], legacy)
+
+    def test_a_legacy_delivered_row_is_never_replayed(self):
+        evidence = self.evidence("cloudcli", "run-completed")
+        decision = m.decide(evidence)
+        full = m.delivery_key_for(decision)
+        self.notifier(FakeLark())  # creates the (migrated) table
+        db = sqlite3.connect(self.ledger)
+        try:
+            db.execute(
+                "INSERT INTO milestone_deliveries "
+                "(delivery_key, milestone_key, outcome, state, remote_id, "
+                " attempted_at, why, intent, transport_key) "
+                "VALUES (?,?,?,?,?,?,?,?,NULL)",
+                (full, evidence.key, decision.outcome, m.DELIVERED, "om_old",
+                 datetime.now(timezone.utc).isoformat(), "legacy delivered",
+                 json.dumps({"text": m.message(decision)})))
+            db.commit()
+        finally:
+            db.close()
+
+        provider = FakeLark()
+        observation = self.notifier(provider).observe(evidence)
+        self.assertEqual(observation.state, m.DUPLICATE)
+        self.assertEqual(observation.remote_id, "om_old")
+        self.assertEqual(observation.transport_key, full[:50])
+        self.assertEqual(provider.calls, [])
+
+    def test_a_pre_nfc_delivered_row_is_not_resent(self):
+        payload = self.payload("phase", "accepted")
+        payload["key"] = "café"  # decomposed pre-NFC identity
+        evidence = m.normalize("phase", payload)
+        decision = m.decide(evidence)
+        raw = m.raw_delivery_key_for(decision)
+        canonical = m.delivery_key_for(decision)
+        self.assertNotEqual(raw, canonical)
+
+        self.notifier(FakeLark())  # creates the (migrated) table
+        db = sqlite3.connect(self.ledger)
+        try:
+            db.execute(
+                "INSERT INTO milestone_deliveries "
+                "(delivery_key, milestone_key, outcome, state, remote_id, "
+                " attempted_at, why, intent, transport_key) "
+                "VALUES (?,?,?,?,?,?,?,?,NULL)",
+                (raw, evidence.key, decision.outcome, m.DELIVERED, "om_old",
+                 datetime.now(timezone.utc).isoformat(), "pre-NFC row",
+                 json.dumps({"text": m.message(decision)})))
+            db.commit()
+        finally:
+            db.close()
+
+        provider = FakeLark()
+        observation = self.notifier(provider).observe(evidence)
+        self.assertEqual(observation.state, m.DUPLICATE)
+        self.assertEqual(observation.delivery_key, raw)
+        self.assertEqual(provider.calls, [])
 
     def test_duplicate_github_webhook_is_idempotent(self):
         evidence = self.evidence("github_actions", "ci-green")
