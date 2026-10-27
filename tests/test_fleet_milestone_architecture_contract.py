@@ -144,6 +144,44 @@ def _imports(path: Path) -> set[str]:
     return found
 
 
+def _suite_key(name: str) -> str:
+    """One comparison key for a test path, on every platform.
+
+    `scripts/hermetic_tests.py::shard_files` answers with `str(Path)`, which uses
+    the platform separator: `tests/test_x.py` on POSIX, `tests\\test_x.py` on
+    Windows. `Path(...).as_posix()` fixes that on Windows but is a no-op on POSIX,
+    so a test built on it can only be *verified* on Windows. Replacing the
+    separator explicitly makes the key identical everywhere, which means this can
+    be proved on Linux and still hold on Windows.
+
+    A POSIX filename containing a literal backslash would be folded here. No test
+    file in this suite has one, and the suite globs `tests/test_*.py`.
+    """
+    return name.replace("\\", "/")
+
+
+def _assertion_count(path: Path) -> int:
+    """Statements in the file that can fail: `assert` plus any `assert*` call.
+
+    A count of `test_` functions says a matrix exists; it says nothing about
+    whether the matrix can fail. Eighteen empty test bodies satisfy every
+    presence check in this file and exercise nothing, so the cheapest honest
+    signal is that the file contains at least as many assertions as test
+    functions. This is a floor, not a proof — the proof is the module running.
+    """
+    count = 0
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Assert):
+            count += 1
+        elif isinstance(node, ast.Call):
+            func = node.func
+            name = (func.attr if isinstance(func, ast.Attribute)
+                    else func.id if isinstance(func, ast.Name) else "")
+            if name.startswith("assert"):
+                count += 1
+    return count
+
+
 def _test_count(path: Path) -> int:
     return sum(1 for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -290,16 +328,36 @@ class TheSuiteActuallySchedulesIt(unittest.TestCase):
 
     def test_the_shards_partition_the_suite_without_loss(self) -> None:
         """A file no shard schedules is a test CI never runs."""
+        # `shard_files()` answers with `str(Path)`, which uses the platform
+        # separator. Normalising here is the difference between a portable test
+        # and one that can only pass on POSIX: on Windows every name would carry
+        # a backslash and the comparison below would fail 83 times over.
         seen: dict[str, int] = {}
         for spec in HARNESS_SHARDS:
             for name in self.harness.shard_files(spec):
-                seen[name] = seen.get(name, 0) + 1
+                key = _suite_key(name)
+                seen[key] = seen.get(key, 0) + 1
         self.assertEqual(sorted(n for n in seen if seen[n] > 1), [],
                          "a file scheduled by two shards runs twice")
-        on_disk = sorted(p.relative_to(ROOT).as_posix()
+        on_disk = sorted(_suite_key(p.relative_to(ROOT).as_posix())
                          for p in (ROOT / "tests").glob("test_*.py"))
         self.assertEqual(sorted(seen), on_disk,
                          "the shards must schedule every tests/test_*.py")
+
+    def test_the_comparison_key_is_the_same_on_every_platform(self) -> None:
+        """The portable fixture for this check, runnable anywhere.
+
+        `shard_files()` returns `str(Path)`. On Windows that is
+        `tests\\test_x.py`; on POSIX it is `tests/test_x.py`. A comparison that
+        does not normalise therefore passes on Linux and fails on Windows, which
+        is the worst shape a gate can have: green where it is written, red where
+        it runs. This asserts the normalisation without needing Windows.
+        """
+        windows_style = "tests\\test_ability_projection.py"
+        posix_style = "tests/test_ability_projection.py"
+        self.assertEqual(_suite_key(windows_style), _suite_key(posix_style))
+        self.assertEqual(_suite_key(windows_style),
+                         "tests/test_ability_projection.py")
 
     def test_it_has_not_been_parked_in_the_known_failures_baseline(self) -> None:
         self.assertTrue(BASELINE.is_file(), f"{BASELINE} is missing")
@@ -323,8 +381,24 @@ class TheContractIsNotEmpty(unittest.TestCase):
     def test_it_defines_a_real_test_matrix(self) -> None:
         self.assertGreaterEqual(
             _test_count(MILESTONE_TEST), MINIMUM_TESTS,
-            "the announcer test file is a token file; a green run on it would "
-            "not mean the matrix was exercised")
+            "the announcer test file no longer has the shape of a matrix; a "
+            "green run on it would not mean the matrix was exercised")
+
+    def test_every_test_function_can_actually_fail(self) -> None:
+        """Presence is cheap to fake; a test that cannot fail is not a test.
+
+        Without this, a file of empty `test_` bodies — with the right keywords
+        and a stand-in class — satisfies every other check in this module while
+        asserting nothing. The real matrix carries roughly five assertions per
+        test function; the floor here is one.
+        """
+        tests = _test_count(MILESTONE_TEST)
+        assertions = _assertion_count(MILESTONE_TEST)
+        self.assertGreaterEqual(
+            assertions, tests,
+            f"{MILESTONE_TEST.name} defines {tests} test functions but only "
+            f"{assertions} assertion statements: a matrix whose tests cannot "
+            "fail makes a green run mean nothing")
 
     def test_every_promised_behaviour_is_still_covered(self) -> None:
         gaps = {name: tokens for name, tokens in REQUIRED_BEHAVIOURS.items()
