@@ -6,11 +6,16 @@ WHAT THIS IS
 A thin, offline-testable seam between three things that already exist:
 
     device facts        CloudCLI ``run_get`` / GitHub Actions / a signed-off phase
-    the event vocabulary ``runtime/notification-contract.yaml`` (INFO / ATTENTION / ACTION)
-    the outbound outlet  ``runtime/notifications.py#deliver`` -> an injected
-                         ``HumanControlProvider`` (at Tokyo:
-                         ``runtime/direct_lark_notify.py`` over
-                         ``runtime/message_transport.py``)
+    the severity axis   ``runtime/notification-contract.yaml`` (INFO / ATTENTION / ACTION)
+    the outbound outlet ``runtime/notifications.py#capability_of`` + an injected
+                        ``HumanControlProvider`` (at Tokyo:
+                        ``runtime/direct_lark_notify.py`` over
+                        ``runtime/message_transport.py``)
+
+It does NOT claim a §10 event name: the contract declares the closest INFO and
+ACTION events DECLARED_ABSENT, and a milestone is not an alert. It uses the
+contract's severity words and the same capability gate, then hands its own
+deterministic sentence to the provider.
 
 It classifies ONE bounded observation at a time, composes a safe sentence
 (optionally with one event-activated summarizer call), and records whether the
