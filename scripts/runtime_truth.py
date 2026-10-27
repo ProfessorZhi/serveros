@@ -161,6 +161,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -244,6 +245,14 @@ TREE_MANIFEST = "RELEASE.json"
 # than deliverable content. See `_content_bytes`.
 ARTIFACT_MANIFEST = "ARTIFACT.json"
 ATTRIBUTION_ONLY = frozenset({"source"})
+
+# The two keys a face build adds to `ARTIFACT.json`: which face these bytes are,
+# and the composition's full declaration beside it. A combined artifact (and
+# every artifact built before the split) carries neither, and `None` there means
+# "recompute the composition's combined payload" — the reading this file has
+# always made.
+FACE_KEY = "face"
+DECLARED_KINDS_KEY = "declared_kinds"
 
 # Drift classes that are NOT about the bytes on disk agreeing with each other.
 # A chain can be internally perfect and still be the wrong release; these name
@@ -680,7 +689,9 @@ def composition_files(build) -> dict[str, Path]:
 
 def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
                       marketplace_path: Path,
-                      layout_at: Path | None = None) -> tuple[dict[Path, bytes], str] | None:
+                      layout_at: Path | None = None,
+                      face: str | None = None
+                      ) -> tuple[dict[Path, bytes], str] | None:
     """Recompute the artifact from current canonical source + the recorded pin.
 
     This is what makes the question answerable without the build recording its
@@ -693,6 +704,12 @@ def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
     against `plugin/bundle.yaml` would accuse a correctly-built profile of
     drifting from a composition it never claimed — a false report produced by
     the checker, in the same shape as the false report it exists to catch.
+
+    `face` is the OTHER half of that identity. Since Fleet V1's D1 split one
+    composition produces two disjoint payloads (`plugin` and `node-runtime`),
+    and recomputing a face artifact as the combined composition reports a
+    correct artifact as drifting by everything the other face carries. `None`
+    keeps the pre-split reading: the composition's combined payload.
 
     `layout_at` is not a detail of the build, it is the repair of a check whose
     answer depended on where two unrelated directories happened to sit. `plan()`
@@ -713,9 +730,15 @@ def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
     path = composition_files(build).get(composition)
     if path is None:
         return None
+    if face is not None and not _plan_accepts_face(build):
+        return None
+    # Only a face build passes the keyword, so a builder loaded from an older
+    # source revision is asked exactly the question it can answer.
+    face_kwargs = {"face": face} if face is not None else {}
     try:
         files, manifests, readme, marketplace, version = build.plan(
-            path, ability_repo, ability_rev, layout_at or output, marketplace_path)
+            path, ability_repo, ability_rev, layout_at or output, marketplace_path,
+            **face_kwargs)
     except (OSError, ValueError) as exc:
         return None
     payload = {rel: content for content, rel, _executable in files}
@@ -724,7 +747,8 @@ def expected_artifact(build, ability_repo: Path, ability_rev: str, output: Path,
     return payload, version
 
 
-def recompute_blocker(build, output: Path, pin: str | None = None) -> str:
+def recompute_blocker(build, output: Path, pin: str | None = None,
+                      face: str | None = None) -> str:
     """Why the artifact could not be recomputed, named rather than generalized.
 
     "Cannot verify" is true but not actionable. Every reason this function can
@@ -736,6 +760,11 @@ def recompute_blocker(build, output: Path, pin: str | None = None) -> str:
     own" — a different fact from "nobody looked". The default is `None` rather
     than `""` so that the two do not collapse into one message, and the callers
     that never read a pin keep their present wording.
+
+    `face` is the same distinction for the payload's identity. A node-runtime
+    face composes no Skill, so it has no ability pin BY CONSTRUCTION — reporting
+    that as a missing pin would call the split a defect. A face the artifact's
+    own record cannot justify is refused before the pin question is asked.
     """
     if not (output / "README.md").is_file():
         return "missing README.md (it carries the composition declaration)"
@@ -744,7 +773,10 @@ def recompute_blocker(build, output: Path, pin: str | None = None) -> str:
         return "README.md declares no composition"
     if composition not in composition_files(build):
         return f"no composition file declares `{composition}`"
-    if pin == "":
+    problem = face_problem(build, output)
+    if problem:
+        return problem
+    if pin == "" and not face_reads_no_skill(build, face):
         return ("README.md declares no ability pin, so this artifact names no "
                 "source of its own to be recomputed from")
     return "artifact not recomputable"
@@ -796,6 +828,92 @@ def declared_pin(artifact: Path) -> str:
     except OSError:
         return ""
     return found.group(1) if found else ""
+
+
+def artifact_record(artifact: Path) -> dict | None:
+    """The artifact's own build record, or None when it carries none.
+
+    Read rather than imported: the record travels with the bytes it describes,
+    and this file is asked the same question about artifacts built by other
+    revisions of the builder.
+    """
+    path = artifact / ARTIFACT_MANIFEST
+    if not path.is_file():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def declared_face(artifact: Path) -> str | None:
+    """The face the artifact's build record says it is, if it says one.
+
+    `None` is the combined payload: what a composition that declares both faces
+    produces, and what every artifact built before the split recorded. It is
+    NOT "the artifact is a plugin" — a single-kind artifact built before faces
+    existed has no `face` either, and recomputing it as combined is the reading
+    that reproduces its bytes.
+    """
+    doc = artifact_record(artifact)
+    face = doc.get(FACE_KEY) if doc else None
+    return face if isinstance(face, str) and face else None
+
+
+def face_problem(build, artifact: Path) -> str | None:
+    """Why the recorded face cannot be used to recompute this artifact, or None.
+
+    A face is a claim about the bytes, so it is checked before it is used:
+    it must be a name, a kind the release path implements, and one of the kinds
+    this artifact itself declared. The last one matters because `ARTIFACT.json`
+    is the artifact's own account of itself — a `face` its `declared_kinds` do
+    not contain is internally inconsistent even if the kind name is real.
+    """
+    doc = artifact_record(artifact)
+    if doc is None:
+        return None
+    raw = doc.get(FACE_KEY)
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw:
+        return f"{ARTIFACT_MANIFEST} records a face that is not a name: {raw!r}"
+    if not _plan_accepts_face(build):
+        return ("the artifact records a face, but the source it was built from "
+                "predates artifact faces, so its payload cannot be recomputed")
+    contract = getattr(build, "release_contract", None)
+    kinds = tuple(getattr(contract(), "ARTIFACT_KINDS", ()) or ()) if contract else ()
+    if raw not in kinds:
+        return (f"{ARTIFACT_MANIFEST} records face {raw!r}, which the release "
+                f"path does not implement ({list(kinds)})")
+    declared = doc.get(DECLARED_KINDS_KEY)
+    if isinstance(declared, list) and declared and raw not in declared:
+        return (f"{ARTIFACT_MANIFEST} records face {raw!r} but its declared kinds "
+                f"are {declared}; the artifact's own claim is inconsistent")
+    return None
+
+
+def _plan_accepts_face(build) -> bool:
+    """Whether the loaded builder can recompute one face by name."""
+    try:
+        return "face" in inspect.signature(build.plan).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def face_reads_no_skill(build, face: str | None) -> bool:
+    """Whether this face's bytes do not depend on the ability-management pin.
+
+    The node-runtime face ships no Skill, so a missing pin is a fact about the
+    face rather than a reason its payload cannot be recomputed. `None` is the
+    combined payload and reads Skills, so it keeps the old rule.
+    """
+    if face is None:
+        return False
+    contract = getattr(build, "release_contract", None)
+    if contract is None:
+        return False
+    return face == contract().NODE_RUNTIME
 
 
 def _git_object_at(ability_repo: Path, ref: str, path: str):
@@ -1696,13 +1814,20 @@ def collect(args) -> dict:
              for composition, entry in compositions.items()}
 
     recorded_pin = claude.get("gitCommitSha") or ""
+    output_face = declared_face(args.output)
+    # A node-runtime face composes no Skill, so it carries no ability pin and
+    # must not borrow the one in the PLUGIN install record: that record describes
+    # a different artifact.
+    face_reads_skills = not face_reads_no_skill(build, output_face)
     declared = declared_pin(args.output)
-    ability_rev = args.ability_rev or declared or recorded_pin
+    ability_rev = args.ability_rev or declared
+    if face_reads_skills:
+        ability_rev = ability_rev or recorded_pin
     pinned = ability_rev if len(ability_rev) == 40 else ""
     record_note = ""
     record_class = None
     record_why = ""
-    if declared and recorded_pin and declared != recorded_pin:
+    if face_reads_skills and declared and recorded_pin and declared != recorded_pin:
         # Named, not blocking: this is the install record being wrong about the
         # artifact, which nothing in this repository can repair (a `local`
         # marketplace source gives Claude no revision to record). Making it
@@ -1734,7 +1859,14 @@ def collect(args) -> dict:
     # 行的 verdict 说"这个 pin 本身是不是有效的 canonical revision"; superseded 是一个
     # 有效的 revision, 所以它在行里仍是 OK, 由 note 和 axis 的 state 说出来。把 superseded
     # 降级成失败会让一次完全可复现的发布看起来像坏了。
-    if provenance["reachable"] is None:
+    if not face_reads_skills:
+        # Not a missing pin: a node-runtime payload is built without one, and
+        # `recompute_blocker` says the same thing below. UNKNOWN is the honest
+        # word here (nobody observed a pin), and it is not READY.
+        pin_verdict, pin_detail = UNKNOWN, (
+            "this artifact is the node-runtime face; it composes no Skill and "
+            "carries no ability pin")
+    elif provenance["reachable"] is None:
         pin_verdict, pin_detail = UNKNOWN, provenance["detail"]
     elif provenance["reachable"]:
         pin_verdict, pin_detail = OK, provenance["detail"]
@@ -1747,19 +1879,34 @@ def collect(args) -> dict:
         pin_verdict, pin_detail, note=record_note, axis=AXIS_PROVENANCE)
 
     built_ver = installed_ver = UNKNOWN
+    # The artifact's OWN record is the version source. It is what a face build
+    # writes (`<version>+<cachebuster>.<face>`), and a node-runtime face has no
+    # `plugin.json` to read one from — asking only the plugin manifest would
+    # report the node face's version as UNKNOWN and call a correct artifact
+    # drifted. Combined artifacts record the same value in both places.
+    record = artifact_record(args.output) or {}
+    built_ver = str(record.get("version") or UNKNOWN)
     manifest_path = args.output / ".claude-plugin/plugin.json"
-    if manifest_path.is_file():
+    if built_ver == UNKNOWN and manifest_path.is_file():
         try:
             built_ver = json.loads(manifest_path.read_text()).get("version", UNKNOWN)
         except (OSError, json.JSONDecodeError):
             built_ver = UNKNOWN
     installed_ver = claude.get("version", UNKNOWN)
 
-    row(f"{subject} (bundle identity)", "", built_ver, installed_ver,
-        OK if built_ver == installed_ver and built_ver != UNKNOWN else SOURCE_RUNTIME_DRIFT,
-        "" if built_ver == installed_ver else
-        f"{args.output} is {built_ver}, but Claude's record for the `{subject}` "
-        f"payload says {installed_ver}")
+    if face_reads_skills:
+        row(f"{subject} (bundle identity)", "", built_ver, installed_ver,
+            OK if built_ver == installed_ver and built_ver != UNKNOWN else SOURCE_RUNTIME_DRIFT,
+            "" if built_ver == installed_ver else
+            f"{args.output} is {built_ver}, but Claude's record for the `{subject}` "
+            f"payload says {installed_ver}")
+    else:
+        # The Claude record is the plugin face's; this run's artifact is the
+        # node-runtime face. Comparing them would be two different artifacts
+        # under one row, so the row says which one it is instead.
+        row(f"{subject} (bundle identity)", "", built_ver, installed_ver, UNKNOWN,
+            "this artifact is the node-runtime face; Claude's record describes "
+            "the plugin face, which is a different artifact")
 
     # --- 7. does the installed payload equal what canonical builds? ------
     # The artifact this row asks about is `--output`, so its own record decides
@@ -1770,9 +1917,15 @@ def collect(args) -> dict:
         args.output, build, args, serveros_head)
     attribution = source_attribution(args.output, src_head, src_root)
     expected = None
-    if pinned and args.ability_repo.is_dir():
+    # A node-runtime face needs no ability pin; a combined or plugin face does.
+    # The face itself is validated first, so a forged `face` never becomes a
+    # reason to recompute, and never becomes a reason to call the bytes fine.
+    output_face_problem = face_problem(src_build, args.output)
+    if output_face_problem is None and (
+            (pinned and args.ability_repo.is_dir())
+            or not face_reads_no_skill(src_build, output_face)):
         got = expected_artifact(src_build, args.ability_repo, pinned, args.output,
-                                args.marketplace_path)
+                                args.marketplace_path, face=output_face)
         if got:
             expected, recomputed_version = got
             if recomputed_version == built_ver:
@@ -1785,8 +1938,13 @@ def collect(args) -> dict:
                                 "to source")
             else:
                 repro_verdict, repro_detail = SOURCE_STALE, attribution[1]
+            # The "installed" column is this artifact's own version. For a
+            # plugin/combined payload that coincides with Claude's record; for a
+            # node-runtime face Claude's record is another artifact, so its
+            # version would be the wrong number in this row.
             row(f"{subject} (payload reproducibility)", recomputed_version, "",
-                installed_ver, repro_verdict, repro_detail, note=src_note)
+                installed_ver if face_reads_skills else built_ver,
+                repro_verdict, repro_detail, note=src_note)
 
     # The two runtimes nest differently and neither is guessable from the other:
     # Claude's install record gives the payload leaf directly, while Codex adds
@@ -1799,11 +1957,15 @@ def collect(args) -> dict:
     # detail. Reporting both as "not present: None" is how a missing record for
     # ONE composition read as a missing payload.
     claude_leaf = claude.get("installPath")
-    targets = [("runtime-assets (built)", args.output,
-                None),
-               ("Claude plugin cache", Path(claude_leaf) if claude_leaf else None,
-                f"Claude records no install for `{subject}`"
-                if not distribution_name else "")]
+    targets = [("runtime-assets (built)", args.output, None)]
+    if face_reads_skills:
+        # The Claude cache is a PLUGIN payload. When this run's artifact is the
+        # node-runtime face, that cache is a different artifact, and comparing
+        # the two would manufacture a drift out of the split itself.
+        targets.append(
+            ("Claude plugin cache", Path(claude_leaf) if claude_leaf else None,
+             f"Claude records no install for `{subject}`"
+             if not distribution_name else ""))
     for label, root, absent_why in targets:
         if root is None or not Path(root).is_dir():
             row(f"{subject} @ {label}", "", "", MISSING, MISSING,
@@ -1812,7 +1974,8 @@ def collect(args) -> dict:
         root = Path(root)
         if expected is None:
             row(f"{subject} @ {label}", "", "", f"sha256={tree_hash(root) or 'NONE'}",
-                UNKNOWN, "cannot verify: " + recompute_blocker(src_build, args.output))
+                UNKNOWN, "cannot verify: " + recompute_blocker(
+                    src_build, args.output, pinned, face=output_face))
             continue
         # `RELEASE.json` is the node-runtime face of the payload, written by
         # `release.py` when a revision is staged; `expected_artifact` recomputes
@@ -1921,6 +2084,7 @@ def collect(args) -> dict:
         # same way, and its comment says the two rows are asking one question;
         # this is the half that makes that true instead of nearly true.
         plugin_pin = declared_pin(payload)
+        plugin_face = declared_face(payload)
         # ...and the same half for the SOURCE: the pin says what this plugin was
         # read from in ability-management, which leaves untouched the question
         # of which generation of the product's own composition built it. Each
@@ -1929,10 +2093,33 @@ def collect(args) -> dict:
         # is the one THIS artifact names, not the checkout's.
         p_build, p_root, p_head, p_note = recompute_source(
             payload, build, args, serveros_head)
-        if not plugin_pin or not args.ability_repo.is_dir():
+        # ...and the same question for the FACE. This payload may be the plugin
+        # face of a split composition, in which case recomputing it as combined
+        # reports every node module as drift. A node-runtime face (installed
+        # here by mistake or by a hand copy) is still measured against its own
+        # bytes, but it does not owe an ability pin.
+        plugin_needs_pin = not face_reads_no_skill(p_build, plugin_face)
+        plugin_problem = face_problem(p_build, payload)
+        if plugin_problem is not None:
             row(label, "", "", f"version={installed_version}  sha256="
                 f"{tree_hash(payload) or 'NONE'}", UNKNOWN,
-                "cannot verify: " + recompute_blocker(p_build, payload, plugin_pin),
+                "cannot verify: " + plugin_problem, note=p_note)
+            continue
+        if face_reads_no_skill(p_build, plugin_face):
+            # Its bytes may match their own face exactly and still not be a
+            # plugin: a node-runtime payload has no plugin manifest. Calling the
+            # byte chain OK here would report INSTALLED as if it were loadable.
+            row(label, "", "", f"version={installed_version}  sha256="
+                f"{tree_hash(payload) or 'NONE'}", UNKNOWN,
+                "this payload declares the node-runtime face; a plugin cache "
+                "expects the plugin face, so its bytes are not this row's "
+                "question", note=p_note)
+            continue
+        if plugin_needs_pin and (not plugin_pin or not args.ability_repo.is_dir()):
+            row(label, "", "", f"version={installed_version}  sha256="
+                f"{tree_hash(payload) or 'NONE'}", UNKNOWN,
+                "cannot verify: " + recompute_blocker(
+                    p_build, payload, plugin_pin, face=plugin_face),
                 note=p_note)
             continue
         # Named, not judged: a plugin built at a pin other than the node
@@ -1943,11 +2130,13 @@ def collect(args) -> dict:
             f"built at ability pin {plugin_pin[:12]}; the node payload declares "
             f"{pinned[:12]}")
         got = expected_artifact(p_build, args.ability_repo, plugin_pin, payload,
-                                args.marketplace_path, layout_at=args.output)
+                                args.marketplace_path, layout_at=args.output,
+                                face=plugin_face)
         if got is None:
             row(label, "", "", f"version={installed_version}  sha256="
                 f"{tree_hash(payload) or 'NONE'}", UNKNOWN,
-                "cannot verify: " + recompute_blocker(p_build, payload),
+                "cannot verify: " + recompute_blocker(
+                    p_build, payload, plugin_pin, face=plugin_face),
                 note=p_note)
             continue
         expected_plugin, plugin_built = got
@@ -2006,6 +2195,7 @@ def collect(args) -> dict:
         # Same reading as the Claude row above, for the same reason: the pin is
         # the one this payload declares, not the node payload's.
         leaf_pin = declared_pin(leaf)
+        leaf_face = declared_face(leaf)
         # Same reading as the Claude row above, on both axes: the pin this
         # payload declares, and the source commit this payload records. Codex's
         # installed leaf records a commit of its own — on this node the same one
@@ -2013,21 +2203,39 @@ def collect(args) -> dict:
         # checkout was the wrong tree to rebuild it from.
         c_build, c_root, c_head, c_note = recompute_source(
             leaf, build, args, serveros_head)
-        if not leaf_pin or not args.ability_repo.is_dir():
+        leaf_needs_pin = not face_reads_no_skill(c_build, leaf_face)
+        leaf_problem = face_problem(c_build, leaf)
+        if leaf_problem is not None:
             row(label, "", "", f"version={installed_version}  sha256="
                 f"{tree_hash(leaf) or 'NONE'}", UNKNOWN,
-                "cannot verify: " + recompute_blocker(c_build, leaf, leaf_pin),
+                "cannot verify: " + leaf_problem,
+                note="; ".join(n for n in (note, c_note) if n))
+            continue
+        if face_reads_no_skill(c_build, leaf_face):
+            row(label, "", "", f"version={installed_version}  sha256="
+                f"{tree_hash(leaf) or 'NONE'}", UNKNOWN,
+                "this payload declares the node-runtime face; a plugin cache "
+                "expects the plugin face, so its bytes are not this row's "
+                "question", note="; ".join(n for n in (note, c_note) if n))
+            continue
+        if leaf_needs_pin and (not leaf_pin or not args.ability_repo.is_dir()):
+            row(label, "", "", f"version={installed_version}  sha256="
+                f"{tree_hash(leaf) or 'NONE'}", UNKNOWN,
+                "cannot verify: " + recompute_blocker(
+                    c_build, leaf, leaf_pin, face=leaf_face),
                 note="; ".join(n for n in (note, c_note) if n))
             continue
         pin_note = "" if (not pinned or leaf_pin == pinned) else (
             f"built at ability pin {leaf_pin[:12]}; the node payload declares "
             f"{pinned[:12]}")
         got = expected_artifact(c_build, args.ability_repo, leaf_pin, leaf,
-                                args.marketplace_path, layout_at=args.output)
+                                args.marketplace_path, layout_at=args.output,
+                                face=leaf_face)
         if got is None:
             row(label, "", "", f"version={installed_version}  sha256="
                 f"{tree_hash(leaf) or 'NONE'}", UNKNOWN,
-                "cannot verify: " + recompute_blocker(c_build, leaf),
+                "cannot verify: " + recompute_blocker(
+                    c_build, leaf, leaf_pin, face=leaf_face),
                 note="; ".join(n for n in (note, c_note) if n))
             continue
         expected_codex, codex_built = got
@@ -2174,17 +2382,29 @@ def collect(args) -> dict:
         n_build, n_root, n_head, n_note = recompute_source(
             rev_dir, build, args, serveros_head)
         pin = declared_pin(rev_dir)
-        if not pin or not args.ability_repo.is_dir():
-            node_detail = recompute_blocker(n_build, rev_dir)
+        rev_face = declared_face(rev_dir)
+        rev_problem = face_problem(n_build, rev_dir)
+        # A node-runtime revision is the normal case for a split release: it
+        # composes no Skill, so it carries no ability pin and asking for one
+        # would make the split itself look like an unverifiable node.
+        rev_needs_pin = not face_reads_no_skill(n_build, rev_face)
+        if rev_problem is not None:
+            node_detail = rev_problem
+            node_note = n_note
+        elif rev_needs_pin and (not pin or not args.ability_repo.is_dir()):
+            node_detail = recompute_blocker(
+                n_build, rev_dir, pin, face=rev_face)
             node_note = n_note
         else:
             # `layout_at=args.output`: the node revision is not a plugin and has
             # no marketplace position, so it borrows the one the plugin rows are
             # already required to have rather than being asked for its own.
             got = expected_artifact(n_build, args.ability_repo, pin, rev_dir,
-                                    args.marketplace_path, layout_at=args.output)
+                                    args.marketplace_path, layout_at=args.output,
+                                    face=rev_face)
             if got is None:
-                node_detail = recompute_blocker(n_build, rev_dir)
+                node_detail = recompute_blocker(
+                    n_build, rev_dir, pin, face=rev_face)
                 node_note = n_note
             else:
                 node_expected, node_built = got
