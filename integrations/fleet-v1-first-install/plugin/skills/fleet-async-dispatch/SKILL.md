@@ -57,6 +57,27 @@ Do not poll the run until it settles. A long task is allowed to be long.
 Polling burns the commander's turn and produces no new fact. Inspect later,
 when there is a reason to, or when the run is expected to have settled.
 
+## Out-of-band milestone status
+
+A fleet can report significant milestones to the owner without the commander
+asking: a run reaching a verified terminal state, CI going green on the exact
+commit a watch names, or a check going red and needing a decision. When that is
+configured, those reports arrive on their own schedule, through the owner's
+notification channel — not through this conversation, and not because of
+anything the commander did.
+
+That changes what the commander owes:
+
+- **Do not build a poll loop to wait for them.** The report is not produced by
+  your turns; a turn spent polling does not bring it closer.
+- **A milestone report is not your result.** It is a fact about the run. The
+  work is still closed out from the run, the session and the artefact, as below.
+- **No report arriving is not a failure.** It may simply not be configured on
+  this fleet. Say so, and read the run — do not let silence stand in for
+  success.
+- **Never report a milestone as delivered by you.** A send receipt belongs to
+  the channel that sent it, and a send ACK is not an owner read.
+
 ## Later inspection
 
 Use the recorded references, not a fresh guess:

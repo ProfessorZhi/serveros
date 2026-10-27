@@ -71,10 +71,14 @@ class TheClientInstallsAndDiscoversThePackage(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.client = find_client()
+        cls.home = None
+        cls._installed = False
         if cls.client is None:
-            raise unittest.SkipTest(
+            cls._skip_reason = (
                 "no `claude` binary on this host (PATH or the CloudCLI image); "
                 "install/discovery CLIENT_E2E is NOT_RUN here, not passed")
+            return
+        cls._skip_reason = None
         cls.home = Path(tempfile.mkdtemp(prefix="l4-smoke-home-"))
 
     @classmethod
@@ -85,10 +89,23 @@ class TheClientInstallsAndDiscoversThePackage(unittest.TestCase):
 
     # -- helpers ---------------------------------------------------------
 
+    #: Environment variables a client may honour instead of `HOME`. Passing the
+    #: ambient environment through and overriding only `HOME` is not isolation:
+    #: with `CLAUDE_CONFIG_DIR` set the client writes there and never looks at
+    #: `HOME`, so the smoke would have written into a real configuration while
+    #: still passing. All of them are pinned into the throwaway tree.
+    REDIRECTED = ("CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+                  "XDG_CACHE_HOME", "XDG_STATE_HOME")
+
     def _env(self) -> dict:
         env = dict(os.environ)
         env["HOME"] = str(self.home)
+        for name in self.REDIRECTED:
+            env.pop(name, None)
         env["XDG_CONFIG_HOME"] = str(self.home / ".config")
+        env["XDG_DATA_HOME"] = str(self.home / ".local" / "share")
+        env["XDG_CACHE_HOME"] = str(self.home / ".cache")
+        env["XDG_STATE_HOME"] = str(self.home / ".local" / "state")
         return env
 
     def _claude(self, *args: str) -> subprocess.CompletedProcess:
@@ -96,15 +113,24 @@ class TheClientInstallsAndDiscoversThePackage(unittest.TestCase):
                               env=self._env(), stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT)
 
+    def _ensure_installed(self) -> None:
+        """Install once, so no test depends on another having run first."""
+        if getattr(type(self), "_installed", False):
+            return
+        added = self._claude("plugin", "marketplace", "add", str(ROOT))
+        self.assertEqual(added.returncode, 0, added.stdout)
+        installed = self._claude("plugin", "install", f"{PLUGIN_NAME}@{MARKETPLACE}")
+        self.assertEqual(installed.returncode, 0, installed.stdout)
+        type(self)._installed = True
+
+    def setUp(self) -> None:
+        if getattr(type(self), "_skip_reason", None):
+            self.skipTest(type(self)._skip_reason)
+        self._ensure_installed()
+
     # -- the smoke -------------------------------------------------------
 
     def test_install_then_discover(self) -> None:
-        added = self._claude("plugin", "marketplace", "add", str(ROOT))
-        self.assertEqual(added.returncode, 0, added.stdout)
-
-        installed = self._claude("plugin", "install", f"{PLUGIN_NAME}@{MARKETPLACE}")
-        self.assertEqual(installed.returncode, 0, installed.stdout)
-
         details = self._claude("plugin", "details", PLUGIN_NAME)
         self.assertEqual(details.returncode, 0, details.stdout)
         text = details.stdout
@@ -113,27 +139,38 @@ class TheClientInstallsAndDiscoversThePackage(unittest.TestCase):
         self.assertIn("MCP servers (1)", text)
         self.assertIn("serveros-fleet", text)
 
-    def test_the_mcp_entry_is_listed_and_withholds_its_tools(self) -> None:
-        """`Needs authentication` is the correct observation, not a failure.
+    def test_the_mcp_entry_is_registered(self) -> None:
+        """Registration only. This does not assert that the tools are reachable.
 
-        It proves the endpoint answered. Claiming the tools are reachable would
-        require a completed OAuth sign-in, which this file does not perform.
+        Whether the surface answers requires a completed OAuth sign-in, which
+        this file never performs. What it can observe is that the entry is
+        installed, and — when the client reports it — that it is withheld
+        pending authentication.
         """
         listed = self._claude("mcp", "list")
         self.assertEqual(listed.returncode, 0, listed.stdout)
         self.assertIn("serveros-fleet", listed.stdout,
                       f"the MCP entry is not registered:\n{listed.stdout}")
+        if "Needs authentication" in listed.stdout:
+            self.assertNotIn("mcp__serveros-fleet__", listed.stdout,
+                             "an unauthenticated entry must not advertise tools")
 
-    def test_the_isolated_home_is_where_it_landed(self) -> None:
-        """Nothing may be written to the operator's real configuration."""
+    def test_the_install_landed_in_the_throwaway_home(self) -> None:
+        """Where it landed.
+
+        This does not prove the real configuration was untouched — comparing the
+        operator's tree before and after would race with whatever else runs on
+        the host. It is the `REDIRECTED` list that keeps the client inside the
+        throwaway tree: every variable a client might honour instead of `HOME` is
+        set to a path under it. The assertion here is only that the install
+        followed those paths, which is what makes the redirection effective
+        rather than decorative.
+        """
         local = self.home / ".claude"
         self.assertTrue(local.exists(),
-                        "the install did not land in the throwaway HOME, so it "
-                        "may have written somewhere real")
-        marketplace = local / "plugins" / "known_marketplaces.json"
-        if marketplace.exists():
-            known = json.loads(marketplace.read_text(encoding="utf-8"))
-            self.assertIn(MARKETPLACE, known)
+                        "the install did not land in the throwaway HOME, so the "
+                        "redirection was not honoured and it may have written "
+                        "somewhere real")
 
 
 if __name__ == "__main__":

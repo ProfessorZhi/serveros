@@ -22,6 +22,7 @@ binary, no credential, no service.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -130,47 +131,67 @@ class AnUpdateIsAVersionAdvance(unittest.TestCase):
         self.assertEqual(manifest["version"], "9.9.4")
 
 
-class ARollbackIsAByteForByteRecreation(unittest.TestCase):
+class ARollbackTargetIsIdentifiableAndReproducible(unittest.TestCase):
+    """What a rollback actually needs.
+
+    An earlier version of this test regenerated the old version after generating
+    a new one and compared it to the old one — `f(a) == f(a)` with a call in
+    between. It proved determinism, which `test_the_previous_release_is_
+    reproducible_from_its_own_source` already proves, and claimed more.
+
+    What is checked here is what an operator needs: each released version has a
+    stable digest that identifies it, two versions do not share one, and
+    regenerating a pinned version reproduces the digest that identifies it. That
+    is what makes "roll back to the previous release" verifiable rather than
+    remembered.
+
+    Not proven, and not claimed: that a *newer builder* reproduces an older
+    release byte for byte. That would need the builder itself pinned per release,
+    which this package does not yet do.
+    """
+
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="l4-rollback-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
-    def test_the_previous_release_is_reproducible_from_its_own_source(self) -> None:
-        """Rollback is "rebuild the pinned revision", so it must be deterministic.
+    @staticmethod
+    def _digest(tree: dict[str, bytes]) -> str:
+        h = hashlib.sha256()
+        for rel in sorted(tree):
+            h.update(rel.encode("utf-8"))
+            h.update(b"\0")
+            h.update(tree[rel])
+        return h.hexdigest()
 
-        Two generations from one source must agree byte for byte; otherwise
-        "roll back to the previous version" produces a tree nobody released.
-        """
-        source = _source_copy(self.tmp, version="9.8.0")
-        first, second = self.tmp / "a", self.tmp / "b"
+    def _release(self, version: str, out_name: str) -> str:
+        source = _source_copy(self.tmp / out_name, version=version)
+        out = self.tmp / out_name / "out"
+        _generate_from(source, out)
+        return self._digest(_tree(out))
+
+    def test_each_version_has_its_own_digest(self) -> None:
+        first = self._release("9.8.0", "a")
+        second = self._release("9.8.1", "b")
+        self.assertNotEqual(first, second,
+                            "two releases share a digest, so a rollback cannot "
+                            "be told apart from the thing it rolls back from")
+
+    def test_regenerating_a_pinned_version_reproduces_its_digest(self) -> None:
+        recorded = self._release("9.8.0", "a")
+        self._release("9.8.1", "b")          # a later release happens
+        again = self._release("9.8.0", "c")  # rollback target is rebuilt
+        self.assertEqual(recorded, again,
+                         "the pinned version did not reproduce the digest that "
+                         "identifies the release being rolled back to")
+
+    def test_the_previous_release_is_reproducible_from_its_own_source(self) -> None:
+        source = _source_copy(self.tmp / "det", version="9.7.0")
+        first, second = self.tmp / "det" / "one", self.tmp / "det" / "two"
         _generate_from(source, first)
         _generate_from(source, second)
         self.assertEqual(_tree(first), _tree(second),
-                         "two runs from one source disagree, so a rollback could "
-                         "not reproduce the release it rolls back to")
-
-    def test_rolling_back_after_an_update_returns_the_original_bytes(self) -> None:
-        source = _source_copy(self.tmp, version="9.8.0")
-        before = self.tmp / "before"
-        _generate_from(source, before)
-
-        # Forward: a newer release.
-        manifest = source / "plugin" / "plugin.json"
-        doc = json.loads(manifest.read_text(encoding="utf-8"))
-        doc["version"] = "9.8.1"
-        manifest.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n",
-                            encoding="utf-8")
-        _generate_from(source, self.tmp / "updated")
-
-        # Back: the pinned revision again.
-        doc["version"] = "9.8.0"
-        manifest.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n",
-                            encoding="utf-8")
-        rolled_back = self.tmp / "rolled-back"
-        _generate_from(source, rolled_back)
-
-        self.assertEqual(_tree(before), _tree(rolled_back),
-                         "rolling back did not reproduce the previous release")
+                         "two runs from one source disagree, so a rebuild cannot "
+                         "reproduce the release it rebuilds")
 
 
 class ThePackageNeedsNoRuntimeRestart(unittest.TestCase):
@@ -187,27 +208,49 @@ class ThePackageNeedsNoRuntimeRestart(unittest.TestCase):
         if not PLUGIN_DIR.is_dir():
             self.skipTest("the committed plugin is not in this tree")
 
-    def test_the_package_carries_nothing_a_service_manager_could_run(self) -> None:
-        runnable = sorted(rel for rel in _tree(PLUGIN_DIR)
-                          if Path(rel).suffix.lower() in
-                          (".sh", ".service", ".timer", ".socket", ".py", ".js"))
-        self.assertEqual(runnable, [],
-                         "a package that ships something runnable can make an "
-                         "install into a deployment")
+    def test_the_package_contains_exactly_the_expected_members(self) -> None:
+        """An allowlist of names, not a blocklist of suffixes.
 
-    def test_no_manifest_can_start_a_process(self) -> None:
+        A suffix blocklist only catches the extensions someone thought of: a
+        `hooks/postinstall.bash`, a `deploy/fleet.conf` holding a `[Service]`
+        stanza, or a `.ps1` all slipped past an earlier version of this check.
+        Naming every member the build is allowed to produce closes that, and it
+        fails on the *first* unexpected file rather than on a recognised one.
+        """
+        skills = _source_copy(self.tmp_members()).glob("plugin/skills/*/SKILL.md")
+        expected = {".claude-plugin/plugin.json", ".mcp.json", "README.md",
+                    "PRIVACY.md", "assets/composerIcon.png", "assets/logo.png"}
+        expected |= {f"skills/{p.parent.name}/SKILL.md" for p in skills}
+        self.assertEqual(set(_tree(PLUGIN_DIR)), expected,
+                         "an unexpected member is something the package can ship "
+                         "that no test looked at")
+
+    def tmp_members(self) -> Path:
+        scratch = Path(tempfile.mkdtemp(prefix="l4-members-"))
+        self.addCleanup(shutil.rmtree, scratch, True)
+        return scratch
+
+    def test_no_skill_tells_the_reader_to_restart_a_service(self) -> None:
+        """The prose channel is reachable even when the package ships no code.
+
+        Structure proves the package cannot *start* anything; it cannot stop a
+        Skill from instructing an operator to restart one. The README is allowed
+        to discuss restarts — it is documentation for a human — but a Skill is
+        instruction the assistant follows.
+        """
+        import re
+        imperative = re.compile(
+            r"(?i)systemctl|daemon-reload|systemd-|\bservice\s+\S+\s+(?:restart|reload)")
         offenders = {}
         for rel, data in _tree(PLUGIN_DIR).items():
-            if not rel.endswith(".json"):
+            if not rel.startswith("skills/"):
                 continue
-            text = data.decode("utf-8", "replace")
-            hit = [word for word in ("\"command\"", "\"args\"", "\"exec\"",
-                                     "\"service\"", "\"unit\"")
-                   if word in text]
-            if hit:
-                offenders[rel] = hit
+            hits = sorted(set(imperative.findall(data.decode("utf-8", "replace"))))
+            if hits:
+                offenders[rel] = hits
         self.assertEqual(offenders, {},
-                         "the binding is an HTTP endpoint, not a process to start")
+                         "a Skill that says how to restart a service makes a "
+                         "documentation update into an operational instruction")
 
     def test_the_only_outbound_endpoint_is_the_mcp_url(self) -> None:
         binding = json.loads((PLUGIN_DIR / ".mcp.json").read_text(encoding="utf-8"))
@@ -248,6 +291,13 @@ class InstallRefusesBeforeItTouchesTheClient(unittest.TestCase):
         return _Done()
 
     def test_a_stale_tree_is_refused_and_the_client_is_never_invoked(self) -> None:
+        """Uses the committed binding's own URL.
+
+        An earlier version passed the example URL from this file, which made the
+        tree stale on `.mcp.json` no matter what — so the test passed with the
+        skill mutation removed and proved nothing about skill staleness. The
+        control below is what makes this one mean something.
+        """
         skill = PLUGIN_DIR / "skills" / "fleet-evidence-review" / "SKILL.md"
         original = skill.read_bytes()
         try:
@@ -255,12 +305,31 @@ class InstallRefusesBeforeItTouchesTheClient(unittest.TestCase):
             with mock.patch.object(fleet_plugin.shutil, "which",
                                    return_value="/usr/bin/claude"), \
                  mock.patch.object(fleet_plugin.subprocess, "run", self._fake_run):
-                code = fleet_plugin.install(URL, keep_legacy=False)
+                code = fleet_plugin.install(fleet_plugin.DEFAULT_NEXT_MCP_URL,
+                                            keep_legacy=False)
         finally:
             skill.write_bytes(original)
         self.assertEqual(code, 1, "a stale package must not be installed")
         self.assertEqual(self.calls, [],
                          "the client was invoked before the tree was verified")
+
+    def test_the_same_install_succeeds_when_the_tree_is_current(self) -> None:
+        """The control: without the mutation the client *is* reached.
+
+        Without this, a refusal caused by something else entirely would look
+        like skill-staleness detection working.
+        """
+        self.assertEqual(fleet_plugin.check(fleet_plugin.DEFAULT_NEXT_MCP_URL), 0,
+                         "the committed tree must be current for this control")
+        with mock.patch.object(fleet_plugin.shutil, "which",
+                               return_value="/usr/bin/claude"), \
+             mock.patch.object(fleet_plugin.subprocess, "run", self._fake_run):
+            code = fleet_plugin.install(fleet_plugin.DEFAULT_NEXT_MCP_URL,
+                                        keep_legacy=False)
+        self.assertEqual(code, 0)
+        self.assertNotEqual(self.calls, [],
+                            "a current tree must reach the client, or the refusal "
+                            "test above proves nothing")
 
     def test_no_client_on_path_is_a_refusal_not_a_crash(self) -> None:
         with mock.patch.object(fleet_plugin.shutil, "which", return_value=None), \
