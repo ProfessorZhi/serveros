@@ -120,6 +120,13 @@ void print_usage(std::FILE* out) {
                  "                         document says no map was readable.\n"
                  "  --lease FILE           single-writer lease. Taken with flock, never\n"
                  "                         waited for, and released when this process exits.\n"
+                 "                         Defaults to $XDG_RUNTIME_DIR/serveros/\n"
+                 "                         native-core.lease — the same path the Python\n"
+                 "                         daemon defaults to, so one pen is shared by\n"
+                 "                         construction rather than by an operator\n"
+                 "                         remembering to pass the same argument. With no\n"
+                 "                         absolute XDG_RUNTIME_DIR there is no default\n"
+                 "                         and --lease is required.\n"
                  "  --link-state up|down|unknown\n"
                  "                         whether this host has a working link. Default\n"
                  "                         unknown, which REFUSES to act.\n"
@@ -190,6 +197,30 @@ bool read_file(const std::string& path, std::string& out) {
     std::ostringstream buffer;
     buffer << stream.rdbuf();
     out = buffer.str();
+    return true;
+}
+
+//: The lease path both programs mean when nobody names one.
+//:
+//: `runtime/daemon.py` defaults to `$XDG_RUNTIME_DIR/serveros/native-core.lease`
+//: and says, in its own comment, that a Core started with "the default --lease"
+//: contends with it "by construction". That sentence was FALSE of this binary
+//: until this function existed: `--lease` was required with no default, so the
+//: two programs shared a pen only when an operator happened to pass the daemon's
+//: path by hand.
+//:
+//: Derived, never guessed. An unset or relative `XDG_RUNTIME_DIR` refuses rather
+//: than falling back to a path of this program's own invention: a lease at a path
+//: nobody else knows is exactly the split-lock this exists to prevent, and a
+//: default that only one program agrees with is worse than no default at all.
+bool default_lease_path(std::string& out, std::string& why) {
+    const char* runtime_dir = std::getenv("XDG_RUNTIME_DIR");
+    if (runtime_dir == nullptr || runtime_dir[0] != '/') {
+        why = "XDG_RUNTIME_DIR is unset or not absolute, so there is no default "
+              "lease path to derive; pass --lease FILE explicitly";
+        return false;
+    }
+    out = std::string(runtime_dir) + "/serveros/native-core.lease";
     return true;
 }
 
@@ -492,6 +523,15 @@ int main(int argc, char** argv) {
         // reboot. Refused with a named reason rather than defaulted.
         nodecore::supervisor::ActionGateInput gate;
         gate.act = true;
+        // The lease path is DERIVED here, not left empty: see default_lease_path.
+        if (lease_path.empty()) {
+            std::string why;
+            if (!default_lease_path(lease_path, why)) {
+                std::fprintf(stderr, "%s\n", why.c_str());
+                return 2;
+            }
+        }
+
         gate.have_lease = !lease_path.empty();
         if (serve && !facts_path.empty()) {
             // The facts document IS how the resident path knows these. Asking
