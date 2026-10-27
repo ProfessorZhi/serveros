@@ -598,15 +598,20 @@ def test_an_internal_import_the_payload_does_not_carry_is_refused(tmp_path):
 
 
 def test_a_manifest_that_describes_itself_two_ways_is_refused(tmp_path):
-    """`standalone` is derived from the dependency lists. A manifest where the
-    flag and the lists disagree is the exact thing a verifier exists to catch."""
+    """`standalone` is the legacy spelling of `runtime_standalone`.
+
+    A manifest where the two spellings disagree is the exact thing a verifier
+    exists to catch: `standalone: true` used to mean "not external, not
+    depends_on", and a reader that believed it would install a payload that has
+    just been measured to die on the first fleet call.
+    """
     node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
 
     def mutate(manifest, members):
         manifest["l2"]["standalone"] = True
 
     broken = rewrite(node, tmp_path / "broken.tar.gz", mutate)
-    with pytest.raises(l2.Refused, match="describes itself two ways"):
+    with pytest.raises(l2.Refused, match="disagrees with l2.runtime_standalone"):
         l2.verify(l2.read_artifact(broken))
 
 
@@ -767,17 +772,397 @@ def test_release_and_l2_release_agree_on_a_staged_directory(tmp_path):
     assert report["ok"], report
 
 
-def test_the_module_makes_no_network_process_or_credential_calls():
-    """A packaging tool that can shell out or open a socket is a packaging tool
-    that can do either while claiming to be offline.
+# --------------------------------------------------------------------------- #
+# import_standalone vs runtime_standalone: measured, in a fresh interpreter
+# --------------------------------------------------------------------------- #
+def _mutate_member(path: Path, out: Path, name: str, transform) -> Path:
+    """Change one member's bytes and keep the manifest honest about them."""
+    def mutate(manifest, members):
+        members[name] = transform(members[name])
+        manifest["member_sha256"][name] = l2._sha(members[name])
+        reseal(manifest)
+    return rewrite(path, out, mutate)
+
+
+def test_the_node_entrypoint_imports_with_the_repository_out_of_reach(tmp_path):
+    """The node imports without a checkout; that is a fact, not a compliment.
+
+    Measured in a separate interpreter (`-I`, cwd elsewhere, any `sys.path` entry
+    that can see a `fleet/` dropped), because the same measurement in this process
+    would answer "yes" for a payload that found `fleet` already in `sys.modules`.
+    """
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+    measured = l2.measure_standalone(l2.read_artifact(node).members,
+                                     entry=l2.ENTRY[l2.L2_NODE])
+    assert measured.entry_imports is True
+    assert dict(measured.probe)[l2.ENTRY[l2.L2_NODE]] == "imports"
+
+
+def test_the_hub_entrypoint_does_not_import_with_the_repository_out_of_reach(tmp_path):
+    """The hub's import chain is eager, so it dies at `registry` immediately."""
+    hub = build(l2.L2_HUB, tmp_path / "hub.tar.gz", version=HUB_VERSION)
+    measured = l2.measure_standalone(l2.read_artifact(hub).members,
+                                     entry=l2.ENTRY[l2.L2_HUB])
+    assert measured.entry_imports is False
+    assert dict(measured.probe)[l2.ENTRY[l2.L2_HUB]] == "FleetRefusal"
+
+
+def test_the_node_runtime_path_needs_the_repository_even_though_it_imports(tmp_path):
+    """This is the whole point of two flags instead of one.
+
+    `connector.py` defers `from ..fleet import FleetService` into three function
+    bodies (1124, 1317, 1384), so the artifact *loads* on a device with no checkout
+    and then fails the first time the runtime needs a fleet — after the process is
+    up, inside an agent turn, with nothing in the release notes about it. One
+    boolean cannot say that; the pair can.
+    """
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+    measured = l2.measure_standalone(l2.read_artifact(node).members,
+                                     entry=l2.ENTRY[l2.L2_NODE])
+    probe = dict(measured.probe)
+    assert measured.entry_imports is True, "the premise: the node does import"
+    assert measured.runtime_imports is False, "and it still cannot run alone"
+    assert probe["fleet_mcp.registry"] == "FleetRefusal"
+    assert measured.entry_imports != measured.runtime_imports, (
+        "a single `standalone` flag collapses exactly this difference")
+
+
+def test_the_two_standalone_flags_are_separate_facts_in_the_manifest(tmp_path):
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+    hub = build(l2.L2_HUB, tmp_path / "hub.tar.gz", version=HUB_VERSION)
+    node_block = l2.read_artifact(node).manifest["l2"]
+    hub_block = l2.read_artifact(hub).manifest["l2"]
+
+    assert (node_block["import_standalone"], node_block["runtime_standalone"]) \
+        == (True, False)
+    assert (hub_block["import_standalone"], hub_block["runtime_standalone"]) \
+        == (False, False)
+    for block in (node_block, hub_block):
+        assert block["standalone"] is block["runtime_standalone"], (
+            "`standalone` is the legacy spelling of the strong claim; if it "
+            "followed the import instead, a payload that cannot run would read as "
+            "standalone")
+        assert block["install_requires_repo"] == {"fleet": ["fleet_mcp.registry"]}
+        assert block["install"]["independently_installable"] is False
+        assert block["install"]["blocked_by"], (
+            "an artifact that needs a checkout must name what blocks it")
+        assert block["probe"]["fleet_mcp.registry"] == "FleetRefusal"
+
+
+def test_a_manifest_that_understates_import_standalone_is_refused(tmp_path):
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+
+    def mutate(manifest, members):
+        manifest["l2"]["import_standalone"] = False
+
+    broken = rewrite(node, tmp_path / "broken.tar.gz", mutate)
+    with pytest.raises(l2.Refused, match="l2.import_standalone says False"):
+        l2.verify(l2.read_artifact(broken))
+
+
+def test_a_manifest_that_claims_runtime_standalone_is_refused(tmp_path):
+    """Both spellings flipped: the measurement is what refuses it, not the alias."""
+    hub = build(l2.L2_HUB, tmp_path / "hub.tar.gz", version=HUB_VERSION)
+
+    def mutate(manifest, members):
+        manifest["l2"]["runtime_standalone"] = True
+        manifest["l2"]["standalone"] = True
+
+    broken = rewrite(hub, tmp_path / "broken.tar.gz", mutate)
+    with pytest.raises(l2.Refused, match="l2.runtime_standalone says True"):
+        l2.verify(l2.read_artifact(broken))
+
+
+def test_a_payload_whose_probe_record_is_not_its_probe_is_refused(tmp_path):
+    """The evidence travels with the claim, so the two are compared."""
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+
+    def mutate(manifest, members):
+        manifest["l2"]["probe"]["fleet_mcp.registry"] = "imports"
+
+    broken = rewrite(node, tmp_path / "broken.tar.gz", mutate)
+    with pytest.raises(l2.Refused, match="l2.probe records"):
+        l2.verify(l2.read_artifact(broken))
+
+
+def test_a_non_standalone_artifact_cannot_call_itself_independently_installable(
+        tmp_path):
+    """`allow_external_in_repo` buys a build, never an install.
+
+    The build flag exists so the packaging work can proceed against today's
+    coupling. It is not a statement that the coupling is fine, and the manifest
+    must not be able to turn it into one.
+    """
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+
+    def mutate(manifest, members):
+        manifest["l2"]["install"]["independently_installable"] = True
+
+    broken = rewrite(node, tmp_path / "broken.tar.gz", mutate)
+    with pytest.raises(l2.Refused,
+                       match="not made installable by a manifest field"):
+        l2.verify(l2.read_artifact(broken))
+
+
+def test_a_payload_that_loses_its_blocked_by_list_is_refused(tmp_path):
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+
+    def mutate(manifest, members):
+        manifest["l2"]["install"]["blocked_by"] = []
+
+    broken = rewrite(node, tmp_path / "broken.tar.gz", mutate)
+    with pytest.raises(l2.Refused, match="install.blocked_by is \\[\\]"):
+        l2.verify(l2.read_artifact(broken))
+
+
+def test_an_allowance_the_closure_does_not_need_is_refused(tmp_path):
+    """A named permission is a permission for one dependency, not a standing one."""
+    with pytest.raises(l2.Refused, match="allow_external_in_repo names \\['runtime'\\]"):
+        build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION,
+              allow_external_in_repo=("fleet", "runtime"))
+
+
+def test_the_dependency_on_the_repository_is_named_not_merely_permitted(tmp_path):
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+    block = l2.read_artifact(node).manifest["l2"]
+    assert block["install_requires_repo"] == {"fleet": ["fleet_mcp.registry"]}
+    assert block["install"]["requires_repository"] == block["install_requires_repo"]
+    assert any("fleet_mcp.registry -> fleet.transport (7 symbols)"
+               in line for line in block["install"]["blocked_by"]), \
+        block["install"]["blocked_by"]
+
+
+# --------------------------------------------------------------------------- #
+# the pinned edge: one holder, one module, exactly seven names
+# --------------------------------------------------------------------------- #
+def test_the_pin_matches_the_source_it_was_measured_from():
+    """The constant and `fleet_mcp/registry.py:33` are the same statement."""
+    tree = ast.parse((ROOT / "fleet_mcp" / "registry.py").read_text(encoding="utf-8"))
+    imports = [node for node in ast.walk(tree)
+               if isinstance(node, ast.ImportFrom) and node.module == "fleet.transport"]
+    assert len(imports) == 1, (
+        "registry.py has one `from fleet.transport import (...)`; two would be two "
+        "edges the pin does not describe")
+    names = sorted(alias.name for alias in imports[0].names)
+    assert names == sorted(l2.EXTERNAL_EDGES["fleet"]["symbols"])
+    assert len(names) == 7, names
+    assert imports[0].level == 0, "a relative import would resolve inside fleet_mcp"
+
+
+def test_the_pinned_edge_is_the_only_way_the_two_payloads_leave_their_package(tmp_path):
+    """Out of the repository, not out of the package: `yaml` is a wheel and is not
+    an edge this pin is about."""
+    for kind, version in ((l2.L2_NODE, NODE_VERSION), (l2.L2_HUB, HUB_VERSION)):
+        artifact = l2.read_artifact(build(kind, tmp_path / f"{kind}.tar.gz",
+                                          version=version))
+        block = artifact.manifest["l2"]
+        holders = l2._refuse_external_edges(
+            kind, artifact.members,
+            third_party=block["requires"]["modules"])
+        assert holders == {"fleet": ["fleet_mcp.registry"]}, holders
+        edges = l2._external_edges(artifact.members)["fleet"]
+        assert {edge["module"] for edge in edges} == {"fleet.transport"}
+        assert [len(edge["symbols"]) for edge in edges] == [7]
+        assert {edge["form"] for edge in edges} == {l2.EDGE_FORM}
+
+
+def test_an_eight_name_import_from_the_pinned_module_is_refused(tmp_path):
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+
+    def add_one(data: bytes) -> bytes:
+        # No line-ending assumption: `registry.py` is CRLF in a Windows checkout
+        # and LF in the blob, and a test that only works on one of them proves
+        # something about this worktree rather than about the guard.
+        return data.replace(b"canonical_level,",
+                            b"canonical_level,\n        DeviceCertificate,", 1)
+
+    broken = _mutate_member(node, tmp_path / "broken.tar.gz",
+                            "fleet_mcp/registry.py", add_one)
+    with pytest.raises(l2.Refused, match="imports 8 name"):
+        l2.verify(l2.read_artifact(broken))
+
+
+def test_a_second_module_entering_the_pinned_edge_is_refused(tmp_path):
+    """The pin is a count. A second holder is how seven names become twenty."""
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+
+    def mutate(manifest, members):
+        name = "fleet_mcp/privacy.py"
+        members[name] = members[name] + (
+            b"\nfrom fleet.transport import Device\n")
+        declare(manifest, name, members[name])
+        reseal(manifest)
+
+    broken = rewrite(node, tmp_path / "broken.tar.gz", mutate)
+    with pytest.raises(l2.Refused, match="the pin says exactly one holder"):
+        l2.verify(l2.read_artifact(broken))
+
+
+def test_a_wider_import_form_of_the_pinned_edge_is_refused(tmp_path):
+    """`import fleet.registry` and `from fleet import transport` are not the pin.
+
+    Both reach *more* than one module's seven names, and neither names what it
+    takes — so neither is something a manifest can describe.
+    """
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+    for addition, expected in ((b"\nimport fleet.registry\n", "`import fleet.registry`"),
+                               (b"\nfrom fleet import transport\n",
+                                "`from-package-import-names fleet`")):
+        broken = Path(tmp_path) / f"broken{len(addition)}.tar.gz"
+        _mutate_member(node, broken, "fleet_mcp/registry.py",
+                       lambda data, extra=addition: data + extra)
+        with pytest.raises(l2.Refused, match="enters fleet as") as caught:
+            l2.verify(l2.read_artifact(broken))
+        assert expected in str(caught.value), str(caught.value)
+
+
+def test_a_repository_package_the_manifest_does_not_mention_is_refused(tmp_path):
+    """`runtime/` is not `yaml`: an artifact that imports it depends on this
+    checkout, and the manifest has to say so before the pin can be asked about it.
+    """
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+
+    def mutate(manifest, members):
+        name = "fleet_mcp/version.py"
+        members[name] = members[name] + b"\nimport runtime.agent_control_store\n"
+        manifest["member_sha256"][name] = l2._sha(members[name])
+        reseal(manifest)
+
+    broken = rewrite(node, tmp_path / "broken.tar.gz", mutate)
+    with pytest.raises(l2.Refused, match="does not name its dependencies"):
+        l2.verify(l2.read_artifact(broken))
+
+
+def test_an_unpinned_in_repo_package_is_refused_by_the_edge_check():
+    """The build measures `third_party` from the source tree, so a repository
+    package can never be listed there. This asserts the mechanism with the set the
+    build would pass — the place where the distinction is still knowable.
+    """
+    members = {"fleet_mcp/__init__.py": b'"""x."""\n',
+               "fleet_mcp/version.py":
+                   b"from runtime.agent_control_store import ControlStore\n"}
+    with pytest.raises(l2.Refused,
+                       match="neither a declared third-party module nor a pinned"):
+        l2._refuse_external_edges(l2.L2_NODE, members, third_party=("yaml",))
+    # And the same payload is accepted the moment the name is pinned, which is what
+    # makes the refusal a pin and not a blacklist: the guard is about an edge
+    # nobody decided on, not about a package somebody dislikes.
+    pinned = dict(l2.EXTERNAL_EDGES)
+    try:
+        l2.EXTERNAL_EDGES["runtime"] = {"module": "runtime.agent_control_store",
+                                        "holder": "fleet_mcp.version",
+                                        "symbols": ("ControlStore",)}
+        assert l2._refuse_external_edges(l2.L2_NODE, members,
+                                        third_party=("yaml",)) == {
+            "runtime": ["fleet_mcp.version"]}
+    finally:
+        l2.EXTERNAL_EDGES.clear()
+        l2.EXTERNAL_EDGES.update(pinned)
+
+
+# --------------------------------------------------------------------------- #
+# the 17 pinned modules are reachable, not just present
+# --------------------------------------------------------------------------- #
+def test_all_seventeen_pinned_modules_are_reachable_from_the_entrypoint(tmp_path):
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+    members = l2.read_artifact(node).members
+    reachable = l2._reachable_from(l2.ENTRY[l2.L2_NODE], members)
+    assert len(l2.NODE_SHARED_SURFACE) == 17
+    assert set(l2.NODE_SHARED_SURFACE) <= reachable
+    assert set(l2.NODE_EXCLUSIVE) <= reachable
+    assert len(reachable) == 30, sorted(reachable)
+
+
+def test_a_pin_entry_that_is_present_but_unreachable_is_refused(tmp_path):
+    """Present and reachable are different claims; this is the second one.
+
+    Blanking `config.py` drops the imports that reach five pinned modules without
+    removing a single file, so every presence check still passes and only the
+    reachability walk notices.
+    """
+    node = build(l2.L2_NODE, tmp_path / "node.tar.gz", version=NODE_VERSION)
+    broken = _mutate_member(node, tmp_path / "broken.tar.gz", "fleet_mcp/config.py",
+                            lambda data: b'""""""\n')
+    with pytest.raises(l2.Refused, match="carries but never reaches"):
+        l2.verify(l2.read_artifact(broken))
+
+
+def test_cutting_the_connector_to_fleet_edge_flips_runtime_standalone(tmp_path):
+    """`HANDOFF-407.md`'s blocked plan, executed on a copy: one file, three
+    statements, and the artifact becomes independently installable.
+
+    The handoff is #407's to act on, so nothing in `fleet_mcp/` is edited here. But
+    a blocked plan that has never been run is a guess about how much work it is,
+    and "cut A is worth doing first" is a claim about a measurement. This makes the
+    claim executable: the edge is deleted in a temporary copy, the pin is trimmed
+    by exactly the modules the closure lost (the ratchet rule the build already
+    enforces), and the two flags are read back.
+    """
+    import shutil
+
+    tree = tmp_path / "tree"
+    shutil.copytree(ROOT / "fleet_mcp", tree / "fleet_mcp")
+    shutil.copytree(ROOT / "fleet", tree / "fleet")
+    connector = tree / "fleet_mcp" / "node" / "connector.py"
+    source = connector.read_text(encoding="utf-8")
+    lines = source.splitlines(keepends=True)
+    cut = [(node.lineno, node.end_lineno) for node in ast.walk(ast.parse(source))
+           if isinstance(node, ast.ImportFrom) and node.module == "fleet"]
+    assert cut, "edge A has moved; re-measure HANDOFF-407 before trusting its table"
+    for start, end in sorted(cut, reverse=True):
+        del lines[start - 1:end]
+    connector.write_text("".join(lines), encoding="utf-8")
+
+    before_manifest, before_members = l2.manifest_for(
+        l2.L2_NODE, NODE_VERSION, root=ROOT, allow_external_in_repo=ALLOW)
+    assert "fleet_mcp/registry.py" in before_members, (
+        "the premise: A is what drags registry into the node's closure")
+    assert before_manifest["l2"]["runtime_standalone"] is False
+
+    after_modules = set(l2.closure(l2.ENTRY[l2.L2_NODE], tree).modules)
+    pin = l2.NODE_SHARED_SURFACE
+    trimmed = tuple(module for module in pin if module in after_modules)
+    assert trimmed != pin, "cut A must remove something from the pin, or nothing moved"
+
+    try:
+        l2.NODE_SHARED_SURFACE = trimmed
+        manifest, members = l2.manifest_for(l2.L2_NODE, NODE_VERSION, root=tree)
+        block = manifest["l2"]
+        assert block["external_in_repo"] == [], (
+            "A is the only path to the repository root; if this is not empty then a "
+            "second edge exists and HANDOFF-407 is out of date")
+        assert len(members) == 25, sorted(members)
+        assert (block["import_standalone"], block["runtime_standalone"]) == (True, True)
+        assert block["install"]["independently_installable"] is True
+        assert block["install"]["blocked_by"] == []
+        assert len(block["shared_surface"]) == 12
+        # And the cut payload verifies under the trimmed pin, which is the check
+        # `verify` makes: the manifest must describe the pin it was built against.
+        l2.write_artifact(manifest, members, tmp_path / "after.tar.gz")
+        l2.verify(l2.read_artifact(tmp_path / "after.tar.gz"), expect_kind=l2.L2_NODE)
+    finally:
+        l2.NODE_SHARED_SURFACE = pin
+
+
+def test_the_module_opens_no_socket_and_spawns_only_the_isolation_probe():
+    """A packaging tool that can open a socket, or shell out to anything it likes,
+    is a tool that can do either while claiming to be offline.
+
+    `subprocess` is not banned outright any more, and that is a decision rather
+    than a relaxation: "does this payload import without the repository" can only
+    be answered in a fresh interpreter — measuring it in this process would answer
+    "yes" for a payload that merely found `fleet` already in `sys.modules`. So the
+    test keeps the ban that matters (no network, no shell) and pins the one spawn
+    to the one shape: `sys.executable -I -B -c <the _PROBE constant> <dir> …`, no
+    `shell=`, no `check=`, no arguments assembled from data.
 
     `os.system` is not an import, so the import scan never sees it: the attribute
     calls are checked separately, or the ban covers only the way it is spelled
     least often.
     """
     tree = ast.parse((PACKAGE / "l2_release.py").read_text(encoding="utf-8"))
-    banned = {"subprocess", "socket", "urllib", "http", "requests", "ssl",
-              "shutil", "telnetlib", "ftplib", "smtplib"}
+    banned = {"socket", "urllib", "http", "requests", "ssl", "shutil",
+              "telnetlib", "ftplib", "smtplib"}
     imported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -785,17 +1170,37 @@ def test_the_module_makes_no_network_process_or_credential_calls():
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
     assert not (imported & banned), f"release build imports {sorted(imported & banned)}"
+
     calls = set()
+    spawns = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
             continue
         holder = node.func.value
-        if isinstance(holder, ast.Name) and holder.id in {"os", "subprocess", "socket",
-                                                          "shutil"}:
+        if isinstance(holder, ast.Name) and holder.id == "subprocess":
+            spawns.append(node)
+            calls.add(f"subprocess.{node.func.attr}")
+        elif isinstance(holder, ast.Name) and holder.id in {"os", "socket"}:
             calls.add(f"{holder.id}.{node.func.attr}")
         elif isinstance(holder, ast.Attribute) and holder.attr in {"system", "popen"}:
             calls.add(node.func.attr)
-    assert not calls, f"release build calls {sorted(calls)}"
+    assert calls == {"subprocess.run"}, f"release build calls {sorted(calls)}"
+
+    call = spawns[0]
+    assert {keyword.arg for keyword in call.keywords} <= {"capture_output", "text",
+                                                          "cwd", "env", "timeout"}
+    argv = call.args[0]
+    assert isinstance(argv, ast.List), "the child command must be a literal list"
+    fixed = [ast.unparse(element) for element in argv.elts]
+    assert fixed[0] == "sys.executable"
+    # `-I`: no PYTHONPATH, no user site, no cwd. `-B`: no bytecode written into
+    # the payload being measured. `-c`: the probe, not a file from the payload.
+    assert fixed[1:4] == ["'-I'", "'-B'", "'-c'"], fixed[1:4]
+    assert fixed[4] == "_PROBE", fixed[4]
+    assert l2._PROBE.count("importlib.import_module") == 1
+    assert "fleet" in l2._PROBE, (
+        "the probe must strip any sys.path entry that can see a `fleet` package, "
+        "or a site-packages copy makes the measurement say the opposite")
 
 
 def test_the_artifact_contains_no_absolute_paths(tmp_path):

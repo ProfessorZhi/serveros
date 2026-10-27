@@ -84,6 +84,43 @@ A alone is worth doing first: it is one file, it removes the repository-root
 dependency, and it makes "the node artifact installs on a device" a true sentence
 instead of a conditional one.
 
+## A, measured end to end — and it is enough on its own
+
+The row above says cut A leaves the artifact not needing `fleet/`. What that buys
+is now stated in the two fields the manifest carries, and the measurement was run
+for real: copy `fleet_mcp/` and `fleet/` to a temporary tree, delete the three
+`ImportFrom`s whose module is `fleet` from `connector.py`, trim the pin by exactly
+the modules the closure lost, build, verify. Nothing in this working tree was
+modified.
+
+| | today | after A |
+|---|---|---|
+| files in `l2-node` | 30 | **25** |
+| `external_in_repo` | `["fleet"]` | `[]` |
+| `import_standalone` | true | true |
+| `runtime_standalone` | **false** | **true** |
+| `standalone` (legacy alias) | false | true |
+| `install.independently_installable` | **false** | **true** |
+| `install.blocked_by` | `["fleet_mcp.registry -> fleet.transport (7 symbols)"]` | `[]` |
+| pinned modules left | 17 | **12** |
+
+The pin trim is not optional and is not a new rule: the build refuses a pin entry
+the payload no longer reaches, and it names the five that leave —
+`audit`, `dispatch`, `fleet`, `privacy`, `registry`. That refusal is the ratchet
+working; trim the tuple in the same PR as the cut.
+
+Important: A does **not** change `import_standalone`, which is already true. The
+node imports without a checkout today because the connector defers
+`from ..fleet import FleetService` into function bodies. What A changes is that it
+**runs** without one — `fleet_mcp/registry.py:33` is the only path to the
+repository root, and nothing else in the node closure reaches `registry`.
+
+This whole paragraph is executable:
+`tests/test_fleet_l2_release_separation.py::test_cutting_the_connector_to_fleet_edge_flips_runtime_standalone`
+runs it and asserts the numbers above. If #407 changes A's shape, that test fails
+with "edge A has moved; re-measure HANDOFF-407 before trusting its table" rather
+than letting this document quietly become wrong.
+
 ## What D7 asks of the change, in this directory's terms
 
 - `NODE_SHARED_SURFACE` in `l2_release.py` shrinks by exactly the modules that
@@ -103,5 +140,9 @@ instead of a conditional one.
 
 Do not make `l2_release.py` tolerate these edges. It refuses them by default on
 purpose: the only way to build a non-standalone artifact is to pass
-`--allow-external-in-repo fleet`, which writes `"standalone": false` into the
-manifest where a reviewer will see it.
+`--allow-external-in-repo fleet`, which writes `"standalone": false`,
+`"runtime_standalone": false`, `"install": {"independently_installable": false}`
+and the blocked-by list into the manifest where a reviewer will see them. The
+allowance buys a build and nothing else: no field a build can write makes a
+payload that needs a checkout installable on its own, and the verifier re-measures
+the claim instead of reading it.

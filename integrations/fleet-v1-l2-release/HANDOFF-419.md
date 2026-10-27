@@ -165,10 +165,60 @@ correct payload looks like.
 Nothing here is a request to copy more code. Item 1 is the one that would turn a
 correct artifact red today.
 
+## 9. Checked against #436 `85493198` — what aligns, what does not
+
+`#436` (head `85493198`, `scripts/release.py` + `tests/test_release_l2_layers.py`)
+is the stacked change that consumes this manifest. Read at that SHA, **the shape
+now aligns**; three smaller things do not, and none of them is fixed here because
+that file has an owner.
+
+Aligned, verified:
+
+| | where |
+|---|---|
+| `members` includes `ARTIFACT.json`; `member_sha256` covers everything except it | `test_a_member_list_without_the_manifest_is_refused`, `test_a_digest_map_that_does_not_cover_the_members_is_refused` |
+| the tree digest is computed over `digests = members − {ARTIFACT.json}` | their `tree_digest = _l2_tree_digest([... for name in digests])` |
+| `on_disk` has the manifest discarded *and* `declared_files` excludes it, so it is neither "missing" nor "extra" | their `missing`/`extra` |
+| canonical member names, no backslash, no control characters | their `PurePosixPath(name) != name` check |
+| bytecode refused | their `.pyc`/`.pyo` check |
+| a pin entry the payload no longer carries | their `stale` check |
+| an intra-package import the payload does not carry | their `uncarried` check |
+| both kinds' required members, platforms, layer separation | unchanged since `001eb7c` |
+
+Three divergences, all reported rather than patched:
+
+1. **Prerelease versions.** `L2_VERSION_RE` (`scripts/release.py:322`) is
+   `^\d+\.\d+\.\d+(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$` — no `-rc.1` branch, while
+   `l2_release.VERSION_RE` accepts one (§8 item 4). A release candidate built here
+   verifies here and is refused by the release path. Today's shipped versions
+   (`1.4.0+n…`) pass both, so nothing is broken now; the fix is four characters on
+   their side (or a decision that an RC is not a version, which would then belong
+   in `l2_release.VERSION_RE` too — the two must not disagree).
+2. **`depends_on` is module-only.** Their loop is still
+   `wanted = f"{str(dependency).replace('.', '/')}.py"`, so a package
+   (`fleet_mcp`) is refused although it carries `fleet_mcp/__init__.py`. §8 item 4.
+   Nothing builds with `depends_on` today, so this is latent, not live.
+3. **`standalone` is recomputed, never measured.**
+   `scripts/release.py:1188` is `standalone = l2.get("standalone") is True and not
+   external`, and that value becomes `"installable"` in the status report. It is
+   the same arithmetic this module had before this revision and it cannot see the
+   failure it is meant to catch: a payload that imports and then dies on its first
+   fleet call. The manifest now carries the answer as `runtime_standalone` plus the
+   probe record that produced it, so the fix on their side is to prefer
+   `runtime_standalone` when present and fall back to the old expression when not.
+   Until then the two agree on both kinds today (`standalone: false`), which is why
+   this is a finding and not a breakage.
+
+What #436 does **not** need to do: it reads no field this revision adds, so
+`import_standalone`, `runtime_standalone`, `probe`, `install_requires_repo` and
+`install` are additive by construction. Its own tests were checked the same way —
+they build payloads through a `make_l2`/`reseal` pair that already excludes
+`ARTIFACT.json` from the digest map, so they describe this shape.
+
 ## State after each side
 
 | | today | after this lands |
 |---|---|---|
 | `release.py` reads our manifest | refuses kinds by name | verifies both kinds |
-| `l2_release.py` verifies our manifest | **REAL** (56 tests: 55 pass, 1 skip) | unchanged, plus parity test stops skipping |
-| our manifest shape matches yours | **REAL** (asserted) | unchanged |
+| `l2_release.py` verifies our manifest | **REAL** (77 tests: 76 pass, 1 skip) | unchanged, plus parity test stops skipping |
+| our manifest shape matches yours | **REAL** (asserted), and re-checked against `#436 @ 85493198` in §9 | unchanged |

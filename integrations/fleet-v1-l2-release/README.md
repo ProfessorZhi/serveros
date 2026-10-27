@@ -32,7 +32,7 @@ the node adds `fleet_mcp/node/{__init__,connector}.py`, the hub adds
 is therefore refused by default, because its closure also leaves `fleet_mcp` and
 needs the repository-root `fleet/` namespace package — through
 `fleet_mcp/registry.py`, which does `from fleet.transport import ...` inside a
-`try` that raises `INTERNAL` at import. Both artifacts are **not standalone**:
+`try` that raises `INTERNAL` at import:
 
 ```
 $ python integrations/fleet-v1-l2-release/l2_release.py build \
@@ -42,19 +42,66 @@ package(s) ['fleet'] that the artifact does not carry (fleet <- ['fleet_mcp.regi
 ```
 
 Building succeeds only when the caller names that package
-(`--allow-external-in-repo fleet`), and the manifest then records
-`"standalone": false` and `"external_in_repo": ["fleet"]`. That is not a
-formality: an artifact installed with it raises at import on a machine without
-this checkout, and a manifest that hid that behind a `requires` line would make a
-packaging defect look solved. Cutting the edges is #407's job and is written down
-in `HANDOFF-407.md` with the measured numbers (three cuts take the node artifact
-from 30 files to a standalone 17).
+(`--allow-external-in-repo fleet`). An allowance buys a build, never an install:
+the flag cannot make the artifact standalone, and the manifest says so in a field
+a deployment reader can act on.
+
+## Two flags, because one was too blunt to act on
+
+`standalone: false` used to mean "not external and not depends_on", which is an
+arithmetic restatement of the manifest's own lists — a field that could never
+catch the thing it was named for. There are two different questions here and the
+node answers them differently:
+
+| flag | question | `l2-node` | `l2-hub` |
+|---|---|---|---|
+| `import_standalone` | does `import <entrypoint>` succeed with only this payload on `sys.path`? | **true** | **false** |
+| `runtime_standalone` | does everything the runtime path reaches also import? | **false** | **false** |
+| `standalone` | legacy spelling of `runtime_standalone` | false | false |
+| `install.independently_installable` | can this be installed without a checkout? | **false** | **false** |
+
+```
+$ python integrations/fleet-v1-l2-release/l2_release.py measure /tmp/node.tar.gz
+{ "entry": "fleet_mcp.node.connector",
+  "import_standalone": true, "runtime_standalone": false,
+  "probe": {"fleet_mcp.node.connector": "imports",
+            "fleet_mcp.registry": "FleetRefusal"} }
+```
+
+The node imports because `connector.py` defers `from ..fleet import FleetService`
+into three function bodies (`1124`, `1317`, `1384`); it cannot run because
+`fleet_mcp/registry.py:33` raises `FleetRefusal(INTERNAL)` without a checkout and
+`fleet_mcp/fleet.py:67` imports it at module level. So the node artifact loads on
+a device, comes up, and dies inside a later agent turn — which is exactly the
+failure a single boolean cannot describe. The hub gets neither: its import chain
+is eager, so it fails to import in the same sandbox.
+
+Both numbers are **measured**, not declared: `measure_standalone` writes the
+payload to a temporary directory and imports it in a separate interpreter
+(`-I -B`, cwd elsewhere, any `sys.path` entry that can see a `fleet/` dropped),
+and `verify` re-runs the same probe rather than believing the manifest. The
+manifest carries the probe record next to the claim so the two can be compared.
+
+The **dependency on the repository is pinned like the shared surface is**:
+`EXTERNAL_EDGES` fixes one holder (`fleet_mcp.registry`), one module
+(`fleet.transport`) and exactly seven names. A second module reaching `fleet`, an
+`import fleet.registry`, a `from fleet import transport`, an eighth name, or a
+repository package that no pin mentions all fail the build and the verify by name.
 
 The 17 **pinned** modules are frozen in `NODE_SHARED_SURFACE` (the other 11 of
 the 28 modules in both are declared node leaves and never needed a pin). Today's
 coupling is legal because it is recorded; a module that is not in the tuple and
-not under `fleet_mcp.node/` fails the build by name, and a pin entry the closure
-no longer reaches fails it too — so the list cannot rot in either direction.
+not under `fleet_mcp.node/` fails the build by name, and a pin entry the payload
+no longer reaches — or carries but nothing imports — fails it too, so the list
+cannot rot in either direction. `test_all_seventeen_pinned_modules_are_reachable_from_the_entrypoint`
+walks the payload by AST to check *reachable*, not merely present.
+
+Cutting the edges is #407's job and is written down in `HANDOFF-407.md` with the
+measured numbers (three cuts take the node artifact from 30 files to a standalone
+17). Cutting **A alone** — one file, three statements — is measured too, by
+`test_cutting_the_connector_to_fleet_edge_flips_runtime_standalone`: 25 files,
+`external_in_repo: []`, both flags true, `independently_installable: true`, 12
+pinned modules left, and the resulting artifact verifies.
 
 ## The manifest
 
@@ -82,8 +129,17 @@ schema, composition, name, version, kinds, skills, recommended, mcp_servers,
 members[path…], member_sha256{path: sha256},
 source{entry, module_count, tree_sha256},
 l2{kind, entrypoint, platforms, depends_on, requires{python, modules},
-   external_in_repo, standalone, shared_surface, provides}
+   external_in_repo,
+   import_standalone, runtime_standalone, standalone, probe{module: verdict},
+   install_requires_repo{package: [holder…]},
+   install{independently_installable, requires_repository, blocked_by[]},
+   shared_surface, provides}
 ```
+
+The `l2` additions after `external_in_repo` are additive and measured. A reader
+that only knows the older shape (`scripts/release.py` and #436's
+`verify_l2_layer`) ignores them, which is why adding them cannot break the
+release path; this verifier requires them and compares them to a fresh probe.
 
 Archives are deterministic: USTAR, gzip `mtime=0`, empty filename, uid/gid 0,
 sorted members, mode 0644. Two builds of the same tree are byte-identical, so
@@ -113,13 +169,27 @@ only protects the builder protects the thing that cannot lie.
   duplicate name, a symlink or a directory, an absolute path or `..`;
 - the wrong kind, an unknown kind, a version that drifted from the build, a
   manifest schema that drifted from `serveros/artifact.v1`;
+- an `l2` block that contradicts the payload: a node claiming the hub's
+  `provides`, a hub listing a shared surface, a `tree_sha256`/`module_count` that
+  does not describe the member list;
+- an isolation claim the payload does not bear out — `import_standalone`,
+  `runtime_standalone`, the `probe` record, `install_requires_repo` or
+  `install.independently_installable` differing from a fresh probe, and
+  `standalone` disagreeing with `runtime_standalone`, whose legacy spelling it is;
+- an artifact that needs a checkout calling itself
+  `independently_installable: true`, or losing its `blocked_by` list — the build
+  flag buys a build, and no manifest field can turn it into an install;
+- an external edge that is not the pinned one: `fleet` reached from a second
+  module, `import fleet.registry`, `from fleet import transport`, an eighth name,
+  or a repository package (`runtime`) that neither `requires.modules` nor a pin
+  mentions — and `fleet` itself declared under `requires.modules`, where
+  `pip install fleet` would find some unrelated distribution;
 - an import the manifest does not declare (`numpy`), an intra-package import the
   payload does not carry (`from .report import x` with no `fleet_mcp/report.py`),
   a `depends_on` the payload does not carry;
-- an `l2` block that contradicts the payload: a node claiming the hub's
-  `provides`, a hub listing a shared surface, a `standalone` flag disagreeing
-  with its own dependency lists, a `tree_sha256`/`module_count` that does not
-  describe the member list;
+- a pin entry the payload carries but never reaches from its entrypoint — the pin
+  is about what the artifact *uses*, and shipping a module nothing imports is
+  dead weight in a release that still counts as shared surface;
 - a **vendored CloudCLI tool schema** — a `.json` containing `inputSchema` and
   `run_get`. The provider forwards the running CLI's schema; a payload that ships
   a copy keeps answering after the CLI moves;
@@ -131,14 +201,27 @@ only protects the builder protects the thing that cannot lie.
 
 | claim | status |
 |---|---|
-| builds, reads back, verifies, refuses — both kinds | **REAL**, 56 tests (55 pass + 1 skip), offline |
+| builds, reads back, verifies, refuses — both kinds | **REAL**, 77 tests (76 pass + 1 skip), offline |
 | byte-identical rebuild | **REAL** (two builds compared) |
 | member list is the shape `release.py` consumes | **REAL** (`test_the_member_list_is_the_shape_the_release_reader_consumes`) |
-| `release.py` verifies `l2-node`/`l2-hub` | **NOT DONE** — needs `HANDOFF-419.md`; today it refuses our kinds by name |
-| node artifact stand-alone (no repository checkout) | **FALSE TODAY** — measured, `standalone: false`, see #407 |
+| the node imports without a checkout | **REAL** (`import_standalone: true`, measured by importing it in a separate interpreter) |
+| the hub does not import without a checkout | **REAL** (`import_standalone: false`, `FleetRefusal`) |
+| the node's runtime path needs a checkout | **REAL** (`fleet_mcp.registry` raises `FleetRefusal` in the same sandbox) |
+| the repository dependency is one holder, one module, seven names | **REAL** (`EXTERNAL_EDGES`, pinned and re-checked on every verify) |
+| all 17 pinned modules are reachable from the entrypoint | **REAL** (AST walk, not a count) |
+| cutting edge A makes the node independently installable | **REAL ON A COPY** — 25 files, both flags true, verifies; the cut itself is #407's to make |
+| `release.py` verifies `l2-node`/`l2-hub` | **NOT OURS** — #433/#436 own `scripts/release.py`; #436 @ `85493198` reads this manifest shape (see `HANDOFF-419.md` §9) |
 | installed on a node or the hub | **NOT_RUN** — this directory installs nothing |
 | signed artifacts | **NOT DONE** — digests are recorded, nothing is signed |
 | Windows/Linux runtime behaviour of the artifacts | **NOT_RUN** — packaging is platform-tested, execution is not |
+
+One limit, stated rather than implied: the verifier can tell a repository package
+from a wheel by name only for the names in `EXTERNAL_EDGES`. A hand-written
+manifest could list a second repository package (`runtime`) under
+`requires.modules` and the byte-level check would treat it as a pip dependency.
+The build cannot — it measures the third-party set from the source tree, where
+`runtime/` is a directory and not a wheel — so a payload that passes the build is
+not reachable that way; an artifact that never went through this build is.
 
 ## Run it
 
@@ -149,8 +232,14 @@ python integrations/fleet-v1-l2-release/l2_release.py build \
 python integrations/fleet-v1-l2-release/l2_release.py verify /tmp/node.tar.gz --kind l2-node
 python integrations/fleet-v1-l2-release/l2_release.py pair /tmp/old.tar.gz /tmp/new.tar.gz --kind l2-node
 python integrations/fleet-v1-l2-release/l2_release.py extract /tmp/node.tar.gz /tmp/rev
+python integrations/fleet-v1-l2-release/l2_release.py measure /tmp/node.tar.gz
 python -m pytest tests/test_fleet_l2_release_separation.py -q
 ```
+
+`measure` imports the payload the way a fresh machine would and prints the two
+flags, the per-module probe record and the repository dependencies. It runs the
+same probe `build` and `verify` run; it is the evidence behind the manifest's
+fields, available without reading the manifest.
 
 `extract` is what connects this directory to `scripts/release.py`: that tool
 stages a directory (`shutil.copytree`), not an archive. It runs only after
