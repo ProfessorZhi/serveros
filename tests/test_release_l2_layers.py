@@ -52,13 +52,30 @@ def tree_digest(entries) -> str:
     return hashlib.sha256(recipe.encode("utf-8")).hexdigest()
 
 
+#: Modules that are packages, not single files.
+_PACKAGES = {"fleet_mcp", "fleet_mcp.node", "fleet_mcp.providers"}
+
+
+def _module_path(dotted: str) -> str:
+    base = dotted.replace(".", "/")
+    return f"{base}/__init__.py" if dotted in _PACKAGES else f"{base}.py"
+
+
+def _node_files() -> dict[str, str]:
+    """A node payload with the real shape: its leaves plus the pinned surface.
+
+    Not a four-file toy. The pin is a measurement of what the connector's closure
+    actually contains — 13 leaves and 17 shared modules — and a fixture smaller
+    than the measurement would pass every check except the one that compares them.
+    """
+    modules = list(release.L2_NODE_EXCLUSIVE) + list(release.L2_NODE_SHARED_SURFACE)
+    files = {_module_path(name): f'"""{name}."""\n' for name in modules}
+    files["fleet_mcp/node/connector.py"] = '"""connector."""\nfrom fleet_mcp import config\n'
+    return files
+
+
 BASE_FILES = {
-    "l2-node": {
-        "fleet_mcp/__init__.py": '"""fleet_mcp."""\n',
-        "fleet_mcp/node/__init__.py": '"""node half."""\n',
-        "fleet_mcp/node/connector.py": "from fleet_mcp import config\n",
-        "fleet_mcp/config.py": "import json\n",
-    },
+    "l2-node": _node_files(),
     "l2-hub": {
         "fleet_mcp/__init__.py": '"""fleet_mcp."""\n',
         "fleet_mcp/server.py": "import json\n",
@@ -79,9 +96,12 @@ def make_l2(base: Path, kind: str, *, version: str = "1.4.0+n20261028a",
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
-    members = sorted(payload)
+    # #431's 2026-10-28 revision: `members` INCLUDES the manifest, and the digest
+    # map covers everything except it.
+    digests_list = sorted(payload)
     member_sha256 = {name: hashlib.sha256(payload[name].encode()).hexdigest()
-                     for name in members}
+                     for name in digests_list}
+    members = sorted(set(digests_list) | {release.ARTIFACT_MANIFEST})
     manifest = {
         "schema": release.ARTIFACT_MANIFEST_SCHEMA,
         "composition": "fleet-l2",
@@ -92,9 +112,9 @@ def make_l2(base: Path, kind: str, *, version: str = "1.4.0+n20261028a",
         "member_sha256": member_sha256,
         "source": {
             "entry": "fleet_mcp.node.connector" if kind == "l2-node" else "fleet_mcp.server",
-            "module_count": len(members),
+            "module_count": len(member_sha256),
             "tree_sha256": tree_digest(
-                [{"path": name, "sha256": member_sha256[name]} for name in members]),
+                [{"path": name, "sha256": member_sha256[name]} for name in digests_list]),
         },
         "l2": {
             "kind": kind,
@@ -111,13 +131,14 @@ def make_l2(base: Path, kind: str, *, version: str = "1.4.0+n20261028a",
         # Opt-in, and deliberately NOT the default. A mutation that silently
         # recomputes the digests it is supposed to contradict turns every future
         # digest test green, and the repair is invisible in the test body.
-        manifest["members"] = sorted(set(manifest["members"]))
+        real = sorted(name for name in set(manifest["members"])
+                      if name != release.ARTIFACT_MANIFEST and (art / name).is_file())
         manifest["member_sha256"] = {
-            name: hashlib.sha256((art / name).read_bytes()).hexdigest()
-            for name in manifest["members"] if (art / name).is_file()}
+            name: hashlib.sha256((art / name).read_bytes()).hexdigest() for name in real}
+        manifest["members"] = sorted(set(real) | {release.ARTIFACT_MANIFEST})
+        manifest["source"]["module_count"] = len(real)
         manifest["source"]["tree_sha256"] = tree_digest(
-            [{"path": name, "sha256": manifest["member_sha256"].get(name, "")}
-             for name in manifest["members"]])
+            [{"path": name, "sha256": manifest["member_sha256"][name]} for name in real])
     (art / release.ARTIFACT_MANIFEST).write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return art
@@ -241,7 +262,7 @@ class L2VerificationTest(unittest.TestCase):
     def test_a_duplicated_member_is_refused(self):
         art = make_l2(self.base, "l2-node")
         manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
-        manifest["members"] = manifest["members"] + [manifest["members"][0]]
+        manifest["members"] = manifest["members"] + ["fleet_mcp/config.py"]
         (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
         report = release.verify_l2_layer(art, kind="l2-node")
         self.assertFalse(report["ok"])
@@ -267,7 +288,7 @@ class L2VerificationTest(unittest.TestCase):
         manifest["member_sha256"].pop("fleet_mcp/server.py", None)
         manifest["source"]["tree_sha256"] = tree_digest(
             [{"path": name, "sha256": manifest["member_sha256"][name]}
-             for name in manifest["members"]])
+             for name in manifest["members"] if name != release.ARTIFACT_MANIFEST])
         (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
 
         report = release.verify_l2_layer(art, kind="l2-hub")
@@ -278,7 +299,7 @@ class L2VerificationTest(unittest.TestCase):
     def test_a_tree_digest_over_a_subset_is_refused(self):
         art = make_l2(self.base, "l2-node")
         manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
-        first = manifest["members"][0]
+        first = sorted(manifest["member_sha256"])[0]
         manifest["source"]["tree_sha256"] = tree_digest(
             [{"path": first, "sha256": manifest["member_sha256"][first]}])
         (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))

@@ -60,7 +60,7 @@ import shutil
 import subprocess
 from fnmatch import fnmatchcase
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # The placeholders the units are written with. They are inert to systemd on
 # purpose: systemd expands `%` and `$`, so a `$NAME` left unrendered would
@@ -885,6 +885,14 @@ def _l2_layer_problems(kind: str, names) -> list[str]:
                            - set(L2_NODE_SHARED_SURFACE)) - {""})
         if unpinned:
             problems.append(f"new hub coupling in the node artifact: {unpinned}")
+        # The pin is a measurement, not a permission. An entry the payload no
+        # longer contains means a coupling was cut and the list was not updated —
+        # leaving it would let the next one grow back unnoticed.
+        stale = sorted(set(L2_NODE_SHARED_SURFACE) - modules)
+        if stale:
+            problems.append(f"the pinned shared surface is stale: {stale} no longer "
+                            f"appear in the node artifact; delete their entries in the "
+                            f"same change that cut them")
     else:
         leaked = sorted(name for name in names
                         if name.startswith(L2_HUB_DENIED_PREFIXES))
@@ -904,9 +912,14 @@ def _l2_layer_problems(kind: str, names) -> list[str]:
     return problems
 
 
-def _l2_declared_modules(files: dict[str, bytes]) -> set[str]:
-    """Every third-party top-level module the payload imports."""
+def _l2_declared_modules(files: dict[str, bytes]) -> tuple[set[str], set[str]]:
+    """(third-party top-level modules imported, fleet_mcp modules imported).
+
+    Two answers from one walk, because both questions are about the same AST and
+    a second pass would be a second chance to disagree with the first.
+    """
     measured: set[str] = set()
+    in_repo: set[str] = set()
     stdlib = set(getattr(sys, "stdlib_module_names", frozenset()))
     for name, data in files.items():
         if not name.endswith(".py"):
@@ -927,13 +940,16 @@ def _l2_declared_modules(files: dict[str, bytes]) -> set[str]:
                 else:
                     modules = [node.module or ""]
             for module in modules:
-                top = module.split(".")[0]
-                if module.startswith("fleet_mcp") or not top:
+                if not module:
                     continue
+                if module == "fleet_mcp" or module.startswith("fleet_mcp."):
+                    in_repo.add(module)
+                    continue
+                top = module.split(".")[0]
                 if top in stdlib or top == "__future__":
                     continue
                 measured.add(top)
-    return measured
+    return measured, in_repo
 
 
 def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
@@ -985,6 +1001,12 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
         problems.append(f"version {version!r} is not <major>.<minor>.<patch>[+<cachebuster>]")
 
     # --- the member list, against the bytes ---------------------------------
+    #
+    # Since #431's 2026-10-28 revision (head 2469ec5f) `members` INCLUDES
+    # `ARTIFACT.json` itself and `member_sha256` covers everything EXCEPT it — a
+    # file cannot hold its own digest. That shape is what `scripts/build.py`
+    # writes for the other kinds, and it is what the release path's own
+    # undeclared-file check compares against.
     listed = manifest.get("members")
     recorded = manifest.get("member_sha256")
     if not isinstance(listed, list) or not all(isinstance(item, str) for item in listed):
@@ -996,6 +1018,19 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
         recorded = {}
     if len(listed) != len(set(listed)):
         problems.append("members lists a path more than once")
+    if ARTIFACT_MANIFEST not in listed:
+        problems.append(f"the member list omits {ARTIFACT_MANIFEST} itself; the release "
+                        f"path's own undeclared-file check exempts only {TREE_MANIFEST}, "
+                        f"so an unlisted manifest is reported as a file the build did "
+                        f"not produce")
+    digests = [name for name in listed if name != ARTIFACT_MANIFEST]
+    if isinstance(recorded, dict):
+        extra_digests = sorted(set(recorded) - set(digests))
+        omitted = sorted(set(digests) - set(recorded))
+        if extra_digests or omitted:
+            problems.append(f"member_sha256 covers {extra_digests or 'nothing'} extra and "
+                            f"omits {omitted or 'nothing'}; every member except "
+                            f"{ARTIFACT_MANIFEST} has exactly one digest")
 
     # Path safety BEFORE joining anything: a member list is a document, and a
     # document that says `../../etc/passwd` must not be resolved to see if it
@@ -1005,8 +1040,19 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
         if not isinstance(name, str) or not name or name.startswith("/") \
                 or ".." in Path(name).parts:
             problems.append(f"member name {name!r} is not a relative path inside the payload")
-        else:
-            safe_listed.append(name)
+            continue
+        # ONE spelling per file. `fleet_mcp/./node/x.py` and `fleet_mcp//node/x.py`
+        # are the same file written two ways, and a manifest that lists both is a
+        # manifest whose member count is a claim about spelling rather than about
+        # contents.
+        if str(PurePosixPath(name)) != name:
+            problems.append(f"member name {name!r} is not in canonical form "
+                            f"({str(PurePosixPath(name))!r})")
+            continue
+        if name.endswith((".pyc", ".pyo")):
+            problems.append(f"{name} is bytecode; a payload carries sources")
+            continue
+        safe_listed.append(name)
 
     # A symlink is not a member. `is_file()` follows it, so a payload could
     # "carry" a required member that lives outside the artifact entirely — and
@@ -1019,16 +1065,19 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
 
     on_disk = {str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*") if p.is_file()}
     on_disk.discard(ARTIFACT_MANIFEST)
+    # `RELEASE.json` is written by the promotion that follows, never by the build,
+    # so it is the one file legitimately present that the manifest cannot list.
     on_disk.discard(TREE_MANIFEST)
-    missing = sorted(set(safe_listed) - on_disk)
-    extra = sorted(on_disk - set(safe_listed))
+    declared_files = {name for name in safe_listed if name != ARTIFACT_MANIFEST}
+    missing = sorted(declared_files - on_disk)
+    extra = sorted(on_disk - declared_files)
     if missing:
         problems.append(f"the payload is missing declared member(s) {missing}")
     if extra:
         problems.append(f"file present that the manifest did not declare: {extra}")
 
     files: dict[str, bytes] = {}
-    for name in safe_listed:
+    for name in declared_files:
         path = rev_dir / name
         if not path.is_file():
             continue
@@ -1040,8 +1089,10 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
         elif hashlib.sha256(data).hexdigest() != want:
             problems.append(f"{name} does not match the manifest entry")
 
+    # Over the DIGESTS list: the manifest cannot hash itself, so it is not one of
+    # the entries the tree digest describes.
     tree_digest = _l2_tree_digest([{"path": name, "sha256": recorded.get(name, "")}
-                                   for name in safe_listed])
+                                   for name in digests])
     source_block = manifest.get("source")
     if source_block is not None and not isinstance(source_block, dict):
         problems.append(f"source is a {type(source_block).__name__}, not an object")
@@ -1093,14 +1144,24 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
     declared = set((requires or {}).get("modules") or [])
     external = set(l2.get("external_in_repo") or [])
     try:
-        imported = _l2_declared_modules(files)
+        imported, in_repo = _l2_declared_modules(files)
     except ValueError as exc:
         problems.append(str(exc))
-        imported = set()
+        imported, in_repo = set(), set()
     undeclared_imports = sorted(imported - declared - external)
     if undeclared_imports:
         problems.append(f"the payload imports {undeclared_imports}, which its manifest "
                         f"does not declare; it would install into an ImportError")
+
+    # Every in-repo module the payload imports has to be IN the payload. An
+    # import of `fleet_mcp.X` that the artifact does not carry is the same
+    # Install-time failure as a missing wheel, and it is invisible to the
+    # third-party check above because `fleet_mcp` is not third-party.
+    carried = {_l2_module_of(name) for name in safe_listed} - {""}
+    uncarried = sorted(in_repo - carried)
+    if uncarried:
+        problems.append(f"the payload imports {uncarried} from fleet_mcp but does not "
+                        f"carry those modules; it would raise at import")
 
     for dependency in l2.get("depends_on") or []:
         wanted = f"{str(dependency).replace('.', '/')}.py"
