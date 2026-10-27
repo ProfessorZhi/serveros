@@ -21,6 +21,7 @@ layers:
 
 directories:
   native: L1
+  serverosd: L1       # native/node-core 的打包与校验层：一个清单、一个执行器、一个校验器
   bin: shared        # 各层入口脚本：serverosd(L1)、serveros-fleet-owned(L2)、serverosctl(工具)
   runtime:
     split: true
