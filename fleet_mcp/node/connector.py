@@ -1160,8 +1160,8 @@ class Connector:
                 )
             project = arguments.get("project")
             if self.config.owner_access is not None:
-                from ..fleet import FleetService
-                FleetService._verify_owner_project(self.provider, project)
+                from ..owner_access import verify_owner_project
+                verify_owner_project(self.provider, project)
                 arguments.setdefault("permissionMode", self.config.owner_access.permission_mode)
                 return
             if (not isinstance(project, str) or not project.strip()
@@ -1352,8 +1352,7 @@ class Connector:
         The answer is returned UNCHANGED: the host re-reads the catalogue after
         it and does not take this ACK as proof that anything happened.
         """
-        from ..owner_access import project_path_within_roots
-        from ..fleet import FleetService
+        from ..owner_access import project_catalogue_row, project_path_within_roots
 
         if set(payload) - {"project_id", "force"}:
             raise FleetRefusal(BAD_REQUEST,
@@ -1371,8 +1370,8 @@ class Connector:
                 "this connector's `allow_control` is false, so no stored state "
                 "on this machine may be removed from the far end.",
             )
-        row = FleetService._project_catalogue_row(self.provider, project_id,
-                                                  include_archived=True)
+        row = project_catalogue_row(self.provider, project_id,
+                                    include_archived=True)
         if row is None:
             raise FleetRefusal(
                 "PROJECT_NOT_FOUND",
@@ -1420,8 +1419,8 @@ class Connector:
                 f"caller's. It is {self.config.allow_create!r} here.",
             )
         if self.config.owner_access is not None:
-            from ..fleet import FleetService
-            FleetService._verify_owner_project(self.provider, project)
+            from ..owner_access import verify_owner_project
+            verify_owner_project(self.provider, project)
         elif ("*" not in self.config.allow_create_projects
               and project.strip() not in self.config.allow_create_projects):
             raise FleetRefusal(

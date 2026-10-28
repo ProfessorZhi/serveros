@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Any
+from .errors import WRITE_NOT_GRANTED, refuse
 
 MAX_PERMISSION_MODE = "bypassPermissions"
 _ROOT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
@@ -188,3 +189,57 @@ def build_project_path(profile: OwnerAccessProfile, root_ref: str, name: str,
     if local_check:
         _check_local_destination(root, target)
     return target
+
+
+def project_row(rows, project_id: str) -> dict[str, Any] | None:
+    """The catalogue row whose id is exactly `project_id`, or `None`.
+
+    A row is matched only when every id field it carries agrees with the
+    others AND with the id asked for: a row that reports two different ids
+    is ambiguous, and picking one of them would be this surface guessing
+    which project to act on.
+    """
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ids = [row[k] for k in ("projectId", "project_id", "id")
+               if isinstance(row.get(k), str) and row[k]]
+        if ids and len(set(ids)) == 1 and ids[0] == project_id:
+            return row
+    return None
+
+
+def project_catalogue_row(provider, project_id: str, *,
+                          include_archived: bool) -> dict[str, Any] | None:
+    """One project row, read from the DEVICE's own catalogue.
+
+    `include_archived` is explicit at every call site because the two
+    questions differ: a create verifies against the ACTIVE catalogue (a
+    session cannot be minted in an archived project), while a delete's
+    pre-read must see archived rows too, or the row a permanent delete most
+    often targets would be invisible. An unreadable catalogue is a refusal
+    rather than an empty one — acting on "it is not there" when the question
+    was never answered is exactly the blind delete this read exists to
+    prevent.
+    """
+    caller = getattr(provider, "native_call", None)
+    if caller is None:
+        raise refuse(WRITE_NOT_GRANTED,
+                     "provider cannot verify its current project catalogue")
+    listing = caller("projects_list", {"includeArchived": bool(include_archived)})
+    rows = listing.get("projects") if isinstance(listing, dict) else listing
+    if rows is None and isinstance(listing, dict) and isinstance(listing.get("data"), dict):
+        rows = listing["data"].get("projects")
+    if not isinstance(rows, list):
+        raise refuse(WRITE_NOT_GRANTED,
+                     "provider did not return a current project catalogue")
+    return project_row(rows, project_id)
+
+
+def verify_owner_project(provider, project) -> None:
+    row = project_catalogue_row(provider, project, include_archived=False)
+    if row is not None and not (row.get("isArchived") is True
+                                or row.get("is_archived") is True):
+        return
+    raise refuse(WRITE_NOT_GRANTED,
+                 "project does not exist in the selected runtime's active catalogue")
