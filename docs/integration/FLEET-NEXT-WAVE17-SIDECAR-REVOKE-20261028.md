@@ -231,13 +231,17 @@ tests/test_fleet_v1_next_tailscale_gate.py
 ```
 
 — a runbook, an onboarding plan and a test. #502's branch head adds a fourth
-(`wave16_preflight.py`, a reader) and this PR adds a fifth (this module, also a
-reader). **None of them installs it into a root**, and that is the whole point:
-every reference reads or describes the file, so no receipt was ever written, so
-there is nothing for a revoke to verify against. So `upstream_verdict()` returns
-`BLOCKED / BLOCKED_UPSTREAM` with `receipt_found=False`, and says in those words
-that a revoke of the real sidecar is **not verified** and that this is **not a
-real-device pass**.
+(`wave16_preflight.py`, a reader). This PR adds four more mentions of its own
+(the module, its README, its tests and this document), so at this PR's head the
+same command counts **7**.
+
+Every one of them is a document, a reader or a test. **None of them installs it
+into a root**, and that is the whole point: no receipt was ever written, so
+there is nothing for a revoke to verify against. A reader added by this PR does
+not change that — it is the counting that changes, not the evidence. So
+`upstream_verdict()` returns `BLOCKED / BLOCKED_UPSTREAM` with
+`receipt_found=False`, and says in those words that a revoke of the real sidecar
+is **not verified** and that this is **not a real-device pass**.
 
 It does not invent a receipt, and it does not run a read-only simulation and
 call it a device result. Fabricating the evidence would be the one thing that
