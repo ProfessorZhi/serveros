@@ -153,6 +153,15 @@ Wave15 的 5 个旧 xfail 在组合里已成为**普通通过测试**（未 skip
 
 这些测试在 **#498 单独树上 skip**（monitor 包不存在），所以 #498 的 hosted CI 不会看到；进入真实组合后才执行。它们是**测试缺陷**，不是产品缺陷，但意味着“#498 作者测试全绿”不能成立。Patch owner：#498。不要在本 QA 中修改它们。
 
+此外，#494 的 `tests/test_fleet_next_rc_wave14_ledger.py` 在组合树新增 2 个 failure：
+
+| 测试 | 原因 |
+|---|---|
+| `TheManifestNamesEachAuthorsOwnIncrement::test_every_recorded_file_holds_the_authors_own_blob` | #494 manifest 仍按 `00503f9` 记录 blob；本 QA 合法合入 #497/#498/#499 后，`core.py`/`activation.py`/`adapter.py` 已不是 manifest 里的 blob |
+| `TheManifestNamesEachAuthorsOwnIncrement::test_the_composition_adds_nothing_it_did_not_record` | 组合树包含 manifest 未记录的 fix commits |
+
+这两条不是产品缺陷，而是“QA 组合领先于 RC manifest”的记录缺口。Patch owner：**下一个 RC Owner** 更新 manifest/增量；QA 不修改 #494 的测试或 manifest。
+
 ## 6. 各输入 PR 的 hosted CI（继承失败）
 
 | PR | run | 结果 | 主要失败 |
@@ -166,7 +175,19 @@ Wave15 的 5 个旧 xfail 在组合里已成为**普通通过测试**（未 skip
 
 ## 7. QA PR 的 CI
 
-见本 PR checks；QA 套件所在 shard 与作者测试失败所在 shard 分开报告。若 hosted CI 因 #498 的 3 个组合新增 failure 或既有 Lark 失败而红，本文件保留红色，不把 QA 的 31 pass 说成全仓通过。
+run `40694536062`（head `caa1dd1`，QA 文件在此 commit）：
+
+| job | 结果 |
+|---|---|
+| Claude Code plugin matches its source | pass, 17s |
+| Suite shard 1/4 | **fail**, 1m09s — 10 failing, **2 new**（#494 RC ledger 的 blob/manifest 两条） |
+| Suite shard 2/4 | pass, 5m00s |
+| Suite shard 3/4 | **fail**, 5m10s — 17 failing, **3 new**（#498 runtime_tick :170/:217/:231） |
+| Suite shard 4/4 | **pass**, 3m47s — 含本 QA 文件（31 passed + 3 xfailed） |
+| HOSTED_DAEMON complete daemon and native facts | pass, 41s |
+| native-contract | pass, 2m15s |
+
+**6/8 jobs pass；QA 套件所在 shard4 pass。** 两个红 shard 是组合产物（RC manifest 未记录 fix；#498 新测试只在组合里执行），不是 QA 测试失败。本文件不把 shard4 的 31 pass 说成全仓通过。
 
 ## 8. 分层与边界
 
