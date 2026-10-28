@@ -306,7 +306,7 @@ CI runner it runs.
 | `test_a_revoked_upgrade_still_leaves_no_trace` → root survived | the backup directory was never pruned | `_prune_empty_dirs()`, used by revoke and restore |
 | `test_a_floating_version_is_refused` (subTest `01.0.0`) | `01.0.0` is **not** a floating version; #473's regex accepts a leading zero | the case was replaced with `"1.0.0 "`, and the regex left alone — it is #473's contract, not mine to tighten |
 
-Four more defects were found later — by the probe, by a console run, and by CI —
+Five more defects were found later — by the probe, by a console run, and by CI —
 and each has its own regression test:
 
 | finding | why it mattered | fix |
@@ -315,9 +315,17 @@ and each has its own regression test:
 | 12 of restore's 15 guards were executed but not depended on | restore writes; an unobservable guard can be deleted | 15 restore refusals + the no-drift test |
 | the CLI emitted non-UTF-8 JSON on a GBK console | the payload was unparseable by its only consumer | `sys.stdout.reconfigure(encoding="utf-8")`, plus a test over real bytes whose positive control fails with `0x97` |
 | `upstream_verdict()` asked `git grep` whether a receipt existed | a string search finds the module, tests and README that *name* the schema, so it answered "a receipt exists" for its own source; green locally only because the file was untracked — `git grep <rev>` reads a commit, not a worktree | artifact detection: basename + `cat-file blob` + parsed `schema`, with `BLOCKED_NOT_VERIFIED` when a receipt really is found; `TheReceiptCheckLooksForAnArtifactNotAString` (4 tests, own repositories) |
+| both of this round's loaders took a synthetic `sys.modules` name without reading it first | the name is process-wide; a second writer takes the module from the first, and each copy carries its own exception classes — the exact `Refused`-raised-as-one-class-caught-as-another defect `test_loader_identity.py` exists for | the tree's accepted shape (`.get`, write behind `if module is None:`) in `probe_guards.py` and in the test module's own loader |
 
-The last one is the only one CI found that the local run did not, and it is
-written up in full under "CI — read, not inferred" below.
+The receipt grep is written up in full under "CI — read, not inferred" below.
+The loader one is subtler and worth its own sentence: `test_loader_identity.py`
+is **already red on `main`** (25 sites), so my two sites could not turn CI red
+and did not appear in any `NEW FAILURE` line. They showed up as *additional
+entries inside a failing test's own list*, which is only visible if a red gate's
+output is read rather than skipped. A pre-existing failure still carries
+information about new code — it is just not the "did I break it" information.
+The 25 remaining sites are not this PR's to fix, and the gate stays red after
+this change; what changes is that this round added none.
 
 The probe also wrote into the repository once (disabling the root guard let
 `relative-root/` be created under the working directory). The probe now runs with
@@ -466,6 +474,20 @@ reported here, not fixed here — `tests/test_direct_lark_notify.py` and
 A separate `NOT_RUN`, not a green: `fleet-next-isolated-contracts.yml`'s `paths:`
 does not cover `integrations/fleet-next-wave17-sidecar-release/**`, so that
 workflow produces no run for this PR.
+
+**The next head, `995cb1b6`,** which carries the receipt fix and the probe
+script, reads: shard 1 `8 failing, 0 new`, shard 2 `19 failing, 0 new`, shard 3
+`18 failing, 0 new`, shard 4 `13 failing, **1 new**` — and that one new failure
+is the `test_direct_lark_notify` case above, unmoved. This PR's own test file
+appears in no `FAILED` line, and the count of shard-4 failures fell from 14 to
+13 because the mine is gone. Shard 3's reading is also where the loader-identity
+sites above came from: that gate is red for 25 other files, and the log's
+listing of them is what showed this round's two entries sitting among them.
+
+The commit after it fixes the two loader sites described above and edits this
+paragraph, so it cannot contain its own CI reading — writing a result into the
+file that produces it is how a record goes stale. That reading is in the PR
+thread, and the two commits before it are the ones quoted here.
 
 ### Device — **NOT_RUN**
 
