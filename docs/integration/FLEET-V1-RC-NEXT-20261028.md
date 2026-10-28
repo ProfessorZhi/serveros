@@ -91,7 +91,7 @@ pr/458 -> c2e885e54ba8  tree 5a97605e   ← FINAL
 |---|---|---|
 | **CODE** | 合成树 `5a97605e`；`build.py#verify_artifact_kinds` / `build_face_kinds`（#462 后的真实行为）；`release.py` 的 L2 校验路径；`MilestoneNotifier.send_text` 真身；`BatchAggregator` 构造闸门 | §3 + §6 |
 | **UNIT** | 本机 pytest（单进程、单核、`-p no:cacheprovider`），只跑入口/打包/Batch/Skill 相关 | §5 |
-| **HOSTED_CI** | 本轮树的 run **尚未产生**（分支见 §10）。§5.4 的 183/197 是**上一轮**的读数，只作方法示范，不作本轮结论 | §5.4 |
+| **HOSTED_CI** | 本轮跑在 #469 @ `6b5d9cc` 的 run `40637519596`：**分片 1/4 PASS**，2/4/3/4/4 各带 NEW；四片合计 **4 条 NEW**（3 条同一跨 PR 时序信号 + 1 条陈旧常量），其余 50 条在基线内 | §5.4 |
 | **REAL_DEVICE** | **NOT_RUN** —— 未登录任何设备，未安装，未起服务 | — |
 | **CLIENT_E2E** | **NOT_RUN** —— 无 Claude Code / ChatGPT 客户端会话，无飞书投递 | — |
 | **PRODUCTION** | **NOT_RUN** —— 未触碰东京/戴尔任何运行中的服务、网关、隧道 | — |
@@ -153,21 +153,36 @@ payload 应该校验通过」这条自然红。**Linux CI 上不会出现**（te
 同文件另有 1 条非此因：`L2VerificationTest::test_a_symlinked_member_is_refused` ⇒
 `OSError: [WinError 1314] 客户端没有所需的特权` —— 建符号链接需要特权，**NOT_RUN**。
 
-### 5.4 上一轮 CI 层的读数（方法保留，**不是本轮结论**）
+### 5.4 HOSTED_CI：本轮跑在 #469 上的读数（run `40637519596`）
 
-判法与上面相同，只是数据来自 `== baseline gate ==` 之后的 NEW FAILURES ID 集合
-（四片分片成员随文件集重排，跨片比计数必错）：
+判法与上面相同：只读 `== baseline gate ==` 之后的 **NEW FAILURES ID 集合**
+（四片分片成员随文件集重排，跨片比计数必错）。四片结果：
 
-| 树 | NEW FAILURES | 文件 |
+| 分片 | 读数 | NEW |
 |---|---|---|
-| #449 `4db2e711` | 183 | 7 |
-| 上一轮合成树 `5113cdc6` | 197 | 8 |
+| 1/4 | **PASS** | — |
+| 2/4 | 17 failing | **2** |
+| 3/4 | 17 failing | **1** |
+| 4/4 | 20 failing（+2 flaky 重试后过） | **1** |
 
-`only-in-#449 = 0`；`only-in-上一轮 = 14` = 11 × #450 新文件撞同一个阻塞 + 1 同族打包布局
-id + 1 我自己的 gate（故意红）+ 1 `test_fleet_mcp_human_auth` 的无归属 id
-（`git diff 4db2e711 5113cdc6 -- fleet_mcp/` 为空、相关 blob 完全相同 ⇒ 分片内顺序/并发嫌疑）。
+**NEW FAILURES 共 4 条，四片里的其余 50 条全在基线内。** 逐条：
 
-本轮新树的 CI 需要新的 run 才能读；在拿到之前**不把上一轮的数字算到本轮头上**。
+| 测试 | 判定 |
+|---|---|
+| `test_fleet_next_plugin_package::ThisIsNotTheNativeServerOSPlugin::test_the_clean_package_is_not_caught_by_the_layout_rule` | **`7 != 6`**：这是该文件里的正向控制，硬编码了 payload 成员数。#456 往 `integrations/chatgpt-fleet-next/` 加了 `batch_contract.py` 与 `skills/fleet-batch-commander/SKILL.md`（包内文件 10 → 12），`PAYLOAD_ENTRIES` 递归选中了多出来的那一个，计数没跟着改 ⇒ **B8**，测试侧陈旧常量 |
+| `test_fleet_v1_milestone_batch::TheBoundsAreReal::test_the_aggregator_refuses_a_notifier_without_the_seam` | **B6**（本机也复现）：拿真 notifier 期望 `BatchRefused`，#460 给了真身 seam ⇒ 不抛 |
+| `test_fleet_v1_milestone_batch_integration::TheSeamIsHonest::test_the_real_notifier_without_the_seam_is_refused_up_front` | **B6 的第二处**，而且它自己把话说清楚了：`#423 has landed send_text — delete PublicSeamStub and the BLOCKED note, and pass the real notifier`。这是**设计好的 tripwire**，不是缺陷 |
+| `test_fleet_v1_milestone_batch_registration::TheLiveCommanderContractIsConsumedAsIs::test_a_plan_the_live_contract_accepts_becomes_a_registration` | #464 自己的登记路径测试，与上面同族（seam 落地后需要重新接地）；**本机未覆盖**（见下） |
+
+⇒ **4 条 NEW 里 3 条是同一个跨 PR 时序信号**（#459/#464 的「seam 已到位」桥接件需要落地后清理），
+**1 条是 #456 的陈旧常量**。**没有一条是产品回归。**
+
+**本机覆盖的漏项（诚实记录）**：我的定向集里有 `test_fleet_v1_milestone_batch.py`，却**没有**
+`test_fleet_v1_milestone_batch_integration.py` 与 `..._registration.py`，所以 B6 的第二处和
+第 4 条只有 CI 才看见。这是本机选择定向范围时漏掉的，不是它们不可测。
+
+上一轮（已作废的 `5113cdc6`）的对照，方法相同：#449 自身 183 / 7 文件，上一轮树 197 / 8 文件，
+`only-in-#449 = 0`。那一轮的数字**不用来解释本轮**。
 
 ### 5.5 绿的那半（新树实测）
 
@@ -247,8 +262,9 @@ seam 落地时那条 `expectedFailure` 会变成 **unexpected success**，让运
 | B3 | #407 按 #449 §9 继续排除（V2 manager wake） | **DEPENDENCY**，未变 |
 | B4 | #461 / #465 的 base 就是 #407 的分支 | **BLOCKED on B3**：V1-only 子集各 4 文件，但要连带 85 文件（§2） |
 | B5 | #448 合入后 Windows 路径问题 | **部分解决**：`build.py#str(rel)` 的反斜杠问题已被 #448 修掉——`test_build_fleet_hub_packaging` 由 11 errors 变 **16 passed** |
-| **B6** | **#459 的 `TheBoundsAreReal::test_the_aggregator_refuses_a_notifier_without_the_seam` 已过时** | **跨 PR 新发现**：它拿**真** `MilestoneNotifier` 期望 `BatchRefused`；#460 给了真身 `send_text`，于是「不抛」——这条在任何单 PR 上都看不出来，只在 #459+#460 同树时才红。改法是换成无 seam 的 stub（我的 gate 用 `object()` 已经这么做） |
+| **B6** | **#459/#464 的桥接件在 seam 落地后变红（两处 + 一处登记路径）** | **跨 PR 新发现，CI 与本机都取证**：`test_fleet_v1_milestone_batch.py::TheBoundsAreReal::test_the_aggregator_refuses_a_notifier_without_the_seam` 拿**真** `MilestoneNotifier` 期望 `BatchRefused`，而 #460 给了真身 `send_text`；`test_fleet_v1_milestone_batch_integration.py::TheSeamIsHonest::...refused_up_front` 与 `test_fleet_v1_milestone_batch_registration.py::...becomes_a_registration` 同族。**改法是删掉 `PublicSeamStub` 与 BLOCKED 注记、改传真 notifier**（那条集成测试的消息自己就这么写）；我的 gate 已用真类 + `object()` 对照组 |
 | **B7** | **#448 新增的两个 Windows 测试类在 Windows 上必红** | **跨 PR 新发现**：fixture 用 `write_text` 落盘（CRLF）却按 LF 文本算摘要，§5.3 已双向证明。Linux CI 看不见 |
+| **B8** | **#456 加了包成员却没改硬编码计数** | **跨 PR 新发现（CI）**：`test_fleet_next_plugin_package.py` 的正向控制 `assertEqual(len(members), 6)`，而 #456 往 `integrations/chatgpt-fleet-next/` 加了两个文件（包内 10 → 12），`collect()` 递归选中多的那一个 ⇒ `7 != 6`。测试侧陈旧常量，改成从声明派生即可 |
 
 B1/B2 的关闭是**实测**（`22 passed` + 两个翻转探针），不是从别人的 CI 结果继承来的
 —— #462 的 5/5 是它自己那棵树上的读数，我重新合成、重新跑过。
@@ -278,6 +294,11 @@ B1/B2 的关闭是**实测**（`22 passed` + 两个翻转探针），不是从�
 ## 10. 分支
 
 本轮的四个自有文件（两份 gate + 本文 + `integrations/fleet-v1-rc-next/README.md`）追加在
-合成树 `c2e885e5` 之上，作为一个**新的** Draft RC 分支推送（旧分支 `6c91073..a49783e`
-与旧 PR 保持原样、只留一条指向后继的说明）。原因：#425 明确「#463 仍是 3/7 且必须重建」，
-而重建的正确形状是把**新树**当底座，不是把旧 PR 的树强推成新树。
+合成树 `c2e885e5` 之上，作为**新的** Draft RC 推送：**PR #469**，
+分支 `integrate/fleet-v1-rc-next2-20261028` @ **`6b5d9cc`**，base = `integrate/fleet-v1-rc-20261028`
+（#449 的分支，故 diff 就是 13 个 PR 的累计改动 + 我这 4 个文件）。
+
+旧分支 `6c91073..a49783e` 与旧 PR **#463 原样保留**，只留一条指向后继的说明。
+原因：#425 明确「#463 仍是 3/7 且必须重建」，而重建的正确形状是把**新树**当底座，
+不是把旧 PR 的树强推成新树——后者会得到一个「历史写着 10 个 PR、内容却是 13 个 PR」的
+不可审计分支。
