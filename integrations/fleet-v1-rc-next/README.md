@@ -4,6 +4,15 @@ This directory holds **no product code**. It is the receipt for one integration
 QA pass over the Fleet V1 release candidate, and it exists so that what blocks
 the RC is *decidable* rather than remembered.
 
+**Wave 7 (same day, later)** composes #469 `14306f36` + #470 `56fcb927` into
+`4847eb5a` (tree `4e31e4a2`) and maps the three V1 stacks onto it without
+merging #407's 85 files. Read
+[`docs/integration/FLEET-V1-RC-WAVE7-20261028.md`](../../docs/integration/FLEET-V1-RC-WAVE7-20261028.md);
+the tripwire that keeps that map honest is
+[`tests/test_fleet_v1_rc_wave7_ledger.py`](../../tests/test_fleet_v1_rc_wave7_ledger.py)
+(9 tests, all green on the RC, each one red the moment its stack half-lands —
+measured in both directions).
+
 - The measured record — live PR SHAs, the exact composition recipe (13
   zero-conflict merges over #449 `4db2e711` → commit `c2e885e5`, tree
   `5a97605e`), the inherited-baseline vs cross-PR-new-failure separation, and
@@ -37,6 +46,12 @@ Only three of those positions are causal: `459` before `462`/`464` (their base
 is #459's branch), `447` before `451` (#451 is #447's stacked patch), `453`
 before `456`. `461` and `465` are deliberately **not** in the list: both sit on
 #407, whose 85-file Draft is excluded (document §2/§7).
+
+Wave 7 then composes one more pair on top of that result — `git merge-tree
+--write-tree 14306f36 pr/470` (zero conflicts, 6 files, +1399/−57) — which is
+what this branch's `4847eb5a` is. It repairs two of #469's four hosted NEW ids
+(both `…_without_the_seam` bridge tests) and leaves the other two to their
+owners; document §3.
 
 ## Running the gates
 
