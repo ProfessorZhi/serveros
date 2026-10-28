@@ -187,10 +187,22 @@ provider calls: 1（从未确认）
 |---|---|
 | CODE | **部分通过**；5 个阻断，见 §4 |
 | UNIT | 25 passed + 5 xfailed（跨 PR）；单 PR 24/35/39/50/24 各自通过 |
-| CI | 见 PR checks；不把“某些 shard 绿”当成全链路 |
+| CI | **4/5**；见 §6.1，shard4 是与本 PR 无关的既有 Lark 失败 |
 | REAL_DEVICE | **NOT_RUN** |
 | PRODUCTION | **NOT_RUN**；Legacy Fleet 0.1.0 未被触碰 |
 | Timer / systemd | **NOT CLAIMED**；未安装、未 enable、未 systemctl |
+
+### 6.1 CI（run 40668962403，QA commit `c3c892e`）
+
+| job | 结果 |
+|---|---|
+| Claude Code plugin matches its source | pass, 14s |
+| Suite shard 1/4 | pass, 4m16s — 3096 passed, 16 skipped, **5 xfailed**；包含 `test_fleet_next_monitor_crosspr_qa.py`（远端 `refs/pull/<n>/head` 取树成功） |
+| Suite shard 2/4 | pass, 1m23s |
+| Suite shard 3/4 | pass, 2m30s |
+| Suite shard 4/4 | **fail**, 2m12s — `tests/test_direct_lark_notify.py::CardCreateThenPatchTest::test_create_returns_an_id_and_patch_names_it`，`AssertionError: 'FAILED' != 'DELIVERED'`；baseline gate 报 13 failing / 1 new。该文件不在本 PR 改动内，QA 测试在 shard1；这与输入中“shard4 的 Lark 时间测试既有失败”一致，但 gate 认为该 node 未列入 baseline，故不能刷绿。 |
+
+结论：CI 的形状仍是 4/5；shard1 的 `5 xfailed` 就是本文件的 5 个 `expectedFailure`，不是 pass。shard4 的失败与本 PR 无关，但必须如实保留。
 
 ## 7. 未做与边界
 
