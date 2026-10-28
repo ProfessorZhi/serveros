@@ -18,6 +18,7 @@ nothing else.
 | `batch.py` | the correlation itself: one `Batch`, one verdict per member, one summary, a bounded alert budget, receipts |
 | `registration.py` | the durable **declaration** a ChatGPT turn leaves behind (one file, ten identity columns) |
 | `dispatch.py` | the finite tick a supervisor can run, and the config `#446`'s runner loads |
+| `cli.py` | the entrypoint a scheduler can start: one bounded tick of a **filed** registration, one JSON answer, exit — including the all-queued dispatch `dispatch.py` must refuse |
 | `tests/test_fleet_v1_milestone_batch_e2e_integration.py` | the chain across PR boundaries, on the **real** `send_text` |
 
 ## What it is not
@@ -352,6 +353,144 @@ member key and the verdict, so the same restarted process cannot re-alert.
 `test_a_second_one_shot_process_sees_an_amendment_made_between_them` and
 `test_the_ticker_reloads_an_amended_registration_once` are what pin the re-read.
 
+## `cli.py` — the entrypoint a scheduler can actually start
+
+Every entry point above refuses `NO_WATCHES`, and that refusal is right: a tick
+with nothing to read must not be reported as progress. But it leaves one real
+dispatch with **no runnable server at all** — the one whose ACKs all carried no
+`run_id`. `tick_once` raises, `runner_document` raises, and the Tokyo loop that
+was supposed to watch it has nothing to call. The owner then learns that the
+dispatch stalled by noticing the chat stopped moving. `cli.py` is the one file
+that answers that case instead of refusing it.
+
+```
+绝对路径的登记文件 + 授权 factory
+    -> #464 Registration.load          the declaration, re-read from disk
+    -> #446 load_factory               the only dynamic import there is
+    -> #423 MilestoneNotifier          on #423's one ledger
+    -> #428 MilestoneObserver + #464 BatchAggregator
+    -> one tick, one JSON document, exit
+```
+
+```console
+$ python integrations/fleet-v1-milestone-batch/cli.py \
+    --registration /abs/batches/dispatch-….json \
+    --ledger       /abs/milestones.sqlite \
+    --state        /abs/observer-state.json \
+    --lock         /abs/runner.lock \
+    --provider-factory some_module:make_provider \
+    --source-factory   some_module:make_source \
+    --provider-options /abs/provider.json --source-options /abs/source.json \
+    --max-sends-per-minute 4
+```
+
+`--registration`, `--ledger`, `--state` are required and must be **absolute**: a
+scheduler's working directory is not an input anyone reviewed. `--lock` is
+optional; when given it is `#446`'s `SingleActiveLock`, held for the tick and
+released in a `finally`. A second invocation while one holds it answers
+`REFUSED` / `LOCKED` rather than ticking twice.
+
+### The five answers
+
+`state` describes the **correlation**; `summary.state` is what the **provider**
+said. They are deliberately separate fields.
+
+| `state` | exit | meaning | what was spent |
+|---|---|---|---|
+| `TICKED` | 0 | the tick ran; the batch is still open (an ACK-only task, a `RUN_NOT_FOUND` read, a rate-limited read) | reads |
+| `SETTLED` | 0 | every member has a terminal fact **and** the summary is confirmed (`DELIVERED`, or `DUPLICATE` on a later process) | reads + one send |
+| `UNCONFIRMED` | 4 | settled, but the provider did not confirm the summary (`DELIVERY_UNKNOWN`) | reads + one *attempt* |
+| `BLOCKED_INPUT` | 3 | no member has a Run and the deadline is still ahead | nothing |
+| `REFUSED` | 2 | this entrypoint would not run (bad path, refused registration, unresolvable factory, lock held) | nothing |
+
+Four answers are **non-zero exits on purpose**. A scheduler reads exit 0 as "fine,
+carry on"; a batch nobody could observe, or a summary nobody confirmed, must not
+look like that. `BLOCKED_INPUT` in particular is the answer the assignment named:
+it is not a silent success and not a fabricated watch.
+
+`BLOCKED_INPUT` costs nothing — no ledger file, no provider call, no source read.
+Its document names every task with `verdict=PENDING`, `code=NEVER_ISSUED`,
+`run_id=null`, and the `task_id` / `session_ref` / `delivery_id` the owner can act
+on, plus the deadline, so the stall is reviewable without the chat history.
+Re-running produces the same document until either a real `runId` is amended in
+(same shape as `registration.amend`) or the deadline passes.
+
+### The deadline, and the rule it does not re-implement
+
+Past the deadline with still nothing issued, the run proceeds — and the input to
+`BatchAggregator` is an **empty** report (`absorb_rows(())`, "this tick
+established nothing"). No watch is invented, no source is called, and `#464`'s own
+`_state_for` turns the unissued member into `UNOBSERVED` / `NEVER_ISSUED`, which
+is `ACTIONABLE`: a bounded alert per member (≤ `MAX_ALERTS` 10, the rest counted
+in the summary) and one summary reading `0/N 已验证`. The alert carries the raw
+verdict word; the summary carries the Chinese label 「未观察」.
+
+The CLI restates one word (`NEVER_ISSUED`) rather than reaching into
+`batch._state_for`, because `_state_for` needs a notifier with the seam and a
+queued dispatch has no message to send through one. The restatement is pinned
+against the original: `test_the_entrypoint_and_the_aggregator_agree_on_the_deadline`
+runs both statements of the rule on the same declarations (deadline ahead → not
+settled, no message; deadline passed → `UNOBSERVED`) and requires agreement, so
+either side drifting reddens it.
+
+### What it refuses to be
+
+| it is not | how that is enforced |
+|---|---|
+| a second import surface | The registration is JSON read by `#464`'s loader, whose member field set is closed; a Batch file cannot name a module. The only dynamic imports are the operator's two `--*-factory` specs, resolved by `#446`'s `load_factory` (`module:callable`, identifier-checked). A registration carrying an extra `factory` field is refused as `BAD_REGISTRATION`. |
+| a second provider | One factory call, one `MilestoneNotifier`, one provider, closed on the way out. `--max-sends-per-minute` wraps it in `#446`'s `RateLimitedProvider`, whose limit turns a send into UNKNOWN, never into a delivery. |
+| a second ledger | The ledger path is passed to #423's notifier and nowhere else. Delivery truth is that one table; the CLI keeps no state between invocations. |
+| a scheduler | One invocation is one tick and it exits. No sleep, no loop, no daemon, no systemd unit written. |
+| a resident model call | No model, no credential, no socket. The summary is a template. |
+
+Re-runnability needs no state file of its own: every delivery key is derived from
+the batch id and the member key, so a **second process** is told `DUPLICATE` under
+the key the first one used and sends nothing. A **third** is told the same. That is
+`#423`'s claim, not the CLI's memory — which is why it holds across processes and
+not merely across calls.
+
+### Evidence
+
+`tests/test_fleet_v1_milestone_batch_cli.py` — 24 tests, CODE + UNIT, two real
+interpreter processes and a file-backed `FakeLark`:
+
+| requirement | test |
+|---|---|
+| a path that is not absolute, a registration the loader refuses, a spec `#446` will not resolve, a factory that raises, a factory that is not a provider, a lock already held — each `REFUSED`, and none of them costs a read, a send or a ledger | `test_a_relative_registration_path_is_refused`, `test_a_registration_naming_a_module_is_refused`, `test_a_factory_spec_that_is_not_a_module_callable_is_refused`, `test_a_factory_that_does_not_return_a_provider_is_refused`, `test_a_factory_that_raises_is_refused_with_its_own_reason`, `test_a_second_tick_cannot_overlap_the_first` |
+| all-queued + deadline ahead → `BLOCKED_INPUT`, nothing sent, nothing written | `test_a_batch_with_no_issued_run_is_blocked_not_settled`, `test_the_blocked_answer_names_what_to_fix`, `test_the_blocked_answer_is_not_a_dead_end` |
+| `dispatch.tick_once` still refuses `NO_WATCHES` — the library guard is not weakened to make the CLI work | `test_the_library_still_refuses_to_tick_a_dispatch_with_no_watch` |
+| the deadline branch: `UNOBSERVED`, `0/3 已验证`, bounded alerts | `test_past_the_deadline_the_unobserved_members_are_alerts_not_silence`, `test_the_unobserved_alerts_stay_bounded` |
+| the two statements of the deadline rule agree | `test_the_entrypoint_and_the_aggregator_agree_on_the_deadline` |
+| ACK-only stays open; `RUN_NOT_FOUND` stays open; another boot's payload never verifies | `test_ack_only_is_not_a_settlement`, `test_run_not_found_is_a_tick_not_a_settlement`, `test_a_payload_from_another_boot_never_verifies_a_member` |
+| two processes, then a third: one send each, no double send | `test_a_second_process_replays_instead_of_resending`, `test_a_third_process_still_sends_nothing` |
+| five identities stay five fields | `test_the_five_identities_are_never_folded_into_one` |
+| provider UNKNOWN → `UNCONFIRMED`, exit 4, never `DELIVERED` | `test_a_provider_unknown_is_never_recorded_as_delivered` |
+| `#446`'s rate limit → one send, `UNCONFIRMED` | `test_446_s_send_rate_limit_never_becomes_a_delivery` |
+| the provider is closed exactly once | `test_the_provider_is_closed_once` |
+| the document survives a real pipe under a non-UTF-8 console | `test_the_document_is_utf8_through_a_real_pipe_whatever_the_locale` |
+
+Mutation-checked (each reddens its own test, then the file is restored
+byte-identically, verified by sha256, with the same selection re-run green as the
+control — a red without that control would not distinguish "caught" from "already
+red"):
+
+| mutation | red |
+|---|---|
+| drop the deadline branch (`if not watches:`) | the deadline tests + the agreement test |
+| `UNCONFIRMED` → `SETTLED` for an unconfirmed summary | `…unknown_is_never…`, `…rate_limit…` |
+| the blocked answer reports `settled: True` with a fake `DELIVERED` receipt | the blocked-not-settled test |
+| build the notifier before the blocked check | every "a blocked answer costs nothing" assertion |
+| never take `#446`'s lock | the overlap test |
+| drop the stdout reconfiguration | the strict-UTF-8 pipe test |
+| project the run id into `delivery_id` | the five-identities test |
+| give a queued task its `session_ref` as `run_id` | the blocked test |
+
+`LIVE IM NOT_RUN`: every send above goes to a file-backed `FakeLark`. No real
+Feishu message, no `systemctl`, no installed timer, no device E2E, no paid model.
+The out-of-pytest smoke (three real interpreter launches: `BLOCKED_INPUT` exit 3 →
+`SETTLED` `DELIVERED` exit 0 → `SETTLED` `DUPLICATE` exit 0, four provider sends
+across the three) is the same evidence at the process boundary.
+
 ## Evidence
 
 `tests/test_fleet_v1_milestone_batch.py` — 27 tests, CODE + UNIT:
@@ -505,12 +644,13 @@ file is restored byte-identically — verified by sha256):
 | `dispatch` drops its own `UNBOUNDED_LIFECYCLE` guard | the guard test (#446 still refuses, so the layers are independent) |
 | `tick_from_file` caches instead of re-reading | `None != 'run_dell_1'` |
 
-Totals on this branch: `90 passed, 7 skipped, 15 subtests passed` across the
-four files, ~23 s, on Windows, targeted (never the full suite — the two
-pre-existing Windows baselines and the `#449` build failure are not this lane's
-and are not counted here). The seven skips are the live `#456` family, which
-cannot run where `#456` is absent; on the `#469` tree the same four files report
-`97 passed, 0 skipped`, because there the seven run and pass.
+Totals on this branch: `114 passed, 7 skipped, 15 subtests passed` across the
+five files (`cli.py`'s 24 included), ~43 s, on Windows, targeted (never the full
+suite — the two pre-existing Windows baselines and the `#449` build failure are
+not this lane's and are not counted here). The seven skips are the live `#456`
+family, which cannot run where `#456` is absent; on the `#469` tree the same
+files report `97 passed, 0 skipped` for the first four, because there the seven
+run and pass.
 
 RED without #460: on `d72befe7` the same file reports `2 passed, 23 skipped`, and
 the two that run assert the refusal — `hasattr(MilestoneNotifier, "send_text")`
