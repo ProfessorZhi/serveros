@@ -7,6 +7,13 @@ the three failures an observer actually has:
     what it already delivered. The `cursor` map is keyed by `watch_key` and
     stores the fingerprint of the last fact that was handed on, so a re-read of
     the same fact is free and a *different* fact is not blocked.
+*   **It believes its own bookkeeping.** A fingerprint alone says "a hand-over
+    was attempted", not "a message arrived". Every row therefore carries a
+    `delivery` word — `CONFIRMED` only with a ledger receipt behind it, and
+    `UNCONFIRMED` otherwise — and `confirmation()` is the one predicate that
+    may turn a fact green. A row from an older monitor has no `delivery` field
+    at all, which reads as `UNCONFIRMED`: an unproven delivery is not a
+    delivery.
 *   **Two of it run at once.** A `flock` on a sidecar lock file makes "one
     writer" a fact rather than a hope: a second tick refuses immediately
     (`SECOND_WRITER`) instead of writing beside the first. `boot_epoch` names
@@ -37,6 +44,12 @@ from .contract import SCHEMA_STATE, MonitorRefused
 
 #: A cursor older than this is a stalled monitor.
 STALE_AFTER_SECONDS = 3600.0
+
+#: The two lives of one cursor row. `CONFIRMED` means a ledger receipt for this
+#: exact fact was recorded; `UNCONFIRMED` means only that a hand-over was
+#: attempted. Only the first may be reported as settled.
+DELIVERY_CONFIRMED = "CONFIRMED"
+DELIVERY_UNCONFIRMED = "UNCONFIRMED"
 
 
 def _utc_iso(now: float) -> str:
@@ -208,19 +221,99 @@ class DurableState:
     # -- cursor -------------------------------------------------------------
 
     @staticmethod
-    def dispatched(document: dict[str, Any], key: str, fingerprint: str) -> bool:
-        """Was *this exact fact* already handed on by a previous process?"""
-        row = document.get("cursor", {}).get(key) or {}
-        return row.get("fingerprint") == fingerprint
+    def claim(document: dict[str, Any], key: str, fingerprint: str) -> dict[str, Any] | None:
+        """The outstanding record for *this exact fact*, or None.
 
-    def record(self, document: dict[str, Any], *, key: str, fingerprint: str,
-               status: str, reason: str | None, now: float | None = None) -> None:
-        document.setdefault("cursor", {})[key] = {
+        A row for a different fingerprint is a different fact, so it is not a
+        claim on this one and the caller may hand it over.
+        """
+        row = document.get("cursor", {}).get(key)
+        if not isinstance(row, dict) or row.get("fingerprint") != fingerprint:
+            return None
+        return row
+
+    @staticmethod
+    def confirmation(row: dict[str, Any] | None) -> bool:
+        """Does this row carry a *real* ledger receipt for the fact?
+
+        Only `DELIVERY_CONFIRMED` does. A row written by `begin`, or by any
+        monitor older than this one — a row with a fingerprint and no
+        `delivery` field at all — is an *attempt*, and an attempt is not a
+        delivery. Reading it as one is the defect #495 §4.1 recorded: a fact
+        whose receipt never arrived was reported `SETTLED` on the next tick.
+        """
+        return bool(row) and row.get("delivery") == DELIVERY_CONFIRMED
+
+    def begin(self, document: dict[str, Any], *, key: str, fingerprint: str,
+              status: str, reason: str | None, now: float | None = None) -> dict[str, Any]:
+        """Record an outstanding *claim*, before the hand-over.
+
+        The write is deliberate and it is deliberately not called "delivered".
+        It exists so a crash between the send and its receipt leaves a claim
+        that a later tick can reconcile — never an empty cursor that reads as
+        "this was never tried" and invites a blind second message.
+        """
+        row = {
             "fingerprint": fingerprint,
             "status": status,
             "reason": reason,
             "recorded_at": _utc_iso(now if now is not None else self._clock()),
+            "delivery": DELIVERY_UNCONFIRMED,
+            "delivery_state": "ATTEMPTED",
+            "delivery_key": None,
+            "remote_id": None,
+            "attempts": 0,
+            "confirmed_at": None,
         }
+        document.setdefault("cursor", {})[key] = row
+        return row
+
+    def confirm(self, document: dict[str, Any], *, key: str, fingerprint: str,
+                delivery_state: str, delivery_key: str, remote_id: str | None,
+                attempts: int = 1, now: float | None = None) -> dict[str, Any]:
+        """Record a receipt. This is the *only* way a fact becomes terminal."""
+        if not isinstance(delivery_key, str) or not delivery_key.strip():
+            raise MonitorRefused(
+                "BAD_RECEIPT",
+                "a confirmation needs the ledger's delivery key; a receipt with no "
+                "identity cannot be bound to the fact it claims to settle")
+        moment = now if now is not None else self._clock()
+        row = self.begin(document, key=key, fingerprint=fingerprint,
+                         status=document.get("cursor", {}).get(key, {}).get("status"),
+                         reason=document.get("cursor", {}).get(key, {}).get("reason"),
+                         now=moment)
+        row.update({
+            "delivery": DELIVERY_CONFIRMED,
+            "delivery_state": delivery_state,
+            "delivery_key": delivery_key,
+            "remote_id": remote_id,
+            "attempts": int(attempts),
+            "confirmed_at": _utc_iso(moment),
+        })
+        return row
+
+    def settle_unconfirmed(self, document: dict[str, Any], *, key: str,
+                           fingerprint: str, delivery_state: str,
+                           delivery_key: str | None, attempts: int,
+                           why: str | None = None,
+                           now: float | None = None) -> dict[str, Any]:
+        """Keep a fact outstanding: attempted, not delivered, not settled."""
+        moment = now if now is not None else self._clock()
+        row = document.get("cursor", {}).get(key)
+        if not isinstance(row, dict) or row.get("fingerprint") != fingerprint:
+            row = self.begin(document, key=key, fingerprint=fingerprint,
+                             status=None, reason=None, now=moment)
+        row.update({
+            "fingerprint": fingerprint,
+            "delivery": DELIVERY_UNCONFIRMED,
+            "delivery_state": delivery_state,
+            "delivery_key": delivery_key,
+            "attempts": int(attempts),
+            "confirmed_at": None,
+            "unconfirmed_at": _utc_iso(moment),
+            "unconfirmed_why": why,
+        })
+        return row
 
     # -- heartbeat ----------------------------------------------------------
 
