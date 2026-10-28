@@ -89,10 +89,7 @@ class SourceArchivesAreDistinct(unittest.TestCase):
 
 class LegacyControlSurfaceIsOutsideTheDelta(unittest.TestCase):
     def test_no_fleet_mcp_runtime_service_or_plugin_path_moves(self) -> None:
-        paths = qa.legacy_surface_touched()
-        if paths is None:
-            self.skipTest("shallow checkout has no #487 base to diff; local evidence covers it")
-        self.assertEqual(paths, [])
+        self.assertEqual(qa.legacy_surface_touched(), [])
 
 
 class TheOwnerConflictIsNamedNotPatched(unittest.TestCase):

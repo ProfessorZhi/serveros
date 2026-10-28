@@ -42,6 +42,27 @@ MERGE_COMMITS = {
     "cli_481": "0ca9b8b",
     "parallel_480": "f8a7e13",
 }
+#: The declared compose delta from #487; used only when CI's checkout is too
+#: shallow to diff against WAVE13_BASE. A forbidden prefix in this declaration
+#: is still a failure, not a skip.
+P2_PATHS = frozenset({
+    "docs/integration/FLEET-NEXT-RC-WAVE13-BLOCKED-OWNER.md",
+    "docs/reviews/fleet-next-parallel-plugin-20261028.md",
+    "integrations/chatgpt-fleet-next/batch_contract.py",
+    "integrations/fleet-next-parallel-plugin/README.md",
+    "integrations/fleet-next-parallel-plugin/parallel_plugin.py",
+    "integrations/fleet-next-rc-wave13-qa/README.md",
+    "integrations/fleet-next-rc-wave13-qa/wave13_qa.py",
+    "integrations/fleet-v1-milestone-batch/README.md",
+    "integrations/fleet-v1-milestone-batch/cli.py",
+    "tests/test_fleet_chatgpt_batch_commander.py",
+    "tests/test_fleet_next_parallel_plugin.py",
+    "tests/test_fleet_next_rc_wave13_compose.py",
+    "tests/test_fleet_v1_l4_model_evidence.py",
+    "tests/test_fleet_v1_milestone_batch_cli.py",
+    "tests/test_fleet_v1_milestone_batch_cli_fakes.py",
+})
+
 WAVE12_LEDGER = "tests/test_fleet_next_rc_wave12_ledger.py"
 WAVE12_README = "integrations/fleet-v1-milestone-batch/README.md"
 WAVE12_EXPECTED_README_SHA256 = (
@@ -228,6 +249,8 @@ def legacy_surface_touched() -> list[str]:
             ["git", "diff", "--name-only", f"{WAVE13_BASE}..HEAD"],
             cwd=ROOT, check=True, text=True, capture_output=True).stdout
     except (OSError, subprocess.CalledProcessError):
-        return None
+        paths = P2_PATHS
+    else:
+        paths = out.splitlines()
     forbidden = ("fleet_mcp/", "runtime/", "services/", "plugin/", "deploy/")
-    return [line for line in out.splitlines() if line.startswith(forbidden)]
+    return [line for line in paths if line.startswith(forbidden)]
