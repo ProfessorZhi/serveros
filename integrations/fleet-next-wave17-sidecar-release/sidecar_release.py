@@ -56,8 +56,12 @@ Three properties worth stating plainly:
     `deleted == ()`.
   * **It does not fabricate a past install.** If the real sidecar has no install
     receipt, `upstream_verdict()` says `BLOCKED_UPSTREAM` and names the changes
-    the owning PR must make. It never signs a read-only simulation as a device
-    pass.
+    the owning PR must make; if a receipt does exist, it says
+    `BLOCKED_NOT_VERIFIED`, because then the missing piece is the device and not
+    the artifact. It never signs a read-only simulation as a device pass. The
+    receipt it looks for is a **file that is one** — a `RECEIPT_NAME` path whose
+    body declares `RECEIPT_SCHEMA` — not a file that mentions the schema, since
+    this module mentions it.
 
 `install()` is here because a revoke needs something to revoke, and because the
 descriptor is only meaningful if the bytes it describes are the bytes written.
@@ -120,6 +124,10 @@ BLOCKED_FILE_ABSENT = "BLOCKED_FILE_ABSENT"
 BLOCKED_FOREIGN_PRESENT = "BLOCKED_FOREIGN_PRESENT"
 BLOCKED_BACKUP_MODIFIED = "BLOCKED_BACKUP_MODIFIED"
 BLOCKED_UPSTREAM = "BLOCKED_UPSTREAM"
+#: A receipt exists, so the missing piece is the device rather than the artifact.
+#: Distinct from BLOCKED_UPSTREAM because that one asks a file's owner to add
+#: evidence, and here the evidence is there.
+BLOCKED_NOT_VERIFIED = "BLOCKED_NOT_VERIFIED"
 
 #: Same pin as #473's artifact builder, so a version one accepts the other
 #: accepts. Two spellings of "a version" would let a descriptor carry something
@@ -1229,6 +1237,41 @@ def _grep_paths(repo: Path | str, pattern: str, commit: str) -> tuple[str, ...]:
                         for line in out))
 
 
+def _tree_paths(repo: Path | str, commit: str) -> tuple[str, ...]:
+    """Every path in `commit`, recursively."""
+    raw = _git(repo, ["ls-tree", "-r", "-z", "--name-only", commit])
+    return tuple(path for path in raw.decode("utf-8", "surrogateescape").split("\0")
+                 if path)
+
+
+def _receipt_like_files(repo: Path | str, commit: str) -> tuple[str, ...]:
+    """Files *named* like an install receipt, whatever they contain."""
+    return tuple(path for path in _tree_paths(repo, commit)
+                 if posixpath.basename(path) == RECEIPT_NAME)
+
+
+def _receipts_in_tree(repo: Path | str, commit: str) -> tuple[str, ...]:
+    """Paths that **are** install receipts, not paths that mention the schema.
+
+    A `git grep` for the schema string matches the module that defines it —
+    this one — so the first version of this check reported a receipt for its own
+    source code. It looked right locally only because the module was still
+    untracked: `git grep <rev>` reads a **commit**, not a worktree, so the
+    answer depended on whether the file had been staged. The artifact is what
+    counts — a file named `RECEIPT_NAME` whose body declares `RECEIPT_SCHEMA`.
+    A mention of the schema is a mention.
+    """
+    found: list[str] = []
+    for path in _receipt_like_files(repo, commit):
+        try:
+            body = json.loads(_git(repo, ["cat-file", "blob", f"{commit}:{path}"]))
+        except (Refused, ValueError):
+            continue
+        if isinstance(body, Mapping) and body.get("schema") == RECEIPT_SCHEMA:
+            found.append(path)
+    return tuple(sorted(found))
+
+
 def _commit_of(repo: Path | str, ref: str) -> str:
     commit = _git(repo, ["rev-parse", ref]).decode("ascii", "replace").strip()
     if not COMMIT_RE.match(commit):
@@ -1301,21 +1344,44 @@ def upstream_verdict(repo: Path | str, ref: str,
     """
     commit = _commit_of(repo, ref)
     records = _file_records(repo, commit, files)
-    receipts = _grep_paths(repo, RECEIPT_SCHEMA, commit)
-    reference_hits = _grep_paths(repo, files[0].split("/")[-1], commit)
+    receipts = _receipts_in_tree(repo, commit)
+    lookalikes = _receipt_like_files(repo, commit)
+    name = posixpath.basename(files[0])
+    reference_hits = _grep_paths(repo, name, commit)
+    mentions = (f"{name} is mentioned by {len(reference_hits)} file(s) at {commit[:8]} — "
+                f"{', '.join(reference_hits) or 'nothing'} — and a mention is not an "
+                f"install: an installer is what would leave a receipt, and that is the "
+                f"artifact being looked for")
+
+    if receipts:
+        return UpstreamVerdict(
+            decision=BLOCKED, code=BLOCKED_NOT_VERIFIED,
+            reasons=(f"an install receipt exists at {', '.join(receipts)}; a revoke can be "
+                     f"attempted against the root it names, so the missing piece is no "
+                     f"longer the receipt but the device",
+                     "this reader will not run a revoke and could not witness one, so the "
+                     "result is NOT VERIFIED; this is not a real-device pass",
+                     mentions),
+            required_changes=(), receipt_found=True, files=tuple(files),
+            commit=commit, manifest_digest=_manifest_of(records),
+            references=tuple(sorted(reference_hits)))
+
     reasons = [
-        f"no install receipt ({RECEIPT_SCHEMA}) appears anywhere at {commit[:8]}, so no "
-        f"record of a real install exists for these {len(files)} file(s)",
-        f"{files[0].split('/')[-1]} is referenced by {len(reference_hits)} file(s) — "
-        f"{', '.join(reference_hits) or 'nothing'} — and every one of them is a document, "
-        f"a reader or a test: none of them writes it into a root",
+        f"no install receipt appears anywhere at {commit[:8]}: a file named "
+        f"{RECEIPT_NAME} whose body declares schema {RECEIPT_SCHEMA} is what an "
+        f"installer leaves behind, and there is none — so no record of a real "
+        f"install exists for these {len(files)} file(s)",
+        mentions,
         "an offline reader cannot witness an install that has no record, so a revoke of "
         "the real sidecar is NOT VERIFIED; this is not a real-device pass",
     ]
+    if lookalikes:
+        reasons.insert(1, f"{', '.join(lookalikes)} is named like a receipt but its body "
+                          f"does not declare {RECEIPT_SCHEMA}; a name is not an install")
     return UpstreamVerdict(decision=BLOCKED, code=BLOCKED_UPSTREAM,
                            reasons=tuple(reasons),
                            required_changes=REQUIRED_CHANGES,
-                           receipt_found=bool(receipts), files=tuple(files),
+                           receipt_found=False, files=tuple(files),
                            commit=commit, manifest_digest=_manifest_of(records),
                            references=tuple(sorted(reference_hits)))
 

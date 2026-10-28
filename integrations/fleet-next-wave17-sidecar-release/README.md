@@ -149,12 +149,25 @@ reports the two files pinned at the current commit, and then:
 revoke: BLOCKED BLOCKED_UPSTREAM receipt_found= False
 ```
 
-Because `git grep -l -F "serveros/fleet-sidecar-install-receipt.v1"` finds
-nothing in the tree, and every reference to `next_tailscale_gate.py` is a
-document, a reader or a test — none of them installs it into a root. An offline
-reader cannot witness an install that has no record, so this module refuses to
-sign one. It is **not** a real-device pass, and `upstream_verdict()` says so in
-those words.
+because no file **is** an install receipt: `upstream_verdict()` looks for a path
+named `.sidecar-install-receipt.json` whose body declares schema
+`serveros/fleet-sidecar-install-receipt.v1`, and there is none. Every file that
+mentions `next_tailscale_gate.py` is a document, a reader or a test — none of
+them installs it into a root.
+
+That check is deliberately about the artifact and not about a string. A
+`git grep` for the schema finds this module, its tests and its README, because
+they all name it; the first version of the check did exactly that and reported
+"a receipt exists" for its own source code. It looked correct locally only
+because the file was still untracked — `git grep <rev>` reads a commit, not a
+worktree. `TheReceiptCheckLooksForAnArtifactNotAString` builds its own
+repositories and pins both directions.
+
+When a receipt *is* found the answer changes to `BLOCKED_NOT_VERIFIED`: the
+missing piece is then the device rather than the artifact. An offline reader
+cannot witness an install on a host, so this module refuses to sign one either
+way, and `upstream_verdict()` says "not verified" and "not a real-device pass"
+in those words.
 
 `REQUIRED_CHANGES` names what the owning PR (#473 / the sidecar owner) has to
 do before a revoke of the real sidecar is verified rather than described. Until
@@ -179,7 +192,15 @@ runbook's `rm -rf` is still the only thing in the world that does it.
 ```bash
 python integrations/fleet-next-wave17-sidecar-release/sidecar_release.py --describe --ref HEAD
 python -m pytest tests/test_fleet_next_wave17_sidecar_release.py -q
+python integrations/fleet-next-wave17-sidecar-release/probe_guards.py
 ```
+
+`probe_guards.py` withdraws one protection at a time — replacing a guard's body,
+breaking a helper it delegates to, or deleting a name from a declared pipeline —
+and reports how many tests notice. It exits 1 if any protection can be withdrawn
+without a red run. Withdrawing a guard lets the code *write*, so it runs with its
+cwd inside a temporary directory; that is also why the tests that touch relative
+paths chdir first.
 
 See `docs/integration/FLEET-NEXT-WAVE17-SIDECAR-REVOKE-20261028.md` for the
 verdicts, the RED→GREEN record, the mutation-probe table and the handoff.

@@ -25,7 +25,7 @@ revoked today. See §8.
 | 1 | Release is pinned (version, 40-hex commit, per-file sha256, manifest) | **VERIFIED (offline)** |
 | 2 | Manifest is reproducible from installed bytes | **VERIFIED** — recomputed from the files, twice |
 | 3 | Install leaves evidence that a revoke can check | **VERIFIED** — receipt + independent ownership marker |
-| 4 | Revoke deletes only receipt-owned files inside the receipt's root | **VERIFIED** — 26 refusal codes, all 26 asserted by tests |
+| 4 | Revoke deletes only receipt-owned files inside the receipt's root | **VERIFIED** — 27 refusal codes, all 27 asserted by tests |
 | 5 | Revoke refuses a stranger's directory, a shared/Legacy root, a link, a traversal, a foreign file, a post-install edit, a live writer, another device/boot, and missing evidence | **VERIFIED (offline)** |
 | 6 | Second revoke is idempotent — tree unchanged **and** refused, not `OK` | **VERIFIED** |
 | 7 | Upgrade + restore, one level of history | **VERIFIED (offline)** |
@@ -133,6 +133,11 @@ what it says.
 | a file no receipt owns | `BLOCKED_FOREIGN_PRESENT` |
 | upgrade that would overwrite the one remembered version | `BLOCKED_UPGRADE_CHAIN` |
 | backup not the bytes backed up | `BLOCKED_BACKUP_MODIFIED` |
+| supplied source bytes are not the pinned bytes | `BLOCKED_SOURCE_DIGEST` |
+| a root that already carries a receipt, with no `replace=` | `BLOCKED_ALREADY_INSTALLED` |
+| a non-empty root that carries no receipt | `BLOCKED_ROOT_NOT_EMPTY` |
+| the real sidecar has no install receipt anywhere in the tree | `BLOCKED_UPSTREAM` |
+| a receipt does exist, but an offline reader cannot witness the install | `BLOCKED_NOT_VERIFIED` |
 
 Two of these are worth spelling out, because the plausible implementation gets
 both wrong:
@@ -216,13 +221,16 @@ blurred:
 * **the sidecar in the tree today** — **NOT VERIFIED**, because there is no
   record of an install to revoke.
 
-The second answer is derived, not assumed:
+The second answer is derived, not assumed, and the derivation had to be fixed
+once already: the check is **"does a file that *is* a receipt exist"** — a path
+named `.sidecar-install-receipt.json` whose body declares schema
+`serveros/fleet-sidecar-install-receipt.v1` — and not "does any file mention the
+schema". A grep for the schema string finds this module, its tests and this
+document, because they all name it; that is how the first version of the check
+reported a receipt for its own source code (see §9).
 
-```bash
-git grep -l -F "serveros/fleet-sidecar-install-receipt.v1"   # no hits, at any ref
-```
-
-and `next_tailscale_gate.py` is referenced by exactly 3 files at `e69fc033` —
+No such file exists at `e69fc033` or at this PR's head, and
+`next_tailscale_gate.py` is mentioned by exactly 3 files at `e69fc033` —
 
 ```
 docs/fleet-v1-next-ingress-runbook.md
@@ -275,11 +283,14 @@ merged directly on that basis.
 
 ```
 $ python -m pytest tests/test_fleet_next_wave17_sidecar_release.py -q
-97 passed, 1 skipped, 17 subtests passed
+101 passed, 1 skipped, 17 subtests passed
 
 $ python -m unittest discover -s tests -p 'test_fleet_next_wave17_sidecar_release.py'
-Ran 98 tests
+Ran 102 tests
 OK (skipped=1)
+
+$ python -m py_compile integrations/fleet-next-wave17-sidecar-release/*.py
+compile OK
 ```
 
 The skip is the symlink/junction case when the host forbids both; on the Linux
@@ -295,14 +306,18 @@ CI runner it runs.
 | `test_a_revoked_upgrade_still_leaves_no_trace` → root survived | the backup directory was never pruned | `_prune_empty_dirs()`, used by revoke and restore |
 | `test_a_floating_version_is_refused` (subTest `01.0.0`) | `01.0.0` is **not** a floating version; #473's regex accepts a leading zero | the case was replaced with `"1.0.0 "`, and the regex left alone — it is #473's contract, not mine to tighten |
 
-Three more defects were found later, by the probe and by a console run, and each
-has its own regression test:
+Four more defects were found later — by the probe, by a console run, and by CI —
+and each has its own regression test:
 
 | finding | why it mattered | fix |
 |---|---|---|
 | the guard tuple held function objects | 13 guards reported "not depended on"; the probe was measuring nothing | names + call-time resolution + `TheGuardPipelineIsResolvedAtCallTime` |
 | 12 of restore's 15 guards were executed but not depended on | restore writes; an unobservable guard can be deleted | 15 restore refusals + the no-drift test |
 | the CLI emitted non-UTF-8 JSON on a GBK console | the payload was unparseable by its only consumer | `sys.stdout.reconfigure(encoding="utf-8")`, plus a test over real bytes whose positive control fails with `0x97` |
+| `upstream_verdict()` asked `git grep` whether a receipt existed | a string search finds the module, tests and README that *name* the schema, so it answered "a receipt exists" for its own source; green locally only because the file was untracked — `git grep <rev>` reads a commit, not a worktree | artifact detection: basename + `cat-file blob` + parsed `schema`, with `BLOCKED_NOT_VERIFIED` when a receipt really is found; `TheReceiptCheckLooksForAnArtifactNotAString` (4 tests, own repositories) |
+
+The last one is the only one CI found that the local run did not, and it is
+written up in full under "CI — read, not inferred" below.
 
 The probe also wrote into the repository once (disabling the root guard let
 `relative-root/` be created under the working directory). The probe now runs with
@@ -312,19 +327,29 @@ cannot leave a mark and cannot be confused by one.
 
 ### Mutation probe — every protection is load-bearing
 
-Baseline first: `testsRun=98 flipped=0`.
+This is a script now, not a paragraph: `probe_guards.py`, committed beside the
+module so the table below can be reproduced by anyone who doubts it.
 
-Two mutations per protection, because they fail differently. **Body**: the guard
-is replaced by a function that always refuses — this proves the *check* is what
-the tests depend on. **Removal**: the guard's name is deleted from the declared
-pipeline — this proves its *presence* is depended on. The first run of this
-probe had thirteen guards at zero on both axes and the module's comment claimed
-the opposite; §6 is what that cost.
+```
+$ python integrations/fleet-next-wave17-sidecar-release/probe_guards.py
+baseline: testsRun=102 flipped=0
+…
+mutations=51  load-bearing=51  not-load-bearing=0
+```
 
-Body mutations (`23` protections, `load-bearing=23`, `weak=[]`):
+Baseline first, and it stops if the baseline is already red: a probe over a red
+tree measures nothing. Two mutations per protection, because they fail
+differently. **Body**: the guard is replaced by a function that always refuses —
+this proves the *check* is what the tests depend on. **Removal**: the guard's
+name is deleted from the declared pipeline — this proves its *presence* is
+depended on. The first run of this probe had thirteen guards at zero on both
+axes and the module's comment claimed the opposite; §6 is what that cost.
+
+Body and helper mutations (`23` protections, `load-bearing=23`, `weak=[]`):
 
 | protection | tests flipped |
 |---|---:|
+| `check_descriptor` | 93 |
 | `_guard_grant` | 48 |
 | `_guard_descriptor` | 45 |
 | `_guard_root` | 43 |
@@ -337,7 +362,6 @@ Body mutations (`23` protections, `load-bearing=23`, `weak=[]`):
 | `_guard_symlink` | 21 |
 | `_inside` (containment) | 20 |
 | `_guard_containment` | 19 |
-| `check_descriptor` | 18 |
 | `_guard_files` | 16 |
 | `_guard_install_root_match` | 16 |
 | `_guard_previous_match` | 15 |
@@ -350,26 +374,98 @@ Body mutations (`23` protections, `load-bearing=23`, `weak=[]`):
 | `_file_problems` | 1 |
 
 Pipeline removals (`28` slots: 13 revoke + 15 restore, `detected=28`,
-`undetected=0`).
+`undetected=0`). Every removal flips at least two tests, and the first test it
+breaks is usually `test_the_two_pipelines_do_not_drift` — the structural test —
+followed by the refusal that names that guard.
 
-**Read the zeros, not the counts.** A guard replaced by "always refuse" breaks
-every test that drives a lifecycle, so the numbers are cascades: 48 for
-`_guard_grant` does not mean 48 tests are about grants. Excluding the lifecycle
-test and re-running the same 23 mutations gives 93 tests and still
-`load-bearing=23` — but the counts barely move (47, 44, 42 …), because a second
-lifecycle test cascades the same way. That is a property of the design, not a
-gap: one end-to-end path is supposed to exercise the whole surface.
+**Read the zeros, not the counts.** A protection replaced by "always refuse"
+breaks every test that drives a lifecycle, so the counts are cascades: 48 for
+`_guard_grant` does not mean 48 tests are about grants, and 93 for
+`check_descriptor` means "a descriptor is always valid" breaks almost every test
+that ever builds one. That is a property of the design, not a gap: one
+end-to-end path is supposed to exercise the whole surface. Every body mutation's
+first flip is the same lifecycle test, and the removals' first flip is the
+structural no-drift test — so the tallies say "the whole lifecycle notices",
+not "this many tests are about this guard".
 
 So the probe answers a binary question per protection — *does anything notice?* —
-and the per-code evidence is separate and exact: all **26** refusal codes are
-referenced by a test that asserts that code, which is what stops a test from
-being satisfied by a neighbouring guard's refusal. The small counts are the ones
+and the per-code evidence is separate and exact: all **27** refusal codes are
+referenced by a test that asserts *that* code, which is what stops a test from
+being satisfied by a neighbouring guard's refusal. (The count grew by one in CI:
+`BLOCKED_NOT_VERIFIED`, the answer when an install receipt really exists but an
+offline reader still cannot witness the install.) The small counts are the ones
 worth reading (`_file_problems` 1, `_is_link` 3, `_prune_empty_dirs` 3): each is
 the single thing distinguishing a specific refusal.
 
 ### CI — read, not inferred
 
-<!-- CI_SECTION -->
+Run [`40707133286`](https://github.com/ProfessorZhi/serveros/actions/runs/40707133286),
+head `2ecf8723`, **red on shard 4/4 with two `NEW FAILURE` entries**. `NEW FAILURE`
+means "a failure that `tests/hermetic-known-failures.txt` does not list"; it does
+not mean "this PR broke it", so each one is attributed below by evidence rather
+than by position.
+
+| shard | baseline-gate reading |
+|---|---|
+| 1/4 | `8 failing, 0 new, 0 flaky` |
+| 2/4 | `19 failing, 0 new, 0 flaky` |
+| 3/4 | `19 failing, 0 new, 1 flaky` — `test_codex_app_server_provider.py::test_a_dead_server_is_a_stopped_provider_and_not_a_closed_session`, passed on retry |
+| 4/4 | `14 failing, **2 new**, 0 flaky` |
+
+**New failure 1 — mine, real, fixed in the next commit.**
+
+```
+tests/test_fleet_next_wave17_sidecar_release.py::TheRealSidecarIsBlockedNotSigned::
+  test_the_upstream_verdict_is_blocked_and_names_what_is_missing
+AssertionError: True is not false : a receipt was reported without one existing
+```
+
+`upstream_verdict()` asked `git grep <commit> -F <receipt schema>`. That is a
+string search, and this module, its tests and its README all contain the schema
+string by definition, so at any commit that contains them the answer is "a
+receipt exists". It was green locally only because the file was still
+**untracked** — `git grep <rev>` reads a commit, not a worktree — which is the
+precise way a local run can be greener than CI on the same source.
+
+The fix makes the question about an artifact: `ls-tree -r --name-only`, keep
+paths whose basename is `RECEIPT_NAME`, `cat-file blob <commit>:<path>` each one,
+and keep only bodies whose `schema` is `RECEIPT_SCHEMA`. A receipt is a file, not
+a mention of one. When one is found the verdict becomes the new
+`BLOCKED_NOT_VERIFIED` (the missing piece is then the device, not the artifact).
+This also corrected a false claim in §8 and in the README: `git grep` finds
+**seven** matches at this branch's head, not none.
+
+Two positive controls, because "the check passes" is the weak direction:
+restoring the grep turns `TheReceiptCheckLooksForAnArtifactNotAString` red (2
+failures); making the detector always return empty turns its receipt-found test
+red. That class builds its own repositories, so it cannot pass because of what
+happens to be in this one.
+
+**New failure 2 — not mine, and the evidence is a base-tree run.**
+
+```
+tests/test_direct_lark_notify.py::CardCreateThenPatchTest::
+  test_create_returns_an_id_and_patch_names_it
+AssertionError: 'FAILED' != 'DELIVERED'   (tests/test_direct_lark_notify.py:259)
+```
+
+| reading | value |
+|---|---|
+| blob `tests/test_direct_lark_notify.py` at `origin/main` (= `e69fc033`) | `16d49e38…` |
+| same blob at this PR's head | `16d49e38…` (identical) |
+| blob `runtime/live_sender.py` at both | `1eb4718b…` (identical) |
+| listed in `tests/hermetic-known-failures.txt` | no |
+| `git archive origin/main` → fresh directory → run that file | **1 failed, 19 passed**, same assertion |
+
+The last row is the one that decides it: a tree exported from `origin/main`
+containing **none** of this PR's bytes reproduces the failure identically, so it
+is a pre-existing failure on `main` that the baseline file does not list. It is
+reported here, not fixed here — `tests/test_direct_lark_notify.py` and
+`runtime/live_sender.py` are outside this round's writable surface.
+
+A separate `NOT_RUN`, not a green: `fleet-next-isolated-contracts.yml`'s `paths:`
+does not cover `integrations/fleet-next-wave17-sidecar-release/**`, so that
+workflow produces no run for this PR.
 
 ### Device — **NOT_RUN**
 
