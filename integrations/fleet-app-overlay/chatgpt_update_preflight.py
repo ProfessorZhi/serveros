@@ -89,9 +89,14 @@ def _semver(value: str) -> tuple[int, int, int]:
 def _check_icons(members: dict[str, bytes], manifest: dict,
                  tmp: Path) -> list[dict]:
     openai = ((manifest.get("extensions") or {}).get("com.openai") or {})
+    interface = openai.get("interface") if isinstance(openai, dict) else None
+    if not isinstance(interface, dict):
+        interface = {}
     reports: list[dict] = []
     for slot in ("composerIcon", "logo"):
-        value = openai.get(slot)
+        value = openai.get(slot) if isinstance(openai, dict) else None
+        if not value:
+            value = interface.get(slot)
         if not value:
             reports.append({"slot": slot, "status": "NOT_DECLARED"})
             continue

@@ -165,6 +165,18 @@ class ThePreflightChecksTheUpdateGuard(unittest.TestCase):
         self.assertEqual(caught.exception.code, "ICON_INVALID")
 
 
+    def test_nested_interface_icon_slots_are_checked(self) -> None:
+        files_nested = files("0.2.0")
+        manifest_nested = manifest("0.2.0")
+        manifest_nested["extensions"]["com.openai"] = {
+            "interface": manifest_nested["extensions"]["com.openai"]}
+        files_nested["plugin.json"] = json.dumps(manifest_nested).encode()
+        out = preflight.preflight(
+            self.prev, self.archive("nested.zip", files_nested),
+            PLUGIN_ID, RELEASE_ID)
+        self.assertEqual(out["icons"][0]["status"], "OK")
+
+
 class ThePresentationMatrixIsHonest(unittest.TestCase):
     def setUp(self) -> None:
         self.matrix = json.loads(
