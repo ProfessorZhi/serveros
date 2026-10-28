@@ -1,0 +1,62 @@
+{
+  "_comment": [
+    "Reference records for `tests/test_fleet_milestone_architecture_contract.py`.",
+    "The values are illustrative and written to be shape-correct, not observed.",
+    "A real record is produced by reading one device; `NOT_OBSERVED` and",
+    "`NOT_INSTALLED` exist so 'we did not look' and 'it is not there' cannot be",
+    "recorded as if they were a version."
+  ],
+  "schema": "serveros/fleet-release-acceptance.v1",
+  "records": [
+    {
+      "artifact_kind": "milestone_announcer",
+      "device_ref": "dell-fjd",
+      "os_principal": "fjd",
+      "observed_at": "2026-10-27T10:00:00Z",
+      "source_sha": "e69fc0337ae5d33000478e3d5162077f525bc8cc",
+      "version": "0.1.0",
+      "digest": "NOT_OBSERVED",
+      "installed_path": "NOT_INSTALLED",
+      "previous_digest": null,
+      "rollback": null,
+      "compatible_cloudcli": "NOT_OBSERVED",
+      "identities": {
+        "run_id": "run_01J0000000000000000000000",
+        "delivery_id": "dlv_01J0000000000000000000000",
+        "boot_id": "boot_01J0000000000000000000000"
+      },
+      "acceptance": {
+        "CODE": "PASS",
+        "HOSTED_CI": "NOT_RUN",
+        "REAL_DEVICE": "NOT_RUN",
+        "CLIENT_E2E": "NOT_RUN",
+        "PRODUCTION": "NOT_TOUCHED"
+      }
+    },
+    {
+      "artifact_kind": "node_runtime",
+      "device_ref": "tokyo-vince",
+      "os_principal": "vince",
+      "observed_at": "2026-10-27T10:00:00Z",
+      "source_sha": "696e823f00000000000000000000000000000000",
+      "version": "NOT_OBSERVED",
+      "digest": "NOT_OBSERVED",
+      "installed_path": "NOT_INSTALLED",
+      "previous_digest": null,
+      "rollback": null,
+      "compatible_cloudcli": "NOT_OBSERVED",
+      "identities": {
+        "run_id": null,
+        "delivery_id": null,
+        "boot_id": null
+      },
+      "acceptance": {
+        "CODE": "PASS",
+        "HOSTED_CI": "NOT_RUN",
+        "REAL_DEVICE": "NOT_OBSERVED",
+        "CLIENT_E2E": "NOT_RUN",
+        "PRODUCTION": "NOT_TOUCHED"
+      }
+    }
+  ]
+}
