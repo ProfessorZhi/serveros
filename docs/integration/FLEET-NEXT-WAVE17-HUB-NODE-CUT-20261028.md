@@ -265,8 +265,23 @@ python integrations/fleet-next-wave17-hub-node-release-cut/wave17_cut.py \
 technical_state GREEN_SANDBOX · decision BLOCKED_OWNER · device NOT_RUN
 ```
 
-Hosted CI is the PR's own run at the same head; this document does not claim a
-hosted result before it exists.
+Hosted CI at `6f76553` (the first pushed head): the plugin check and Suite
+shards 1, 2 and 3 passed. Shard 4 reported 17 baseline-listed failures plus
+**one new failure that is not this lane's**:
+
+```text
+tests/test_direct_lark_notify.py::CardCreateThenPatchTest::
+    test_create_returns_an_id_and_patch_names_it  ('FAILED' != 'DELIVERED')
+```
+
+The fixture patches a card with `sent_at: 2026-10-13T06:00:00Z`;
+`runtime/message_transport.py:84` sets `CARD_UPDATE_WINDOW_DAYS = 14`, so on
+2026-10-28 the card is 15 days old and the patch is refused. The same test
+fails, identically, at the base commit `517ef91` in a clean `git archive`
+copy — it crossed its date window on 2026-10-27 and is unrelated to the Hub/
+Node cut. It was **not** edited and no `hermetic-known-failures.txt` entry was
+added: both are another owner's files, and a baseline exemption is not this
+lane's to grant. The lane's own 13 tests are not in the failure list.
 
 ### 7.1 Commits and change surface
 
