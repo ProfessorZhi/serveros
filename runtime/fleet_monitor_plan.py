@@ -51,7 +51,7 @@ The first version accepted a plain `{"ok": True}` dictionary, which made this
 whole section a suggestion: any caller could mint the word «yes», hand it in
 beside a real transport, and put a private machine's row in a company channel.
 So `apply_plan` now requires an `AudienceVerdict` — a typed, HMAC-signed
-instance from `runtime/fleet_audience.py` — and checks it against the send it is
+instance from `runtime/fleet_hub/fleet_audience.py` — and checks it against the send it is
 about to make: the RECIPIENT it was issued for, the DEVICE SET it covers, and
 (for a real transport) the CANONICAL HASH OF THIS CARD. A verdict for another
 recipient, another device list, or another card is refused, and a `preview`
@@ -85,7 +85,8 @@ card_delivery = _load("serveros_runtime_card_delivery", _HERE / "card_delivery.p
 # `fleet_monitor_source` uses, so a verdict issued there is this module's type
 # and `isinstance` answers True about it — one file under two names is two
 # classes, the hazard the tree's other loaders document.
-fleet_audience = _load("serveros_fleet_audience", _HERE / "fleet_audience.py")
+fleet_audience = _load("serveros_fleet_audience",
+                       _HERE / "fleet_hub" / "fleet_audience.py")
 preview_gate = fleet_audience.preview_gate
 
 CARD_KEY = "fleet-monitor"
