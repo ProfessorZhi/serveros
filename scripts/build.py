@@ -24,10 +24,20 @@ Two properties matter and are enforced below:
    revision via `git`, never from a working tree. A stale or dirty checkout on
    this machine therefore cannot silently downgrade the distribution, and no
    generated artifact ever references this machine's build paths.
+
+A composition may declare more than one artifact kind, and `--face` builds ONE
+of them as its own artifact: `plugin` is the device Ability/Skill payload (the
+plugin manifests and the composed Skills, no daemon), and `node-runtime` is the
+serverosd payload (the Core modules and the node MCP surface, no Skill). Each
+face has its own cache identity, so the two can be versioned, released and
+rolled back apart — which one payload carrying both faces could not do. The
+face is a build of a kind the composition already declares; the build refuses a
+kind the payload does not back, in either direction.
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -579,7 +589,13 @@ def ability_skill_files(repo: Path, rev: str, name: str) -> list[tuple[bytes, Pa
     return pairs
 
 
-def claude_plugin_manifest(bundle: dict, version: str, skills: list[str]) -> dict:
+def claude_plugin_manifest(bundle: dict, version: str, skills: list[str],
+                           servers: list[dict] | None = None) -> dict:
+    # `servers` is the face's, not the composition's. A Skill-only build ships
+    # no `.mcp.json`, and a manifest naming one would be a declaration pointing
+    # at a file this artifact does not contain — it loads, then fails on first
+    # tool call. Passing the list in is how the manifest stays true to the face.
+    servers = _declared_servers(bundle) if servers is None else servers
     manifest = {
         "name": bundle["name"],
         "version": version,
@@ -592,12 +608,14 @@ def claude_plugin_manifest(bundle: dict, version: str, skills: list[str]) -> dic
     # is discovered by default, so this field is redundant today — and it is the
     # one line that says, in the manifest itself, that this plugin owns a node
     # surface. A convention is not a declaration.
-    if _declared_servers(bundle):
+    if servers:
         manifest["mcpServers"] = "./.mcp.json"
     return manifest
 
 
-def codex_plugin_manifest(bundle: dict, version: str) -> dict:
+def codex_plugin_manifest(bundle: dict, version: str,
+                          servers: list[dict] | None = None) -> dict:
+    servers = _declared_servers(bundle) if servers is None else servers
     manifest = {
         "name": bundle["name"],
         "version": version,
@@ -616,7 +634,7 @@ def codex_plugin_manifest(bundle: dict, version: str) -> dict:
             "brandColor": bundle["brand_color"],
         },
     }
-    if _declared_servers(bundle):
+    if servers:
         manifest["mcpServers"] = "./.codex-mcp.json"
     return manifest
 
@@ -764,8 +782,16 @@ def codex_mcp_manifest(bundle: dict) -> dict:
     return {"mcpServers": servers}
 
 
-def build_readme(bundle: dict, version: str, skills: list[str], ability_rev: str) -> str:
-    servers = _declared_servers(bundle)
+def build_readme(bundle: dict, version: str, skills: list[str], ability_rev: str,
+                 cachebuster: str | None = None, servers: list[dict] | None = None,
+                 recommended: list[dict] | None = None) -> str:
+    cachebuster = cachebuster if cachebuster is not None else bundle["cachebuster"]
+    # A face ships a subset of the composition, and the README is the artifact's
+    # own statement about itself. Deriving these from the composition instead of
+    # from what was written would make a Skill-only payload advertise a node MCP
+    # surface it does not contain — the same false declaration, in prose.
+    servers = _declared_servers(bundle) if servers is None else servers
+    recommended = (bundle.get("recommended") or []) if recommended is None else recommended
     surface = ""
     if servers:
         surface = (
@@ -774,7 +800,6 @@ def build_readme(bundle: dict, version: str, skills: list[str], ability_rev: str
             "the local `serverosd` socket, holding no state of its own; when the daemon is not "
             "running it reports that rather than answering with an empty result.\n\n"
         )
-    recommended = bundle.get("recommended") or []
     on_demand = ""
     if recommended:
         on_demand = (
@@ -784,20 +809,44 @@ def build_readme(bundle: dict, version: str, skills: list[str], ability_rev: str
             "contain them; an entry marked `missing` is a gap the composition records rather "
             "than papers over.\n\n"
         )
+    # A composition with no Skill payload is the node-runtime face. Saying
+    # "Provided skills: " followed by the pin would state that this artifact was
+    # read from ability-management when it carries nothing of the kind — the
+    # static claim the split exists to stop. The other compositions keep this
+    # text byte for byte: their cachebusters name released payloads, and a
+    # cosmetic README change under an unchanged cachebuster would leave an
+    # installed cache that disagrees with canonical under a version string
+    # `claude plugin update` reads as "already current".
+    if skills:
+        provided = "Provided skills: " + ", ".join(skills) + "\n\n"
+        pin = (
+            f"Reusable skills read from `ability-management@{ability_rev}`. "
+            "Canonical identity alias: `ProfessorZhi/workspace-maintainer` is presented as the "
+            "`workspace-management` runtime name/path.\n\n"
+        )
+    else:
+        provided = (
+            "Provided skills: none. This artifact carries the node runtime and no Skill "
+            "payload; the device Ability family is the `plugin` face of the same "
+            "composition (`--face plugin`) and is released separately, so its Skills "
+            "are not a function of this version.\n\n"
+        )
+        pin = (
+            "No Skill is composed from `ability-management` for this artifact; the "
+            "revision the node was built against is recorded in `ARTIFACT.json`.\n\n"
+        )
     return (
         f"# ProfessorZhi/{bundle['name']}\n\n"
         "Generated by `src/serveros/scripts/build.py`. Do not edit by hand.\n\n"
         f"Composition: `{bundle['composition']}`. The composition file is the authority for "
         "what this artifact contains; the pin below is the authority for what it was read "
         "from.\n\n"
-        "Provided skills: " + ", ".join(skills) + "\n\n"
+        + provided
         + surface
         + on_demand
-        + f"Generated version: `{version}` (cachebuster suffix `{bundle['cachebuster']}`).\n\n"
-        f"Reusable skills read from `ability-management@{ability_rev}`. "
-        "Canonical identity alias: `ProfessorZhi/workspace-maintainer` is presented as the "
-        "`workspace-management` runtime name/path.\n\n"
-        "Keep the cachebuster fixed for byte-identical rebuilds; bump it once only when a "
+        + f"Generated version: `{version}` (cachebuster suffix `{cachebuster}`).\n\n"
+        + pin
+        + "Keep the cachebuster fixed for byte-identical rebuilds; bump it once only when a "
         "new generated payload must invalidate an installed plugin cache.\n"
     )
 
@@ -831,6 +880,123 @@ def declared_artifact_kinds(bundle: dict, bundle_path: Path) -> list[str]:
     if len(set(kinds)) != len(kinds):
         raise ValueError(f"{bundle_path}: `artifacts:` repeats a kind: {kinds}")
     return list(kinds)
+
+
+_RELEASE_CONTRACT = None
+
+
+def release_contract():
+    """`release.py`'s kind vocabulary, its per-kind required members, and the
+    names of the kinds — read from that file rather than restated here.
+
+    A kind IS a verifier in `release.py`; this script's job is to produce a
+    payload whose own manifest is true when the verifier reads it. Keeping one
+    list means the build and the verifier cannot disagree about what a kind
+    requires, which is the failure two copies of the list would create.
+    """
+    global _RELEASE_CONTRACT
+    if _RELEASE_CONTRACT is None:
+        path = Path(__file__).resolve().parent / "release.py"
+        spec = importlib.util.spec_from_file_location(
+            "_serveros_release_contract", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _RELEASE_CONTRACT = module
+    return _RELEASE_CONTRACT
+
+
+def verify_artifact_kinds(kinds: list[str], members: list[str],
+                          bundle_path: Path) -> dict[str, list[str]]:
+    """Refuse a kind claim the payload does not keep, in BOTH directions.
+
+    Returns the evidence for each declared kind — the member paths that back it
+    — so the artifact records what its claim stands on instead of only that the
+    claim was made.
+
+    declared but absent: a composition that says `node-runtime` and ships no
+    daemon would be staged and then fail to start a unit. The release path
+    refuses it later, but the build is where the bytes are chosen, and emitting
+    the claim anyway leaves a payload whose own manifest is false.
+
+    absent but present: a composition that says `plugin` alone and still ships
+    `runtime/` and `bin/` has not decoupled the faces — it has relabelled one
+    payload as the other. `verify_plugin` cannot see this (it checks the
+    manifests a plugin must carry, not the daemon it must not), so the build is
+    the only place the claim and the bytes are both in hand.
+
+    This is also the boundary the device Ability family rests on. `installed`
+    and `ready` are observations of a node; a build is not entitled to assert
+    either by declaring a kind. It can prove only which bytes it wrote, and this
+    makes that proof a precondition of the claim.
+    """
+    contract = release_contract()
+    present = set(members)
+    vocabulary = tuple(contract.ARTIFACT_KINDS)
+    required = {kind: tuple(rels)
+                for kind, rels in contract.REQUIRED_MEMBERS.items()}
+
+    unknown = [kind for kind in kinds if kind not in vocabulary]
+    if unknown:
+        raise ValueError(
+            f"{bundle_path}: {unknown} is not a kind the release path implements "
+            f"({list(vocabulary)}); an artifact released as it would have no "
+            f"verifier")
+    for kind in kinds:
+        missing = [rel for rel in required[kind] if rel not in present]
+        if missing:
+            raise ValueError(
+                f"{bundle_path}: declares `{kind}` but the payload does not "
+                f"carry {missing}; the declaration is a claim the bytes do not "
+                f"keep")
+    for kind in vocabulary:
+        if kind in kinds:
+            continue
+        leaked = [rel for rel in required[kind] if rel in present]
+        if leaked:
+            raise ValueError(
+                f"{bundle_path}: does not declare `{kind}` yet the payload "
+                f"carries {leaked}; the two faces are one payload again, and a "
+                f"reader would have to guess which one it is from the artifact's "
+                f"name")
+    return {kind: sorted(set(required[kind]) & present) for kind in kinds}
+
+
+def face_carries(face: str | None) -> dict[str, bool]:
+    """What ONE build face writes, or everything when no face was chosen.
+
+    A kind is the release verifier's word for one face of the product. This is
+    the build's half of the same decision: given a composition that declares
+    both `node-runtime` and `plugin`, which members belong to the artifact being
+    written right now. Splitting them is the whole of the device/runtime
+    decoupling — the two artifacts are disjoint payloads with their own cache
+    identity, so either can be versioned, released and rolled back without the
+    other, while `ability-management` stays the one canonical source of the
+    reusable Skills both compose.
+
+    The names come from `release.py`, not from a second list here, so a kind
+    renamed there cannot leave a face here that nothing verifies.
+    """
+    if face is None:
+        # The combined build, unchanged: a composition that declares both kinds
+        # keeps producing the one payload both releases read.
+        return {"skills": True, "modules": True, "plugin_manifests": True,
+                "mcp_manifests": True, "marketplace": True, "recommended": True}
+    contract = release_contract()
+    if face == contract.PLUGIN:
+        # The device Ability family. A plugin is a payload a Claude Code loads:
+        # Skills plus the plugin manifests. It ships no daemon and no node MCP
+        # adapter, because an adapter whose entry point is in another artifact
+        # would load and then fail on first call.
+        return {"skills": True, "modules": False, "plugin_manifests": True,
+                "mcp_manifests": False, "marketplace": True, "recommended": True}
+    if face == contract.NODE_RUNTIME:
+        # The serverosd face. Modules and the node MCP surface, no Skill at all,
+        # so a runtime rollback cannot rewind the device Abilities.
+        return {"skills": False, "modules": True, "plugin_manifests": False,
+                "mcp_manifests": True, "marketplace": False, "recommended": False}
+    raise ValueError(
+        f"{face!r} is not a kind the release path implements "
+        f"({list(contract.ARTIFACT_KINDS)})")
 
 
 def source_identity(repo: Path, ability_repo: Path, ability_rev: str) -> dict:
@@ -897,7 +1063,13 @@ def source_identity(repo: Path, ability_repo: Path, ability_rev: str) -> dict:
 
 def artifact_manifest(bundle: dict, version: str, skills: list[str],
                       members: list[str], kinds: list[str],
-                      source: dict) -> dict:
+                      source: dict, *,
+                      cachebuster: str | None = None,
+                      kind_evidence: dict[str, list[str]] | None = None,
+                      face: str | None = None,
+                      declared_kinds: list[str] | None = None,
+                      recommended: list[dict] | None = None,
+                      mcp_servers: list[str] | None = None) -> dict:
     """The build's statement about what it produced, written INTO the artifact.
 
     It travels with the bytes for the same reason the composition declaration in
@@ -924,13 +1096,21 @@ def artifact_manifest(bundle: dict, version: str, skills: list[str],
     and the plugin's own `provides` list is the union of both — so a consumer
     that read only `skills` saw 10 declared and 5 present and had no artifact
     fact to tell it which five were which.
+
+    The face-only keys (`face`, `declared_kinds`, `kind_evidence`) are written
+    only for a face build. The combined payload keeps the manifest it has always
+    written: its cachebuster names a released payload, and adding keys under an
+    unchanged label would leave an installed cache that disagrees with canonical
+    under a version string `claude plugin update` reads as already current.
     """
-    return {
+    entries = recommended if recommended is not None else (bundle.get("recommended") or [])
+    record = {
         "schema": "serveros/artifact.v1",
         "composition": bundle["composition"],
         "name": bundle["name"],
         "version": version,
-        "cachebuster": bundle["cachebuster"],
+        "cachebuster": (cachebuster if cachebuster is not None
+                        else bundle["cachebuster"]),
         "kinds": kinds,
         "skills": sorted(skills),
         # Name and status, not just names: `available` and `missing` are a
@@ -940,66 +1120,131 @@ def artifact_manifest(bundle: dict, version: str, skills: list[str],
         # the README prints it.
         "recommended": sorted(
             ({"name": entry["name"], "status": entry["status"]}
-             for entry in bundle.get("recommended") or []),
+             for entry in entries),
             key=lambda entry: entry["name"]),
         # Names, not the entries: the release-side check asks whether the MCP
         # manifests the payload carries declare the same SERVER NAMES as the
         # composition, and a record of the commands would be a second copy of
         # facts the payload already states.
-        "mcp_servers": sorted(entry["name"] for entry in _declared_servers(bundle)),
+        "mcp_servers": (mcp_servers if mcp_servers is not None
+                        else sorted(entry["name"] for entry in _declared_servers(bundle))),
         "members": members,
         "source": source,
     }
+    if face is not None:
+        record["face"] = face
+        # The composition may be released as more than one face; this artifact
+        # is exactly one of them. Both facts are recorded so a reader can tell
+        # "this payload is the plugin face" from "this composition also has a
+        # runtime face", which one version string could not say.
+        record["declared_kinds"] = list(declared_kinds or kinds)
+        # What this face's claim stands on, derived from `members` rather than
+        # copied from the composition. It is the difference between a manifest
+        # that asserts a kind and one that shows the bytes behind it.
+        record["kind_evidence"] = kind_evidence or {}
+    return record
 
 
 def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
-         marketplace_path: Path):
+         marketplace_path: Path, face: str | None = None):
     bundle = load_composition(bundle_path)
-    version = f"{bundle['version']}+{bundle['cachebuster']}"
-    kinds = declared_artifact_kinds(bundle, bundle_path)
+    declared = declared_artifact_kinds(bundle, bundle_path)
+    if face is None:
+        # The combined artifact: the composition's declaration, verbatim, and
+        # its own cache identity. This is the build every existing composition
+        # has always produced, and its bytes do not change.
+        kinds = list(declared)
+        cachebuster = bundle["cachebuster"]
+        carries = face_carries(None)
+    else:
+        if face not in declared:
+            raise ValueError(
+                f"{bundle_path}: --face {face!r} is not one of this "
+                f"composition's declared artifacts {declared}; a face is a build "
+                f"of a face the composition already says it is released as")
+        kinds = [face]
+        # A face is its own payload, so it is its own cache identity. Sharing
+        # the composition's label would let a Skill-only payload and a daemon
+        # payload claim one version string — the coupling this split removes.
+        cachebuster = f"{bundle['cachebuster']}.{face}"
+        carries = face_carries(face)
+    version = f"{bundle['version']}+{cachebuster}"
+    # What this face actually carries, in the two forms the artifact states it:
+    # the on-demand Abilities it recommends (a plugin-face fact) and the node MCP
+    # servers whose entry points ship with it (a node-face fact).
+    recommended = (bundle.get("recommended") or []) if carries["recommended"] else []
 
     local_root = repo_root() / "skills"
-    validate_recommended(bundle, local_root, ability_repo, ability_rev)
+    if carries["recommended"]:
+        # The node face ships no Skill and therefore recommends none; asking
+        # the pinned catalogue about it would be a dependency on
+        # ability-management for a payload that reads none of it.
+        validate_recommended(bundle, local_root, ability_repo, ability_rev)
     files: list[tuple[bytes, Path, bool]] = []
     skills: list[str] = []
-    for entry in bundle["skills"]:
-        name = entry["name"]
-        source = entry["source"]
-        skills.append(name)
-        if source == "local":
-            for src, rel in local_skill_files(local_root / name):
-                files.append((src.read_bytes(), Path("skills") / name / rel,
-                              is_executable(src)))
-        elif source == "ability-management":
-            for content, rel, executable in ability_skill_files(ability_repo, ability_rev, name):
-                files.append((content, Path("skills") / name / rel, executable))
-        else:
-            raise ValueError(f"unknown skill source for {name}: {source!r}")
+    if carries["skills"]:
+        for entry in bundle["skills"]:
+            name = entry["name"]
+            source = entry["source"]
+            skills.append(name)
+            if source == "local":
+                for src, rel in local_skill_files(local_root / name):
+                    files.append((src.read_bytes(), Path("skills") / name / rel,
+                                  is_executable(src)))
+            elif source == "ability-management":
+                for content, rel, executable in ability_skill_files(ability_repo, ability_rev, name):
+                    files.append((content, Path("skills") / name / rel, executable))
+            else:
+                raise ValueError(f"unknown skill source for {name}: {source!r}")
 
     # ServerOS Core modules ship verbatim. Each declares its own path under
     # bundle.yaml, so adding a module is one bundle key plus one directory —
     # never a second vocabulary of module names hardcoded here.
-    for module in CORE_MODULES:
-        module_rel = bundle.get(module, {}).get("path")
-        if not module_rel:
-            continue
-        if module_rel != module:
-            raise ValueError(f"{module}: bundle path must be {module!r}, got {module_rel!r}")
-        for src, rel in local_skill_files(repo_root() / module_rel):
-            files.append((src.read_bytes(), Path(module_rel) / rel, is_executable(src)))
+    if carries["modules"]:
+        for module in CORE_MODULES:
+            module_rel = bundle.get(module, {}).get("path")
+            if not module_rel:
+                continue
+            if module_rel != module:
+                raise ValueError(f"{module}: bundle path must be {module!r}, got {module_rel!r}")
+            for src, rel in local_skill_files(repo_root() / module_rel):
+                files.append((src.read_bytes(), Path(module_rel) / rel, is_executable(src)))
 
-    manifests = {
-        Path(".claude-plugin/plugin.json"): claude_plugin_manifest(bundle, version, skills),
-        Path(".claude-plugin/marketplace.json"): claude_marketplace_manifest(bundle, version),
-        Path(".codex-plugin/plugin.json"): codex_plugin_manifest(bundle, version),
-    }
-    if _declared_servers(bundle):
+    # Plugin manifests are a fact about the PLUGIN face. A `node-runtime`
+    # composition that also emitted them would be a daemon a Claude Code could
+    # try to load, and `verify_artifact_kinds` would refuse the payload anyway —
+    # the plugin kind's required members would be present while the kind is not
+    # declared. Emitting them only for the face that claims them makes that
+    # refusal unreachable by construction rather than by convention.
+    plugins = release_contract().PLUGIN in kinds
+    # Whether this face SHIPS the node surface, which is what the plugin
+    # manifests must agree with. A Skill-only face declares no MCP server.
+    emit_mcp = bool(_declared_servers(bundle)) and carries["mcp_manifests"]
+    face_servers = _declared_servers(bundle) if emit_mcp else []
+    manifests: dict[Path, dict] = {}
+    if plugins and carries["plugin_manifests"]:
+        manifests.update({
+            Path(".claude-plugin/plugin.json"): claude_plugin_manifest(
+                bundle, version, skills, face_servers),
+            Path(".claude-plugin/marketplace.json"): claude_marketplace_manifest(bundle, version),
+            Path(".codex-plugin/plugin.json"): codex_plugin_manifest(
+                bundle, version, face_servers),
+        })
+    if emit_mcp:
         # Two files, two shapes. Emitted together so that neither runtime can
         # drift into being the only one this plugin actually reaches.
         manifests[Path(".mcp.json")] = claude_mcp_manifest(bundle)
         manifests[Path(".codex-mcp.json")] = codex_mcp_manifest(bundle)
-    readme = build_readme(bundle, version, skills, ability_rev)
-    marketplace = codex_marketplace(bundle, output, marketplace_path)
+    readme = build_readme(
+        bundle, version, skills, ability_rev,
+        cachebuster=cachebuster,
+        servers=face_servers,
+        recommended=recommended)
+    # The marketplace descriptor lists the composition AS a plugin. A
+    # node-runtime face must not overwrite the device plugin's entry with a
+    # daemon, so it produces no descriptor (and `build()` writes none).
+    marketplace = (codex_marketplace(bundle, output, marketplace_path)
+                   if plugins and carries["marketplace"] else None)
 
     # The artifact manifest is one of the generated JSON files, which is what
     # makes it written by `--write`, content-checked by `--check`, included in
@@ -1011,9 +1256,28 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
     members = sorted({str(rel) for _c, rel, _e in files}
                      | {str(rel) for rel in manifests}
                      | {"README.md", ARTIFACT_MANIFEST_NAME})
+    # Before the manifest is written, and therefore before any artifact can
+    # carry a claim: every declared kind must be backed by the members above,
+    # and no undeclared kind may be silently present.
+    kind_evidence = verify_artifact_kinds(kinds, members, bundle_path)
+    mcp_servers = sorted(entry["name"] for entry in face_servers)
+    source = source_identity(repo_root(), ability_repo, ability_rev)
+    if not carries["skills"]:
+        # Provenance is a claim about what was READ. A daemon payload reads no
+        # Skill, so naming the ability pin here would attribute bytes to a
+        # revision this build never opened.
+        source["ability_management"] = {
+            "repo": None,
+            "revision": None,
+            "basis": ("this artifact composes no Skill from ability-management; "
+                      "the node-runtime face does not depend on the ability pin"),
+        }
     manifests[Path(ARTIFACT_MANIFEST_NAME)] = artifact_manifest(
         bundle, version, skills, members, kinds,
-        source_identity(repo_root(), ability_repo, ability_rev))
+        source,
+        cachebuster=cachebuster, kind_evidence=kind_evidence, face=face,
+        declared_kinds=declared, recommended=recommended,
+        mcp_servers=mcp_servers)
     return files, manifests, readme, marketplace, version
 
 
@@ -1022,7 +1286,8 @@ def _json_bytes(value: dict) -> bytes:
 
 
 def build(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
-          marketplace_path: Path, write: bool, pack_contract_path: Path) -> int:
+          marketplace_path: Path, write: bool, pack_contract_path: Path,
+          face: str | None = None) -> int:
     # Validated here and not in `plan()`. The two are used for different
     # questions: `build()` produces the artifact, and `runtime_truth.py` calls
     # `plan()` to RECOMPUTE an installed artifact from a recorded pin. A pack
@@ -1031,9 +1296,16 @@ def build(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
     # — so putting the check in `plan()` made every recomputation of a
     # historical artifact refuse for a reason that was about the release
     # calendar rather than about the artifact.
-    validate_packs(pack_contract_path, ability_repo, ability_rev)
+    #
+    # The node-runtime face reads no Skill, so it is not checked against the
+    # ability catalogue: a daemon build that could be refused for a reason
+    # about ability-management would still be coupled to it, one layer down
+    # from the payload.
+    if face_carries(face)["skills"]:
+        validate_packs(pack_contract_path, ability_repo, ability_rev)
     files, manifests, readme, marketplace, _version = plan(
-        bundle_path, ability_repo, ability_rev, output, marketplace_path
+        bundle_path, ability_repo, ability_rev, output, marketplace_path,
+        face=face
     )
 
     expected_files = {rel for _content, rel, _executable in files} | set(manifests) | {Path("README.md")}
@@ -1083,10 +1355,11 @@ def build(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
                 drifted.add(f"content {rel}")
         if (output / "README.md").is_file() and (output / "README.md").read_text() != readme:
             drifted.add("content README.md")
-        if not marketplace_path.is_file():
-            drifted.add(f"missing {marketplace_path}")
-        elif marketplace_path.read_bytes() != _json_bytes(marketplace):
-            drifted.add(f"content {marketplace_path}")
+        if marketplace is not None:
+            if not marketplace_path.is_file():
+                drifted.add(f"missing {marketplace_path}")
+            elif marketplace_path.read_bytes() != _json_bytes(marketplace):
+                drifted.add(f"content {marketplace_path}")
         # Both classes are reported in one run. `--check` writes nothing, so
         # stopping at the credential would only make the operator run it twice
         # to learn the rest — and the second run would report the same
@@ -1122,8 +1395,9 @@ def build(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(_json_bytes(value))
     (output / "README.md").write_text(readme)
-    marketplace_path.parent.mkdir(parents=True, exist_ok=True)
-    marketplace_path.write_bytes(_json_bytes(marketplace))
+    if marketplace is not None:
+        marketplace_path.parent.mkdir(parents=True, exist_ok=True)
+        marketplace_path.write_bytes(_json_bytes(marketplace))
     return 0
 
 
@@ -1135,8 +1409,9 @@ def main() -> int:
     ap.add_argument("--bundle", type=Path, default=root / "plugin/bundle.yaml")
     ap.add_argument("--ability-repo", type=Path,
                     default=Path(os.environ.get("SERVEROS_ABILITY_REPO", "")) if os.environ.get("SERVEROS_ABILITY_REPO") else None)
-    ap.add_argument("--ability-rev", required=True,
-                    help="pinned ability-management revision the reusable Skills are read from")
+    ap.add_argument("--ability-rev",
+                    help="pinned ability-management revision the reusable Skills are read from. "
+                         "Not required for --face node-runtime, which reads no Skill.")
     # The runtime artifact has exactly one home: the stable distribution root.
     # Requiring an explicit destination keeps this repository a source tree and
     # prevents a second, repo-local plugin payload from appearing alongside it.
@@ -1148,20 +1423,45 @@ def main() -> int:
     ap.add_argument("--marketplace-path", type=Path, required=True,
                     help="Codex marketplace descriptor, e.g. "
                          "$DATA_ROOT/runtime-assets/hwz-server-os/.agents/plugins/marketplace.json")
+    # One composition can be released as two faces. Without this option the
+    # build produces the combined payload both releases read; with it, the
+    # named face is built as its own artifact, under its own cache identity, so
+    # the device Abilities and the daemon can be versioned, released and rolled
+    # back apart. The face must be one the composition already declares.
+    ap.add_argument("--face", choices=list(release_contract().ARTIFACT_KINDS),
+                    default=None,
+                    help="build ONE face of a composition that declares it, as a "
+                         "separate artifact with its own cache identity "
+                         "(e.g. `plugin` for the device Ability family, "
+                         "`node-runtime` for serverosd). Omit for the combined "
+                         "payload.")
     args = ap.parse_args()
     if args.check == args.write:
         ap.error("choose exactly one of --check or --write")
-    if args.ability_repo is None:
-        ap.error("--ability-repo is required (or set SERVEROS_ABILITY_REPO)")
+    node_face = args.face == release_contract().NODE_RUNTIME
+    if not node_face:
+        if args.ability_repo is None:
+            ap.error("--ability-repo is required (or set SERVEROS_ABILITY_REPO)")
+        if not args.ability_rev:
+            ap.error("--ability-rev is required")
     try:
-        rev = resolve_ability_rev(args.ability_repo, args.ability_rev)
-        if rev != args.ability_rev:
-            raise ValueError(
-                f"--ability-rev must be a full commit SHA; {args.ability_rev} resolves to {rev}"
-            )
-        return build(args.bundle, args.ability_repo, rev, args.output,
+        if node_face:
+            # The node face reads no Skill, so neither the checkout nor the pin
+            # is consulted: a daemon build refused for a reason about
+            # ability-management would still be coupled to it.
+            rev = args.ability_rev or ""
+            ability_repo = args.ability_repo or Path(".")
+        else:
+            ability_repo = args.ability_repo
+            rev = resolve_ability_rev(ability_repo, args.ability_rev)
+            if rev != args.ability_rev:
+                raise ValueError(
+                    f"--ability-rev must be a full commit SHA; {args.ability_rev} resolves to {rev}"
+                )
+        return build(args.bundle, ability_repo, rev, args.output,
                      args.marketplace_path, args.write,
-                     args.pack_contract or (root / "abilities" / "pack-contract.yaml"))
+                     args.pack_contract or (root / "abilities" / "pack-contract.yaml"),
+                     face=args.face)
     except (OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

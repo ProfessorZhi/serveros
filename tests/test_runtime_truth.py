@@ -220,7 +220,13 @@ class RuntimeTruthTests(unittest.TestCase):
             "composition": NODE_COMPOSITION,
             "name": "hwz-server-os-fixture-node",
             "cachebuster": "fixture.1",
-            "artifacts": ["plugin"],
+            # Both faces, because the payload has both: it extends core, so it
+            # inherits `runtime/`, `bin/` and `workengine/` AND emits the plugin
+            # manifests this suite reads a version from. It declared `plugin`
+            # alone, which was a label the bytes did not keep — `build.py` now
+            # refuses that rather than writing a manifest that says one thing
+            # while the payload ships the other.
+            "artifacts": ["node-runtime", "plugin"],
             "skills": [
                 {"name": "runtime-management", "source": "ability-management"},
                 {"name": "workspace-management", "source": "ability-management"},
