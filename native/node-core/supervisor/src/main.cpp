@@ -24,6 +24,7 @@
 // property a run beside `serverosd` needs — the Python daemon owns the health
 // ledger, and a second writer would be a second authority over one account.
 #include <signal.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -99,7 +100,7 @@ void print_usage(std::FILE* out) {
                  "                         different thing from this one.\n"
                  "  --max-ticks N          stop after N ticks. For tests; a unit must not\n"
                  "                         pass it.\n"
-                 "  --enable-actions       ACT. REQUIRES --lease, --link-state and\n"
+                 "  --enable-actions       ACT. REQUIRES --link-state and\n"
                  "                         --agent-state. With --serve it additionally REQUIRES\n"
                  "                         --facts, because a resident loop cannot act on a fact\n"
                  "                         stated once at startup.\n"
@@ -120,6 +121,13 @@ void print_usage(std::FILE* out) {
                  "                         document says no map was readable.\n"
                  "  --lease FILE           single-writer lease. Taken with flock, never\n"
                  "                         waited for, and released when this process exits.\n"
+                 "                         Defaults to $XDG_RUNTIME_DIR/serveros/\n"
+                 "                         native-core.lease — the same path the Python\n"
+                 "                         daemon defaults to, so one pen is shared by\n"
+                 "                         construction rather than by an operator\n"
+                 "                         remembering to pass the same argument. With no\n"
+                 "                         absolute XDG_RUNTIME_DIR there is no default\n"
+                 "                         and --lease is required.\n"
                  "  --link-state up|down|unknown\n"
                  "                         whether this host has a working link. Default\n"
                  "                         unknown, which REFUSES to act.\n"
@@ -190,6 +198,53 @@ bool read_file(const std::string& path, std::string& out) {
     std::ostringstream buffer;
     buffer << stream.rdbuf();
     out = buffer.str();
+    return true;
+}
+
+//: The lease path both programs mean when nobody names one.
+//:
+//: `runtime/daemon.py` defaults to `$XDG_RUNTIME_DIR/serveros/native-core.lease`
+//: and says, in its own comment, that a Core started with "the default --lease"
+//: contends with it "by construction". That sentence was FALSE of this binary
+//: until this function existed: `--lease` was required with no default, so the
+//: two programs shared a pen only when an operator happened to pass the daemon's
+//: path by hand.
+//:
+//: Derived, never guessed. An unset or relative `XDG_RUNTIME_DIR` refuses rather
+//: than falling back to a path of this program's own invention: a lease at a path
+//: nobody else knows is exactly the split-lock this exists to prevent, and a
+//: default that only one program agrees with is worse than no default at all.
+bool default_lease_path(std::string& out, std::string& why) {
+    const char* runtime_dir = std::getenv("XDG_RUNTIME_DIR");
+    if (runtime_dir == nullptr || runtime_dir[0] != '/') {
+        why = "XDG_RUNTIME_DIR is unset or not absolute, so there is no default "
+              "lease path to derive; pass --lease FILE explicitly";
+        return false;
+    }
+    std::string base(runtime_dir);
+    // A trailing slash would make the derived string differ from the daemon's
+    // for the same inode. Normalising here keeps "the same path" a fact about
+    // the string as well as about the filesystem.
+    while (base.size() > 1 && base.back() == '/') {
+        base.pop_back();
+    }
+    const std::string directory = base + "/serveros";
+    // THE DIRECTORY IS NOT CREATED HERE, and that is a refusal rather than a
+    // detail. `WriterLease::acquire` opens relative to an existing parent and
+    // never mkdirs, and the Python daemon's `SafeLease` DOES create it — so the
+    // one case where the two programs differ is a fresh `$XDG_RUNTIME_DIR`. Left
+    // to fail inside the action gate, that turned into "every unit refused for
+    // NO_LEASE" and a single pass that still exited 0: an operator would read
+    // that as success. Refused up front instead, naming both remedies.
+    struct stat info {};
+    if (::stat(directory.c_str(), &info) != 0 || !S_ISDIR(info.st_mode)) {
+        why = "the default lease directory " + directory + " does not exist or is not "
+              "a directory. This Core does not create it (the Python daemon does, for "
+              "its status socket): create it once, or pass --lease FILE. Acting "
+              "without a lease is acting without the pen";
+        return false;
+    }
+    out = directory + "/native-core.lease";
     return true;
 }
 
@@ -457,7 +512,8 @@ int main(int argc, char** argv) {
         // the life of the process is how `LINK_UP` and `AGENT_IDLE` become
         // hard-coded. So the resident acting form is admitted only with a facts
         // document it re-reads every tick; the persisted budget and the
-        // single-writer lease are still required, and the existing ActionGate
+        // single-writer lease (derived when not given) are still required, and
+        // the existing ActionGate
         // below enforces them unchanged.
         if (facts_path.empty()) {
             std::fprintf(stderr,
@@ -492,6 +548,15 @@ int main(int argc, char** argv) {
         // reboot. Refused with a named reason rather than defaulted.
         nodecore::supervisor::ActionGateInput gate;
         gate.act = true;
+        // The lease path is DERIVED here, not left empty: see default_lease_path.
+        if (lease_path.empty()) {
+            std::string why;
+            if (!default_lease_path(lease_path, why)) {
+                std::fprintf(stderr, "%s\n", why.c_str());
+                return 2;
+            }
+        }
+
         gate.have_lease = !lease_path.empty();
         if (serve && !facts_path.empty()) {
             // The facts document IS how the resident path knows these. Asking
@@ -1064,7 +1129,8 @@ int main(int argc, char** argv) {
 
         const nodecore::supervisor::TickFn tick = [&observe_and_plan, act] {
             // Acting in the resident loop is admitted only when `--enable-actions`
-            // was given, which above also required `--state`, `--lease` and a
+            // was given, which above also required `--state`, a lease path
+            // (given, or derived by default_lease_path) and a
             // per-tick `--facts` document. Observe-only remains the default.
             return observe_and_plan(act);
         };

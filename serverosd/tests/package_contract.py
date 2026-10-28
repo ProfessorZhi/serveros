@@ -582,23 +582,19 @@ class ConsumerMatrixTest(unittest.TestCase):
                   ).read_text(encoding="utf-8")
         self.assertIn(f'kCapabilitySchema = "{declared}"', header)
 
-    def test_the_lease_gap_is_recorded_and_still_true(self):
-        """The matrix's sharpest claim, held to the code it is about.
+    def test_the_lease_path_is_shared_by_construction(self):
+        """The matrix's sharpest claim, which is now the opposite one.
 
-        The Python daemon defaults its lease path; the native Core has none. The
-        matrix says so with `native_default_lease: null`, and this asserts the
-        reason is still real — by looking for an ASSIGNMENT, not for a filename.
-
-        An earlier version of this test grepped one literal token out of
-        `native/**` and its commit message claimed that "the day someone gives
-        --lease a default, this fails". It did not: a default named `core.lease`,
-        or written as two adjacent string literals, or set in a unit file, would
-        all have passed. What is checked now is the property itself — every
-        assignment to `lease_path` comes from `argv`.
+        It used to assert a GAP: the daemon defaulted a lease path and the native
+        Core had none, so the two contended on one file only when an operator
+        passed the same argument twice. The Core now derives that path itself and
+        refuses to derive one without an absolute `XDG_RUNTIME_DIR`, so this holds
+        the closure instead — by comparing the two sources that name the path.
         """
         single = self.matrix["single_writer"]
-        self.assertIsNone(single["native_default_lease"])
-        self.assertFalse(single["shared_by_declaration"])
+        self.assertTrue(single["shared_by_declaration"])
+        self.assertEqual(single["native_default_lease"],
+                         "$XDG_RUNTIME_DIR/serveros/native-core.lease")
 
         daemon = (REPO_ROOT / "runtime" / "daemon.py").read_text(encoding="utf-8")
         self.assertIn("native-core.lease", daemon,
@@ -606,14 +602,15 @@ class ConsumerMatrixTest(unittest.TestCase):
 
         main_cpp = (REPO_ROOT / "native/node-core/supervisor/src/main.cpp"
                     ).read_text(encoding="utf-8")
-        assignments = [line.strip() for line in main_cpp.splitlines()
-                       if re.search(r"\blease_path\s*=(?!=)", line)]
-        self.assertTrue(assignments, "lease_path is never assigned; the code moved")
-        for line in assignments:
-            self.assertEqual(line, "lease_path = argv[++i];",
-                             "the native Core now derives a lease path from something "
-                             "other than argv; update the matrix with its default and "
-                             "say whether the two programs share it")
+        # Assembled from two pieces (`base + "/serveros"`, then
+        # `+ "/native-core.lease"`), so the assertion is on the pieces.
+        self.assertIn('+ "/serveros"', main_cpp,
+                      "the C++ default and the daemon's default have drifted apart")
+        self.assertIn('"/native-core.lease"', main_cpp)
+        self.assertIn("default_lease_path(lease_path", main_cpp,
+                      "the Core no longer derives the lease path")
+        # The refusal is the part that keeps a default from being a guess.
+        self.assertIn("no default", main_cpp)
 
 
 
