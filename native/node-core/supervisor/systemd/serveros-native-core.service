@@ -97,18 +97,23 @@ Environment=SERVEROS_NATIVE_CORE_STATE=@SERVEROS_NATIVE_CORE_STATE@
 # --serve is not a default this file can change later without an edit a
 # reviewer sees. See the note above.
 #
-# FIXED 2026-10-14 (Stage 2): this line used to read `--observe`, a flag the
-# binary has never accepted. The Stage 1 template would have failed at start
-# with "unknown option --observe" — a unit that cannot start says so, which is
-# the only reason this was a loud mistake and not a silent one. Observe-only is
-# the DEFAULT in both modes and needs no flag; `--serve` is what makes it
-# resident, and `--enable-actions` is the switch this file must never carry.
+# CHANGED 2026-10-28 to `--monitor-only`, per the owner boundary: V1 serverosd
+# is a monitor. `--serve` was resident and observe-only by default, and that was
+# enough to be safe; it was not enough to be VISIBLE. A shipped instance reported
+# `profile: "serve"`, so the boundary existed only in a flag an operator might
+# add. `--monitor-only` names the profile in the process's own readback and
+# refuses every flag that authorises a verb, including `--enable-actions`, which
+# this file must never carry.
+#
+# History worth keeping: this line used to read `--observe`, a flag the binary
+# never accepted — a unit that cannot start says so, which is the only reason
+# that was a loud mistake rather than a silent one.
 #
 # The status socket is a UNIX socket in the user's own runtime directory, so
 # [Service] needs no RuntimeDirectory= and no ListenStream. One Core per user:
 # two users on one device get two instances of this unit, with their own
 # manifests, allowlists and runtime directories, and neither can see the other.
-ExecStart=@SERVEROS_NATIVE_CORE_BIN@ --serve --manifest @SERVEROS_NATIVE_CORE_MANIFEST@
+ExecStart=@SERVEROS_NATIVE_CORE_BIN@ --monitor-only --manifest @SERVEROS_NATIVE_CORE_MANIFEST@
 
 Restart=on-failure
 RestartSec=30

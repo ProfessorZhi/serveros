@@ -48,6 +48,7 @@ std::string build_status_json(const StatusSnapshot& snapshot) {
     nodecore::Json root = nodecore::Json::object();
     root.set("schema", nodecore::Json::string(kStatusSchema));
     root.set("mode", nodecore::Json::string(snapshot.mode));
+    root.set("profile", nodecore::Json::string(snapshot.profile));
     root.set("node", nodecore::Json::string(snapshot.node));
     root.set("principal", nodecore::Json::string(snapshot.principal));
     root.set("pid", nodecore::Json::integer(snapshot.pid));
@@ -88,6 +89,18 @@ std::string build_status_json(const StatusSnapshot& snapshot) {
         services.push(service_json(notice));
     }
     root.set("services", std::move(services));
+
+    // The monitor's own cost, and the profile that incurred it. Numbers appear
+    // only when measured — the same rule every other value in this document
+    // follows: a value nobody read is not a zero.
+    nodecore::Json monitor = nodecore::Json::object();
+    monitor.set("profile", nodecore::Json::string(snapshot.profile));
+    if (snapshot.rss_kb >= 0) monitor.set("rss_kb", nodecore::Json::integer(snapshot.rss_kb));
+    if (snapshot.cpu_ms_total >= 0) {
+        monitor.set("cpu_ms_total", nodecore::Json::integer(snapshot.cpu_ms_total));
+    }
+    if (snapshot.tick_ms >= 0) monitor.set("tick_ms", nodecore::Json::integer(snapshot.tick_ms));
+    root.set("monitor", std::move(monitor));
 
     // Sorted keys and the Pretty form, so two answers that say the same thing
     // are the same bytes and a reader can diff them.
