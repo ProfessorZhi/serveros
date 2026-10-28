@@ -134,7 +134,17 @@ Each row is a real run on a throwaway copy; the file was restored afterwards.
 | negative | the #503-alone shape: the regression in a tree **without** #493 | `Ran 3 tests`, `OK (skipped=3)` → the job's checker prints `FAIL_SKIPPED_COMPOSITION` and exits **1** |
 | negative | gate a file that is not in the tree | `FAIL_NO_FILE`, `failures=1`, exit **1** |
 | positive | collection count on the pinned regression | `collected=3 expected=3`, exit **0**, all three ids listed |
-| positive | the gate function on the coverage check | `exit=0 collected=18 floor=10` |
+| positive | the gate function on the coverage check | `exit=0 collected=19 floor=10` |
+| negative (hosted) | `EXPECTED_TESTS: '3'` → `'2'` on a throwaway branch, pushed | composition job red: `collected=3 expected=2` → `FAIL_NO_COLLECTION`, exit 1 — and the offline job red on the static assertion |
+
+The hosted mutation run also found a defect in this workflow that the local
+runs could not show: the runner starts every `shell: bash` step with `-e`, so a
+gated file that fails killed the step inside the loop — red in 0.3 s, with no
+per-file line, no diagnosis and no artifact. The collection step now turns
+`-e` off and sets its exit status explicitly, and
+`test_the_gate_step_survives_the_runner_errexit` refuses an edit that removes
+`set +e`. A gate that fails without saying why is the same silence as a path
+filter that never fires.
 
 ## 6. Lark: #415's fix is in the #500 tree, not in `main`
 

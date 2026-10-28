@@ -285,6 +285,20 @@ class TheRunCannotBeGreenWithoutCollecting(unittest.TestCase):
                       "the offline job does not assert a collected-test floor; "
                       "`discover` prints `Ran 0 tests ... OK` for a missing file")
 
+    def test_the_gate_step_survives_the_runner_errexit(self):
+        """A red gate must print *why* it is red.
+
+        The hosted runner starts every `shell: bash` step with `-e`. Under that,
+        a gated file that fails kills the step inside the loop, before the
+        per-file line is printed: the job is red with no reading in it. Observed
+        on a hosted mutation run — the step exited 1 in 0.3s with an empty log
+        and no artifact. `set +e` is what makes the diagnosis reachable.
+        """
+        steps = job_steps(self.document, "offline-unit-contracts")
+        self.assertIn("set +e", steps,
+                      "the collection step must disable the runner's errexit; "
+                      "without it a failing gate is red and silent")
+
     def test_naming_a_family_did_not_drop_the_older_files(self):
         """The families are an addition; the files they do not match stay."""
         steps = job_steps(self.document, "offline-unit-contracts")

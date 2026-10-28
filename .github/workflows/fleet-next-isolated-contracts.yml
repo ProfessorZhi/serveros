@@ -149,6 +149,13 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
+          # The runner starts every bash step with `-e`. A gated file that
+          # fails would then kill the step inside `gate_file`, before the
+          # diagnosis below is printed — the job would be red with no reason
+          # in it. This gate is expected to fail, so `-e` is turned off here
+          # and the exit status is set explicitly at the end.
+          set +e
+          mkdir -p test-output
           : > test-output/gate.status
           failures=0
 
