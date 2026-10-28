@@ -232,6 +232,8 @@ only protects the builder protects the thing that cannot lie.
 | `L2-CUT-A.patch` is the behaviour-preserving version | **REAL ON A COPY** — 31 → 26 files, `external_in_repo []`, both flags true, installable, pin 13, `git apply --check` clean; the cut itself is #407's to make and is **NOT APPLIED** |
 | the cut changes no test outcome | **REAL** — 226 passed/24 skipped identical; the 335 pre-existing platform failures are the same set with and without the patch |
 | the cut is a RED → GREEN contract, not a promise | **REAL** — `tests/test_l2_source_standalone_contract.py`: 3 `xfail(strict=True)` fail today, pass on a patched copy (verified both ways with `--runxfail`), XPASS-strict when it lands |
+| `#416` composes with the cut | **REAL ON A COPY** — disjoint files, `git apply --check` clean both ways; 226 passed/24 skipped with #416 alone, with the cut alone, and with both; node closure 31 → 26 only when the cut is present |
+| three modules on #407's head are in neither artifact | **REAL** at `9538238d` — `events`, `run_watcher`, `runtime` are reachable from no entrypoint and are the whole consumer set of `runtime/fleet_mcp_owner.py`; measured, not concluded; recorded in `HANDOFF-407.md` and reported to #407/#416 |
 | `release.py` verifies `l2-node`/`l2-hub` | **NOT OURS** — #433/#436 own `scripts/release.py`; #436 @ `85493198` reads this manifest shape (see `HANDOFF-419.md` §9) |
 | installed on a node or the hub | **NOT_RUN** — this directory installs nothing |
 | signed artifacts | **NOT DONE** — digests are recorded, nothing is signed |

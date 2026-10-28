@@ -221,6 +221,59 @@ unapplied. If you want it, the smallest thing that works is **two commits**:
 Commit 1 alone cannot break the node; commit 2 is the one whose blast radius is
 the node closure, and the contract tests name it precisely.
 
+### A second gap on your head, which the cut does **not** fix: three modules are in neither artifact
+
+Measured on the same `9538238d`, separately from cut A. Both artifacts come from
+an import closure — `l2-node` from `fleet_mcp.node.connector`, `l2-hub` from
+`fleet_mcp.server` — and 17 of your 50 `fleet_mcp/*.py` files are reachable from
+neither:
+
+```
+on_disk: 50   node: 31   hub: 31   orphans: 17
+  fleet_mcp.deploy (+ 7 submodules)     fleet_mcp.health_admission
+  fleet_mcp.events                      fleet_mcp.http_transport
+  fleet_mcp.human_auth                  fleet_mcp.oauth
+  fleet_mcp.owner_setup                 fleet_mcp.release_evidence
+  fleet_mcp.run_watcher                 fleet_mcp.runtime
+```
+
+Most are deliberately out of scope. Three are new on your branch and are the
+entire consumer set of `runtime/fleet_mcp_owner.py`:
+
+```
+fleet_mcp/run_watcher.py:11:    from .events import validate_event
+runtime/fleet_mcp_owner.py:14:  from fleet_mcp.events import EventStore
+runtime/fleet_mcp_owner.py:15:  from fleet_mcp.run_watcher import RunWatcher
+runtime/fleet_mcp_owner.py:87:  from fleet_mcp.runtime import main as fleet_main
+```
+
+`fleet_mcp/events.py` and `fleet_mcp/run_watcher.py` do not exist on
+`main @ e69fc03`; they arrive with this branch, and nothing under `fleet_mcp/`
+imports them.
+
+Two consequences that are true today:
+
+1. A host that installs the `l2-hub` payload and then runs the repository's
+   `runtime/fleet_mcp_owner.py` gets `ImportError: fleet_mcp.run_watcher` — the
+   owner runtime needs three modules the artifact does not ship.
+2. `#416 @ dc73c600` (base `9538238d`) changes `run_watcher.py` — 73 added lines,
+   "refuse to call an empty run done". That half of their fix reaches **no**
+   artifact. Their `cloudcli_native.py` half does, because that module is in both
+   closures. Reported to them; their branch otherwise composes with cut A with no
+   conflict (disjoint files, `git apply --check` clean both ways, 226 passed
+   before and after each, and node closure 31 → 26 with the cut on top).
+
+Which layer carries the owner runtime is a decision, not a defect to patch here,
+and both readings are defensible:
+
+- if `events` + `run_watcher` + `runtime` are an **out-of-artifact layer**, the L2
+  manifest has to say so — today nothing does, and
+  `install.independently_installable` speaks only about the payload;
+- if the **hub artifact should carry them**, the hub entrypoint must reach them:
+  either `fleet_mcp/server.py` imports what it needs, or the hub entrypoint
+  becomes `runtime.fleet_mcp_owner` (one constant here, but it moves three
+  modules and their pin entries into the hub payload).
+
 ## What D7 asks of the change, in this directory's terms
 
 - `NODE_SHARED_SURFACE` in `l2_release.py` shrinks by exactly the modules that
