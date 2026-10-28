@@ -67,28 +67,83 @@ signed PHASE_ACCEPTED ┘   (facts)     (outcome)  (deterministic headline      
 summarizer 自身的超时与并发边界由调用方负责（本模块不并发调用它）。
 
 消息首行是判定事实（如 `VERIFIED_GREEN · CI_PASSED · ci:Tests:… · device:…`
-或 `ACTION REQUIRED · CI_ACTION_REQUIRED · …`），其后是确定性的
+或 `RED · CI_ACTION_REQUIRED · …`），其后是确定性的
 `Kind / Status / Severity / Gates / Evidence / Summary / Next` 块。成功是
 INFO，不是红色报警；`YELLOW` 从不外发。
 
 ## 幂等与 UNKNOWN
 
-- delivery key 由事实派生：`milestone:<source>:<device>:<kind>:<key>:<outcome>`；
-  同一 milestone、同一 outcome → 同一 key。投递前用主键 `INSERT` 原子 `claim`；
-  同进程重复观察、重复 webhook、进程重启后重放，都读到既有行：
-  `DELIVERED` → `DUPLICATE`，`IN_FLIGHT` / `DELIVERY_UNKNOWN` → `UNKNOWN_REPLAY`，
-  不再调用 provider。
+- 完整 delivery identity 由事实派生：
+  `milestone:<source>:<device>:<kind>:<key>:<outcome>`（NFC、UTF-8、大小写敏感，
+  ≤512）。账本同时存完整 `delivery_key` 与 ≤50 的 `transport_key`（见下节）。
+  投递前用主键 `INSERT` 原子 `claim`；同进程重复观察、重复 webhook、进程重启后
+  重放，都读到既有行：`DELIVERED` → `DUPLICATE`，
+  `IN_FLIGHT` / `DELIVERY_UNKNOWN` → `UNKNOWN_REPLAY`，不再调用 provider。
 - provider 返回 `delivered: true` 但**没有 `remote_id`**、返回没有显式
   `delivered: true`、provider 抛错、或 capability 为 `UNSUPPORTED` → 账本记
   `DELIVERY_UNKNOWN`，**绝不记 `DELIVERED`**。
 - 进程在 claim 之后崩溃会留下 `IN_FLIGHT`；下一次观察把它当成
   `UNKNOWN_REPLAY`，不自动重发。对 `IN_FLIGHT` / `DELIVERY_UNKNOWN` 的显式
   `reconcile(key)` 只在 transport 自己的 `IDEMPOTENCY_WINDOW_SECONDS` 内、用
-  **同一个 key** 再问一次；窗口外拒绝，因为重复会变成第二条消息。拿到
-  `remote_id` 才升级为 `DELIVERED`，且 `DELIVERED` 不会被降级。
+  **同一个 transport key** 再问一次；窗口外拒绝，因为重复会变成第二条消息。
+  拿到 `remote_id` 才升级为 `DELIVERED`，且 `DELIVERED` 不会被降级。
 - **纠正不是重复**：同一 milestone 从 `UNKNOWN` 变成终态属于新事实（outcome
   词不同，key 也不同），会作为一次纠正投递；同一 outcome 的再次观察才是
   `DUPLICATE`。两种情况都有测试。
+
+## Key derivation and the 50-character transport ceiling
+
+`runtime/message_transport.py` passes `idempotency_key[:50]` to the CLI, and the
+service dedupes on that value. A full identity longer than 50 therefore makes
+two different milestones share a key on their common prefix — the pre-fix bug
+this section closes.
+
+- **Full identity (ledger key)**: `milestone:<source>:<device>:<kind>:<key>:<outcome>`,
+  NFC-normalised, UTF-8, case-sensitive, ≤512. Stored as `delivery_key` and
+  accepted by `reconcile`.
+- **Transport key (≤50)**: `ms1:` + 46 hex characters of SHA-256 over the full
+  identity = 50 characters. This is what the injected provider and the CLI see.
+- The ledger stores **both** columns, so a receipt can be audited against the
+  identity that produced it.
+- 184 bits make an accidental collision vanishingly unlikely; this is a digest,
+  **not** a zero-collision mathematical proof.
+- **Old rows** (written before the column existed) keep `transport_key = NULL`.
+  A legacy `DELIVERED` row is never replayed. A legacy `IN_FLIGHT` /
+  `DELIVERY_UNKNOWN` row uses its original `full[:50]` key only in an explicit
+  `reconcile`, so the retry cannot create a second message under a new key. New
+  rows never use the legacy truncation.
+- **Pre-NFC rows**: the observer checks the raw (un-normalised) identity before
+  claiming the canonical key, so a row written before NFC canonicalisation is
+  matched and not resent once.
+- **Legacy reconcile residual**: two pre-fix rows that shared `full[:50]` cannot
+  be told apart retroactively. An explicit `reconcile` of one reuses the old key
+  and trusts the provider's dedupe echo; the stored `why` says so. This is the
+  pre-fix trade-off, confined to legacy rows; new rows never use it.
+
+## 词表：milestone_kind vs delivery_state/lifecycle（冻结提案）
+
+#418/#422 的审查指出 `milestone_kind` 把「里程碑种类」和「投递生命周期位置」
+混在一起，而 #423 的两轴已经分开。**本 PR 不单方面修改公共词表**；以下是交给
+#417/#422 作者确认的冻结提案，README/tests 先钉住 #423 这一侧：
+
+| #418/#422 词 | 轴 | #423 词 |
+|---|---|---|
+| `DISPATCH_ACK` | delivery/lifecycle | 不建模为 milestone；最接近 `SILENT` / 仅卡片（pre-terminal） |
+| `RUN_ENDED` | milestone_kind | 可信成功 = `RUN_COMPLETED`；失败 = `RUN_FAILED` / `RUN_CANCELLED`；不可信 = `RUN_OUTCOME_UNKNOWN` |
+| `CI_PASSED` | milestone_kind | `CI_PASSED`（唯一同名交集） |
+| `QA_ACCEPTED` | milestone_kind | `PHASE_ACCEPTED` / `PR_ACCEPTED`（scope 区分阶段或 PR） |
+| `FEISHU_DELIVERED` | delivery_state | `DELIVERED` |
+| （无对应词） | milestone_kind | `TASK_COMPLETED`：建议映射到 `RUN_ENDED`（scope=task），或由 #422 决定是否新增 |
+
+我们的两轴封闭且不相交：
+
+- `milestone_kind`（事实）：`RUN_COMPLETED` · `CI_PASSED` · `PHASE_ACCEPTED` · `PR_ACCEPTED` · `TASK_COMPLETED`
+  （代码中的显式封闭集合 `MILESTONE_KINDS`）
+- `delivery_state`（生命周期）：`IN_FLIGHT` · `DELIVERED` · `DELIVERY_UNKNOWN` · `CARD_ONLY` · `NO_EVENT` · `DUPLICATE` · `UNKNOWN_REPLAY`
+
+`DISPATCH_ACK` / `FEISHU_DELIVERED` **不是** `milestone_kind`；测试
+`test_the_two_vocabularies_are_disjoint` 钉住这一点。等 #417/#422 作者确认后，
+再决定是采用本表、还是由 #422 在 §5 内拆栏并补契约测试。
 
 ## 唯一未接的生产接口
 
@@ -114,7 +169,7 @@ python3 -m unittest -v tests.test_fleet_v1_milestone_notify
 ## 证据分级
 
 - **CODE**：本目录。
-- **UNIT**：`tests/test_fleet_v1_milestone_notify.py`（31 项，含一项驱动真实
+- **UNIT**：`tests/test_fleet_v1_milestone_notify.py`（39 项，含一项驱动真实
   `direct_lark_notify` provider 的 monkeypatch 集成测试）。
 - **HOSTED_CI**：PR 的 `Tests` 工作流。
 - **REAL_FEISHU_DELIVERY**：**未声称**。只有真实 provider receipt + Owner

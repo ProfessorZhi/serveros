@@ -112,6 +112,11 @@ class MilestoneNotifyTest(unittest.TestCase):
     def evidence(self, source, ref):
         return m.normalize(source, self.payload(source, ref))
 
+    def run_payload(self, run_id):
+        payload = self.payload("cloudcli", "run-completed")
+        payload["run"] = {**payload["run"], "runId": run_id}
+        return payload
+
     def notifier(self, provider, **kwargs):
         kwargs.setdefault("conversation_ref", "conversation:ops")
         return m.MilestoneNotifier(provider, self.ledger, **kwargs)
@@ -214,6 +219,237 @@ class MilestoneNotifyTest(unittest.TestCase):
         self.assertEqual(observation.remote_id, "om_real_1")
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][1:3], ["im", "+messages-send"])
+        # The real transport path receives the derived short key, unchanged by
+        # its own `[:50]`, not the 111-character ledger identity.
+        sent_key = seen[0][seen[0].index("--idempotency-key") + 1]
+        self.assertEqual(sent_key, observation.transport_key)
+        self.assertLessEqual(len(sent_key), 50)
+
+    def test_the_two_vocabularies_are_disjoint(self):
+        """`milestone_kind` is the fact; `delivery_state` is the lifecycle.
+
+        This pins #423's side of the #417/#422 vocabulary freeze proposal. The
+        five positive kinds are evidence kinds; `DISPATCH_ACK` and
+        `FEISHU_DELIVERED` are positions on the delivery chain and must never
+        appear as a milestone kind.
+        """
+        milestone_kinds = set(m.MILESTONE_KINDS)
+        delivery_states = {
+            m.DELIVERED, m.UNKNOWN_DELIVERY, m.IN_FLIGHT, m.CARD_ONLY,
+            m.SILENT_STATE, m.DUPLICATE, m.UNKNOWN_REPLAY,
+        }
+        self.assertEqual(milestone_kinds & delivery_states, set())
+        self.assertFalse(hasattr(m, "DISPATCH_ACK"))
+        self.assertFalse(hasattr(m, "FEISHU_DELIVERED"))
+        self.assertEqual(
+            m.MILESTONE_KINDS,
+            {"RUN_COMPLETED", "CI_PASSED", "PHASE_ACCEPTED",
+             "PR_ACCEPTED", "TASK_COMPLETED"})
+
+    # -- transport key derivation (the 50-character ceiling) ---------------- #
+    def test_two_runs_sharing_the_old_50_char_prefix_get_distinct_transport_keys(self):
+        """The old transport key was the first 50 chars; that collided here.
+
+        Both full identities share the same source/device/kind prefix, so
+        `full[:50]` is identical for two different Runs. The derived transport
+        key must differ, fit the ceiling, and be what the provider receives.
+        """
+        evidence_first = m.normalize("cloudcli", self.run_payload(
+            "a1b1c184-ea82-4079-8da9-a96bd3568cc3"))
+        evidence_second = m.normalize("cloudcli", self.run_payload(
+            "ffffffff-ea82-4079-8da9-a96bd3568cc3"))
+        first = m.decide(evidence_first)
+        second = m.decide(evidence_second)
+        full_first = m.delivery_key_for(first)
+        full_second = m.delivery_key_for(second)
+        self.assertNotEqual(full_first, full_second)
+        # The premise of the bug: the old truncation made them the same key.
+        self.assertEqual(full_first[:50], full_second[:50])
+
+        short_first = m.transport_key_for(full_first)
+        short_second = m.transport_key_for(full_second)
+        self.assertNotEqual(short_first, short_second)
+        self.assertLessEqual(len(short_first), 50)
+        self.assertLessEqual(len(short_second), 50)
+        self.assertTrue(short_first.startswith("ms1:"))
+
+        provider = FakeLark()
+        notifier = self.notifier(provider)
+        one = notifier.observe(evidence_first)
+        two = notifier.observe(evidence_second)
+        self.assertEqual((one.state, two.state), (m.DELIVERED, m.DELIVERED))
+        self.assertEqual([call["idempotency_key"] for call in provider.calls],
+                         [short_first, short_second])
+        self.assertEqual(self.ledger_row(full_first)["transport_key"], short_first)
+        self.assertEqual(self.ledger_row(full_second)["transport_key"], short_second)
+
+    def test_transport_key_is_stable_across_restart_and_ignores_the_sentence(self):
+        base = self.payload("cloudcli", "run-completed")
+        changed = {**base, "observed_at": "2026-10-27T12:00:00Z",
+                   "summary": "a different sentence entirely"}
+        evidence_first = m.normalize("cloudcli", base)
+        evidence_second = m.normalize("cloudcli", changed)
+        first = m.decide(evidence_first)
+        second = m.decide(evidence_second)
+        self.assertEqual(m.delivery_key_for(first), m.delivery_key_for(second))
+        self.assertEqual(m.transport_key_for(m.delivery_key_for(first)),
+                         m.transport_key_for(m.delivery_key_for(second)))
+
+        first_provider = FakeLark()
+        first_run = self.notifier(first_provider).observe(evidence_first)
+        restarted_provider = FakeLark()
+        restarted = self.notifier(restarted_provider).observe(evidence_second)
+        self.assertEqual(restarted.state, m.DUPLICATE)
+        self.assertEqual(restarted.transport_key, first_run.transport_key)
+        self.assertEqual(restarted_provider.calls, [])
+
+    def test_transport_key_is_case_sensitive_and_unicode_normalized(self):
+        composed = self.payload("phase", "accepted")
+        composed["key"] = "café"
+        decomposed = self.payload("phase", "accepted")
+        decomposed["key"] = "café"
+        upper = self.payload("phase", "accepted")
+        upper["key"] = "CAFÉ"
+
+        composed_decision = m.decide(m.normalize("phase", composed))
+        decomposed_decision = m.decide(m.normalize("phase", decomposed))
+        upper_decision = m.decide(m.normalize("phase", upper))
+
+        # NFC canonicalisation: the same identity in two encodings is one key.
+        self.assertEqual(m.delivery_key_for(composed_decision),
+                         m.delivery_key_for(decomposed_decision))
+        self.assertEqual(
+            m.transport_key_for(m.delivery_key_for(composed_decision)),
+            m.transport_key_for(m.delivery_key_for(decomposed_decision)))
+        # Case is part of the identity, not folded.
+        self.assertNotEqual(m.delivery_key_for(composed_decision),
+                            m.delivery_key_for(upper_decision))
+        self.assertNotEqual(
+            m.transport_key_for(m.delivery_key_for(composed_decision)),
+            m.transport_key_for(m.delivery_key_for(upper_decision)))
+        self.assertEqual(m.transport_key_for("stable"), m.transport_key_for("stable"))
+        with self.assertRaises(m.MilestoneRefused):
+            m.transport_key_for({"not": "text"})
+        with self.assertRaises(m.MilestoneRefused):
+            m.legacy_transport_key(123)
+
+    def test_an_old_ledger_schema_is_migrated_without_losing_rows(self):
+        db = sqlite3.connect(self.ledger)
+        try:
+            db.executescript("""
+                CREATE TABLE milestone_deliveries (
+                    delivery_key TEXT PRIMARY KEY,
+                    milestone_key TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    remote_id TEXT,
+                    attempted_at TEXT NOT NULL,
+                    why TEXT NOT NULL,
+                    intent TEXT NOT NULL);
+            """)
+            db.execute(
+                "INSERT INTO milestone_deliveries VALUES (?,?,?,?,?,?,?,?)",
+                ("old-full-key", "m", m.VERIFIED_GREEN, m.DELIVERED, "om_old",
+                 "2026-10-27T10:00:00+00:00", "old receipt", "{}"))
+            db.commit()
+        finally:
+            db.close()
+
+        ledger = m.MilestoneLedger(self.ledger)
+        row = ledger.get("old-full-key")
+        self.assertEqual(row["state"], m.DELIVERED)
+        self.assertEqual(row["remote_id"], "om_old")
+        self.assertIn("transport_key", row)
+        self.assertIsNone(row["transport_key"])
+
+    def test_a_legacy_unknown_row_is_not_replayed_and_keeps_the_old_short_key(self):
+        evidence = self.evidence("cloudcli", "run-completed")
+        decision = m.decide(evidence)
+        full = m.delivery_key_for(decision)
+        legacy = full[:50]
+        text = m.message(decision)
+
+        provider = FakeLark()
+        notifier = self.notifier(provider)  # creates the (migrated) table
+        db = sqlite3.connect(self.ledger)
+        try:
+            db.execute(
+                "INSERT INTO milestone_deliveries "
+                "(delivery_key, milestone_key, outcome, state, remote_id, "
+                " attempted_at, why, intent, transport_key) "
+                "VALUES (?,?,?,?,?,?,?,?,NULL)",
+                (full, evidence.key, decision.outcome, m.UNKNOWN_DELIVERY,
+                 None, datetime.now(timezone.utc).isoformat(),
+                 "legacy UNKNOWN", json.dumps({"text": text})))
+            db.commit()
+        finally:
+            db.close()
+
+        replay = notifier.observe(evidence)
+        self.assertEqual(replay.state, m.UNKNOWN_REPLAY)
+        self.assertEqual(provider.calls, [])
+
+        recovered = notifier.reconcile(full)
+        self.assertEqual(recovered.state, m.DELIVERED)
+        self.assertEqual(provider.calls[0]["idempotency_key"], legacy)
+        self.assertEqual(len(provider.calls[0]["idempotency_key"]), 50)
+        self.assertEqual(self.ledger_row(full)["transport_key"], legacy)
+
+    def test_a_legacy_delivered_row_is_never_replayed(self):
+        evidence = self.evidence("cloudcli", "run-completed")
+        decision = m.decide(evidence)
+        full = m.delivery_key_for(decision)
+        self.notifier(FakeLark())  # creates the (migrated) table
+        db = sqlite3.connect(self.ledger)
+        try:
+            db.execute(
+                "INSERT INTO milestone_deliveries "
+                "(delivery_key, milestone_key, outcome, state, remote_id, "
+                " attempted_at, why, intent, transport_key) "
+                "VALUES (?,?,?,?,?,?,?,?,NULL)",
+                (full, evidence.key, decision.outcome, m.DELIVERED, "om_old",
+                 datetime.now(timezone.utc).isoformat(), "legacy delivered",
+                 json.dumps({"text": m.message(decision)})))
+            db.commit()
+        finally:
+            db.close()
+
+        provider = FakeLark()
+        observation = self.notifier(provider).observe(evidence)
+        self.assertEqual(observation.state, m.DUPLICATE)
+        self.assertEqual(observation.remote_id, "om_old")
+        self.assertEqual(observation.transport_key, full[:50])
+        self.assertEqual(provider.calls, [])
+
+    def test_a_pre_nfc_delivered_row_is_not_resent(self):
+        payload = self.payload("phase", "accepted")
+        payload["key"] = "café"  # decomposed pre-NFC identity
+        evidence = m.normalize("phase", payload)
+        decision = m.decide(evidence)
+        raw = m.raw_delivery_key_for(decision)
+        canonical = m.delivery_key_for(decision)
+        self.assertNotEqual(raw, canonical)
+
+        self.notifier(FakeLark())  # creates the (migrated) table
+        db = sqlite3.connect(self.ledger)
+        try:
+            db.execute(
+                "INSERT INTO milestone_deliveries "
+                "(delivery_key, milestone_key, outcome, state, remote_id, "
+                " attempted_at, why, intent, transport_key) "
+                "VALUES (?,?,?,?,?,?,?,?,NULL)",
+                (raw, evidence.key, decision.outcome, m.DELIVERED, "om_old",
+                 datetime.now(timezone.utc).isoformat(), "pre-NFC row",
+                 json.dumps({"text": m.message(decision)})))
+            db.commit()
+        finally:
+            db.close()
+
+        provider = FakeLark()
+        observation = self.notifier(provider).observe(evidence)
+        self.assertEqual(observation.state, m.DUPLICATE)
+        self.assertEqual(observation.delivery_key, raw)
+        self.assertEqual(provider.calls, [])
 
     def test_duplicate_github_webhook_is_idempotent(self):
         evidence = self.evidence("github_actions", "ci-green")
@@ -430,11 +666,13 @@ class MilestoneNotifyTest(unittest.TestCase):
         ledger = m.MilestoneLedger(self.ledger)
         first = ledger.claim(
             delivery_key="one-key", milestone_key="m", outcome=m.VERIFIED_GREEN,
-            attempted_at="2026-10-27T10:00:00+00:00", intent="{}")
+            attempted_at="2026-10-27T10:00:00+00:00", intent="{}",
+            transport_key=m.transport_key_for("one-key"))
         self.assertIsNone(first)
         second = ledger.claim(
             delivery_key="one-key", milestone_key="m", outcome=m.VERIFIED_GREEN,
-            attempted_at="2026-10-27T10:00:01+00:00", intent="{}")
+            attempted_at="2026-10-27T10:00:01+00:00", intent="{}",
+            transport_key=m.transport_key_for("one-key"))
         self.assertIsNotNone(second)
         self.assertEqual(second["state"], m.IN_FLIGHT)
 
@@ -443,7 +681,8 @@ class MilestoneNotifyTest(unittest.TestCase):
         key = "test-delivered-row"
         ledger.claim(delivery_key=key, milestone_key="milestone",
                      outcome=m.VERIFIED_GREEN,
-                     attempted_at="2026-10-27T10:00:00+00:00", intent="{}")
+                     attempted_at="2026-10-27T10:00:00+00:00", intent="{}",
+                     transport_key=m.transport_key_for(key))
         self.assertTrue(ledger.finish(
             delivery_key=key, state=m.DELIVERED, remote_id="om_1",
             attempted_at="2026-10-27T10:00:01+00:00",
@@ -466,7 +705,8 @@ class MilestoneNotifyTest(unittest.TestCase):
             outcome=decision.outcome,
             attempted_at=datetime.now(timezone.utc).isoformat(),
             intent=json.dumps({"text": m.message(decision)},
-                              ensure_ascii=False, sort_keys=True))
+                              ensure_ascii=False, sort_keys=True),
+            transport_key=m.transport_key_for(key))
 
         provider = FakeLark()
         replay = self.notifier(provider).observe(evidence)
@@ -498,7 +738,8 @@ class MilestoneNotifyTest(unittest.TestCase):
         self.assertTrue(recovered.delivered)
         self.assertEqual(recovered.remote_id, "om_default")
         self.assertEqual(len(recovering.calls), 1)
-        self.assertEqual(recovering.calls[0]["idempotency_key"], first.delivery_key)
+        self.assertEqual(recovering.calls[0]["idempotency_key"],
+                         first.transport_key)
 
         final = restarted.observe(evidence)
         self.assertEqual(final.state, m.DUPLICATE)
