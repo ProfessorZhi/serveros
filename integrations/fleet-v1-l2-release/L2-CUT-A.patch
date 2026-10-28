@@ -1,0 +1,193 @@
+diff --git a/fleet_mcp/fleet.py b/fleet_mcp/fleet.py
+index 8ca8a26..96c19d4 100644
+--- a/fleet_mcp/fleet.py
++++ b/fleet_mcp/fleet.py
+@@ -60,7 +60,9 @@ from .errors import (
+ )
+ from .identity import SessionKey
+ from .principals import Principal, dispatch_context, valid_ref
+-from .owner_access import build_project_path, OwnerAccessError
++from .owner_access import (build_project_path, OwnerAccessError,
++                           project_catalogue_row, project_row,
++                           verify_owner_project)
+ from .version import SERVER_VERSION
+ from .session_detail import normalize_detail
+ from .privacy import clamp_limit, redact_payload, UNTRUSTED_NOTICE
+@@ -357,55 +359,17 @@ class FleetService:
+ 
+     @staticmethod
+     def _project_row(rows, project_id: str) -> dict[str, Any] | None:
+-        """The catalogue row whose id is exactly `project_id`, or `None`.
+-
+-        A row is matched only when every id field it carries agrees with the
+-        others AND with the id asked for: a row that reports two different ids
+-        is ambiguous, and picking one of them would be this surface guessing
+-        which project to act on.
+-        """
+-        for row in rows:
+-            if not isinstance(row, dict):
+-                continue
+-            ids = [row[k] for k in ("projectId", "project_id", "id")
+-                   if isinstance(row.get(k), str) and row[k]]
+-            if ids and len(set(ids)) == 1 and ids[0] == project_id:
+-                return row
+-        return None
++        return project_row(rows, project_id)
+ 
+     @staticmethod
+     def _project_catalogue_row(provider, project_id: str, *,
+                                include_archived: bool) -> dict[str, Any] | None:
+-        """One project row, read from the DEVICE's own catalogue.
+-
+-        `include_archived` is explicit at every call site because the two
+-        questions differ: a create verifies against the ACTIVE catalogue (a
+-        session cannot be minted in an archived project), while a delete's
+-        pre-read must see archived rows too, or the row a permanent delete most
+-        often targets would be invisible. An unreadable catalogue is a refusal
+-        rather than an empty one — acting on "it is not there" when the question
+-        was never answered is exactly the blind delete this read exists to
+-        prevent.
+-        """
+-        caller = getattr(provider, "native_call", None)
+-        if caller is None:
+-            raise refuse(WRITE_NOT_GRANTED, "provider cannot verify its current project catalogue")
+-        listing = caller("projects_list", {"includeArchived": bool(include_archived)})
+-        rows = listing.get("projects") if isinstance(listing, dict) else listing
+-        if rows is None and isinstance(listing, dict) and isinstance(listing.get("data"), dict):
+-            rows = listing["data"].get("projects")
+-        if not isinstance(rows, list):
+-            raise refuse(WRITE_NOT_GRANTED, "provider did not return a current project catalogue")
+-        return FleetService._project_row(rows, project_id)
++        return project_catalogue_row(provider, project_id,
++                                     include_archived=include_archived)
+ 
+     @staticmethod
+-    def _verify_owner_project(provider, project):
+-        row = FleetService._project_catalogue_row(provider, project,
+-                                                  include_archived=False)
+-        if row is not None and not (row.get("isArchived") is True
+-                                    or row.get("is_archived") is True):
+-            return
+-        raise refuse(WRITE_NOT_GRANTED, "project does not exist in the selected runtime's active catalogue")
++    def _verify_owner_project(provider, project) -> None:
++        return verify_owner_project(provider, project)
+ 
+     def _provider(self, device_ref: str,
+                   runtime: str = BASE_RUNTIME) -> DeviceProvider | None:
+diff --git a/fleet_mcp/node/connector.py b/fleet_mcp/node/connector.py
+index 368360a..b796306 100644
+--- a/fleet_mcp/node/connector.py
++++ b/fleet_mcp/node/connector.py
+@@ -1160,8 +1160,8 @@ class Connector:
+                 )
+             project = arguments.get("project")
+             if self.config.owner_access is not None:
+-                from ..fleet import FleetService
+-                FleetService._verify_owner_project(self.provider, project)
++                from ..owner_access import verify_owner_project
++                verify_owner_project(self.provider, project)
+                 arguments.setdefault("permissionMode", self.config.owner_access.permission_mode)
+                 return
+             if (not isinstance(project, str) or not project.strip()
+@@ -1352,8 +1352,7 @@ class Connector:
+         The answer is returned UNCHANGED: the host re-reads the catalogue after
+         it and does not take this ACK as proof that anything happened.
+         """
+-        from ..owner_access import project_path_within_roots
+-        from ..fleet import FleetService
++        from ..owner_access import project_catalogue_row, project_path_within_roots
+ 
+         if set(payload) - {"project_id", "force"}:
+             raise FleetRefusal(BAD_REQUEST,
+@@ -1371,8 +1370,8 @@ class Connector:
+                 "this connector's `allow_control` is false, so no stored state "
+                 "on this machine may be removed from the far end.",
+             )
+-        row = FleetService._project_catalogue_row(self.provider, project_id,
+-                                                  include_archived=True)
++        row = project_catalogue_row(self.provider, project_id,
++                                    include_archived=True)
+         if row is None:
+             raise FleetRefusal(
+                 "PROJECT_NOT_FOUND",
+@@ -1420,8 +1419,8 @@ class Connector:
+                 f"caller's. It is {self.config.allow_create!r} here.",
+             )
+         if self.config.owner_access is not None:
+-            from ..fleet import FleetService
+-            FleetService._verify_owner_project(self.provider, project)
++            from ..owner_access import verify_owner_project
++            verify_owner_project(self.provider, project)
+         elif ("*" not in self.config.allow_create_projects
+               and project.strip() not in self.config.allow_create_projects):
+             raise FleetRefusal(
+diff --git a/fleet_mcp/owner_access.py b/fleet_mcp/owner_access.py
+index ef07b23..e26e07f 100644
+--- a/fleet_mcp/owner_access.py
++++ b/fleet_mcp/owner_access.py
+@@ -15,6 +15,7 @@ from dataclasses import dataclass
+ from pathlib import Path, PurePosixPath, PureWindowsPath
+ from types import MappingProxyType
+ from typing import Any
++from .errors import WRITE_NOT_GRANTED, refuse
+ 
+ MAX_PERMISSION_MODE = "bypassPermissions"
+ _ROOT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z")
+@@ -188,3 +189,57 @@ def build_project_path(profile: OwnerAccessProfile, root_ref: str, name: str,
+     if local_check:
+         _check_local_destination(root, target)
+     return target
++
++
++def project_row(rows, project_id: str) -> dict[str, Any] | None:
++    """The catalogue row whose id is exactly `project_id`, or `None`.
++
++    A row is matched only when every id field it carries agrees with the
++    others AND with the id asked for: a row that reports two different ids
++    is ambiguous, and picking one of them would be this surface guessing
++    which project to act on.
++    """
++    for row in rows:
++        if not isinstance(row, dict):
++            continue
++        ids = [row[k] for k in ("projectId", "project_id", "id")
++               if isinstance(row.get(k), str) and row[k]]
++        if ids and len(set(ids)) == 1 and ids[0] == project_id:
++            return row
++    return None
++
++
++def project_catalogue_row(provider, project_id: str, *,
++                          include_archived: bool) -> dict[str, Any] | None:
++    """One project row, read from the DEVICE's own catalogue.
++
++    `include_archived` is explicit at every call site because the two
++    questions differ: a create verifies against the ACTIVE catalogue (a
++    session cannot be minted in an archived project), while a delete's
++    pre-read must see archived rows too, or the row a permanent delete most
++    often targets would be invisible. An unreadable catalogue is a refusal
++    rather than an empty one — acting on "it is not there" when the question
++    was never answered is exactly the blind delete this read exists to
++    prevent.
++    """
++    caller = getattr(provider, "native_call", None)
++    if caller is None:
++        raise refuse(WRITE_NOT_GRANTED,
++                     "provider cannot verify its current project catalogue")
++    listing = caller("projects_list", {"includeArchived": bool(include_archived)})
++    rows = listing.get("projects") if isinstance(listing, dict) else listing
++    if rows is None and isinstance(listing, dict) and isinstance(listing.get("data"), dict):
++        rows = listing["data"].get("projects")
++    if not isinstance(rows, list):
++        raise refuse(WRITE_NOT_GRANTED,
++                     "provider did not return a current project catalogue")
++    return project_row(rows, project_id)
++
++
++def verify_owner_project(provider, project) -> None:
++    row = project_catalogue_row(provider, project, include_archived=False)
++    if row is not None and not (row.get("isArchived") is True
++                                or row.get("is_archived") is True):
++        return
++    raise refuse(WRITE_NOT_GRANTED,
++                 "project does not exist in the selected runtime's active catalogue")
