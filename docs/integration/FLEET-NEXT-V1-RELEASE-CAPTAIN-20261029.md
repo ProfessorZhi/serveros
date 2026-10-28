@@ -9,6 +9,10 @@ time, per device: *does this exact tree, with these exact artifacts, on these
 exact measured resources, reach this exact state — and if not, which fact is
 missing?*
 
+Draft PR: [#510](https://github.com/ProfessorZhi/serveros/pull/510), branch
+`feat/fleet-next-v1-release-captain-20261029`, based on `main` @
+`e69fc0337ae5d33000478e3d5162077f525bc8cc`.
+
 The machine-readable counterpart is
 `integrations/fleet-next-v1-release-captain/release-manifest.2026-10-29.json`;
 the engine is `integrations/fleet-next-v1-release-captain/release_captain.py`;
