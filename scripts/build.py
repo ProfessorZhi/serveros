@@ -1055,7 +1055,13 @@ def _member_path(rel: Path, field: str) -> str:
     """
     text = rel.as_posix()
     first = text.split("/", 1)[0]
-    if (rel.is_absolute() or text.startswith("/") or ".." in rel.parts
+    # A backslash is a legal POSIX filename character, and `as_posix()` keeps
+    # it; on Windows extraction it is a separator. `a\..\b` would traverse
+    # there while `rel.parts` sees one component here, so both separators are
+    # checked.
+    parts = text.replace("\\", "/").split("/")
+    if (rel.is_absolute() or text.startswith("/") or "\\" in text
+            or ".." in parts or "" in parts
             or (len(first) == 2 and first[1] == ":")):
         raise ValueError(f"{field} escapes the artifact: {text!r}")
     return text

@@ -119,6 +119,10 @@ class TheCombinedPayloadKeepsItsIdentity(Fixture):
         # removed from the payload to make a test pass.
         expected = {f"fleet_mcp/{rel.as_posix()}" for _src, rel in
                     build.local_skill_files(REPO / "fleet_mcp")}
+        self.assertGreater(len(expected), 10,
+                           "the module is non-trivial; an empty expectation "
+                           "would certify an empty copy")
+        self.assertIn("fleet_mcp/tools.py", members)
         self.assertLessEqual(expected, members)
 
     def test_it_does_not_claim_an_l2_or_native_identity(self):
@@ -126,12 +130,12 @@ class TheCombinedPayloadKeepsItsIdentity(Fixture):
         for kind in ("l2-node", "l2-hub", "native-runtime"):
             self.assertNotIn(kind, artifact["kinds"])
         # The combined payload deliberately keeps its pre-face bytes, so it has
-        # no face-only evidence key; the face artifacts do.
-        if "kind_evidence" in artifact:
-            self.assertEqual(set(artifact["kind_evidence"]),
-                             {"node-runtime", "plugin"})
+        # no face-only evidence key at all (not an empty one).
+        self.assertNotIn("kind_evidence", artifact)
         self.assertEqual(set(self.artifact(self.node)["kind_evidence"]),
                          {"node-runtime"})
+        self.assertEqual(set(self.artifact(self.plugin)["kind_evidence"]),
+                         {"plugin"})
 
     def test_the_build_faces_are_still_mutually_exclusive(self):
         node = set(self.artifact(self.node)["members"])
@@ -225,7 +229,8 @@ class APathCannotEscapeTheArtifact(Fixture):
                                      and member[1] == ":")
 
     def test_the_member_path_helper_refuses_escape_shapes(self):
-        for rel in (Path("../x"), Path("/x"), Path("C:/x")):
+        for rel in (Path("../x"), Path("/x"), Path("C:/x"),
+                    Path("..\\..\\evil"), Path("a\\b"), Path("a/../b")):
             with self.subTest(rel=rel):
                 with self.assertRaises(ValueError):
                     build._member_path(rel, "test")
