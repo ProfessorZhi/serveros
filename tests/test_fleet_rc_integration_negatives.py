@@ -92,18 +92,24 @@ def problems_with_consumers(doc: dict) -> list[str]:
             problems.append(f"{name} mutates but names no gate_sources")
 
     # The claim "they contend on one file by construction" is only true if both
-    # programs default the same lease path. If either leaves it to the operator,
-    # saying `shared_by_declaration: true` would be an unearned guarantee.
+    # programs *derive* the same lease path. The matrix states that derivation in
+    # `single_writer.python_default_lease` / `native_default_lease` rather than in
+    # each writer's `lease.default_path`, because the Core's path is derived
+    # rather than passed — so those two fields are what the claim rests on.
     single = doc.get("single_writer")
     if isinstance(single, dict):
-        leaves_default_to_operator = any(
-            not (writer.get("lease") or {}).get("default_path")
-            for writer in writers if isinstance(writer, dict))
-        if single.get("shared_by_declaration") and leaves_default_to_operator:
-            problems.append(
-                "shared_by_declaration is true while a writer has no default "
-                "lease path, so the programs do not contend by construction")
-        if single.get("shared_by_declaration") is False and not single.get("why_not"):
+        python_default = single.get("python_default_lease")
+        native_default = single.get("native_default_lease")
+        if single.get("shared_by_declaration"):
+            if not python_default or not native_default:
+                problems.append(
+                    "shared_by_declaration is true but a declared default lease "
+                    "is missing, so there is nothing to contend on")
+            elif python_default != native_default:
+                problems.append(
+                    f"shared_by_declaration is true but the defaults differ "
+                    f"({python_default!r} vs {native_default!r})")
+        elif not single.get("why_not"):
             problems.append("a false shared_by_declaration needs a why_not")
     else:
         problems.append("single_writer must be an object")
@@ -128,15 +134,23 @@ class ServerosdHasOneWriter(unittest.TestCase):
                         "an ungated mutator is the exact thing the matrix exists "
                         "to make visible")
 
-    def test_claiming_shared_contention_without_a_default_lease_is_refused(self) -> None:
+    def test_claiming_shared_contention_with_divergent_defaults_is_refused(self) -> None:
+        """#430 may assert sharing only because both sides derive one path."""
         doc = json.loads(json.dumps(self.doc))
         doc["single_writer"]["shared_by_declaration"] = True
-        doc["single_writer"].pop("why_not", None)
-        doc["writers"][0].setdefault("lease", {})["default_path"] = None
-        self.assertTrue(any("do not contend by construction" in p
+        doc["single_writer"]["python_default_lease"] = "$XDG_RUNTIME_DIR/a.lease"
+        doc["single_writer"]["native_default_lease"] = "$XDG_RUNTIME_DIR/b.lease"
+        self.assertTrue(any("the defaults differ" in p
                             for p in problems_with_consumers(doc)),
-                        "'they share one file' must not be asserted when one "
-                        "program takes whatever path the operator passed")
+                        "'they share one file' must not be asserted when the two "
+                        "programs derive different paths")
+
+    def test_claiming_shared_contention_with_no_derivation_is_refused(self) -> None:
+        doc = json.loads(json.dumps(self.doc))
+        doc["single_writer"]["shared_by_declaration"] = True
+        doc["single_writer"]["native_default_lease"] = None
+        self.assertTrue(any("declared default lease is missing" in p
+                            for p in problems_with_consumers(doc)))
 
     def test_the_tree_does_not_claim_a_device_is_installed(self) -> None:
         """A tree claim is not a device fact, and this document says so."""
