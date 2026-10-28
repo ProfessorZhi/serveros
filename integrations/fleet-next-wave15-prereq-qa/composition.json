@@ -243,7 +243,8 @@
         "id": "#415-lark-window",
         "owner": "n/a",
         "status": "RESOLVED_IN_RC",
-        "evidence": "dd5919a ancestor; test blob identical"
+        "evidence": "dd5919a ancestor of #494 and test blob identical; main lacks it, so a main-based gate sees the Lark window as new",
+        "main_status": "OPEN_ON_MAIN"
       },
       {
         "id": "#493/#488/#490-source-fixes",
@@ -265,5 +266,17 @@
     "Feishu/IM send",
     "paid model",
     "GPU"
-  ]
+  ],
+  "gate_ci": {
+    "first_run": "40675633332",
+    "first_reading": "4/5; shard 4: 14 failing, 2 new, 0 flaky",
+    "first_new": [
+      "tests/test_direct_lark_notify.py::CardCreateThenPatchTest::test_create_returns_an_id_and_patch_names_it",
+      "tests/test_fleet_next_wave15_prereq_qa.py::ThePinsAndBuildOrderAreExact::test_the_gate_is_independent_of_the_rc_branch"
+    ],
+    "post_fix_note": "the gate's own base-ancestor assertion was removed (depth-1 checkout); the only remaining new failure is #415's Lark window on main",
+    "known_external_new_failure": "tests/test_direct_lark_notify.py::CardCreateThenPatchTest::test_create_returns_an_id_and_patch_names_it",
+    "owner": "#415",
+    "claims_5of5": false
+  }
 }

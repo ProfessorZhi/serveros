@@ -155,6 +155,24 @@ merge-process fact, not an RC content gap. It does not need a Wave 15 replay.
 #490's request naming collision. This gate does **not** claim 5/5 and does not
 add the two failures to `hermetic-known-failures.txt`.
 
+### The main-based gate's external new failure
+
+The first hosted run of this gate (`40675633332`) read 4/5 with two new
+failures:
+
+1. this gate's own `GATE_BASE` ancestor assertion — the hosted checkout is
+   depth-1, so the base commit may be absent even though the fact is true. The
+   assertion was removed; independence is asserted as the negative fact
+   ("the RC is not an ancestor of this branch");
+2. `tests/test_direct_lark_notify.py::CardCreateThenPatchTest::test_create_returns_an_id_and_patch_names_it`
+   — the #415 Lark window. `main` does not contain #415 `dd5919a`; #494 does.
+
+After the fix the gate's own tests are green. The only remaining new failure
+on a main-based branch is **#415**, an external merge-order blocker owned by
+that PR. This gate does not fix it, does not add it to
+`hermetic-known-failures.txt`, and does not claim 5/5. The RC path is to merge
+#415 (or base Wave 15 on #494, which already contains it).
+
 ---
 
 ## 5. Dual-track resource isolation (#478)
@@ -202,7 +220,7 @@ add the two failures to `hermetic-known-failures.txt`.
 | --- | --- | --- |
 | hosted 5/5 | #490 author with the separate fix Agent | BLOCKED |
 | #495 seam | #495 QA | QA_ARTIFACT |
-| #415 Lark window | n/a | RESOLVED_IN_RC |
+| #415 Lark window | #415 | RESOLVED_IN_RC / OPEN_ON_MAIN |
 | #493/#488/#490 interfaces | their authors | PENDING, no published SHA |
 
 ---

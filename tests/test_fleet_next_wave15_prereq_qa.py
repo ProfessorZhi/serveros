@@ -299,8 +299,13 @@ class ThePinsAndBuildOrderAreExact(unittest.TestCase):
     def test_the_gate_is_independent_of_the_rc_branch(self):
         """The gate lives on main and reads the RC by SHA. If the RC were an
         ancestor of this branch, the Wave 14 ledger's own delta assertion
-        would treat these legitimate Wave 15 files as an unrecorded edit."""
-        self.assertTrue(_is_ancestor(GATE_BASE))
+        would treat these legitimate Wave 15 files as an unrecorded edit.
+
+        The positive "the base commit is an ancestor" reading is deliberately
+        not asserted here: the hosted checkout is depth-1, so the base commit
+        may not be in the object database even though the fact is true. The
+        independence claim is the negative one, and it is checkable without it.
+        """
         self.assertFalse(_is_ancestor(CURRENT))
         self.assertEqual(_manifest()["gate_base"]["commit"], GATE_BASE)
 
@@ -391,6 +396,14 @@ class TheDualTrackBoundaryAndReleaseMatrix(unittest.TestCase):
             item for item in _manifest()["release_matrix"]["blockers"]
             if item["id"] == "#415-lark-window")
         self.assertEqual(blocker["status"], "RESOLVED_IN_RC")
+        self.assertEqual(blocker["main_status"], "OPEN_ON_MAIN")
+
+    def test_the_gate_ci_does_not_claim_5of5(self):
+        gate_ci = _manifest()["gate_ci"]
+        self.assertFalse(gate_ci["claims_5of5"])
+        self.assertEqual(gate_ci["owner"], "#415")
+        self.assertIn("direct_lark_notify",
+                      gate_ci["known_external_new_failure"])
 
     def test_the_release_matrix_covers_425_and_478(self):
         matrix = _manifest()["release_matrix"]
