@@ -1,0 +1,351 @@
+{
+  "schema": "serveros/fleet-next-rc-wave16-composition.v1",
+  "date": "2026-10-28",
+  "base": {
+    "pr": 494,
+    "commit": "00503f91b019ce342af52f38b19bb3aa21dfff55",
+    "tree": "1c58a45912ef7ebb0b76b7dee7f087262ae62463",
+    "hosted_ci": {
+      "run": "40669351645",
+      "jobs": "4/5",
+      "new": "2 #490 reader-field failures; #499 renames the envelope key"
+    }
+  },
+  "composed_source": {
+    "commit": "f02fa1688827111698062813eb94d1e86040cfd5",
+    "tree": "d45cf478bcf829ae3d851974a1e7da018de58989"
+  },
+  "authors": [
+    {
+      "pr": "#497",
+      "head": "3db8ebf107f83981965cc888269b3b90d89ecb72",
+      "tree": "a6100b9ab3f86877dcd7d100e400a23d99c05c9b",
+      "merge_base": "4f5320de7e187daadd79adc92e7487facd7b1820",
+      "merge": "9c85f684f9d14d0612caa2b622518aa529fff82d",
+      "commits": [
+        {
+          "commit": "3db8ebf107f83981965cc888269b3b90d89ecb72",
+          "tree": "a6100b9ab3f86877dcd7d100e400a23d99c05c9b",
+          "subject": "fix(monitor): a receipt settles a fact, not a cursor; and a CI event gets a typed subject"
+        }
+      ],
+      "immediate_parent": null,
+      "files": [
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/core.py",
+          "sha256": "3d31493d03bb0b4d20e4e0eb28185ff92106fbf692addfafecc1b9e32875718c"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/notifier.py",
+          "sha256": "388480d7588c28938ebe05661af68b1044b7adca65b10612ba6b0c12f7fba8ea"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/state.py",
+          "sha256": "93247ace360594ed7903a6a28c65dd51d4e13adae47381694a1b8a8291dd818e"
+        },
+        {
+          "path": "tests/test_fleet_next_agent_monitor_core.py",
+          "sha256": "9f1fbcb4f628299d9b98486a92a5f5f25974092f18a432644142106a10801a02"
+        }
+      ],
+      "stats": "4 files changed, 948 insertions(+), 80 deletions(-)"
+    },
+    {
+      "pr": "#498",
+      "head": "0096ba695f6c7bcd35dbb5a82957a1f5631d9058",
+      "tree": "faa31c1772278ca72247d552a3e052d624db2f4b",
+      "merge_base": "009662f36a2a5f8e11c51ae517834379a91a7770",
+      "merge": "af6bd42fbb4387140577751df28416412f31d21f",
+      "commits": [
+        {
+          "commit": "6aefafd075fa1b49dd9f5ce0ccdaeb2ea50696f0",
+          "tree": "bdf289f71ddd147f05fd81c3e5c34abefffec5fc",
+          "subject": "fix(next-monitor): carry the tick's verdict, so a stop is never a completion"
+        },
+        {
+          "commit": "f8e1b6f51613073b36e121de5b86fec87a1b5306",
+          "tree": "597b53913f39257e48968d151af09d76e77c7fd2",
+          "subject": "fix(next-monitor): a stale cursor outranks any success word"
+        },
+        {
+          "commit": "0096ba695f6c7bcd35dbb5a82957a1f5631d9058",
+          "tree": "faa31c1772278ca72247d552a3e052d624db2f4b",
+          "subject": "test(next-monitor): register the stub module behind a cache read"
+        }
+      ],
+      "immediate_parent": "f8e1b6f51613073b36e121de5b86fec87a1b5306",
+      "files": [
+        {
+          "path": "integrations/fleet-next-agent-monitor-activation/activation.py",
+          "sha256": "61bfb61cf79e658d9044fbd4fb5dd5b9e98bcc53d347e0d9ec0640210be96e7d"
+        },
+        {
+          "path": "tests/test_fleet_next_agent_monitor_activation.py",
+          "sha256": "1316432aa673cecb4b75ac22a0a2db671fa3037226740df399330b70799cb584"
+        },
+        {
+          "path": "tests/test_fleet_next_agent_monitor_activation_batch.py",
+          "sha256": "76d20c229057633eb0974884dd7063caf42fe668d07f2ed1fe24d767d0e3fb1b"
+        },
+        {
+          "path": "tests/test_fleet_next_agent_monitor_activation_runtime_tick.py",
+          "sha256": "00c77db2991d3dbca89af64ab617b9996299bdd6d99998dadd6bc59e2bdd71c1"
+        },
+        {
+          "path": "tests/test_fleet_next_agent_monitor_activation_truth.py",
+          "sha256": "0e567911de50c2bb9e4a98938f0b91f038e9ee2aba06e0ef3245993405ba4003"
+        }
+      ],
+      "stats": "5 files changed, 994 insertions(+), 68 deletions(-)"
+    },
+    {
+      "pr": "#499",
+      "head": "02027c53f59100fbf43e0ac1f6d84f58561ee91c",
+      "tree": "867939cc4c9b5ce9a5356581c55030b6920d87f2",
+      "merge_base": "06a8be67422f1320e7bdfee38410f8b24d27b501",
+      "merge": "f02fa1688827111698062813eb94d1e86040cfd5",
+      "commits": [
+        {
+          "commit": "02027c53f59100fbf43e0ac1f6d84f58561ee91c",
+          "tree": "867939cc4c9b5ce9a5356581c55030b6920d87f2",
+          "subject": "fix(monitor): make the source adapter a source #493 can call"
+        }
+      ],
+      "immediate_parent": null,
+      "files": [
+        {
+          "path": "docs/integration/FLEET-NEXT-SOURCE-ADAPTER.md",
+          "sha256": "7a748a5e662be9daced5afa8cdc04d028dd526ae194be8663845129d2e346200"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/README.md",
+          "sha256": "2239fce797bbb644fa3c1f321182e4b984e7b26424815eebf6357a46303cadd1"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/__init__.py",
+          "sha256": "02a98e741ec69a9f296a84a6edcf9828e608d6c15b48e82c1129d3b6ec41b9c4"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/adapter.py",
+          "sha256": "bc4d476abafabca052e3aa5141b641dde6d075d4d3c4c41f86e0ec979b898b74"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/cli.py",
+          "sha256": "f07663673155817a7297c326663c970eba2264a936d68e8aa1bd97438b3c2c12"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/compat.py",
+          "sha256": "44d43f460cb402ff6b629a6e57d991bb1d8ec5e81cb04fbe3a1d6ab4234fe746"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/contract.py",
+          "sha256": "c6ff6a12771d01facd1db13b5e4af9eb3cdf91cab7481d38a3a09e132c791bc4"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/serializer.py",
+          "sha256": "2a857ee35e3d68c9efd742f072e5f3975aa4187a7e7ab5d12baa9d2ccc3d0b1e"
+        },
+        {
+          "path": "tests/test_fleet_next_monitor_source_adapter.py",
+          "sha256": "3173306b1dcc3e5f13b9f79855323bca32acddedbfe1922ca4de26d0c63f044e"
+        }
+      ],
+      "stats": "9 files changed, 964 insertions(+), 44 deletions(-)"
+    }
+  ],
+  "history": {
+    "wave12": {
+      "path": "tests/test_fleet_next_rc_wave12_ledger.py",
+      "blob": "1265351b07280ae2243f7f1897e58b6b22cdbab4",
+      "unchanged": true
+    },
+    "wave13": {
+      "path": "tests/test_fleet_next_rc_wave13_ledger.py",
+      "blob": "6d1be1e88698a1ee64930e80a7af2793b55ec6da",
+      "unchanged": true
+    },
+    "wave14": {
+      "path": "tests/test_fleet_next_rc_wave14_ledger.py",
+      "historical_head": "00503f91b019ce342af52f38b19bb3aa21dfff55",
+      "original_blob": "dc54f477fd0ff33304909587e15981731ffdb4f2",
+      "modified_blob": "ee4e64a20638982e3bfd90e58ad2d25d60a182e8",
+      "change": "every byte claim re-scoped from HEAD to WAVE14_HEAD=00503f9; author heads/blobs and refusal conditions kept",
+      "author_blobs_preserved": true
+    }
+  },
+  "notifier": {
+    "seam": "4fc9fcbc677f278d10caeb34d55184545810a13a",
+    "blob": "7df27cb36b169134ff279e43c0b9c329cf919fef",
+    "reintroduced": false
+  },
+  "lark": {
+    "fix": "dd5919a9256246570e611a7fa86aea28b46ef14d",
+    "ancestor": true,
+    "reintroduced": false
+  },
+  "legacy": {
+    "fleet_mcp_tree": "fcc3a9f59f5f50d675fa1da9d92df752ce2e3ef9",
+    "fleet_mcp_unchanged": true,
+    "v2_not_ancestors": [
+      407,
+      473,
+      474
+    ],
+    "483_additive": true
+  },
+  "p0": {
+    "497": {
+      "test": "tests/test_fleet_next_agent_monitor_core.py",
+      "reading": "37 passed",
+      "scenarios": [
+        "UNKNOWN receipt -> retry stays non-green -> confirmed DELIVERED",
+        "fake completed without native activity is UNKNOWN",
+        "typed CI subject is the granted project container",
+        "CI wrong/draft SHA never reaches the notifier",
+        "boot mismatch fails closed"
+      ]
+    },
+    "498": {
+      "tests": [
+        "tests/test_fleet_next_agent_monitor_activation.py",
+        "tests/test_fleet_next_agent_monitor_activation_batch.py",
+        "tests/test_fleet_next_agent_monitor_activation_runtime_tick.py",
+        "tests/test_fleet_next_agent_monitor_activation_truth.py"
+      ],
+      "reading": "3 failed",
+      "failures": [
+        "tests/test_fleet_next_agent_monitor_activation_runtime_tick.py::TheRealRefusalReachesTheSupervisor::test_three_processes_report_the_blocked_tick_and_none_of_them_flattens_it",
+        "tests/test_fleet_next_agent_monitor_activation_runtime_tick.py::TheRealVitalsSurviveTheWrapper::test_a_configured_tick_carries_its_vitals_through_the_wrapper",
+        "tests/test_fleet_next_agent_monitor_activation_runtime_tick.py::TheRealVitalsSurviveTheWrapper::test_a_second_process_does_not_inherit_the_first_ones_verdict"
+      ],
+      "status": "BLOCKED",
+      "owner": "#498 author, with #497 author",
+      "root_cause": "the runtime-tick tests skip on the author head (no #493), then fail on the composed tree: health.reported has no 'backlog' key (KeyError), and the tests compare full documents/ticks_report including wall-clock last_tick/last_ok, so two processes never compare equal; fix belongs to #498's test/wrapper contract or #497's health shape"
+    },
+    "499": {
+      "test": "tests/test_fleet_next_monitor_source_adapter.py",
+      "reading": "80 passed, 21 subtests passed",
+      "scenarios": [
+        "compat denied costs zero reads",
+        "CI SHA mismatch speaks the monitor's word",
+        "explicit boot expectation is honoured",
+        "read_request rename"
+      ]
+    },
+    "480_483": {
+      "tests": [
+        "tests/test_fleet_next_parallel_plugin.py",
+        "tests/test_fleet_next_legacy_survival.py"
+      ],
+      "reading": "86 passed, 11 subtests passed",
+      "scenarios": [
+        "Legacy collision is blocked, never renamed aside",
+        "shadow refusal"
+      ]
+    }
+  },
+  "governance": {
+    "declared_implementations": "3 failed, all baseline entries 51-53",
+    "two_490_failures_gone": true,
+    "loader_identity": "2 failed, baseline entries 66-67",
+    "repository_layers": "10 passed, 37 subtests passed",
+    "no_node_absolute_paths": "5 passed, 5 subtests passed"
+  },
+  "historical_ledgers": {
+    "wave12_wave13": "21 passed, 41 subtests passed",
+    "wave14": "25 passed, 75 subtests passed"
+  },
+  "targeted": {
+    "reading": "263 passed, 189 subtests passed"
+  },
+  "release_matrix": {
+    "issue_425": {
+      "gates": {
+        "A_legacy_control_preserved": {
+          "status": "SOURCE_ONLY",
+          "evidence": "no fleet_mcp delta; real reachability NOT_RUN"
+        },
+        "B_next_side_by_side_artifact": {
+          "status": "NOT_RUN",
+          "evidence": "no install/switch"
+        },
+        "C_agent_monitor_e2e": {
+          "status": "PARTIAL",
+          "evidence": "#497/#499 P0 green; #498 3 runtime-tick tests blocked"
+        },
+        "D_real_coinstall_im_switch": {
+          "status": "NOT_RUN",
+          "evidence": "needs separate authorization"
+        },
+        "E_final_rc_legacy_preserved": {
+          "status": "SOURCE_GATE_PASS",
+          "evidence": "#483 additive; fleet_mcp unchanged"
+        }
+      },
+      "hosted_ci_5of5": {
+        "status": "NOT_MET",
+        "evidence": "final head must be checked; #498 block is a known new failure"
+      }
+    },
+    "issue_478": {
+      "legacy_version": "0.1.0",
+      "legacy_preserved": true,
+      "legacy_tree_unchanged": true,
+      "v2_candidates_not_merged": [
+        407,
+        473,
+        474
+      ],
+      "source_gate": "PASS: no fleet_mcp delta; #483 only adds",
+      "real_gates_not_run": [
+        "real Legacy/Next co-install",
+        "Timer install",
+        "App1 IM",
+        "main merge"
+      ]
+    },
+    "issue_434": {
+      "status": "NOT_RUN",
+      "evidence": "no real device/model/OAuth; four-line closure not measured"
+    },
+    "blockers": [
+      {
+        "id": "#497x#498-runtime-tick",
+        "owner": "#498 author, with #497 author",
+        "status": "BLOCKED",
+        "evidence": "3 exact test IDs; KeyError backlog + wall-clock equality"
+      },
+      {
+        "id": "hosted-5of5",
+        "owner": "Wave16 integrator + #498 author",
+        "status": "BLOCKED",
+        "evidence": "exact final head CI pending; #498 block is a new failure"
+      },
+      {
+        "id": "#495-qa-recheck",
+        "owner": "#495 QA",
+        "status": "INDEPENDENT",
+        "evidence": "latest #495 f600fe6 predates the three new P0 heads"
+      },
+      {
+        "id": "real-coinstall",
+        "owner": "user authorization",
+        "status": "NOT_RUN",
+        "evidence": "Next/Legacy co-install, Timer, App1 IM, main merge"
+      }
+    ]
+  },
+  "not_run": [
+    "real Legacy/Next co-install",
+    "Timer install",
+    "App1 IM",
+    "main merge",
+    "real install",
+    "release",
+    "service start",
+    "OAuth/credential",
+    "Feishu/IM send",
+    "paid model",
+    "GPU"
+  ]
+}

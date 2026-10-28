@@ -42,6 +42,13 @@ REPO = Path(__file__).resolve().parents[1]
 BASE = "a00fabc87fff65aeb50a851536b3314be8399090"
 BASE_TREE = "d84aef2566572353001ec50a60d33ac95c656281"
 
+#: The Wave 14 ledger head. Every byte claim in this file is scoped to this
+#: tree, not to whatever a later Wave composes on top of it. Wave 16 adds P0
+#: fixes to #493/#488/#490 files; a HEAD-relative claim would call those
+#: legitimate author changes an unrecorded edit. The historical claim is
+#: re-checked against this commit, exactly as Wave 13 did for Wave 12.
+WAVE14_HEAD = "00503f91b019ce342af52f38b19bb3aa21dfff55"
+
 #: The composed source commit, before this ledger was added. It is a merge
 #: whose second parent is #483's head; the other author heads are parents of
 #: earlier merges in its first-parent chain.
@@ -182,21 +189,16 @@ def _merge_parents(commit: str) -> tuple[str, ...]:
     return tuple(line[1:])
 
 
-def _committed_delta() -> set[str]:
+def _wave14_delta() -> set[str]:
+    """The Wave 14 composition delta, read from its own head.
+
+    Not HEAD: a later Wave may add its own ledger and P0 fixes. Those are a
+    different tree's fact, and this file must keep asserting the one it
+    recorded.
+    """
     return set(
-        _git("diff", "--name-only", f"{BASE}..HEAD").decode().splitlines()
-    )
-
-
-def _working_delta() -> set[str]:
-    """Committed composition delta, plus the ledger files before they are
-    committed, so RED/GREEN can be read on the same working tree."""
-    changed = _committed_delta()
-    changed |= set(_git("diff", "--name-only", "HEAD").decode().splitlines())
-    changed |= set(
-        _git("ls-files", "--others", "--exclude-standard").decode().splitlines()
-    )
-    return {path for path in changed if path}
+        _git("diff", "--name-only", f"{BASE}..{WAVE14_HEAD}")
+        .decode().splitlines())
 
 
 def _manifest() -> dict:
@@ -294,8 +296,13 @@ class TheManifestNamesEachAuthorsOwnIncrement(unittest.TestCase):
                     f"{pr}'s increment changed; re-derive the composition")
 
     def test_every_recorded_file_holds_the_authors_own_blob(self):
-        """The working tree, the manifest digest and the author commit must be
-        three readings of one file."""
+        """The Wave 14 tree, the manifest digest and the author commit must be
+        three readings of one file.
+
+        The working tree is deliberately not read: Wave 16 legitimately adds
+        P0 fixes to some of these files. The historical claim is true on
+        `WAVE14_HEAD` and is checked there.
+        """
         manifest = _manifest()
         entries = {
             entry["path"]: entry["sha256"]
@@ -307,10 +314,10 @@ class TheManifestNamesEachAuthorsOwnIncrement(unittest.TestCase):
             for relative in paths:
                 with self.subTest(author=commit[:9], file=relative):
                     self.assertEqual(
-                        _digest(REPO / relative),
+                        _blob_digest(f"{WAVE14_HEAD}:{relative}"),
                         _blob_digest(f"{commit}:{relative}"),
-                        f"{relative} no longer holds {commit}'s blob — "
-                        "re-derive the composition instead of editing it")
+                        f"{relative} did not hold {commit}'s blob on the Wave "
+                        "14 head — re-derive that composition")
                     self.assertEqual(
                         entries[relative],
                         _blob_digest(f"{commit}:{relative}"),
@@ -318,11 +325,11 @@ class TheManifestNamesEachAuthorsOwnIncrement(unittest.TestCase):
                         "author's blob")
 
     def test_the_composition_adds_nothing_it_did_not_record(self):
-        """The delta is exactly the four increments plus this ledger. No
-        unrelated file moved."""
+        """The Wave 14 delta is exactly the four increments plus this ledger.
+        No unrelated file moved."""
         expected = {path for paths in AUTHOR_FILES.values() for path in paths}
         expected |= set(OWN_FILES)
-        self.assertEqual(_working_delta(), expected)
+        self.assertEqual(_wave14_delta(), expected)
 
     def test_the_four_increments_do_not_overlap(self):
         seen: dict[str, str] = {}
@@ -340,7 +347,7 @@ class TheLegacySurfaceIsUntouched(unittest.TestCase):
 
     def test_no_legacy_path_is_in_the_composition_delta(self):
         offenders = sorted(
-            path for path in _working_delta()
+            path for path in _wave14_delta()
             if path.startswith(LEGACY_PREFIXES))
         self.assertEqual(
             offenders, [],
