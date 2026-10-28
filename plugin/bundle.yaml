@@ -209,6 +209,17 @@ runtime:
   path: runtime
 fleet_mcp:
   path: fleet_mcp
+
+# The hub package D2 promotes out of `runtime/`. This entry is necessary and not
+# sufficient: the build loop visits `CORE_MODULES` first and only then asks this
+# file for a path, so a key here without one there is never read — and a member
+# there without a key here is skipped by the loop's `continue` with no error at
+# all. Both lists must name the directory, which is why
+# `tests/test_fleet_hub_boundary.py` asserts them together instead of trusting
+# this comment.
+fleet_hub:
+  path: fleet_hub
+
 bin:
   path: bin
 

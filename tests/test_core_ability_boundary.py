@@ -94,6 +94,46 @@ CORE_DIRS = ("runtime", "context", "fleet")
 # A daemon that can load one of these is a daemon that cannot start without it.
 FABRIC_DIRS = ("abilities", "mcp", "memory", "space", "relations", "scripts")
 
+
+# Both tuples above name TOP-LEVEL directories, and the whitelist test below
+# states its own question that way: whether "a NEW top-level directory" appeared.
+# The checks nevertheless compared `path.parent.name`, which answers a different
+# question as soon as a file sits one level down — and in both directions the
+# answer was wrong:
+#
+#   `runtime/reports/business_calendar.py`  parent.name is `reports`, a name in
+#       no table, so the whitelist reported a file OF the core as a stranger.
+#       That is the shape every staged migration has — a product module moved
+#       one level down under the directory that ships it — and what `runtime/`
+#       contains is `docs/architecture/layers.yaml`'s decision, not this table's.
+#
+#   `abilities/sub/resolver.py`             parent.name is `sub`, so the
+#       BLACKLIST never scanned it. A module one directory deeper than the
+#       fabric's top level was outside §24's gate entirely. Nothing noticed
+#       because no fabric directory is nested today; the hole was waiting for
+#       the first one.
+#
+# So the rule is stated once, as the question the tables are about: which
+# top-level directory is this file in. Stating it that way closes the blacklist
+# hole and stops a staging step being read as a new layer. Both halves are
+# measured by `TheDirectoryQuestionIsTopLevel` rather than left to this comment.
+def _tree(path: Path) -> str:
+    """The repository's top-level directory, for a repo-relative module path."""
+    parts = path.parts
+    return parts[0] if len(parts) > 1 else ""
+
+
+def _key(path) -> str:
+    """A module path spelled the way the tables spell it, on any host.
+
+    `str(Path)` uses the host separator, so on Windows every recorded crossing
+    compared unequal to its measured counterpart and the subtractions below
+    matched nothing: the one argued-for edge was re-reported as an offender
+    instead of being removed. The tables hold repository paths, which are `/`
+    on every host, so the comparison is made in that spelling.
+    """
+    return Path(path).as_posix()
+
 # The daemon's own crossings, and this table is a WIDENING of the gate that
 # has to be argued for rather than a list that was always here.
 #
@@ -296,9 +336,9 @@ class CoreDoesNotDependOnTheFabric(unittest.TestCase):
         """
         reached = closure(CORE_ENTRY)
         offenders = sorted(
-            f"{module} (via {module.parent.name}/)"
-            for module in reached if module.parent.name in FABRIC_DIRS
-            and str(module) not in KNOWN_CORE_CROSSINGS)
+            f"{module} (via {_tree(module)}/)"
+            for module in reached if _tree(module) in FABRIC_DIRS
+            and _key(module) not in KNOWN_CORE_CROSSINGS)
         self.assertEqual(offenders, [], "\n".join(
             ["the core process can load something from the fabric:",
              *offenders,
@@ -325,8 +365,8 @@ class CoreDoesNotDependOnTheFabric(unittest.TestCase):
         one file in it and says why."""
         unexpected = sorted(
             str(module) for module in closure(CORE_ENTRY)
-            if module.parent.name not in CORE_DIRS
-            and str(module) not in KNOWN_CORE_CROSSINGS)
+            if _tree(module) not in CORE_DIRS
+            and _key(module) not in KNOWN_CORE_CROSSINGS)
         self.assertEqual(unexpected, [], "\n".join([
             "the core process reaches a directory that is not part of it:",
             *unexpected,
@@ -460,8 +500,8 @@ class TheClisCrossingsAreRecorded(unittest.TestCase):
         "the daemon has no provider dependency" stops being a property and
         becomes a claim about a snapshot."""
         reached = sorted(
-            str(ref) for ref in module_refs(RUNTIME / "cli.py")
-            if ref.parent.name in FABRIC_DIRS)
+            _key(ref) for ref in module_refs(RUNTIME / "cli.py")
+            if _tree(ref) in FABRIC_DIRS)
         self.assertEqual(reached, sorted(KNOWN_CLI_CROSSINGS), "\n".join(
             ["the CLI's crossings into the fabric changed:",
              f"  measured: {reached}",
@@ -497,8 +537,8 @@ class TheCoresCrossingsAreRecorded(unittest.TestCase):
         closure reaches. The raw measurement, before any record is subtracted,
         so that the two directions below are checked against the same thing."""
         return sorted(
-            str(module) for module in closure(CORE_ENTRY)
-            if module.parent.name in FABRIC_DIRS)
+            _key(module) for module in closure(CORE_ENTRY)
+            if _tree(module) in FABRIC_DIRS)
 
     def test_every_recorded_core_edge_is_still_real(self):
         measured = self._measured()
@@ -546,6 +586,91 @@ class TheCoresCrossingsAreRecorded(unittest.TestCase):
             "after it has started', which is a weaker claim than the one this "
             "file's header makes. Raise this number only with a `because` for "
             "the new entry that names why no other process can answer it.")
+
+
+class TheDirectoryQuestionIsTopLevel(unittest.TestCase):
+    """The two directions the `parent.name` spelling got wrong, measured.
+
+    This class exists because the change it guards is invisible in the tests it
+    fixes: both gates still report an empty set on this tree either way, so a
+    green suite says nothing about which question was asked. Each assertion
+    below pairs the answer that is wanted with the answer the old expression
+    gave, on the same input — the old one is asserted to be WRONG, so the
+    difference cannot quietly disappear.
+    """
+
+    def test_a_file_nested_under_a_fabric_directory_is_now_scanned(self):
+        """The direction that matters for §24: a hole one directory deep.
+
+        `abilities/sub/resolver.py` is a fabric module by any reading, and the
+        blacklist answered `sub` and moved on. Nothing in the tree nests there
+        today, which is why the hole was never stepped in — and why closing it
+        costs nothing but this line.
+        """
+        nested = Path("abilities/sub/resolver.py")
+        self.assertIn(_tree(nested), FABRIC_DIRS)
+        self.assertNotIn(nested.parent.name, FABRIC_DIRS)
+
+    def test_a_file_nested_under_a_core_directory_is_part_of_it(self):
+        """The direction that matters for a staged migration.
+
+        A product module moved one level down under `runtime/` is still inside
+        `runtime/`. Whether it BELONGS there is `layers.yaml`'s question; it is
+        not a question about which directory name appears immediately above the
+        file, and answering it here would have made every staged move look like
+        a new layer.
+        """
+        nested = Path("runtime/reports/business_calendar.py")
+        self.assertIn(_tree(nested), CORE_DIRS)
+        self.assertNotIn(nested.parent.name, CORE_DIRS)
+
+    def test_a_new_top_level_directory_is_still_a_failure(self):
+        """The property the whitelist is for, re-asserted after the change.
+
+        This is the assertion that stops the two above from being a general
+        loosening: a directory that is new AT THE TOP is still outside the
+        core, whether it holds one file or a hundred.
+        """
+        for stranger in ("reports/business_calendar.py",
+                         "integrations/x/y.py",
+                         "workengine/store.py",
+                         "cards.py"):
+            self.assertNotIn(_tree(Path(stranger)), CORE_DIRS, stranger)
+
+    def test_a_recorded_crossing_is_subtracted_on_every_host(self):
+        """`str(Path)` is not a repository path outside POSIX.
+
+        The tables hold repository paths, spelled `/`. Measuring the same
+        edge with `str(Path)` gave `abilities\\resolver.py` on Windows, so
+        the subtraction matched nothing and the table's own entry came back
+        as an offender. `_key` is that comparison, and the assertions below
+        are ones both hosts make: the recorded spelling survives it.
+
+        The control on the OLD expression is guarded by `os.name`, and the
+        guard is the point of this docstring. An earlier version asserted,
+        without the guard, that `as_posix()` turns a backslash-spelled path
+        into the `/` spelling — false everywhere except Windows, because POSIX
+        gives a backslash no special meaning and `as_posix` returns it as it
+        found it.
+
+        The Linux runners found it; a green local run could not. The guard
+        is honest rather than a convenience: on POSIX `_key` and `str(Path)`
+        agree on these inputs, so there is no bug there to demonstrate, and
+        inventing one would be the same mistake again.
+        """
+        recorded = "abilities/resolver.py"          # the tables' spelling
+        self.assertEqual(_key(recorded), recorded)
+        self.assertEqual(_key(Path("runtime") / "daemon.py"),
+                         "runtime/daemon.py")
+        if os.name == "nt":
+            # The one host where the old expression disagreed with the table.
+            self.assertNotEqual(str(Path(recorded)), recorded)
+
+    def test_the_tables_are_named_for_top_level_directories(self):
+        """The premise: every entry is a directory that exists at the root."""
+        for name in CORE_DIRS + FABRIC_DIRS:
+            self.assertNotIn("/", name, name)
+            self.assertTrue((RUNTIME.parent / name).is_dir(), name)
 
 
 class AStartedCoreHasLoadedNoFabric(unittest.TestCase):
