@@ -24,6 +24,7 @@
 // property a run beside `serverosd` needs — the Python daemon owns the health
 // ledger, and a second writer would be a second authority over one account.
 #include <signal.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -89,6 +90,12 @@ void print_usage(std::FILE* out) {
                  "                         --enable-actions, where it is read and written;\n"
                  "                         observe-only never uses it.\n"
                  "  --systemctl PATH       the systemctl to run (default %s).\n"
+                 "  --monitor-only         THE V1 MONITOR PROFILE. Resident, read-only,\n"
+                 "                         and unable to be talked into a verb: every flag\n"
+                 "                         that authorises a mutation is REFUSED by name.\n"
+                 "                         Implies --serve. It observes, samples its own cost\n"
+                 "                         and answers the status socket; it runs no model,\n"
+                 "                         starts nothing, restarts nothing and sends nothing.\n"
                  "  --serve                run the resident loop: monotonic ticks, a status\n"
                  "                         socket, and a clean exit on SIGTERM.\n"
                  "  --interval-seconds N   seconds between ticks in --serve (default 60).\n"
@@ -248,6 +255,33 @@ bool default_lease_path(std::string& out, std::string& why) {
     return true;
 }
 
+//: This process's own cost, for the monitor profile's readback.
+//:
+//: Two cheap reads and no subprocess: `/proc/self/statm` for the resident set,
+//: `getrusage` for the CPU this process has burned. A resident monitor whose
+//: cost nobody can read is a claim about cost, and the owner asked for the
+//: measurement.
+void read_self_cost(long& rss_kb, long& cpu_ms) {
+    rss_kb = -1;
+    cpu_ms = -1;
+    std::ifstream statm("/proc/self/statm");
+    long total_pages = 0;
+    long resident_pages = 0;
+    if (statm.good() && (statm >> total_pages >> resident_pages)) {
+        const long page_kb = static_cast<long>(::sysconf(_SC_PAGESIZE)) / 1024;
+        if (page_kb > 0 && resident_pages >= 0) {
+            rss_kb = resident_pages * page_kb;
+        }
+    }
+    struct rusage usage {};
+    if (::getrusage(RUSAGE_SELF, &usage) == 0) {
+        const long long microseconds =
+            (static_cast<long long>(usage.ru_utime.tv_sec) + usage.ru_stime.tv_sec) * 1000000LL +
+            (static_cast<long long>(usage.ru_utime.tv_usec) + usage.ru_stime.tv_usec);
+        cpu_ms = static_cast<long>(microseconds / 1000);
+    }
+}
+
 void sleep_millis_real(long millis) {
     if (millis > 0) {
         ::usleep(static_cast<useconds_t>(millis) * 1000);
@@ -306,6 +340,12 @@ int main(int argc, char** argv) {
     // owner map gives it, then exit. Reads only — it takes no lease, touches no
     // service and writes no file, so it is safe to run on a live host.
     bool capability = false;
+    //: The V1 serverosd shape: resident, read-only, unable to be talked into a
+    //: verb. `--monitor-only` is a PROFILE, not a promise — every flag that
+    //: authorises a mutation is refused below rather than ignored, because a
+    //: monitor that silently accepts `--enable-actions` is one nobody can trust.
+    bool monitor_only = false;
+    std::vector<std::string> acting_flags;
     long interval_seconds = 60;
     long max_ticks = -1;
     nodecore::supervisor::Trigger trigger = nodecore::supervisor::Trigger::Tick;
@@ -327,9 +367,11 @@ int main(int argc, char** argv) {
                 return 2;
             }
             lease_path = argv[++i];
+            acting_flags.push_back(flag);
             continue;
         }
         if (flag == "--link-state") {
+            acting_flags.push_back(flag);
             const std::string value = has_value ? argv[++i] : std::string();
             if (value == "up") {
                 link.known = true;
@@ -347,6 +389,7 @@ int main(int argc, char** argv) {
             continue;
         }
         if (flag == "--agent-state") {
+            acting_flags.push_back(flag);
             const std::string value = has_value ? argv[++i] : std::string();
             if (value == "idle") {
                 agent.known = true;
@@ -363,6 +406,7 @@ int main(int argc, char** argv) {
             continue;
         }
         if (flag == "--service-runtime") {
+            acting_flags.push_back(flag);
             const std::string value = has_value ? argv[++i] : std::string();
             if (value == "serving") {
                 service_runtime.known = true;
@@ -381,6 +425,7 @@ int main(int argc, char** argv) {
         }
         if (flag == "--enable-actions") {
             act = true;
+            acting_flags.push_back(flag);
             continue;
         }
         if (flag == "--serve") {
@@ -395,6 +440,10 @@ int main(int argc, char** argv) {
             capability = true;
             continue;
         }
+        if (flag == "--monitor-only") {
+            monitor_only = true;
+            continue;
+        }
         if (!has_value) {
             std::fprintf(stderr, "%s needs a value\n", flag.c_str());
             return 2;
@@ -404,8 +453,10 @@ int main(int argc, char** argv) {
             manifest_path = value;
         } else if (flag == "--state") {
             state_path = value;
+            acting_flags.push_back(flag);
         } else if (flag == "--receipt") {
             receipt_path = value;
+            acting_flags.push_back(flag);
         } else if (flag == "--systemctl") {
             systemctl_path = value;
         } else if (flag == "--status-socket") {
@@ -421,6 +472,7 @@ int main(int argc, char** argv) {
         } else if (flag == "--allow-unit") {
             allowed_units.push_back(value);
         } else if (flag == "--facts") {
+            acting_flags.push_back(flag);
             facts_path = value;
         } else if (flag == "--owner-map") {
             owner_map_path = value;
@@ -445,6 +497,21 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (monitor_only) {
+        // THE V1 serverosd PROFILE. Refused by name rather than ignored: a
+        // monitor that silently accepts `--enable-actions` would be a monitor
+        // whose own argv says something it does not do. `--serve` is implied,
+        // because a monitor that is not resident is a sample.
+        if (!acting_flags.empty()) {
+            std::fprintf(stderr,
+                         "--monitor-only refuses %s: this profile cannot issue a verb, and a "
+                         "flag that authorises one is refused rather than ignored. Run the "
+                         "acting profile deliberately, in a separate authorisation\n",
+                         acting_flags.front().c_str());
+            return 2;
+        }
+        serve = true;
+    }
     if (manifest_path.empty()) {
         std::fprintf(stderr, "--manifest is required\n");
         return 2;
@@ -757,6 +824,7 @@ int main(int argc, char** argv) {
     const long process_started_monotonic = monotonic_seconds();
     nodecore::supervisor::StatusSnapshot snapshot;
     snapshot.mode = "observe-only";
+    snapshot.profile = monitor_only ? "monitor-only" : "serve";
     snapshot.node = manifest.node;
     snapshot.principal = manifest.principal;
     snapshot.pid = static_cast<long>(::getpid());
@@ -790,6 +858,7 @@ int main(int argc, char** argv) {
         // including a thrown observation/provider error, releases the writer.
         nodecore::supervisor::WriterLease writer_lease;
         const long tick_started = monotonic_seconds();
+        const auto tick_began = std::chrono::steady_clock::now();
         //: Resident acting re-reads its facts EVERY tick, here, before the plan
         //: is built. `usable == false` (absent, unreadable, stale, malformed)
         //: leaves link and agent unknown, and the admission gate refuses on
@@ -1040,6 +1109,15 @@ int main(int argc, char** argv) {
         snapshot.last_tick_monotonic = tick_started - process_started_monotonic;
         snapshot.last_tick_duration_seconds =
             monotonic_seconds() - tick_started;
+        // The monitor's own cost, measured at the end of the tick it is about.
+        // `monotonic_seconds()` is whole seconds, which is too coarse to say
+        // what one observation cost, so the tick's own duration is taken from
+        // the steady clock in milliseconds.
+        const auto tick_finished = std::chrono::steady_clock::now();
+        snapshot.tick_ms = static_cast<long>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(tick_finished - tick_began)
+                .count());
+        read_self_cost(snapshot.rss_kb, snapshot.cpu_ms);
         snapshot.uptime_seconds = monotonic_seconds() - process_started_monotonic;
         snapshot.plan_ok = plan.ok;
         snapshot.planned_actions = static_cast<long>(plan.actions.size());

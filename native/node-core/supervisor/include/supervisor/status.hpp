@@ -51,6 +51,16 @@ struct StatusSnapshot {
     // "observe-only". Written down rather than inferred, because a client that
     // had to guess whether the Core is willing to act would guess wrong.
     std::string mode = "observe-only";
+    //: Which resident profile answered: "serve" or "monitor-only". The second is
+    //: the V1 serverosd shape — resident, read-only, and unable to be talked
+    //: into issuing a verb. A reader is entitled to see which one replied.
+    std::string profile = "serve";
+    //: This process's OWN cost, measured at the end of the last tick. A monitor
+    //: that cannot state what it costs is a claim; these are the measurement.
+    //: -1 means "not measured", never 0.
+    long rss_kb = -1;
+    long cpu_ms = -1;
+    long tick_ms = -1;
     std::string node;
     std::string principal;
     long pid = 0;
