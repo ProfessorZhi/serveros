@@ -438,8 +438,12 @@ class NativeRuntimeReleaseTests(unittest.TestCase):
                       str(caught.exception))
 
     def test_the_existing_kinds_are_unchanged(self):
+        # `l2-node` / `l2-hub` joined in PR #432. The point of this assertion is
+        # that a kind is never added by accident: growing this tuple is a line
+        # somebody has to write, in the PR that adds the verifier for it.
         self.assertEqual(release.ARTIFACT_KINDS,
-                         ("node-runtime", "plugin", "native-runtime"))
+                         ("node-runtime", "plugin", "native-runtime",
+                          "l2-node", "l2-hub"))
         self.assertEqual(
             release.REQUIRED_MEMBERS[release.NODE_RUNTIME],
             ("bin/serverosd", "bin/serverosctl", "runtime/daemon.py",

@@ -47,6 +47,7 @@ removed the only thing that makes an atomic swap worth having.
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import hashlib
 import importlib.util
@@ -57,6 +58,7 @@ import re
 import shlex
 import shutil
 import subprocess
+from fnmatch import fnmatchcase
 import sys
 from pathlib import Path
 
@@ -217,7 +219,16 @@ PLUGIN = "plugin"
 #: `node-runtime` would make the verifier demand `runtime/daemon.py` from a
 #: payload that has never contained one.
 NATIVE_RUNTIME = "native-runtime"
-ARTIFACT_KINDS = (NODE_RUNTIME, PLUGIN, NATIVE_RUNTIME)
+#: The two halves of L2, released apart because they answer to different
+#: machines: the per-machine connector ships everywhere, and the Tokyo hub is one
+#: host. Registering them here is what lets the release path READ their artifacts;
+#: it is not a claim that either can be installed on its own — see
+#: `verify_l2_layer`'s `installable` verdict and the NOT_STANDALONE refusal in
+#: `cmd_promote`.
+L2_NODE = "l2-node"
+L2_HUB = "l2-hub"
+L2_KINDS = (L2_NODE, L2_HUB)
+ARTIFACT_KINDS = (NODE_RUNTIME, PLUGIN, NATIVE_RUNTIME, L2_NODE, L2_HUB)
 
 #: The native package's own manifest and its one actuator. Named here because
 #: the release path needs them as REQUIRED MEMBERS; the authority on what they
@@ -251,7 +262,68 @@ REQUIRED_MEMBERS = {
     # the manifest and no actuator is a claim with nothing behind it; one with
     # the actuator and no manifest is a binary nobody can identify.
     NATIVE_RUNTIME: (PACKAGE_MANIFEST, NATIVE_ACTUATOR),
+    # The file each kind exists for. Absence means the payload is not the thing
+    # it claims to be, whichever verifier runs.
+    L2_NODE: ("fleet_mcp/__init__.py", "fleet_mcp/node/__init__.py",
+              "fleet_mcp/node/connector.py"),
+    L2_HUB: ("fleet_mcp/__init__.py", "fleet_mcp/server.py"),
 }
+
+# ---------------------------------------------------------------- L2 contract
+#
+# These tables are COPIED from `integrations/fleet-v1-l2-release/l2_release.py`
+# (PR #431, head 001eb7c2), which is the reference implementation and the thing
+# that builds the payloads. Copying rather than importing is deliberate: an
+# integration directory is not a library the release tool may depend on, and a
+# release tool that imported its own input would be verifying a payload against
+# code shipped beside it. The two must agree, and
+# `tests/test_release_l2_layers.py` compares them directly when #431 is present
+# in the tree.
+L2_COMPOSITION = "fleet-l2"
+L2_NAMES = {L2_NODE: "fleet-l2-node", L2_HUB: "fleet-l2-hub"}
+L2_ENTRY = {L2_NODE: "fleet_mcp.node.connector", L2_HUB: "fleet_mcp.server"}
+L2_PLATFORMS = {L2_NODE: ("linux", "windows"), L2_HUB: ("linux",)}
+
+#: The hub's own ingress and operator face. A connector that carries these can
+#: start an MCP server or run OAuth because it was imported.
+L2_NODE_DENIED_MODULES = ("fleet_mcp.server", "fleet_mcp.tools",
+                          "fleet_mcp.oauth", "fleet_mcp.owner_setup")
+L2_NODE_DENIED_PREFIXES = ("fleet_mcp/deploy/", "fleet_mcp/bin/")
+
+#: The measured coupling a node artifact is allowed to have today, frozen. A
+#: module outside both this tuple and L2_NODE_EXCLUSIVE is new coupling.
+L2_NODE_SHARED_SURFACE = (
+    "fleet_mcp.audit", "fleet_mcp.cloudcli_native", "fleet_mcp.core_lite_readback",
+    "fleet_mcp.core_lite_source", "fleet_mcp.disclosure", "fleet_mcp.discovery",
+    "fleet_mcp.dispatch", "fleet_mcp.feishu_sso", "fleet_mcp.fleet",
+    "fleet_mcp.mcp_http", "fleet_mcp.owner_access", "fleet_mcp.privacy",
+    "fleet_mcp.providers.fleet_node", "fleet_mcp.registry",
+    "fleet_mcp.runtime_create_policy", "fleet_mcp.scopes",
+    "fleet_mcp.session_detail",
+)
+L2_NODE_EXCLUSIVE = frozenset({
+    "fleet_mcp", "fleet_mcp.node", "fleet_mcp.node.connector",
+    "fleet_mcp.node_protocol", "fleet_mcp.errors", "fleet_mcp.identity",
+    "fleet_mcp.local_roots", "fleet_mcp.config", "fleet_mcp.runtime_identity",
+    "fleet_mcp.providers", "fleet_mcp.providers.base",
+    "fleet_mcp.providers.cloudcli", "fleet_mcp.version",
+})
+
+#: A hub release is software. Units, bindings, launchers and keys are properties
+#: of the machine that has them.
+L2_HUB_DENIED_PREFIXES = ("fleet_mcp/node/",)
+L2_HUB_DENIED_PATTERNS = ("*.local.yaml", "*.local.yml", "bindings/*", "*.service",
+                          "*.timer", "*.service.in", "*.ps1", "*.vbs", "*.pem",
+                          "*.key", ".env")
+#: Applied to non-source files only: `token_cache.py` is code, `tokens.json` is a
+#: credential.
+L2_HUB_SECRET_PATTERNS = ("*credential*", "*token*")
+
+L2_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$")
+#: A payload that forwards the CloudCLI tool schema asks the running CLI; one that
+#: carries a copy keeps answering after the CLI moves.
+L2_SCHEMA_MARKER = "inputSchema"
+L2_SCHEMA_TOOL_HINT = "run_get"
 
 
 def default_state_dir() -> Path:
@@ -653,6 +725,11 @@ def verify_revision(rev_dir: Path, state_dir: Path, *,
         return verify_plugin(rev_dir)
     if kind == NATIVE_RUNTIME:
         return verify_native_runtime(rev_dir)
+    if kind in L2_KINDS:
+        # BEFORE the node fall-through. Adding a kind to ARTIFACT_KINDS makes it
+        # reachable, and a payload with no daemon would otherwise be asked for
+        # `bin/serverosd` and refused for a reason about another product.
+        return verify_l2_layer(rev_dir, kind=kind)
     return verify_node_runtime(rev_dir, state_dir)
 
 
@@ -771,6 +848,318 @@ def verify_plugin(rev_dir: Path) -> dict:
 
     return {"ok": not problems, "problems": problems,
             "tree_hash": fingerprint(rev_dir) if not problems else None}
+
+
+def _l2_module_of(name: str) -> str:
+    """`fleet_mcp/node/connector.py` -> `fleet_mcp.node.connector`; else empty."""
+    if not name.endswith(".py"):
+        return ""
+    parts = name[:-3].split("/")
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _l2_matches(path: str, pattern: str) -> bool:
+    if pattern.startswith("*") and "/" not in pattern:
+        return fnmatchcase(path.rsplit("/", 1)[-1], pattern)
+    return fnmatchcase(path, pattern) or fnmatchcase(path.rsplit("/", 1)[-1], pattern)
+
+
+def _l2_tree_digest(entries) -> str:
+    stream = "".join(f"{entry['sha256']}  {entry['path']}\n" for entry in entries)
+    return hashlib.sha256(stream.encode("utf-8")).hexdigest()
+
+
+def _l2_layer_problems(kind: str, names) -> list[str]:
+    """The separation rule, per kind — the whole point of releasing them apart."""
+    problems: list[str] = []
+    if kind == L2_NODE:
+        denied = sorted({name for name in names
+                         if _l2_module_of(name) in L2_NODE_DENIED_MODULES
+                         or name.startswith(L2_NODE_DENIED_PREFIXES)})
+        if denied:
+            problems.append(f"a node artifact must not carry hub-side {denied}")
+        modules = {_l2_module_of(name) for name in names}
+        unpinned = sorted((modules - set(L2_NODE_EXCLUSIVE)
+                           - set(L2_NODE_SHARED_SURFACE)) - {""})
+        if unpinned:
+            problems.append(f"new hub coupling in the node artifact: {unpinned}")
+    else:
+        leaked = sorted(name for name in names
+                        if name.startswith(L2_HUB_DENIED_PREFIXES))
+        if leaked:
+            problems.append(f"a hub artifact must not carry device-side {leaked}")
+        forbidden = sorted(name for name in names
+                           if any(_l2_matches(name, pattern)
+                                  for pattern in L2_HUB_DENIED_PATTERNS))
+        if forbidden:
+            problems.append(f"a hub artifact must not carry machine-specific {forbidden}")
+        secrets = sorted(name for name in names
+                         if not name.endswith((".py", ".pyi"))
+                         and any(_l2_matches(name, pattern)
+                                 for pattern in L2_HUB_SECRET_PATTERNS))
+        if secrets:
+            problems.append(f"a hub artifact must not carry credential-shaped {secrets}")
+    return problems
+
+
+def _l2_declared_modules(files: dict[str, bytes]) -> set[str]:
+    """Every third-party top-level module the payload imports."""
+    measured: set[str] = set()
+    stdlib = set(getattr(sys, "stdlib_module_names", frozenset()))
+    for name, data in files.items():
+        if not name.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(data.decode("utf-8", "replace"))
+        except SyntaxError as exc:
+            raise ValueError(f"{name} does not parse: {exc}") from exc
+        package = name.split("/")[:-1]
+        for node in ast.walk(tree):
+            modules: list[str] = []
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    base = list(package[: len(package) - (node.level - 1)])
+                    modules = [".".join(base + ([node.module] if node.module else []))]
+                else:
+                    modules = [node.module or ""]
+            for module in modules:
+                top = module.split(".")[0]
+                if module.startswith("fleet_mcp") or not top:
+                    continue
+                if top in stdlib or top == "__future__":
+                    continue
+                measured.add(top)
+    return measured
+
+
+def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
+    """Check a staged L2 revision, and say separately whether it can stand alone.
+
+    TWO VERDICTS, and the split is the point.
+
+    `ok` answers "is this the artifact it claims to be": schema, one kind, the
+    member list against the bytes on disk, every digest, the tree digest, the
+    layer separation, the declared-vs-imported dependencies and the platforms.
+    That is what `integrations/fleet-v1-l2-release/l2_release.py` (PR #431)
+    implements, and the two must agree.
+
+    `installable` answers a different question: "may a revision directory be
+    pointed at this?" Both L2 payloads measured on 2026-10-28 import the
+    repository's L0 `fleet/` package and do not carry it, so their manifests say
+    `l2.standalone: false`. An artifact like that is *correct* and is not
+    *releasable* — promoting it would install something that raises at import on
+    a machine without this checkout. Registering the kinds must not turn that
+    into a green light, so `cmd_promote` refuses on `installable`, by name, with
+    NOT_STANDALONE.
+
+    Reading the payload: this never extracts, never imports and never writes.
+    """
+    problems: list[str] = []
+
+    try:
+        manifest = read_artifact_manifest(rev_dir)
+    except SystemExit as exc:
+        # A refusal about the manifest is a finding about this revision, not a
+        # crash — the same reasoning `verify_plugin` states.
+        return {"ok": False, "problems": [str(exc)], "tree_hash": None,
+                "installable": False, "standalone": False}
+
+    kinds = manifest.get("kinds") if manifest else None
+    if kinds != [kind]:
+        problems.append(f"{ARTIFACT_MANIFEST} declares kinds {kinds!r}, expected [{kind!r}]")
+    if not isinstance(manifest, dict):
+        return {"ok": False, "problems": problems or ["manifest is not an object"],
+                "tree_hash": None, "installable": False, "standalone": False}
+
+    if manifest.get("composition") != L2_COMPOSITION:
+        problems.append(f"composition is {manifest.get('composition')!r}, "
+                        f"expected {L2_COMPOSITION!r}")
+    if manifest.get("name") != L2_NAMES[kind]:
+        problems.append(f"name is {manifest.get('name')!r}, expected {L2_NAMES[kind]!r}")
+    version = str(manifest.get("version", ""))
+    if not L2_VERSION_RE.match(version):
+        problems.append(f"version {version!r} is not <major>.<minor>.<patch>[+<cachebuster>]")
+
+    # --- the member list, against the bytes ---------------------------------
+    listed = manifest.get("members")
+    recorded = manifest.get("member_sha256")
+    if not isinstance(listed, list) or not all(isinstance(item, str) for item in listed):
+        problems.append("members is not a list of paths")
+        listed = []
+    if not isinstance(recorded, dict):
+        problems.append("member_sha256 is missing; a payload whose bytes are not "
+                        "recorded is not a weaker artifact, it is an unsigned one")
+        recorded = {}
+    if len(listed) != len(set(listed)):
+        problems.append("members lists a path more than once")
+
+    # Path safety BEFORE joining anything: a member list is a document, and a
+    # document that says `../../etc/passwd` must not be resolved to see if it
+    # exists.
+    safe_listed: list[str] = []
+    for name in listed:
+        if not isinstance(name, str) or not name or name.startswith("/") \
+                or ".." in Path(name).parts:
+            problems.append(f"member name {name!r} is not a relative path inside the payload")
+        else:
+            safe_listed.append(name)
+
+    # A symlink is not a member. `is_file()` follows it, so a payload could
+    # "carry" a required member that lives outside the artifact entirely — and
+    # the digest would match, because the bytes are the bytes. The native
+    # verifier refuses a linked member for the same reason.
+    linked = sorted(str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*")
+                    if p.is_symlink())
+    for name in linked:
+        problems.append(f"{name} is a symlink; a member must be a file in the payload")
+
+    on_disk = {str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*") if p.is_file()}
+    on_disk.discard(ARTIFACT_MANIFEST)
+    on_disk.discard(TREE_MANIFEST)
+    missing = sorted(set(safe_listed) - on_disk)
+    extra = sorted(on_disk - set(safe_listed))
+    if missing:
+        problems.append(f"the payload is missing declared member(s) {missing}")
+    if extra:
+        problems.append(f"file present that the manifest did not declare: {extra}")
+
+    files: dict[str, bytes] = {}
+    for name in safe_listed:
+        path = rev_dir / name
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        files[name] = data
+        want = recorded.get(name)
+        if not isinstance(want, str) or not want:
+            problems.append(f"{name} has no recorded digest")
+        elif hashlib.sha256(data).hexdigest() != want:
+            problems.append(f"{name} does not match the manifest entry")
+
+    tree_digest = _l2_tree_digest([{"path": name, "sha256": recorded.get(name, "")}
+                                   for name in safe_listed])
+    source_block = manifest.get("source")
+    if source_block is not None and not isinstance(source_block, dict):
+        problems.append(f"source is a {type(source_block).__name__}, not an object")
+        source_block = {}
+    if (source_block or {}).get("tree_sha256") != tree_digest:
+        problems.append("source.tree_sha256 does not describe this member list")
+
+    # --- required members, here as well as in the shared precheck -------------
+    # The shared loop in `verify_revision` already enforces this for the release
+    # path, and HANDOFF §6.3 says so. It is repeated because `verify_l2_layer` is
+    # also a public entry point (PR #431's parity test calls it directly), and a
+    # verifier that checks less when called directly is the failure this whole
+    # module is about. The peer's `verify` checks it internally for the same
+    # reason.
+    for required in REQUIRED_MEMBERS[kind]:
+        if required not in files:
+            problems.append(f"{kind} artifact is missing its required member {required}")
+
+    # --- separation, dependencies, platforms ---------------------------------
+    problems.extend(_l2_layer_problems(kind, set(safe_listed)))
+
+    # A vendored tool schema is a JSON DOCUMENT that answers what the running CLI
+    # should be asked. Source files are deliberately out of scope: the provider's
+    # own module names both markers because it is the thing that forwards the
+    # schema, and a rule that flagged it would refuse every correct payload.
+    for name in safe_listed:
+        data = files.get(name)
+        if data is None or not name.endswith(".json") or len(data) > 262_144:
+            continue
+        try:
+            value = json.loads(data)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        text = json.dumps(value)
+        if L2_SCHEMA_MARKER in text and L2_SCHEMA_TOOL_HINT in text:
+            problems.append(f"{name} looks like a vendored CloudCLI tool schema; the "
+                            f"provider forwards the running CLI's schema and must not "
+                            f"ship a copy that can disagree with it")
+
+    l2 = manifest.get("l2")
+    if not isinstance(l2, dict):
+        problems.append(f"l2 is a {type(l2).__name__}, not an object; an artifact "
+                        f"with no l2 block is not one of these kinds")
+        l2 = {}
+    requires = l2.get("requires")
+    if requires is not None and not isinstance(requires, dict):
+        problems.append("l2.requires is not an object")
+        requires = {}
+    declared = set((requires or {}).get("modules") or [])
+    external = set(l2.get("external_in_repo") or [])
+    try:
+        imported = _l2_declared_modules(files)
+    except ValueError as exc:
+        problems.append(str(exc))
+        imported = set()
+    undeclared_imports = sorted(imported - declared - external)
+    if undeclared_imports:
+        problems.append(f"the payload imports {undeclared_imports}, which its manifest "
+                        f"does not declare; it would install into an ImportError")
+
+    for dependency in l2.get("depends_on") or []:
+        wanted = f"{str(dependency).replace('.', '/')}.py"
+        if wanted not in files:
+            problems.append(f"depends_on names {dependency!r}, which the payload does not carry")
+
+    platforms = list(l2.get("platforms") or [])
+    unsupported = sorted(set(platforms) - set(L2_PLATFORMS[kind]))
+    if unsupported:
+        problems.append(f"{kind} declares unsupported platform(s) {unsupported}")
+    if not set(L2_PLATFORMS[kind]) <= set(platforms):
+        problems.append(f"{kind} must declare {list(L2_PLATFORMS[kind])}, declared {platforms}")
+
+    # --- the second verdict, kept OUT of `problems` --------------------------
+    #
+    # `ok` answers "is this the artifact it claims to be"; `installable` answers
+    # "may a revision directory be pointed at it". Folding the second into the
+    # first would make a payload that is exactly what the build produces fail
+    # verification — and would put the release path at odds with the build's own
+    # verifier, which believes it. The two are separate fields because they are
+    # separate facts.
+    standalone = l2.get("standalone") is True and not external
+    standalone_reasons: list[str] = []
+    if not standalone:
+        missing_packages = sorted(external)
+        if missing_packages:
+            standalone_reasons.append(
+                f"the payload imports in-repo package(s) {missing_packages} that it "
+                f"does not carry; it cannot run without this checkout")
+        else:
+            standalone_reasons.append(
+                "the manifest does not claim standalone, so nothing here says the "
+                "payload can run on its own")
+
+    return {"ok": not problems, "problems": problems,
+            "tree_hash": fingerprint(rev_dir) if not problems else None,
+            "installable": standalone, "standalone": standalone,
+            "standalone_reasons": standalone_reasons,
+            "external_in_repo": sorted(external)}
+
+
+def _refuse_if_not_installable(report: dict, revision: str, *, kind: str) -> bool:
+    """True when the caller must stop. The release path's own fail-closed point.
+
+    Fail-closed means the ABSENCE of a verdict is a refusal, for the kinds that
+    have one. It is scoped by `kind` rather than defaulted globally, because the
+    three kinds that predate this verdict never carry the field and must keep
+    promoting exactly as they did.
+    """
+    if kind not in L2_KINDS:
+        return False
+    if report.get("installable") is True:
+        return False
+    reasons = report.get("standalone_reasons") or []
+    detail = reasons[0] if reasons else "the artifact is not installable on its own"
+    print(f"REFUSED     {revision}: NOT_STANDALONE — {detail}", file=sys.stderr)
+    print("            The artifact is verified and may be staged; it is not "
+          "installable, so `current` is not moved.", file=sys.stderr)
+    return True
 
 
 def _native_package_verifier():
@@ -1207,7 +1596,7 @@ def cmd_status(args) -> int:
     print(f"previous          {prev or '(none)'}")
     print(f"kind              {kind or '(unrecorded)'} ({basis})")
 
-    if kind in (PLUGIN, NATIVE_RUNTIME):
+    if kind in (PLUGIN, NATIVE_RUNTIME) + L2_KINDS:
         # Neither of these faces installs anything outside the revision
         # directory, and for the same reason: a plugin is loaded by a Claude
         # Code from a registry that is not this tool's to write, and a native
@@ -1219,9 +1608,26 @@ def cmd_status(args) -> int:
         # Reporting DIVERGENT instead — which is what the node branch below
         # would do, because there is no unit and no `bin/serverosd` to compare —
         # would call a correct installation a fault.
-        face = "plugin" if kind == PLUGIN else "native runtime"
+        face = {PLUGIN: "plugin", NATIVE_RUNTIME: "native runtime",
+                L2_NODE: "L2 node", L2_HUB: "L2 hub"}[kind]
         print(f"unit installed    n/a ({face} face)")
         print(f"cli shim          n/a ({face} face)")
+        if kind in L2_KINDS:
+            # A healthy L2 revision is still not installable while it depends on
+            # this checkout. Reporting AGREE here would be the "recognised the
+            # kind, called it ready" failure the handoff warns about.
+            # Fail closed: a receipt that does not say the revision is
+            # installable does not mean it is. A revision staged before this
+            # verdict existed was never assessed, and "never assessed" must not
+            # print as "yes".
+            receipt = root / "revisions" / cur / TREE_MANIFEST if cur else None
+            installable = False
+            if receipt is not None and receipt.is_file():
+                try:
+                    installable = json.loads(receipt.read_text()).get("installable") is True
+                except (OSError, ValueError):
+                    installable = False
+            print(f"installable       {'yes' if installable else 'NOT_STANDALONE'}")
         ok = cur is not None and (root / "current").is_dir()
         print(f"agreement         {'AGREE' if ok else 'DIVERGENT'}")
         return 0 if ok else 1
@@ -1281,6 +1687,10 @@ def cmd_promote(args) -> int:
             for problem in report["problems"]:
                 print(f"REFUSED {problem}", file=sys.stderr)
             return 1
+        # A dry run that answered "would promote" for a payload the real run
+        # will refuse would be the same lie in a cheaper place.
+        if _refuse_if_not_installable(report, args.revision, kind=kind):
+            return 1
         print(f"would promote  {args.revision}  kind={kind} ({basis})  "
               f"tree={report['tree_hash']}")
         return 0
@@ -1291,6 +1701,9 @@ def cmd_promote(args) -> int:
     if not report["ok"]:
         for problem in report["problems"]:
             print(f"REFUSED {problem}", file=sys.stderr)
+        print(f"staged but NOT promoted: {rev_dir}", file=sys.stderr)
+        return 1
+    if _refuse_if_not_installable(report, args.revision, kind=kind):
         print(f"staged but NOT promoted: {rev_dir}", file=sys.stderr)
         return 1
 
@@ -1322,6 +1735,11 @@ def cmd_promote(args) -> int:
         "kind": kind,
         "kind_basis": basis,
         "tree_hash": report["tree_hash"],
+        # The second verdict, recorded so `status` can report it without
+        # re-reading the payload. Absent for the kinds that do not have one.
+        **({"installable": report.get("installable", True),
+            "standalone": report.get("standalone", True)}
+           if kind in L2_KINDS else {}),
         "runtime_root": str(root / "current"),
         "previous": previous,
     }, indent=2) + "\n")
@@ -1366,6 +1784,10 @@ def cmd_rollback(args) -> int:
     if not report["ok"]:
         for problem in report["problems"]:
             print(f"REFUSED {problem}", file=sys.stderr)
+        return 1
+    # The target is verified BEFORE `current` moves, and a target that cannot run
+    # on its own is not a rollback — it is a second outage.
+    if _refuse_if_not_installable(report, rev.name, kind=kind):
         return 1
 
     unit_text = None
