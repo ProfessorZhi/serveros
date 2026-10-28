@@ -64,6 +64,30 @@ NOT_SUCCESS = frozenset({
     STATUS_FAILED, STATUS_STALE, STATUS_UNKNOWN, STATUS_OFFLINE, STATUS_DENIED,
 })
 
+#: The statuses that mean *work is in flight right now*. They are the only
+#: non-terminal statuses a tick may carry out of the door as `TICKED` at exit 0:
+#: a run that is still running is not a failure, and a supervisor that is told
+#: "still working" is not being lied to. Everything else that is not terminal —
+#: `UNKNOWN`, `OFFLINE`, `STALE`, `DENIED` — is a fact the monitor could not
+#: decide, and #495's Wave 16 §4.2 is the measurement of what happens when that
+#: is handed to a supervisor as exit 0: nobody looks again.
+LIVE_STATUSES = frozenset({STATUS_ACCEPTED, STATUS_QUEUED, STATUS_STARTED,
+                           STATUS_RUNNING})
+
+# -- refusal words -----------------------------------------------------------
+#: Named refusals. They live in the vocabulary rather than in one module,
+#: because two layers must speak the same word: the *source* refuses an
+#: unauthorized subject before it reads (zero provider calls) and the *notifier*
+#: refuses it again before it sends (zero sends). A word defined in only one of
+#: them would let the other layer invent its own.
+BLOCKED_LEDGER = "BLOCKED_LEDGER"
+BLOCKED_SUBJECT = "BLOCKED_SUBJECT"
+BLOCKED_CI_SUBJECT = "BLOCKED_CI_SUBJECT"
+BLOCKED_RUN_IDENTITY = "BLOCKED_RUN_IDENTITY"
+
+BLOCKED_WORDS = frozenset({BLOCKED_LEDGER, BLOCKED_SUBJECT, BLOCKED_CI_SUBJECT,
+                           BLOCKED_RUN_IDENTITY})
+
 # -- reasons ----------------------------------------------------------------
 REASON_NEVER_ISSUED = "NEVER_ISSUED"
 REASON_EXPIRED = "EXPIRED"

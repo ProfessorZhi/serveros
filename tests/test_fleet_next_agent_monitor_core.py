@@ -32,6 +32,13 @@ REPO = Path(__file__).resolve().parents[1]
 PACKAGE_PARENT = REPO / "integrations" / "fleet-next-agent-monitor"
 TESTS_DIR = Path(__file__).resolve().parent
 
+#: #498's activation wrapper. It is not on this branch (#497 stacks on #493),
+#: so the wrapper integration test below skips when the file is absent and runs
+#: for real in the composed tree (#497 + #498). It is never modified: the test
+#: starts a subprocess of it, exactly as a supervisor would.
+ACTIVATION_MODULE = (REPO / "integrations" / "fleet-next-agent-monitor-activation"
+                     / "activation.py")
+
 SHA_GREEN = "a" * 40
 SHA_OTHER = "b" * 40
 
@@ -366,7 +373,12 @@ class NoFalseSuccessTest(MonitorProcessTest):
         self.assertEqual(tick["watches"][0]["reason"], "NO_NATIVE_ACTIVITY")
         self.assertEqual(self.journal_rows(), [],
                          "an UNKNOWN must never reach the notifier")
-        self.assertEqual(completed.returncode, 0)
+        # #495 Wave 16 §4.2: "the monitor could not decide" is not exit 0. This
+        # assertion used to read `0`, which is the number a supervisor reads as
+        # "nothing to do here" — so a permanently unobservable watch was never
+        # looked at again.
+        self.assertEqual(tick["state"], "UNCONFIRMED")
+        self.assertEqual(completed.returncode, 4)
 
     def test_device_note_vetoes_a_message(self):
         """The device itself says there was no readable message: not evidence."""
@@ -790,6 +802,128 @@ class CiSubjectTest(MonitorProcessTest):
                 "the CI fact carried the run watch's device")
 
 
+class CiAuthorizationTest(MonitorProcessTest):
+    """Wave 16 §4.1 — a typed subject is a *claim*; the grant is the answer.
+
+    A CI watch may declare `device_ref` as its delivery subject (#497). The
+    source authorizes `project` and then, before it charges the budget or calls
+    the provider, the *declared device* against `grant.devices`. The measured
+    defect this pins: project granted + `device_ref: "device:victim"` with
+    `grant.devices=["device:dev-1"]` produced a `DELIVERED` message whose text
+    and delivery key both named the victim — a real pipeline fact delivered as
+    somebody else's device.
+    """
+
+    def ci_watch(self, sha=SHA_GREEN, **overrides):
+        watch = {"kind": "ci", "project": "proj", "expected_source_sha": sha,
+                 "major": True}
+        watch.update(overrides)
+        return watch
+
+    def green_ci(self, sha=SHA_GREEN, **overrides):
+        payload = {"status": "completed", "conclusion": "success",
+                   "head_sha": sha, "id": 13, "name": "proj"}
+        payload.update(overrides)
+        return {sha: payload}
+
+    def test_a_ci_watch_must_not_deliver_under_an_ungranted_device(self):
+        completed = self.run_cli(
+            config=self.config_document(
+                [self.ci_watch(device_ref="device:victim")],
+                devices=("device:dev-1",), projects=("proj",)),
+            facts=self.facts_document(ci=self.green_ci()))
+        tick = self.document(completed)
+        self.assertEqual(tick["state"], "BLOCKED_INPUT")
+        self.assertEqual(completed.returncode, 3)
+        self.assertEqual(tick["dispatched"], 0)
+        self.assertEqual(tick["delivered"], 0)
+        self.assertEqual(tick["watches"][0]["status"], "DENIED")
+        self.assertEqual(tick["watches"][0]["receipt"], "BLOCKED_CI_SUBJECT")
+        self.assertEqual(tick["reads"], 0,
+                         "an ungranted device still cost a provider call")
+        self.assertEqual(self.journal_rows(), [],
+                         "a fact was delivered under a device the grant omits")
+        self.assertEqual(self.ledger_rows(), [],
+                         "a ledger claim was written for an unauthorized subject")
+
+    def test_a_ci_watch_under_a_granted_device_is_delivered_under_it(self):
+        """The positive control: without it the refusal above proves nothing."""
+        completed = self.run_cli(
+            config=self.config_document(
+                [self.ci_watch(device_ref="device:dev-1")],
+                devices=("device:dev-1",), projects=("proj",)),
+            facts=self.facts_document(ci=self.green_ci()))
+        tick = self.document(completed)
+        self.assertEqual(tick["delivered"], 1)
+        self.assertEqual(tick["state"], "SETTLED")
+        rows = self.journal_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["payload"]["device_ref"], "device:dev-1")
+
+    def test_both_dimensions_must_be_granted_not_either_one(self):
+        """Granted device, ungranted project: still nothing is read or sent."""
+        completed = self.run_cli(
+            config=self.config_document(
+                [self.ci_watch(device_ref="device:dev-1")],
+                devices=("device:dev-1",), projects=("some-other-project",)),
+            facts=self.facts_document(ci=self.green_ci()))
+        tick = self.document(completed)
+        self.assertEqual(tick["dispatched"], 0)
+        self.assertEqual(tick["watches"][0]["status"], "DENIED")
+        self.assertEqual(tick["reads"], 0,
+                         "an ungranted project still cost a provider call")
+        self.assertEqual(self.journal_rows(), [])
+        self.assertNotEqual(completed.returncode, 0)
+
+    def test_the_project_container_subject_needs_no_device_grant(self):
+        """A CI watch with no declared device is still `device:ci:<project>`."""
+        completed = self.run_cli(
+            config=self.config_document([self.ci_watch()],
+                                        devices=(), projects=("proj",)),
+            facts=self.facts_document(ci=self.green_ci()))
+        tick = self.document(completed)
+        self.assertEqual(tick["delivered"], 1)
+        self.assertEqual(self.journal_rows()[0]["payload"]["device_ref"],
+                         "device:ci:proj")
+
+
+class NotifierSubjectContractTest(unittest.TestCase):
+    """The hand-over boundary refuses the same thing the source does.
+
+    Two layers, one word (`BLOCKED_CI_SUBJECT`): the source refuses an
+    unauthorized declared device before it *reads*, and the notifier refuses it
+    again before it *sends*. This class drives the second layer directly,
+    because the CLI path never reaches it — the source has already refused.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, str(PACKAGE_PARENT))
+        self.addCleanup(lambda: sys.path.remove(str(PACKAGE_PARENT)))
+        from fleet_next_agent_monitor import contract, notifier
+        self.contract = contract
+        self.notifier = notifier
+        self.watch = {"kind": "ci", "device_ref": "device:victim",
+                      "project": "proj", "expected_source_sha": SHA_GREEN}
+
+    def test_a_typed_ci_subject_is_not_authorized_by_being_typed(self):
+        observation = {"view": "ci", "identity": {"deviceRef": "device:dev-1"}}
+        with self.assertRaises(self.contract.MonitorRefused) as caught:
+            self.notifier.delivery_subject(observation, self.watch)
+        self.assertEqual(caught.exception.code, "BLOCKED_CI_SUBJECT")
+        self.assertIn("typed is not authorized", caught.exception.why)
+
+    def test_a_ci_subject_the_source_never_authorized_is_refused(self):
+        observation = {"view": "ci", "identity": {}}
+        with self.assertRaises(self.contract.MonitorRefused) as caught:
+            self.notifier.delivery_subject(observation, self.watch)
+        self.assertEqual(caught.exception.code, "BLOCKED_CI_SUBJECT")
+
+    def test_a_ci_subject_the_source_authorized_is_handed_over(self):
+        observation = {"view": "ci", "identity": {"deviceRef": "device:victim"}}
+        self.assertEqual(self.notifier.delivery_subject(observation, self.watch),
+                         "device:victim")
+
+
 class DeviceSubjectTest(MonitorProcessTest):
     """The same rule on the run view: a bare device id is not a #423 subject."""
 
@@ -834,6 +968,60 @@ class DeviceSubjectTest(MonitorProcessTest):
 # --------------------------------------------------------------------------- #
 # the #488 contract: a ZERO-ARGUMENT tick, in a separate interpreter
 # --------------------------------------------------------------------------- #
+class RunIdentityTest(MonitorProcessTest):
+    """P1 — a `delivery_id`-only watch must not be accepted and then never sent.
+
+    `contract.require_watch` allows a run watch that names only a `delivery_id`.
+    The run id #423's envelope needs may then come from the answer itself (the
+    far end says which run this delivery is) — that is an observation, not an
+    invention. When nothing names a run at all, the monitor must refuse *by
+    name* before it writes a claim, instead of handing #423 a `runId: null` that
+    the ledger rejects after the attempt has been recorded.
+    """
+
+    def delivery_watch(self, **overrides):
+        watch = {"kind": "run", "device_ref": "device:dev-1", "session_ref": "ses-1",
+                 "delivery_id": "del-1", "expected_boot_id": "boot-1", "major": True}
+        watch.update(overrides)
+        return watch
+
+    def fact(self, *, run_id="run-1", message="output"):
+        payload = {"instanceId": "legacy-01", "deviceRef": "device:dev-1",
+                   "sessionRef": "ses-1", "deliveryId": "del-1", "bootId": "boot-1",
+                   "status": "completed"}
+        if run_id is not None:
+            payload["runId"] = run_id
+        if message is not None:
+            payload["lastAssistantMessage"] = {"content": message}
+        return {"delivery:del-1": payload}
+
+    def test_a_delivery_id_only_watch_is_delivered_under_the_native_run_id(self):
+        completed = self.run_cli(
+            config=self.config_document([self.delivery_watch()]),
+            facts=self.facts_document(runs=self.fact()))
+        tick = self.document(completed)
+        self.assertEqual(tick["delivered"], 1, completed.stderr)
+        rows = self.journal_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["payload"]["run"]["runId"], "run-1",
+                         "the far end's own runId was not carried into the envelope")
+
+    def test_a_run_with_no_identity_anywhere_is_refused_by_name(self):
+        completed = self.run_cli(
+            config=self.config_document([self.delivery_watch()]),
+            facts=self.facts_document(runs=self.fact(run_id=None)))
+        tick = self.document(completed)
+        self.assertEqual(tick["dispatched"], 0)
+        self.assertEqual(tick["delivered"], 0)
+        self.assertEqual(tick["watches"][0]["receipt"], "BLOCKED_RUN_IDENTITY")
+        self.assertEqual(tick["state"], "BLOCKED_INPUT")
+        self.assertEqual(completed.returncode, 3)
+        self.assertEqual(self.journal_rows(), [],
+                         "a payload #423 cannot key was handed over anyway")
+        self.assertEqual(self.ledger_rows(), [],
+                         "a claim was written for a fact that can never be delivered")
+
+
 class ActivationEntryTest(MonitorProcessTest):
     def test_zero_argument_tick_returns_the_wrapper_shape(self):
         config = self.config_document([self.run_watch()])
@@ -879,6 +1067,203 @@ class ActivationEntryTest(MonitorProcessTest):
         row = json.loads(completed.stdout)
         self.assertEqual(row["state"], "BLOCKED_INPUT")
         self.assertEqual(row["why"], "BLOCKED_RUNTIME_ENTRY")
+
+
+# --------------------------------------------------------------------------- #
+# Wave 16 §4.2 — what a tick may say with its exit code, and to whom
+# --------------------------------------------------------------------------- #
+class SupervisorVerdictTest(MonitorProcessTest):
+    """"I could not decide" must not leave the tick as exit 0.
+
+    `SETTLED`/`TICKED`/`UNCONFIRMED` are three different sentences. Flattening
+    the last two into 0 is how an expired or unobservable watch became invisible:
+    a supervisor that reads only the number saw "nothing to do here" forever.
+    The mirror-image error is just as bad — a run that is *running* is real work,
+    not a failure — so the two are asserted together.
+    """
+
+    def completed_without_message(self):
+        return {"run-1": {"instanceId": "legacy-01", "deviceRef": "device:dev-1",
+                          "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
+                          "status": "completed"}}
+
+    def running(self):
+        return {"run-1": {"instanceId": "legacy-01", "deviceRef": "device:dev-1",
+                          "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
+                          "status": "running"}}
+
+    def test_an_expired_run_never_leaves_the_tick_at_exit_zero(self):
+        completed = self.run_cli(
+            config=self.config_document([self.run_watch()]),
+            facts=self.facts_document(runs={"run-1": {"raise": "EXPIRED"}}))
+        tick = self.document(completed)
+        self.assertEqual(tick["watches"][0]["reason"], "EXPIRED")
+        self.assertEqual(tick["state"], "UNCONFIRMED")
+        self.assertEqual(completed.returncode, 4)
+        self.assertEqual(tick["dispatched"], 0)
+        self.assertEqual(self.journal_rows(), [])
+
+    def test_an_unobservable_run_never_leaves_the_tick_at_exit_zero(self):
+        for name, runs in (("unknown", self.completed_without_message()),
+                           ("never-issued", {})):
+            with self.subTest(name):
+                self._reset()
+                completed = self.run_cli(
+                    config=self.config_document([self.run_watch()]),
+                    facts=self.facts_document(runs=runs))
+                tick = self.document(completed)
+                self.assertEqual(tick["state"], "UNCONFIRMED")
+                self.assertEqual(completed.returncode, 4)
+                self.assertNotEqual(tick["watches"][0]["status"], "FAILED",
+                                    "an unobservable run was reported as a failure")
+                self.assertTrue(any(w["code"] == "UNOBSERVED"
+                                    for w in tick["warnings"]))
+                self.assertEqual(self.journal_rows(), [])
+
+    def test_running_work_is_ticked_and_not_reported_as_failed(self):
+        completed = self.run_cli(
+            config=self.config_document([self.run_watch()]),
+            facts=self.facts_document(runs=self.running()))
+        tick = self.document(completed)
+        self.assertEqual(tick["watches"][0]["status"], "RUNNING")
+        self.assertEqual(tick["state"], "TICKED",
+                         "work in flight was not reported as work in flight")
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(tick["backlog"], 1)
+        self.assertFalse(any(w["code"] == "UNOBSERVED" for w in tick["warnings"]),
+                         "a running watch was counted as unobservable")
+        self.assertEqual(self.journal_rows(), [],
+                         "a RUNNING status was dispatched as an alert")
+
+    def test_one_blind_watch_makes_the_whole_tick_unconfirmed(self):
+        """Live work does not outvote a fact the monitor could not read."""
+        watches = [self.run_watch(),
+                   self.run_watch(run_id="run-2", device_ref="device:dev-1")]
+        completed = self.run_cli(
+            config=self.config_document(watches),
+            facts=self.facts_document(runs={
+                "run-1": self.running()["run-1"],
+                "run-2": {"raise": "EXPIRED"}}))
+        tick = self.document(completed)
+        self.assertEqual(tick["state"], "UNCONFIRMED")
+        self.assertEqual(completed.returncode, 4)
+        self.assertEqual(tick["backlog"], 2)
+        statuses = {row["status"] for row in tick["watches"]}
+        self.assertEqual(statuses, {"RUNNING", "UNKNOWN"})
+
+    def _reset(self) -> None:
+        for path in (self.state, self.state.with_name(self.state.name + ".lock"),
+                     self.journal, self.ledger):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+class ActivationWrapperTest(MonitorProcessTest):
+    """#498's wrapper, unmodified, started as a real subprocess.
+
+    The wrapper is what a supervisor reads. #495 Wave 16 §4.2 measured the seam:
+    the tick said `TICKED` exit 0 for a watch with no verdict, and the wrapper —
+    which is not at fault — carried that word and number through. The fix is in
+    the monitor core, so the proof has to cross the real boundary: a subprocess
+    of #498's own activation module, over this monitor's zero-argument tick.
+
+    #498 is not on this branch. In the composed tree (#497 + #498) these tests
+    run for real; here they skip, and the skip is the honest statement rather
+    than a green on something that never executed.
+    """
+
+    def setUp(self):
+        super().setUp()
+        if not ACTIVATION_MODULE.is_file():
+            self.skipTest(
+                f"{ACTIVATION_MODULE} is not on this branch; the wrapper "
+                f"integration runs for real in the composed tree (#497 + #498)")
+        self.legacy = self.dir / "legacy"
+        self.next_root = self.dir / "next"
+        self.legacy.mkdir()
+        self.next_root.mkdir()
+        self.state = self.next_root / "state.json"
+        self.lock = self.next_root / "monitor.lock"
+
+    def run_wrapper(self):
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join([
+            str(PACKAGE_PARENT), str(TESTS_DIR), str(ACTIVATION_MODULE.parent)])
+        env.update({
+            "FNAM_TEST_JOURNAL": str(self.journal),
+            "FNAM_TEST_LEDGER": str(self.ledger),
+            "FNAM_TEST_MODE": str(self.mode),
+            "FLEET_NEXT_AGENT_MONITOR_CONFIG": str(self.config),
+            "FLEET_NEXT_AGENT_MONITOR_STATE": str(self.state),
+            "FLEET_NEXT_AGENT_MONITOR_OFFLINE_FACTS": str(self.facts),
+            "FLEET_NEXT_AGENT_MONITOR_NOTIFIER": f"{__name__}:journal_factory",
+        })
+        argv = [
+            sys.executable, str(ACTIVATION_MODULE),
+            "--legacy-root", str(self.legacy), "--next-root", str(self.next_root),
+            "--state", str(self.state), "--lock", str(self.lock),
+            "--port", "19301", "--legacy-port", "19300",
+            "--service-name", "serveros-next-agent-monitor",
+            "--legacy-service-name", "serveros-legacy",
+            "--plugin-id", "serveros-next-monitor",
+            "--legacy-plugin-id", "serveros-legacy",
+            "--ticks", "1",
+            "--monitor-entry", "fleet_next_agent_monitor.runtime:tick",
+            "--legacy-read", "activation:probe_true",
+            "--next-write", "activation:probe_false",
+        ]
+        done = subprocess.run(argv, cwd=str(self.dir), env=env,
+                              capture_output=True, text=True, timeout=180)
+        document = json.loads(done.stdout) if done.stdout.strip() else {}
+        return done, document
+
+    def _reset(self) -> None:
+        for path in (self.state, self.lock, self.journal, self.ledger):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+    def test_the_real_wrapper_never_reports_an_unobserved_watch_as_exit_zero(self):
+        cases = (
+            ("expired", {"run-1": {"raise": "EXPIRED"}}),
+            ("unknown", {"run-1": {"instanceId": "legacy-01",
+                                   "deviceRef": "device:dev-1",
+                                   "sessionRef": "ses-1", "runId": "run-1",
+                                   "bootId": "boot-1", "status": "completed"}}),
+        )
+        for name, runs in cases:
+            with self.subTest(name):
+                self._reset()
+                self.write(self.config, self.config_document([self.run_watch()]))
+                self.write(self.facts, self.facts_document(runs=runs))
+                done, result = self.run_wrapper()
+                # `ticks` proves the wrapper really ran a tick: a wrapper that
+                # refused before ticking would also be non-zero, and would prove
+                # nothing about the seam.
+                self.assertEqual(result.get("ticks"), 1,
+                                 f"the wrapper did not tick: {done.stderr[-400:]}")
+                self.assertNotEqual(done.returncode, 0,
+                                    f"the supervisor still sees exit 0: {result}")
+                self.assertEqual(result["state"], "UNCONFIRMED")
+                self.assertFalse(result["completed"])
+                self.assertEqual(self.journal_rows(), [])
+
+    def test_the_real_wrapper_still_exits_zero_for_work_in_flight(self):
+        """The control: the fix must not turn RUNNING into a failure."""
+        self.write(self.config, self.config_document([self.run_watch()]))
+        self.write(self.facts, self.facts_document(runs={"run-1": {
+            "instanceId": "legacy-01", "deviceRef": "device:dev-1",
+            "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
+            "status": "running"}}))
+        done, result = self.run_wrapper()
+        self.assertEqual(result.get("ticks"), 1, done.stderr[-400:])
+        self.assertEqual(result["state"], "TICKED")
+        self.assertEqual(done.returncode, 0)
+        self.assertFalse(result["completed"], "a run in flight was called complete")
+        self.assertEqual(result["health"]["backlog"], 1)
 
 
 # --------------------------------------------------------------------------- #

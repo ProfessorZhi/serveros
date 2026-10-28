@@ -33,6 +33,10 @@ import re
 from typing import Any, Callable, Mapping, Protocol
 
 from .contract import (
+    BLOCKED_CI_SUBJECT,
+    BLOCKED_LEDGER,
+    BLOCKED_RUN_IDENTITY,
+    BLOCKED_SUBJECT,
     STATUS_FAILED,
     STATUS_TERMINAL_VERIFIED,
     VIEW_CI,
@@ -40,9 +44,13 @@ from .contract import (
     MonitorRefused,
 )
 
-BLOCKED_LEDGER = "BLOCKED_LEDGER"
-BLOCKED_SUBJECT = "BLOCKED_SUBJECT"
-BLOCKED_CI_SUBJECT = "BLOCKED_CI_SUBJECT"
+#: Re-exported so a caller that has always imported these from `notifier` keeps
+#: working; the words themselves now live in the shared vocabulary, because the
+#: source refuses with the same ones before it reads.
+__all__ = ["BLOCKED_CI_SUBJECT", "BLOCKED_LEDGER", "BLOCKED_RUN_IDENTITY",
+           "BLOCKED_SUBJECT", "DEVICE_PREFIX", "CI_CONTAINER_PREFIX",
+           "NotifierUnavailable", "cloudcli_payload", "delivery_subject",
+           "github_payload", "load_notifier", "payload_for", "receipt_identity"]
 
 #: #423's `normalize_*` functions accept only a typed `device:<id>` subject
 #: (`milestone_notify._device`); a bare id is refused there. A monitor that sent
@@ -152,8 +160,10 @@ def delivery_subject(observation: Mapping[str, Any],
 
     A run watch must already carry the `device:` type, because prefixing a bare
     id here would mint a device identifier nobody granted. A CI watch may also
-    declare its own typed `device_ref`; if it declares an untyped one, that is a
-    refusal, not something to repair.
+    declare its own typed `device_ref`; if it declares an untyped one that is a
+    refusal, and if it declares a typed one the source must have *authorized*
+    that exact device — a typed reference is a claim, and this function only
+    hands over claims the grant has answered.
     """
     view = observation.get("view") or watch.get("kind")
     declared = watch.get("device_ref")
@@ -185,6 +195,25 @@ def delivery_subject(observation: Mapping[str, Any],
                 f"{declared!r} is declared as the CI subject but is not a typed "
                 f"`device:<id>` reference. A CI watch either declares a typed subject "
                 f"or names the `project` that owns it; it does not get one made up.")
+        # Typed is not authorized. The declaration is an authorization *claim*;
+        # only the grant can settle it, so `sources.observe_ci` checks the
+        # declared device against `grant.devices` before it reads and carries the
+        # device it authorized into the observation's identity. This layer then
+        # requires that the claim and the authorization be the *same device* —
+        # #495 Wave 16 §4.1 measured what happens without it: a granted project
+        # plus `device_ref: "device:victim"` produced a `DELIVERED` message whose
+        # text and delivery key both named the victim.
+        identity = observation.get("identity") or {}
+        authorized = identity.get("deviceRef")
+        authorized = authorized.strip() if isinstance(authorized, str) else ""
+        if authorized != declared:
+            seen = authorized or "no authorized device"
+            raise MonitorRefused(
+                BLOCKED_CI_SUBJECT,
+                f"{declared!r} is a typed reference, and typed is not authorized: "
+                f"this observation was authorized for {seen!r}, not for it. A CI "
+                f"watch names a device the grant covers or the `project` that owns "
+                f"the pipeline; it never names somebody else's device.")
         return declared
 
     project = watch.get("project")
@@ -243,8 +272,25 @@ def cloudcli_payload(observation: Mapping[str, Any], *, watch: Mapping[str, Any]
             f"status {status!r} is never handed to the notifier")
 
     identity = observation.get("identity") or {}
+    run_id = identity.get("runId") or watch.get("run_id")
+    if not isinstance(run_id, str) or not run_id.strip():
+        # A `delivery_id`-only watch is a legal watch (`contract.require_watch`),
+        # and a far end that answers with the run's own `runId` makes it
+        # deliverable — `sources` adopts that id, and this function reads it off
+        # the observation. When neither the watch nor the answer names a run,
+        # #423's envelope has nothing to key on. That is a refusal with a name,
+        # not a payload with `runId: null` that the ledger rejects *after* the
+        # claim has been written: a fact that can never be delivered must say so
+        # before it is attempted.
+        raise MonitorRefused(
+            BLOCKED_RUN_IDENTITY,
+            "this run has no `runId`: neither the watch nor the observation names "
+            "one, and #423's cloudcli envelope requires it. The monitor does not "
+            "derive a run id from the delivery id — a synthesised id would name a "
+            "run nobody issued. Declare `run_id`, or let the far end answer with "
+            "the run's own `runId`.")
     run = {
-        "runId": identity.get("runId") or watch.get("run_id"),
+        "runId": run_id.strip(),
         "status": wire,
         "sessionId": session_ref,
         "bootId": bound_boot_id,
