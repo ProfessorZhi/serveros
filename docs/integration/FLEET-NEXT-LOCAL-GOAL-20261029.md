@@ -54,13 +54,13 @@ claude 2.1.308
 | `integrations/fleet-next-local-goal-supervisor/supervisor.py` | daemon + CLI |
 | `integrations/fleet-next-local-goal-supervisor/README.md` | 契约与边界 |
 | `integrations/fleet-next-local-goal-supervisor/fleet-next-local-goal-supervisor.service` | unit 模板 |
-| `tests/test_fleet_next_local_goal_supervisor.py` | 24 条契约测试 |
+| `tests/test_fleet_next_local_goal_supervisor.py` | 25 条契约测试 |
 | `docs/integration/FLEET-NEXT-LOCAL-GOAL-20261029.md` | 本文 |
 
 ### 3.2 运行时（派生安装，绝不回写源码）
 
 ```text
-源码 commit : f925f2d3810983b09d45b8d6faa23fccf05fd8ec
+源码 commit : 5da979a03db1ed4b819a5fa21c432d1d5335a13a
 运行时副本 : ~/runtime-assets/fleet-next-local-goal-supervisor/f925f2d3…/supervisor.py
 配置       : ~/.config/fleet-next-local-goal-supervisor/config.json
 状态       : ~/state/fleet-next-local-goal-supervisor/
@@ -213,7 +213,7 @@ ActiveState = active (running)，MainPID = 3821275
 ## 8. Operator handoff
 
 ```bash
-S=~/runtime-assets/fleet-next-local-goal-supervisor/f925f2d3810983b09d45b8d6faa23fccf05fd8ec/supervisor.py
+S=~/runtime-assets/fleet-next-local-goal-supervisor/5da979a03db1ed4b819a5fa21c432d1d5335a13a/supervisor.py
 STATE=~/state/fleet-next-local-goal-supervisor
 CONF=~/.config/fleet-next-local-goal-supervisor/config.json
 
