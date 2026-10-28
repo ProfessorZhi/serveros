@@ -59,7 +59,10 @@ struct StatusSnapshot {
     //: that cannot state what it costs is a claim; these are the measurement.
     //: -1 means "not measured", never 0.
     long rss_kb = -1;
-    long cpu_ms = -1;
+    //: CPU burned by this PROCESS since it started — cumulative, unlike
+    //: `tick_ms`, which is the last tick. The name says which, because two
+    //: adjacent cost numbers invite the wrong reading.
+    long cpu_ms_total = -1;
     long tick_ms = -1;
     std::string node;
     std::string principal;

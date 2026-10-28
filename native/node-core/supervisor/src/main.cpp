@@ -476,6 +476,7 @@ int main(int argc, char** argv) {
             facts_path = value;
         } else if (flag == "--owner-map") {
             owner_map_path = value;
+            acting_flags.push_back(flag);
         } else if (flag == "--facts-max-age-seconds") {
             facts_max_age_seconds = std::strtol(value.c_str(), nullptr, 10);
             if (facts_max_age_seconds < 1 || facts_max_age_seconds > 3600) {
@@ -503,11 +504,23 @@ int main(int argc, char** argv) {
         // whose own argv says something it does not do. `--serve` is implied,
         // because a monitor that is not resident is a sample.
         if (!acting_flags.empty()) {
+            // EVERY offending flag is named. Reporting the first one leaves the
+            // operator to discover the rest by re-running, and the claim this
+            // profile makes is about the whole set.
+            std::string listed;
+            for (const std::string& flag : acting_flags) {
+                listed += (listed.empty() ? "" : ", ") + flag;
+            }
             std::fprintf(stderr,
                          "--monitor-only refuses %s: this profile cannot issue a verb, and a "
                          "flag that authorises one is refused rather than ignored. Run the "
                          "acting profile deliberately, in a separate authorisation\n",
-                         acting_flags.front().c_str());
+                         listed.c_str());
+            return 2;
+        }
+        if (capability) {
+            std::fprintf(stderr, "--monitor-only is the resident loop and --capability is a "
+                                 "one-shot report; run one of them\n");
             return 2;
         }
         serve = true;
@@ -823,7 +836,11 @@ int main(int argc, char** argv) {
     // allowed to name ONCE, decide, and describe. Nothing here writes.
     const long process_started_monotonic = monotonic_seconds();
     nodecore::supervisor::StatusSnapshot snapshot;
-    snapshot.mode = "observe-only";
+    // What a reader needs to know is not the flag that was passed but whether
+    // this Core is WILLING TO ACT. The old constant said "observe-only" even
+    // with `--enable-actions`, which is the one case a status reader most needs
+    // to be told about.
+    snapshot.mode = act ? "act" : "observe-only";
     snapshot.profile = monitor_only ? "monitor-only" : "serve";
     snapshot.node = manifest.node;
     snapshot.principal = manifest.principal;
@@ -1117,7 +1134,7 @@ int main(int argc, char** argv) {
         snapshot.tick_ms = static_cast<long>(
             std::chrono::duration_cast<std::chrono::milliseconds>(tick_finished - tick_began)
                 .count());
-        read_self_cost(snapshot.rss_kb, snapshot.cpu_ms);
+        read_self_cost(snapshot.rss_kb, snapshot.cpu_ms_total);
         snapshot.uptime_seconds = monotonic_seconds() - process_started_monotonic;
         snapshot.plan_ok = plan.ok;
         snapshot.planned_actions = static_cast<long>(plan.actions.size());

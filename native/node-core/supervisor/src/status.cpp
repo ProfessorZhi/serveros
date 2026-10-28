@@ -96,7 +96,9 @@ std::string build_status_json(const StatusSnapshot& snapshot) {
     nodecore::Json monitor = nodecore::Json::object();
     monitor.set("profile", nodecore::Json::string(snapshot.profile));
     if (snapshot.rss_kb >= 0) monitor.set("rss_kb", nodecore::Json::integer(snapshot.rss_kb));
-    if (snapshot.cpu_ms >= 0) monitor.set("cpu_ms", nodecore::Json::integer(snapshot.cpu_ms));
+    if (snapshot.cpu_ms_total >= 0) {
+        monitor.set("cpu_ms_total", nodecore::Json::integer(snapshot.cpu_ms_total));
+    }
     if (snapshot.tick_ms >= 0) monitor.set("tick_ms", nodecore::Json::integer(snapshot.tick_ms));
     root.set("monitor", std::move(monitor));
 
