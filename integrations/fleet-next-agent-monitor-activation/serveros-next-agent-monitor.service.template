@@ -1,0 +1,68 @@
+# TEMPLATE — SOURCE ONLY. NOT INSTALLED, NOT ENABLED, NOT RUN.
+#
+# This file is a rendering input, not a unit that belongs in
+# ~/.config/systemd/user/. It is committed so the owner can review *what would be
+# written* before anything is, and so a test can refuse a version that names a
+# Legacy resource. Every `@NEXT_...@` below is substituted by the operator's own
+# renderer; nothing here has a default, because a default is a decision made by
+# whoever forgot to set it.
+#
+# Why a user unit and not a system one: the monitor runs as the operator, with the
+# operator's own grants, and `serverosd` — the device runtime — owns system-level
+# service changes. This template asks for no privilege and needs none.
+#
+# It is deliberately NOT named after, aliased to, or ordered against the Legacy
+# Fleet service. The two tracks share nothing: not a unit name, not a port, not a
+# state directory, not a lock, not a plugin id, not an OAuth audience.
+
+[Unit]
+Description=ServerOS Fleet Next agent monitor (bounded activation, one shot)
+Documentation=@NEXT_DOC_URL@
+# No After=/Requires= on any Fleet unit: this process must be startable while the
+# Legacy track is stopped, and must never pull it up or take it down.
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+# One bounded run per invocation. `RemainAfterExit=no` so the unit's state follows
+# the process, and the process is bounded by --ticks rather than by a timer here.
+RemainAfterExit=no
+
+# The activation wrapper refuses to tick unless the Legacy Fleet READ path is
+# available and this track is not writable. Both are injected, so the unit cannot
+# acquire either by accident.
+ExecStart=@NEXT_PYTHON@ @NEXT_ACTIVATION@ \
+    --legacy-root @NEXT_LEGACY_ROOT_READONLY@ \
+    --next-root @NEXT_ROOT@ \
+    --state @NEXT_STATE_DIR@ \
+    --lock @NEXT_LOCK_FILE@ \
+    --port @NEXT_PORT@ \
+    --legacy-port @NEXT_LEGACY_PORT_READONLY@ \
+    --service-name @NEXT_SERVICE_NAME@ \
+    --legacy-service-name @NEXT_LEGACY_SERVICE_NAME_READONLY@ \
+    --plugin-id @NEXT_PLUGIN_ID@ \
+    --legacy-plugin-id @NEXT_LEGACY_PLUGIN_ID_READONLY@ \
+    --ticks @NEXT_TICKS@ \
+    --monitor-entry @NEXT_MONITOR_ENTRY@ \
+    --legacy-read @NEXT_LEGACY_READ_PROBE@ \
+    --next-write @NEXT_NEXT_WRITE_PROBE@
+
+# Bounded resources: a monitor that cannot finish inside these limits is a fact
+# about the monitor, and the wrapper reports it rather than retrying forever.
+TimeoutStartSec=@NEXT_TIMEOUT@
+Nice=10
+MemoryMax=@NEXT_MEMORY_MAX@
+
+# Nothing writable outside this track's own state directory. No credential is
+# read here; the notifier's provider is injected by the entry, not by the unit.
+StateDirectory=@NEXT_STATE_DIRECTORY_NAME@
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+
+[Install]
+# No [Install] section on purpose. This template is not enabled by accident, and a
+# `WantedBy=` here would make `systemctl --user enable` a one-word deployment.
