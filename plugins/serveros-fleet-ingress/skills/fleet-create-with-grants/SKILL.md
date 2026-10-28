@@ -1,6 +1,6 @@
 ---
 name: fleet-create-with-grants
-description: Create a Fleet session inside the owner-configured managed profile — preferring an idle session but treating routine create as pre-authorized — and track it by its returned execution references, including a run id only when one is returned.
+description: Use when creating a Fleet session inside the owner-max profile, or when deciding whether a create is pre-authorized and which project or root may be used.
 ---
 
 # Creating a session is routine inside the owner-max profile
@@ -143,53 +143,14 @@ Keep every execution reference the answer returned: `session_ref`, `run_id` if
 present, and `queued_message_uuid` if present. A missing `run_id` is
 `NOT_RETURNED`, not a failure and not permission to resend.
 
-## What owner-max does not give you
+## Effective model and scope are read back, not assumed
 
-It does not give you Linux root, OS administration, another OS account, or a
-larger grant than the owner configured. It does not let you choose a model or
-permission mode outside the owner's runtime entry: a model id in your request
-is a request that entry may refuse, not a selection. A runtime that reports a
-different effective mode is a different runtime.
+Owner-max does not grant Linux root, OS administration, another OS account, or
+a larger grant than the owner configured, and it does not let you choose a
+model or permission mode outside the owner's runtime entry. Read the effective
+model and mode back from the session or run record; a model id you wrote is a
+request, not a selection. CC and Codex each have their own effective values.
 
-## The model and the mode are effective values, read back
-
-The effective model and permission mode are whatever the **owner / runtime /
-project** entry resolves to. There is no fleet-wide default to quote: a value
-observed on one runtime is not another runtime's value, and a model id you
-write from memory is not a selection.
-
-- the model is a property of the owner-approved entry. A model id in your
-  request is a request that entry may refuse; it is not a selection.
-- the **effective** model and permission mode are read back after the session
-  exists (`fleet_read_session`, or the run record). That read-back is the only
-  answer worth reporting. "It should be on the default" is a guess; the
-  resolved value is the fact.
-- a runtime whose resolved mode differs from its entry is a **different
-  runtime**, not a misconfiguration to correct from here.
-
-A high native permission mode is the sharpest case. If the owner configured one,
-it belongs to that runtime, account and the owner-configured project **root**
-(for a new project) or the **named project** (for an existing one) — and its
-entire safety argument is that narrowness. It is never "the fleet runs with
-bypass", never a caller-requestable widening, and never reportable without the
-root or project it is confined to and the read-back that confirmed it. CC and Codex each have
-their own effective model and highest native permission; read both back.
-
-## All scopes is not unlimited authority over every account
-
-A credential carrying all six scopes still is not authority over every device or
-every account. Scopes are **one gate of four**, and the other three live
-elsewhere:
-
-- the **device binding** on the target machine (`allow_send`, `allow_create`,
-  `allow_control`);
-- the **operator grant**, which is per principal × device × verb;
-- the **node floor** on the device, which the far end can withdraw without
-  telling anyone here.
-
-Inside the owner-max profile, these gates are already satisfied for the
-configured device/runtime/project; outside it, a refusal is the answer and a
-human decision may be required. A full-scope credential still reaches one
-device, run by one account, under one owner's floor. Saying "we have all the
-scopes" as if it meant "we can do anything anywhere" is the sentence that turns
-a scoped tool into an unbounded one.
+All six scopes still reach one credential and one device binding. The device
+binding, operator grant and node floor are separate gates; full scope is not
+universal authority. The full boundary is in `fleet-safety-boundaries`.

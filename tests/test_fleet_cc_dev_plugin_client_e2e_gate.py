@@ -57,13 +57,13 @@ _spec.loader.exec_module(cc)
 #: the message which source the new text was judged against.
 PINNED_SKILLS = {
     "fleet-async-dispatch": "cbea87e6ece68ae34a2b872b1e9fe897659997134f3ec5fdd5a0aa57f405b8b9",
-    "fleet-commander-orchestration": "c1824434c24a02afbb6f77214a13672a6dc483d9cdd76749458287cb54a3c86b",
-    "fleet-create-with-grants": "aad4d9474b0bad27c71948baba0ca1677dd35a2fbd911c3e7564e97ee2e4502f",
-    "fleet-device-and-session-discovery": "b017e17cf41bf8fa368fa3ae6d72159a53222c66f50bb4d2180ac4f265abc02e",
-    "fleet-evidence-review": "b4ab1d93513f7a10894e253fc74422f158508e9cb5bc61fbd71f85eada2ed67d",
-    "fleet-plugin-update": "bd4f8a0bb52ac1043981deea31a50fedbf49c8a898c6c2ac0d9dbfd1b5e352ae",
-    "fleet-reuse-idle-session": "20ed0be5886e0652dc5130864fd469e34303a0800d4fa66968a8bf52ee4ba1bc",
-    "fleet-safety-boundaries": "2408addd33f5dced3d03fce95154697d19f68db215a4380ce78178a9048715ef",
+    "fleet-commander-orchestration": "c2984247cd73db43cef12fd8eff5570b22ca7ea3cca49d802fe528ce181bef32",
+    "fleet-create-with-grants": "316288e7606e9cadd4c1c7ead86149d629cb7f9bc585961455d74b3fe441b795",
+    "fleet-device-and-session-discovery": "cc73c4e68ae7c4eb8962c290d84e1fbcc4584408cde6db16d1113bb13c9fc26b",
+    "fleet-evidence-review": "8578431b30f5c252ff7e8a6d2feab88c4c9640f4872c65ed270ce929fff5dbe4",
+    "fleet-plugin-update": "c230ce540dd7d3116ca6a3d7b826efa49fab6d0a3f8825c9da07c09c9dee864c",
+    "fleet-reuse-idle-session": "b4f31963ae5c514674fa49710001dbf94ca610f7759697a5b5f816a8c74d040e",
+    "fleet-safety-boundaries": "bef8b51ded805865e9db74850840595b7c028823cac7b8905feb1aba6c8e152f",
 }
 
 

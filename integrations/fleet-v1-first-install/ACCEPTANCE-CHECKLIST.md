@@ -130,9 +130,10 @@ host: this repository refuses V1's host as the Next binding for that reason.
 
 ## What must not be claimed
 
-- **34 tools** is true and measured — `SERVED_TOOLS` is 34 (10 hand-written +
-  22 mirror + 2 descriptor tools), asserted in `tests/test_fleet_release_plan.py`.
-  It is a count of what is *reachable*, not of what a given token may do.
+- **The served tool count is read, not frozen** — at `fleet-mcp-7`,
+  `SERVED_TOOLS` is 44 (11 authored + 31 mirror + 2 descriptor tools). Read the
+  actual `tools/list`; the count is what is *reachable*, not what a given token
+  may do.
 - **6 scopes** is true: `ALLOWED_SCOPES` equals `IMPLEMENTED_SCOPES` — all six,
   measured. `DEFAULT_GRANTABLE_SCOPES` is **two** (`fleet:read`, `fleet:send`);
   an operator who writes nothing does not obtain create, control, approve or

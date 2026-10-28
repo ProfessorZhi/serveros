@@ -1,6 +1,6 @@
 ---
 name: fleet-evidence-review
-description: Accept a delegated result only from evidence you actually read — the run, the tests, the diff — and report honestly what was not verified. Use when closing out any Fleet task, and whenever someone says a change "is done".
+description: Use when closing out a delegated Fleet task, or when someone says a change is done and you must decide what evidence actually proves it.
 ---
 
 # A message that was accepted is not a result
