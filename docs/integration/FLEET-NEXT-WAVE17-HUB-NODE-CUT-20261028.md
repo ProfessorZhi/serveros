@@ -272,13 +272,13 @@ hosted result before it exists.
 
 | commit | what |
 |---|---|
-| `8770161` | adapter, tests, handoff patches, this report |
-| `f3aa45a` | `evidence/wave17-evidence.json`, produced at `8770161` |
+| `26b96fc` | adapter (ownership imports read through #431's resolver), tests, handoff patches, this report |
+| `7a175a2` | `evidence/wave17-evidence.json`, produced at `26b96fc` |
 
-`git diff --stat 517ef91..8770161` — 8 files, +2365 lines, no deletion outside
+`git diff --stat 517ef91..26b96fc` — 9 files, +2683 lines, no deletion outside
 the new paths. Changed-tree listing digest (SHA256 of `git ls-tree -r` over the
-three owned paths at `8770161`):
-`sha256:a504be7cb19f6f1aff9c5dce0f4c65666a951c7c0be958cc8e6e9d9f6132e44d`.
+three owned paths at `26b96fc`):
+`sha256:53d6d91789d2e889b697f3b82466cfbfc9572bf61823f4ad5d4267ed545e8b0a`.
 
 ## 8. Non-goals honoured
 
