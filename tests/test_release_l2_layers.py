@@ -27,7 +27,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE = ROOT / "scripts" / "release.py"
@@ -468,6 +469,214 @@ class L2VerificationTest(unittest.TestCase):
         report = release.verify_l2_layer(art, kind="l2-node")
         self.assertFalse(report["ok"])
         self.assertIn("must declare", " ".join(report["problems"]))
+
+
+class WindowsSeparatorsTest(unittest.TestCase):
+    """The payload comparison must not depend on the host's path separator.
+
+    Member paths in an artifact are POSIX — that is what an archive stores and
+    what #431 writes. `str(Path.relative_to())` uses the OS separator, so on
+    Windows every comparison against a declared member was against
+    `fleet_mcp\\node\\connector.py` while the manifest said
+    `fleet_mcp/node/connector.py`: **a correct payload reported as thirty members
+    missing and thirty undeclared.** Reported by the Windows QA on #434/#429.
+
+    These run on Linux. They do not claim Windows was tested here; they pin the
+    one conversion every comparison goes through, and demonstrate the failure
+    shape it removes.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_windows_relative_path_is_canonicalised(self):
+        class Entry:
+            def relative_to(self, root):
+                return PureWindowsPath(r"fleet_mcp\\server.py")
+        # The stub's str() is the backslash form and its as_posix() is not.
+        self.assertEqual(str(Entry().relative_to("/")), "fleet_mcp\\server.py")
+        self.assertEqual(release._relative_posix(Entry(), "/"), "fleet_mcp/server.py")
+
+    def test_the_comparison_is_what_would_break_on_windows(self):
+        """Simulate the Windows conversion and watch the payload go 30/30 wrong."""
+        art = make_l2(self.base, "l2-node")
+        clean = release.verify_l2_layer(art, kind="l2-node")
+        self.assertTrue(clean["ok"], clean["problems"])
+
+        def windows_separators(entry, root):
+            # What `str(Path.relative_to())` returns on Windows, and nothing else.
+            return entry.relative_to(root).as_posix().replace("/", "\\")
+
+        with mock.patch.object(release, "_relative_posix", windows_separators):
+            broken = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(broken["ok"], "the separator did not reach the comparison")
+        joined = " ".join(broken["problems"])
+        self.assertIn("missing declared member", joined)
+        self.assertIn("did not declare", joined)
+
+    def test_a_correct_payload_still_verifies_through_the_real_helper(self):
+        art = make_l2(self.base, "l2-node")
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertTrue(report["ok"], report["problems"])
+        self.assertTrue(report["installable"])
+
+
+class ValidationStaysStrictTest(unittest.TestCase):
+    """Canonicalising OUR paths must not sanitise a path we were GIVEN."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_backslash_member_name_is_refused_not_converted(self):
+        art = make_l2(self.base, "l2-hub")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["members"] = manifest["members"] + ["fleet_mcp\\server.py"]
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-hub")
+        self.assertFalse(report["ok"])
+        self.assertIn("not in canonical form", " ".join(report["problems"]))
+
+    def test_a_posix_traversal_member_name_is_refused(self):
+        art = make_l2(self.base, "l2-hub")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["members"] = manifest["members"] + ["../outside.py"]
+        manifest["member_sha256"]["../outside.py"] = "0" * 64
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-hub")
+        self.assertFalse(report["ok"])
+        self.assertIn("not a relative path", " ".join(report["problems"]))
+
+    def test_a_windows_traversal_member_name_is_refused_either_way(self):
+        """`..\\x` is a traversal on Windows and a weird filename on POSIX.
+
+        Both readings must refuse it, and neither may sanitise it into a legal
+        path first. On POSIX the backslash rule catches it; on Windows the `..`
+        check would. The assertion accepts either reason and rejects a pass.
+        """
+        art = make_l2(self.base, "l2-hub")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["members"] = manifest["members"] + ["..\\outside.py"]
+        manifest["member_sha256"]["..\\outside.py"] = "0" * 64
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-hub")
+        self.assertFalse(report["ok"], "a backslash traversal was accepted")
+        joined = " ".join(report["problems"])
+        self.assertTrue("not a relative path" in joined or "not in canonical form" in joined,
+                        joined)
+
+
+class SchemaDriftSince2469ec5Test(unittest.TestCase):
+    """Three things #431 changed after the head this stack was aligned to."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_release_candidate_version_is_a_version(self):
+        art = make_l2(self.base, "l2-node", version="1.4.0-rc.1")
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertTrue(report["ok"], report["problems"])
+
+    def test_a_package_may_be_named_as_a_dependency(self):
+        def depends_on_package(manifest, art):
+            manifest["l2"]["depends_on"] = ["fleet_mcp"]
+        art = make_l2(self.base, "l2-node", mutate=depends_on_package)
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertTrue(report["ok"], report["problems"])
+
+    def test_a_dependency_the_payload_lacks_is_still_refused(self):
+        def depends_on_missing(manifest, art):
+            manifest["l2"]["depends_on"] = ["fleet_mcp.nowhere"]
+        art = make_l2(self.base, "l2-node", mutate=depends_on_missing)
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("depends_on names", " ".join(report["problems"]))
+
+    def test_the_measured_answer_can_only_narrow_the_verdict(self):
+        """`runtime_standalone: false` alongside `standalone: true` is a refusal.
+
+        The two fields answer different questions — "does the entry import" and
+        "does the payload run" — and a payload that runs imports. A manifest that
+        says otherwise is contradictory, and this verifier cannot authenticate
+        `ARTIFACT.json` (`member_sha256` excludes it), so a contradiction is
+        refused rather than settled in favour of the field that says yes.
+        """
+        def measured(manifest, art):
+            manifest["l2"]["standalone"] = True
+            manifest["l2"]["runtime_standalone"] = False
+        art = make_l2(self.base, "l2-node", mutate=measured)
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"], "a self-contradicting manifest verified")
+        self.assertIn("contradicts itself", " ".join(report["problems"]))
+        self.assertFalse(report["installable"])
+
+    def test_the_dangerous_direction_is_refused(self):
+        """`standalone: false` + `runtime_standalone: true` must NOT be promoted.
+
+        Believing the more permissive field here is how a contradictory manifest
+        reaches `current`: `installable` would be true, the gate would pass, and
+        the receipt would record a payload as installable on the strength of an
+        unhashed boolean.
+        """
+        def optimistic(manifest, art):
+            manifest["l2"]["standalone"] = False
+            manifest["l2"]["external_in_repo"] = ["fleet"]
+            manifest["l2"]["runtime_standalone"] = True
+        art = make_l2(self.base, "l2-node", mutate=optimistic)
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["installable"],
+                         "the verifier believed runtime_standalone over two "
+                         "contradicting fields")
+        self.assertFalse(report["ok"])
+
+    def test_a_non_boolean_measurement_is_refused(self):
+        def stringy(manifest, art):
+            manifest["l2"]["runtime_standalone"] = "yes"
+        art = make_l2(self.base, "l2-node", mutate=stringy)
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("not a boolean", " ".join(report["problems"]))
+
+    def test_declared_dependencies_mean_not_independently_installable(self):
+        def depends(manifest, art):
+            manifest["l2"]["depends_on"] = ["fleet_mcp"]
+        art = make_l2(self.base, "l2-node", mutate=depends)
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertTrue(report["ok"], report["problems"])
+        self.assertFalse(report["installable"])
+        self.assertIn("depends_on", " ".join(report["standalone_reasons"]))
+
+    def test_a_windows_drive_relative_member_name_is_refused(self):
+        for name in ("C:/windows.py", "C:windows.py"):
+            with self.subTest(name=name):
+                art = make_l2(self.base, "l2-hub")
+                manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+                manifest["members"] = manifest["members"] + [name]
+                manifest["member_sha256"][name] = "0" * 64
+                (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+                report = release.verify_l2_layer(art, kind="l2-hub")
+                self.assertFalse(report["ok"], f"{name} was accepted")
+                self.assertIn("Windows absolute", " ".join(report["problems"]))
+
+    def test_an_old_manifest_without_the_measured_field_still_works(self):
+        art = make_l2(self.base, "l2-node")
+        manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+        manifest["l2"].pop("runtime_standalone", None)
+        (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertTrue(report["ok"], report["problems"])
+        self.assertTrue(report["installable"])
 
 
 class L2LifecycleTest(unittest.TestCase):
