@@ -17,11 +17,19 @@ The payloads built below are #423's own closed envelopes. The monitor's job is
 to decide *whether a fact may be handed over at all* — it hands over only
 `TERMINAL_VERIFIED` and `FAILED`, never a `completed` without native activity,
 never a draft or off-commit pipeline.
+
+The second rule is about *who the message is about*: #423's `_device` accepts
+only a typed `device:<id>` subject, so a payload with `device_ref: ""` is not a
+payload without a subject — it is a delivery that cannot happen. `delivery_subject`
+resolves the subject from an authorized input or refuses by name
+(`BLOCKED_SUBJECT` / `BLOCKED_CI_SUBJECT`); nothing here ever prefixes, repairs
+or invents one.
 """
 from __future__ import annotations
 
 import importlib
 import inspect
+import re
 from typing import Any, Callable, Mapping, Protocol
 
 from .contract import (
@@ -33,6 +41,36 @@ from .contract import (
 )
 
 BLOCKED_LEDGER = "BLOCKED_LEDGER"
+BLOCKED_SUBJECT = "BLOCKED_SUBJECT"
+BLOCKED_CI_SUBJECT = "BLOCKED_CI_SUBJECT"
+
+#: #423's `normalize_*` functions accept only a typed `device:<id>` subject
+#: (`milestone_notify._device`); a bare id is refused there. A monitor that sent
+#: one learned about the mismatch only from a `DELIVERY_UNKNOWN` receipt, which
+#: is the empty-string defect #495 §4.2 recorded.
+DEVICE_PREFIX = "device:"
+
+#: The typed subject a *CI* fact carries. A pipeline run belongs to a project,
+#: never to a device, so this is the **project container's** subject:
+#: `device:ci:<project>`. The `device:` prefix is #423's envelope requirement,
+#: not a claim that a device exists — the `ci:` namespace says what it is.
+#:
+#: It is derived from exactly one authorized input: the watch's own `project`,
+#: which `sources.observe_ci` authorizes *before* the read (an ungranted project
+#: comes back `DENIED/NOT_GRANTED` and is never dispatchable). It is never
+#: copied from another watch's `device_ref`, never read from a run fact, and
+#: never synthesised from an empty or missing value. When there is no authorized
+#: project and no explicitly declared typed `device_ref`, the hand-over is
+#: refused by name (`BLOCKED_CI_SUBJECT`) and nothing is sent.
+CI_CONTAINER_PREFIX = "device:ci:"
+
+#: What #423 will accept as a subject: `device:` then a printable identifier.
+#: The character class excludes non-ASCII on purpose — every comparison below
+#: is a byte comparison, and #423 NFC-normalises the identity it writes.
+_DEVICE_SUBJECT = re.compile(
+    rf"^{re.escape(DEVICE_PREFIX)}[A-Za-z0-9][A-Za-z0-9._:-]{{0,126}}$")#: A project id, as it may appear in a container subject. `:` and `|` are
+#: excluded so a project cannot forge a second separator inside the identity.
+_PROJECT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 class NotifierUnavailable(MonitorRefused):
@@ -100,6 +138,85 @@ def load_notifier(spec: Any, *, config: Mapping[str, Any] | None = None) -> Noti
 
 # -- #423's closed envelopes ------------------------------------------------
 
+def delivery_subject(observation: Mapping[str, Any],
+                     watch: Mapping[str, Any]) -> str:
+    """The typed subject this fact is delivered under, or a refusal by name.
+
+    There are exactly two authorized sources for a subject, and neither of them
+    is an empty string or an invention:
+
+    * a **run** watch's own `device_ref`, which the grant already authorized
+      (a device outside the grant never produced an observation to send), and
+    * a **CI** watch's `project`, which `sources.observe_ci` authorized before
+      reading, carried into the project-container subject `device:ci:<project>`.
+
+    A run watch must already carry the `device:` type, because prefixing a bare
+    id here would mint a device identifier nobody granted. A CI watch may also
+    declare its own typed `device_ref`; if it declares an untyped one, that is a
+    refusal, not something to repair.
+    """
+    view = observation.get("view") or watch.get("kind")
+    declared = watch.get("device_ref")
+    declared = declared.strip() if isinstance(declared, str) else ""
+
+    if view == VIEW_RUN:
+        if not declared:
+            raise MonitorRefused(
+                BLOCKED_SUBJECT,
+                "a run fact has no device_ref to be delivered under; #423 refuses a "
+                "message with no typed subject and this monitor will not invent one")
+        if not _DEVICE_SUBJECT.match(declared):
+            raise MonitorRefused(
+                BLOCKED_SUBJECT,
+                f"{declared!r} is not a typed `device:<id>` subject, which is the only "
+                f"form #423's ledger accepts. The monitor does not prefix, repair or "
+                f"normalise it: a synthesised device ref would name a device nobody "
+                f"granted. Declare the `device:` form in the watch and the grant.")
+        return declared
+
+    if view != VIEW_CI:
+        raise MonitorRefused(
+            BLOCKED_SUBJECT, f"view {view!r} has no delivery subject")
+
+    if declared:
+        if not _DEVICE_SUBJECT.match(declared):
+            raise MonitorRefused(
+                BLOCKED_CI_SUBJECT,
+                f"{declared!r} is declared as the CI subject but is not a typed "
+                f"`device:<id>` reference. A CI watch either declares a typed subject "
+                f"or names the `project` that owns it; it does not get one made up.")
+        return declared
+
+    project = watch.get("project")
+    project = project.strip() if isinstance(project, str) else ""
+    if not project:
+        raise MonitorRefused(
+            BLOCKED_CI_SUBJECT,
+            "a CI event has no device of its own, so it needs an authorized subject: "
+            "either a typed `device_ref` on the watch, or the `project` the pipeline "
+            "belongs to (which the grant must authorize). Neither was given, and an "
+            "empty subject is not a subject.")
+    if not _PROJECT_ID.match(project):
+        raise MonitorRefused(
+            BLOCKED_CI_SUBJECT,
+            f"project {project!r} is not a plain identifier, so folding it into "
+            f"{CI_CONTAINER_PREFIX}<project> would put a separator inside a delivery "
+            f"identity")
+    return CI_CONTAINER_PREFIX + project
+
+
+def receipt_identity(source: str, subject: str) -> str:
+    """The prefix #423's `delivery_key` must carry to be *this* fact's receipt.
+
+    #423 writes `milestone:<source>:<device>:<kind>:<key>:<outcome>` and
+    NFC-normalises it. Both `source` and `subject` here are ASCII by
+    construction (the subject is regex-checked above), so a byte prefix
+    comparison is exact and a receipt naming another subject or another source
+    can never settle this fact.
+    """
+    return f"milestone:{source}:{subject}:"
+
+
 def cloudcli_payload(observation: Mapping[str, Any], *, watch: Mapping[str, Any],
                      session_ref: str, device_ref: str,
                      bound_boot_id: str | None, observed_at: str) -> dict:
@@ -159,8 +276,14 @@ def cloudcli_payload(observation: Mapping[str, Any], *, watch: Mapping[str, Any]
 
 def github_payload(observation: Mapping[str, Any], *,
                    expected_source_sha: str, project: str | None,
-                   observed_at: str) -> dict:
-    """One pipeline fact, in the envelope #423's `normalize_github_actions` accepts."""
+                   device_ref: str, observed_at: str) -> dict:
+    """One pipeline fact, in the envelope #423's `normalize_github_actions` accepts.
+
+    `device_ref` is the resolved typed subject (`delivery_subject`), never the
+    empty string this function used to hard-code. #423's `_device` refuses a
+    bare or empty reference, so an empty one did not mean "no device": it meant
+    a delivery that could not happen and was not reported as such.
+    """
     status = observation["status"]
     identity = observation.get("identity") or {}
     name = project or "ci"
@@ -175,7 +298,7 @@ def github_payload(observation: Mapping[str, Any], *,
         raise MonitorRefused(
             "NOT_DISPATCHABLE", f"status {status!r} is never handed to the notifier")
     return {
-        "device_ref": "",
+        "device_ref": device_ref,
         "observed_at": observed_at,
         "source_trusted": True,
         "milestone": True,
@@ -195,16 +318,23 @@ def github_payload(observation: Mapping[str, Any], *,
 
 def payload_for(observation: Mapping[str, Any], watch: Mapping[str, Any],
                 *, observed_at: str) -> tuple[str, dict]:
-    """The (source, payload) pair #423's `observe_payload` takes."""
+    """The (source, payload) pair #423's `observe_payload` takes.
+
+    Raises `MonitorRefused` (`BLOCKED_SUBJECT` / `BLOCKED_CI_SUBJECT`) when the
+    watch has no authorized typed subject. That is a *refusal*, not a payload
+    with an empty field: nothing is handed to the ledger and the tick says so.
+    """
     if observation.get("view") == VIEW_CI:
         return "github_actions", github_payload(
             observation, expected_source_sha=watch["expected_source_sha"],
-            project=watch.get("project"), observed_at=observed_at)
+            project=watch.get("project"),
+            device_ref=delivery_subject(observation, watch),
+            observed_at=observed_at)
     if observation.get("view") == VIEW_RUN:
         identity = observation.get("identity") or {}
         return "cloudcli", cloudcli_payload(
             observation, watch=watch, session_ref=watch["session_ref"],
-            device_ref=watch["device_ref"],
+            device_ref=delivery_subject(observation, watch),
             bound_boot_id=watch.get("expected_boot_id") or identity.get("bootId"),
             observed_at=observed_at)
     raise MonitorRefused("NOT_DISPATCHABLE",
