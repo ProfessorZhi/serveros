@@ -1,0 +1,190 @@
+diff --git a/fleet_mcp/fleet.py b/fleet_mcp/fleet.py
+index 4f68753..d4b113a 100644
+--- a/fleet_mcp/fleet.py
++++ b/fleet_mcp/fleet.py
+@@ -65,7 +65,8 @@ from .owner_access import (build_project_path, OwnerAccessError,
+ from .version import SERVER_VERSION
+ from .session_detail import normalize_detail
+ from .privacy import clamp_limit, redact_payload, UNTRUSTED_NOTICE
+-from .providers import DeviceProvider, ProviderHealth, build_providers
++from .providers.base import DeviceProvider, ProviderHealth
++from .providers.build import build_providers
+ from .registry import (
+     authored_facts,
+     load_registry,
+diff --git a/fleet_mcp/owner_setup.py b/fleet_mcp/owner_setup.py
+index efc6cd7..12b82be 100644
+--- a/fleet_mcp/owner_setup.py
++++ b/fleet_mcp/owner_setup.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ 
+ import argparse
+ import hashlib
++import importlib
+ import json
+ import os
+ import re
+@@ -14,7 +15,6 @@ from urllib.parse import urlsplit
+ import yaml
+ 
+ from .config import load_config, provider_key, load_owner_max
+-from .node.connector import load_node_config
+ from .owner_access import parse_owner_access
+ from .scopes import ALLOWED_SCOPES
+ from .tools import SERVED_TOOLS
+@@ -112,7 +112,28 @@ def _write(path, content):
+         os.fsync(stream.fileno())
+ 
+ 
+-def prepare(fleet_source, request, output, *, node_sources=None):
++def _node_config_loader():
++    """The Node payload's config loader, as an OPTIONAL feature.
++
++    The Hub's ingress, tools and OAuth never need this. Only owner setup
++    with `--node-config` does, and a Hub installed without the Node
++    artifact must refuse that request by name rather than fail with an
++    ImportError five frames down. The import is dynamic on purpose: a
++    declared optional feature must not be a static edge that makes the
++    Hub's artifact unimportable without its neighbour.
++    """
++    try:
++        module = importlib.import_module(".node.connector", __package__)
++    except ImportError as exc:
++        raise ValueError(
++            "NODE_CONFIG_LOADER_UNAVAILABLE: this Hub was installed "
++            "without the Node artifact, so `--node-config` cannot be "
++            "prepared here; install fleet-node or omit the flag") from exc
++    return module.load_node_config
++
++
++def prepare(fleet_source, request, output, *, node_sources=None,
++            node_config_loader=None):
+     """Validate before writing; return a non-secret activation/readback plan."""
+     if (not isinstance(request, dict) or set(request) -
+             {"owner_max", "profiles", "multiplex_native_families"}):
+@@ -178,7 +199,8 @@ def prepare(fleet_source, request, output, *, node_sources=None):
+         if key not in profiles:
+             raise ValueError("Node setup must belong to a selected actual binding")
+         original, document = _read(source)
+-        node = load_node_config(source)
++        loader = node_config_loader or _node_config_loader()
++        node = loader(source)
+         binding = providers[key]
+         if node.device_ref != binding.device_ref or node.runtime != binding.runtime:
+             raise ValueError("Node source identity differs from the selected binding")
+diff --git a/fleet_mcp/providers/__init__.py b/fleet_mcp/providers/__init__.py
+index 8901ed4..8f3e0aa 100644
+--- a/fleet_mcp/providers/__init__.py
++++ b/fleet_mcp/providers/__init__.py
+@@ -1,8 +1,17 @@
+-"""Device providers — one adapter per way this runtime can reach a device."""
++"""Device providers — one adapter per way this runtime can reach a device.
++
++This package intentionally carries no provider ADAPTER at import time. Both
++adapters pull a surface only one half of the release needs — `cloudcli` needs
++the HTTP transport, `fleet_node` needs `registry` and therefore the identity
++authority — so importing the package must not select either. `build_provider`
++lives in `.build`, which is imported by the Hub's service layer, not by a
++node that only wants one adapter class.
++"""
+ from __future__ import annotations
+ 
+-from ..config import FleetConfig, ProviderBinding
+-from ..errors import BAD_REQUEST, refuse
++import importlib
++from typing import Any
++
+ from .base import (
+     ARCHIVED,
+     MANAGED_IDLE,
+@@ -14,40 +23,27 @@ from .base import (
+     classify,
+     summary_from_dict,
+ )
+-from .cloudcli import CloudCliProvider
+-from .fleet_node import FleetNodeProvider
+ 
+ __all__ = [
+-    "ARCHIVED",
+-    "MANAGED_IDLE",
+-    "RESIDENT_HOST",
+-    "RUNNING_AGENT",
+-    "CloudCliProvider",
+-    "DeviceProvider",
+-    "FleetNodeProvider",
+-    "ProviderHealth",
+-    "SessionSummary",
+-    "classify",
+-    "build_providers",
+-    "summary_from_dict",
++    "ARCHIVED", "MANAGED_IDLE", "RESIDENT_HOST", "RUNNING_AGENT",
++    "CloudCliProvider", "DeviceProvider", "FleetNodeProvider",
++    "ProviderHealth", "SessionSummary", "build_provider", "build_providers",
++    "classify", "summary_from_dict",
+ ]
+ 
+-
+-def build_provider(binding: ProviderBinding) -> DeviceProvider:
+-    if not binding.enabled:
+-        raise refuse(BAD_REQUEST, f"provider {binding.device_ref} is disabled")
+-    if binding.kind == "cloudcli-mcp-http":
+-        return CloudCliProvider(binding)
+-    if binding.kind == "fleet-node":
+-        return FleetNodeProvider(binding)
+-    # `config.PROVIDER_KINDS` already rejects unknown kinds at load; reaching
+-    # here means the two lists disagree, which is a defect in this module.
+-    raise refuse(BAD_REQUEST, f"no adapter for provider kind {binding.kind!r}")
++_LAZY = {
++    "CloudCliProvider": ".cloudcli",
++    "FleetNodeProvider": ".fleet_node",
++    "build_provider": ".build",
++    "build_providers": ".build",
++}
+ 
+ 
+-def build_providers(config: FleetConfig) -> dict[str, DeviceProvider]:
+-    return {
+-        ref: build_provider(binding)
+-        for ref, binding in config.providers.items()
+-        if binding.enabled
+-    }
++def __getattr__(name: str) -> Any:
++    target = _LAZY.get(name)
++    if target is None:
++        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
++    module = importlib.import_module(target, __name__)
++    value = getattr(module, name)
++    globals()[name] = value
++    return value
+diff --git a/fleet_mcp/providers/build.py b/fleet_mcp/providers/build.py
+new file mode 100644
+index 0000000..6202a47
+--- /dev/null
++++ b/fleet_mcp/providers/build.py
+@@ -0,0 +1,26 @@
++"""Provider construction — the Hub's service layer, not a node's import path."""
++from __future__ import annotations
++
++from ..config import FleetConfig, ProviderBinding
++from ..errors import BAD_REQUEST, refuse
++from .base import DeviceProvider
++from .cloudcli import CloudCliProvider
++from .fleet_node import FleetNodeProvider
++
++
++def build_provider(binding: ProviderBinding) -> DeviceProvider:
++    if not binding.enabled:
++        raise refuse(BAD_REQUEST, f"provider {binding.device_ref} is disabled")
++    if binding.kind == "cloudcli-mcp-http":
++        return CloudCliProvider(binding)
++    if binding.kind == "fleet-node":
++        return FleetNodeProvider(binding)
++    raise refuse(BAD_REQUEST, f"no adapter for provider kind {binding.kind!r}")
++
++
++def build_providers(config: FleetConfig) -> dict[str, DeviceProvider]:
++    return {
++        ref: build_provider(binding)
++        for ref, binding in config.providers.items()
++        if binding.enabled
++    }
