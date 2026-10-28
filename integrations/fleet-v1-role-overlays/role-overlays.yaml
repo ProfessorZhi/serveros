@@ -1,0 +1,201 @@
+# L3 role overlays — per-device SELECTION policy, not a second catalogue.
+#
+# Issue: ProfessorZhi/ability-management#39 + ProfessorZhi/serveros#434.
+#
+# What this file is
+# -----------------
+# A role is a device's job and a task is what it is doing right now. An overlay
+# says which already-catalogued Abilities a device should ATTACH for that task,
+# which native observations it already has, and which capabilities are still a
+# GAP. It never defines an Ability, never copies a payload, never sets desired
+# state and never installs anything.
+#
+#   ability-management  owns Artifact Identity / Revision / Compatibility /
+#                       Adoption / Profile / desired state. This file names
+#                       those Abilities; it does not restate them.
+#   ServerOS Work Engine owns Requirement / Work Item / Activity / Run /
+#                       Outcome / authorization. A role can ask; only an
+#                       accepted requirement creates a canonical Work Item.
+#   ServerOS Fleet/CloudCLI owns device binding and observed
+#                       installed/loaded/ready/granted state. A source-level
+#                       plan says UNKNOWN until a device reports.
+#
+# The three roles below are deliberately small. `linux-work` bundles the three
+# abilities a Linux work node uses without deciding to; an overlay is stricter:
+# it attaches per task, and a device never installs the whole registry.
+schema: serveros/ability-role-overlays.v1
+authority:
+  catalogue: ability-management
+  # `serveros` is the repository-local bootstrap Skill; the reusable semantics
+  # below it (ability-management, runtime-management, ...) remain owned by the
+  # ability-management catalogue.
+  local_skills: [serveros]
+  catalogue_note: >-
+    Role entries are names only. The resolver must be given the catalogue (and
+    its revision) and refuses a name it cannot resolve; there is no local
+    ability definition here.
+  work_item: work-engine
+  device_state: fleet-observer
+principle:
+  - select, do not define
+  - attach per task, never install the registry
+  - a native capability is an observation, not a packaged Skill
+  - only an accepted requirement becomes a canonical Work Item
+  - a personal idle job produces no Work Item, no company report, no Feishu
+  - no automatic cross-device or cross-domain data sync
+
+devices:
+  device:tokyo-shared-dev-01:
+    role: tokyo-development-primary
+    class: company-workstation
+  device:llm-lab-dell:
+    role: dell-gpu-compute
+    class: corporate-gpu
+    note: >-
+      Company asset. GPU compute/model deployment is the primary load; personal
+      work is allowed only with owner approval AND while company work is idle.
+      This is not the Windows personal-dell node.
+  device:work-fj:
+    role: work-fj-corporate-windows
+    class: corporate-windows
+    note: >-
+      Native Windows capabilities are observations/adapters owned by L1. They
+      are not re-packaged as Skills here.
+
+gaps:
+  # The GPU family adds ONLY these three, and each names what it reuses rather
+  # than re-implementing it. A gap is not an installed ability.
+  - id: gpu.model-serving-lifecycle
+    state: GAP
+    reuses:
+      telemetry: native/node-core/contract/core-lite-status.v1.md#6c (gpu.readonly)
+      lease: A4
+      acceptance: A7
+      rollback: A8
+    note: >-
+      Start/stop/health of a model server as one bounded lifecycle. It consumes
+      A4's readiness/lease rather than sampling the GPU itself.
+  - id: gpu.isolated-environment
+    state: GAP
+    reuses:
+      telemetry: native/node-core/contract/core-lite-status.v1.md#6c (gpu.readonly)
+      lease: A4
+      workspace: workspace-management
+    note: >-
+      Per-task isolated runtime environment under the A4 lease budget; it does
+      not create a second resource authority.
+  - id: gpu.benchmark-acceptance
+    state: GAP
+    reuses:
+      acceptance: A7
+      rollback: A8
+      telemetry: native/node-core/contract/core-lite-status.v1.md#6c (gpu.readonly)
+    note: >-
+      Benchmark and acceptance semantics for a model-serving task: the verdict
+      stays with A7, recoverable previous with A8.
+
+native_observations:
+  gpu.readonly:
+    contract: native/node-core/contract/core-lite-status.v1.md
+    anchor: "6c"
+    platform: linux
+    note: fixed nvidia-smi query; card counters only, no process data
+  core-lite.status:
+    contract: native/node-core/contract/core-lite-status.v1.md
+    platform: linux
+    note: the L1 node fact surface the role reads; not a Skill
+  windows.core-lite-adapter:
+    contract: native/node-core/contract/core-lite-status.v1.md
+    platform: windows
+    note: >-
+      A Windows host's status comes from the Windows adapter; this Linux program
+      is never presented as one.
+
+roles:
+  tokyo-development-primary:
+    device: device:tokyo-shared-dev-01
+    class: company-workstation
+    tasks:
+      company_requirement:
+        # The requirements→understanding→work→design→implementation→acceptance
+        # spine, attached per task. Document/report abilities are NOT here: they
+        # attach at the step that reaches them.
+        attach:
+          - serveros
+          - ability-management
+          - runtime-management
+          - workspace-management
+          - work-management
+          - information-management
+          - test-management
+        work_item: work-engine
+        reports: []
+        priority: company
+      company_delivery_report:
+        attach: [serveros, work-management, feishu-report]
+        work_item: none
+        reports: [feishu-report]
+        priority: company
+      idle_maintenance:
+        attach: [serveros, runtime-management]
+        work_item: none
+        reports: []
+        priority: idle
+
+  dell-gpu-compute:
+    device: device:llm-lab-dell
+    class: corporate-gpu
+    native: [gpu.readonly, core-lite.status]
+    tasks:
+      company_model_serving:
+        attach: [serveros, runtime-management, test-management]
+        gaps:
+          - gpu.model-serving-lifecycle
+          - gpu.isolated-environment
+          - gpu.benchmark-acceptance
+        work_item: work-engine
+        reports: []
+        priority: company
+        precedence: >-
+          Company model-serving work runs first; a personal idle job waits.
+      personal_idle_experiment:
+        attach: [serveros]
+        gaps: [gpu.isolated-environment, gpu.benchmark-acceptance]
+        work_item: none
+        reports: []
+        priority: personal-idle
+        require: [owner_approval, company_idle]
+        forbid:
+          - b3_requirement_board
+          - b4_canonical_work_item
+          - company_report
+          - feishu_report
+          - cross_device_sync
+        data_boundary: local_only
+        note: >-
+          Authorized personal idle use is not a company requirement. It creates
+          no Work Item, writes no company report and sends nothing to Feishu.
+
+  work-fj-corporate-windows:
+    device: device:work-fj
+    class: corporate-windows
+    native: [windows.core-lite-adapter]
+    tasks:
+      company_task:
+        # Native adapter observations only; no Skill wraps them.
+        attach: [serveros, runtime-management]
+        native: [windows.core-lite-adapter]
+        work_item: work-engine
+        reports: []
+        priority: company
+      company_delivery_report:
+        attach: [serveros, feishu-report]
+        work_item: none
+        reports: [feishu-report]
+        priority: company
+
+forbidden_everywhere:
+  - install_registry
+  - automatic_cross_device_sync
+  - automatic_cross_domain_data_sync
+  - work_item_without_work_engine_acceptance
