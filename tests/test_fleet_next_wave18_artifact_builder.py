@@ -1,0 +1,383 @@
+"""Wave 18 · real, reproducible, isolatable, recoverable Next release units.
+
+Everything here is offline: `git archive` into a throwaway tree, the reviewed
+CUT-A/CUT-B patches applied to that copy, deterministic tarballs, imports in a
+fresh interpreter with no checkout and no neighbour, a negative control, and a
+rollback against a Legacy 0.1.0 fake. Nothing is installed, started, bound,
+authenticated or sent; `REAL_DEVICE NOT_RUN`.
+
+The source files under `fleet_mcp/**` are read-only inputs and are asserted to
+remain unmodified.
+"""
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import io
+import json
+import shutil
+import subprocess
+import sys
+import tarfile
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[1]
+BUILDER_DIR = REPO / "integrations/fleet-next-wave18-artifact-builder"
+VERSION = "1.0.0+wave18test"
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+w18 = _load("wave18_builder", BUILDER_DIR / "wave18_builder.py")
+
+
+@pytest.fixture(scope="session")
+def built(tmp_path_factory):
+    out = tmp_path_factory.mktemp("wave18-evidence")
+    result = w18.evidence(REPO, "HEAD", VERSION, out)
+    return out, result, w18.load_builder(REPO)
+
+
+# ---------------------------------------------------------------------------
+# the D7 builder is reused, not re-implemented
+# ---------------------------------------------------------------------------
+def test_builder_reuses_the_pinned_d7_contract(built):
+    _out, _result, l2 = built
+    assert hashlib.sha256(
+        (REPO / w18.BUILDER_REL).read_bytes()).hexdigest() == w18.BUILDER_PIN_SHA256
+    for name in ("closure", "write_artifact", "read_artifact", "extract",
+                 "measure_standalone"):
+        assert callable(getattr(l2, name))
+    # The four units come from the D7 closure, not a second file walk.
+    assert l2.closure("fleet_mcp.node.connector", REPO).modules
+
+
+# ---------------------------------------------------------------------------
+# RED: the unpatched tree is not two independent artifacts
+# ---------------------------------------------------------------------------
+def test_baseline_is_red_and_refuses_cross_component(tmp_path):
+    result = w18.baseline_evidence(REPO, "HEAD", tmp_path)
+    assert result["state"] == "RED_BASELINE"
+    assert result["decision"] == w18.BLOCKED_CROSS_COMPONENT
+    assert result["partition"]["base_exact"] is False
+    assert result["partition"]["node_own"] == 0
+    assert result["leaks"]["hub"]["leaks"] == [
+        "fleet_mcp/node/__init__.py", "fleet_mcp/node/connector.py"]
+    assert "fleet_mcp/fleet.py" in result["leaks"]["node"]["leaks"]
+    assert "fleet_mcp/registry.py" in result["leaks"]["node"]["leaks"]
+    assert result["two_artifact_boot"]["hub"]["booted"] is False
+    assert result["two_artifact_boot"]["node"]["booted"] is False
+
+    with pytest.raises(w18.Refused) as exc:
+        w18.build(REPO, "HEAD", VERSION, tmp_path / "refused",
+                  mode="baseline")
+    assert exc.value.code == w18.BLOCKED_CROSS_COMPONENT
+    assert "Hub would carry" in exc.value.detail
+
+
+# ---------------------------------------------------------------------------
+# GREEN: four real units, disjoint and verifiable
+# ---------------------------------------------------------------------------
+def test_four_units_build_verify_and_stay_disjoint(built):
+    out, result, l2 = built
+    units = result["units"]
+    expected = {
+        w18.BASE_KIND: (19, []),
+        w18.AUTHORITY_KIND: (3, []),
+        w18.HUB_KIND: (13, [w18.BASE_KIND, w18.AUTHORITY_KIND]),
+        w18.NODE_KIND: (2, [w18.BASE_KIND]),
+        w18.COMPOSITION_KIND: (0, []),
+    }
+    for kind, (count, deps) in expected.items():
+        assert units[kind]["member_count"] == count, kind
+        assert units[kind]["depends_on"] == deps, kind
+        assert units[kind]["tarball_sha256"].startswith("sha256:")
+        assert len(units[kind]["tree_sha256"]) == 64
+        assert all(char in "0123456789abcdef"
+                   for char in units[kind]["tree_sha256"])
+        path = out / "v1" / f"{kind}-{VERSION}.tar.gz"
+        assert path.is_file()
+        w18.verify_unit(l2, w18.Unit(
+            kind=kind, version=VERSION, path=path,
+            sha256=units[kind]["tarball_sha256"].split(":", 1)[1],
+            tree_sha256=units[kind]["tree_sha256"],
+            members={}, manifest={}), expect_kind=kind, expect_version=VERSION)
+
+    hub = l2.read_artifact(out / "v1" / f"{w18.HUB_KIND}-{VERSION}.tar.gz")
+    node = l2.read_artifact(out / "v1" / f"{w18.NODE_KIND}-{VERSION}.tar.gz")
+    base = l2.read_artifact(out / "v1" / f"{w18.BASE_KIND}-{VERSION}.tar.gz")
+    assert set(node.members) == {"fleet_mcp/node/__init__.py",
+                                 "fleet_mcp/node/connector.py"}
+    assert not any(rel.startswith("fleet_mcp/node/") for rel in hub.members)
+    for forbidden in ("fleet_mcp/server.py", "fleet_mcp/tools.py",
+                      "fleet_mcp/fleet.py", "fleet_mcp/registry.py",
+                      "fleet_mcp/owner_setup.py",
+                      "fleet_mcp/providers/fleet_node.py",
+                      "fleet_mcp/providers/build.py"):
+        assert forbidden in hub.members
+        assert forbidden not in node.members
+        assert forbidden not in base.members
+
+
+def test_tarballs_are_byte_identical_across_builds(built):
+    out, result, _l2 = built
+    assert result["deterministic_rebuild"]
+    assert all(result["deterministic_rebuild"].values())
+    assert result["source"]["archive_reproducible_across_three_builds"] is True
+    for kind in (*w18.UNITS, w18.COMPOSITION_KIND):
+        first = (out / "v1" / f"{kind}-{VERSION}.tar.gz").read_bytes()
+        second = (out / "rebuild" / f"{kind}-{VERSION}.tar.gz").read_bytes()
+        assert first == second, kind
+        assert hashlib.sha256(first).hexdigest() == \
+               result["units"][kind]["tarball_sha256"].split(":", 1)[1]
+    # The checksum file is a byte-for-byte artefact of the same build.
+    checksums = (out / "ARTIFACTS.sha256").read_text().splitlines()
+    assert len(checksums) == 5
+    for line in checksums:
+        digest, name = line.split("  ", 1)
+        assert (out / "v1" / name).is_file()
+        assert hashlib.sha256((out / "v1" / name).read_bytes()).hexdigest() == digest
+
+
+# ---------------------------------------------------------------------------
+# isolation: no checkout, no neighbour, no undeclared import
+# ---------------------------------------------------------------------------
+def test_isolation_without_checkout_or_neighbour(built):
+    _out, result, _l2 = built
+    isolation = result["isolation"]
+    assert isolation["hub"]["booted"] is True
+    assert isolation["hub"]["node_loader"] == "NODE_CONFIG_LOADER_UNAVAILABLE"
+    assert isolation["hub"]["authority_symbols"] is True
+    assert isolation["hub"]["dispatch_refused"] is True
+    assert isolation["node"]["booted"] is True
+    assert isolation["node"]["device_ref"] == "device:wave18-hermetic"
+
+    hub_modules = {name for name, _path in isolation["hub"]["fleet_mcp_modules"]}
+    node_modules = {name for name, _path in isolation["node"]["fleet_mcp_modules"]}
+    assert not any(name == "fleet_mcp.node"
+                   or name.startswith("fleet_mcp.node.") for name in hub_modules)
+    assert "fleet_mcp.server" not in node_modules
+    assert "fleet_mcp.fleet" not in node_modules
+    assert "fleet_mcp.registry" not in node_modules
+
+
+def test_undeclared_dependency_is_refused(tmp_path):
+    root = tmp_path / "root"
+    evil = root / "fleet_mcp" / "evil.py"
+    evil.parent.mkdir(parents=True)
+    evil.write_text("X = 1\n")
+    answer = {"fleet_mcp_modules": [
+        ["fleet_mcp", str(root / "fleet_mcp" / "__init__.py")],
+        ["fleet_mcp.evil", str(evil)],
+    ]}
+    with pytest.raises(w18.Refused) as exc:
+        w18.audit_loaded("node", answer, ["fleet_mcp"], root)
+    assert exc.value.code == w18.BLOCKED_UNDECLARED_DEPENDENCY
+
+    outside = tmp_path / "outside.py"
+    outside.write_text("X = 1\n")
+    answer = {"fleet_mcp_modules": [["fleet_mcp.evil", str(outside)]]}
+    with pytest.raises(w18.Refused) as exc:
+        w18.audit_loaded("node", answer, ["fleet_mcp.evil"], root)
+    assert exc.value.code == w18.BLOCKED_UNDECLARED_DEPENDENCY
+
+
+def test_negative_control_removing_a_shared_primitive_fails(built):
+    _out, result, _l2 = built
+    negatives = result["negative_control"]
+    assert set(negatives) == {
+        "node:fleet_mcp/errors.py",
+        "node:fleet_mcp/config.py",
+        "hub:fleet/transport.py",
+    }
+    for case, answer in negatives.items():
+        assert answer["booted"] is False, case
+        assert answer["error"], case
+
+
+# ---------------------------------------------------------------------------
+# rollback: independent, and the Legacy fake does not move
+# ---------------------------------------------------------------------------
+def test_independent_and_composition_rollback_preserve_legacy(built):
+    _out, result, _l2 = built
+    rollback = result["rollback"]
+    assert rollback["decision"] == w18.OK
+    assert rollback["legacy_unchanged"] is True
+    assert rollback["after"] == rollback["before"]
+    assert set(rollback["before"]["answers"]) == {"get_session", "get_run", "send"}
+    assert rollback["before"]["identities"]
+    steps = {step["step"]: step for step in rollback["steps"]}
+    assert steps["rollback-node-only"]["node_booted"] is True
+    assert steps["rollback-node-only"]["hub_UNTOUCHED"] is True
+    assert steps["rollback-node-only"]["legacy_unchanged"] is True
+    assert steps["rollback-hub-only"]["hub_booted"] is True
+    assert steps["rollback-hub-only"]["node_UNTOUCHED"] is True
+    assert steps["rollback-hub-only"]["legacy_unchanged"] is True
+    assert steps["composition-rollback"]["legacy_unchanged"] is True
+
+
+# ---------------------------------------------------------------------------
+# release footprints: #483/#480 vocabulary
+# ---------------------------------------------------------------------------
+def test_release_plan_publishes_footprints_and_collision_veto(built):
+    _out, result, _l2 = built
+    plan = result["release_plan"]
+    hub, node = plan["hub"], plan["node"]
+    for name in w18.RESOURCES:
+        assert name in hub and name in node
+    assert plan["matrix"]["decision"] == w18.OK
+    assert hub["device_ref"] == node["device_ref"]
+    assert hub["install_path"] != node["install_path"]
+    assert hub["port"] != node["port"]
+    assert hub["lock"] != node["lock"]
+    assert hub["backend_id"] != node["backend_id"]
+    assert hub["oauth_audience"] != node["oauth_audience"]
+
+    everything = {name: hub[name] for name in w18.RESOURCES}
+    collided = w18.resource_matrix(hub, dict(node, **everything))
+    assert collided["code"] == w18.BLOCKED_RESOURCE_COLLISION
+    assert {item[0] for item in collided["collisions"]} == set(w18.RESOURCES)
+
+    wrong_host = w18.resource_matrix(hub, dict(node, device_ref="device:osaka"))
+    assert wrong_host["code"] == w18.BLOCKED_DEVICE_DISAGREEMENT
+    assert wrong_host["collisions"] == []
+
+    assert plan["shadow"]["read"]["code"] == w18.OK
+    assert plan["shadow"]["write_even_if_granted"]["code"] == \
+           w18.NEXT_SHADOW_WRITE_FORBIDDEN
+    assert plan["shadow"]["unknown"]["code"] == w18.SHADOW_VERB_UNKNOWN
+    assert w18.shadow_decision("get_run", granted=False)["code"] == \
+           w18.NEXT_SHADOW_NOT_GRANTED
+
+
+# ---------------------------------------------------------------------------
+# authority and provenance
+# ---------------------------------------------------------------------------
+def test_one_identity_authority_and_no_second_device_ref(built):
+    out, result, l2 = built
+    authority = l2.read_artifact(
+        out / "v1" / f"{w18.AUTHORITY_KIND}-{VERSION}.tar.gz")
+    assert set(authority.members) == {
+        "fleet/transport.py", "fleet/transport-contract.yaml",
+        "fleet-authority.json"}
+    declared = json.loads(authority.members["fleet-authority.json"])
+    assert declared["single_authority"] is True
+    assert declared["abi"] == w18.AUTHORITY_ABI
+    assert declared["signed"] is False
+    assert "fleet/registry.yaml" not in authority.members
+
+    for kind in (*w18.UNITS, w18.COMPOSITION_KIND):
+        artifact = l2.read_artifact(out / "v1" / f"{kind}-{VERSION}.tar.gz")
+        for rel, data in artifact.members.items():
+            if rel.startswith("fleet/"):
+                continue
+            assert b"class DeviceRef" not in data, f"{kind}:{rel}"
+            assert b"class DeviceRegistry" not in data, f"{kind}:{rel}"
+
+
+def test_provenance_records_owner_sha_original_and_result(built):
+    _out, result, _l2 = built
+    source = result["source"]
+    assert source["built_from"].startswith("git archive")
+    assert source["workdir_used_as_artifact"] is False
+    assert source["live_tree_clean_at_build"] is True
+    assert source["commit"] and source["tree"]
+
+    patches = {patch["id"]: patch for patch in result["transform"]["patches"]}
+    assert set(patches) == {"CUT-A", "CUT-B"}
+    assert patches["CUT-A"]["owner_commit"].startswith("b042f515")
+    assert patches["CUT-A"]["rebased_to"].startswith("main@e69fc03")
+    assert patches["CUT-B"]["owner_commit"].startswith("3512c551")
+    assert patches["CUT-B"]["rebased_to"] is None
+    for patch in patches.values():
+        assert patch["sha256"].startswith("sha256:")
+        assert patch["applied_in"] == "isolated git-archive copy"
+        assert patch["live_tree_modified"] is False
+        assert patch["targets"]
+        for target in patch["targets"]:
+            assert target["result_sha256"]
+            assert target["result_blob_sha"]
+            if target["path"] != "fleet_mcp/providers/build.py":
+                assert target["original_sha256"]
+                assert target["original_blob_sha"]
+
+
+# ---------------------------------------------------------------------------
+# tamper, dirty source, and the never-modified owner tree
+# ---------------------------------------------------------------------------
+def test_tarball_is_tamper_evident(built, tmp_path):
+    out, _result, l2 = built
+    original = out / "v1" / f"{w18.NODE_KIND}-{VERSION}.tar.gz"
+    tampered = tmp_path / "tampered.tar.gz"
+    with tarfile.open(original, "r:gz") as source:
+        members = [(info, source.extractfile(info).read())
+                   for info in source.getmembers()]
+    with tarfile.open(tampered, "w:gz") as target:
+        changed = False
+        for info, data in members:
+            if info.name == "fleet_mcp/node/connector.py" and not changed:
+                data = data + b"\n# tampered\n"
+                changed = True
+            info.size = len(data)
+            target.addfile(info, io.BytesIO(data))
+    with pytest.raises(l2.Refused):
+        l2.read_artifact(tampered)
+
+
+def test_build_refuses_a_dirty_source(tmp_path):
+    repo = tmp_path / "dirty"
+    (repo / "fleet_mcp").mkdir(parents=True)
+    (repo / "fleet").mkdir()
+    (repo / "fleet_mcp/errors.py").write_text("X = 1\n")
+    (repo / "fleet/transport.py").write_text("X = 1\n")
+    env = {**__import__("os").environ,
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    for args in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "base")):
+        subprocess.run(["git", "-C", str(repo), *args],
+                       check=True, capture_output=True, env=env)
+    (repo / "fleet_mcp/errors.py").write_text("X = 2\n")
+    with pytest.raises(w18.Refused) as exc:
+        w18.archive_source(repo, "HEAD", tmp_path / "out")
+    assert exc.value.code == w18.BLOCKED_DIRTY_SOURCE
+
+
+def test_owner_source_tree_is_untouched(built):
+    proc = subprocess.run(
+        ["git", "-C", str(REPO), "status", "--porcelain",
+         "--untracked-files=no", "--", "fleet_mcp", "fleet", "runtime",
+         "scripts"],
+        capture_output=True, text=True, check=True)
+    assert proc.stdout.strip() == "", proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# the release is still not claimed
+# ---------------------------------------------------------------------------
+def test_release_is_not_claimed_and_device_is_not_run(built):
+    _out, result, _l2 = built
+    assert result["technical_state"] == w18.GREEN_ARTIFACTS
+    assert result["source_state"] == w18.BLOCKED_OWNER
+    assert result["decision"] == w18.BLOCKED_OWNER
+    assert result["release_permitted"] is False
+    assert result["real_device"] == w18.NOT_RUN
+    assert result["why_blocked"]
+    composition = result["units"][w18.COMPOSITION_KIND]
+    assert composition["member_count"] == 0
+    # The composition is a tested set, not a same-version atomic claim.
+    from_l2 = built[2].read_artifact(
+        built[0] / "v1" / f"{w18.COMPOSITION_KIND}-{VERSION}.tar.gz")
+    manifest = from_l2.manifest
+    assert manifest["same_version_required"] is False
+    assert manifest["rollback_order"] == [
+        w18.NODE_KIND, w18.HUB_KIND, w18.AUTHORITY_KIND, w18.BASE_KIND]
+    assert manifest["composition_rollback"]["kind"] == "compensating"
