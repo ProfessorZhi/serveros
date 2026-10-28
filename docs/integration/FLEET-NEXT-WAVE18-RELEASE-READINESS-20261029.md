@@ -366,6 +366,12 @@ would have been counted as `new`; there is exactly one, and it is not this file.
 That is the same distinction this gate applies to the six pinned units in §4,
 applied to itself — a red job is not a red gate.
 
+The docs-only commit after that head reproduces the reading:
+`6b18fee0e582707aae2c5df09074957cbb708902` in run
+[`40760772780`](https://github.com/ProfessorZhi/serveros/actions/runs/40760772780)
+reports 0 / 0 / 0 / 1 new failures for shards 1–4, the same `1` being the same
+date-window test. Documenting a measurement cannot change what it measures.
+
 The 60 baseline failures across the four shards are pre-existing: shard 1's
 `tests/test_verification_tool.py` reports `tests/test_coordination.py` missing
 from the tree, and the rest are the file's known entries. Nothing in this PR
