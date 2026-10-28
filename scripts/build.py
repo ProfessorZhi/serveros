@@ -1216,22 +1216,28 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
     module_blocks = {key: value for key, value in bundle.items()
                      if isinstance(value, dict) and "path" in value}
     contract = release_contract()
-    # A node artifact promises the node modules, so a missing path is a refusal;
-    # a plugin-only composition promises none, and if it carries module blocks
-    # at all the kind check below refuses the payload rather than this loop
-    # deciding what "plugin" means. The orphan direction is unconditional: a
-    # source path the build never visits is unregistered packaging whether the
-    # face is node or plugin.
+    claims_node = contract.NODE_RUNTIME in kinds
+    node_roots = {rel.split("/", 1)[0]
+                  for rel in contract.REQUIRED_MEMBERS[contract.NODE_RUNTIME]}
+    # Every composition that carries module blocks is held to the full list,
+    # with ONE exception: a composition that does not declare `node-runtime`
+    # but carries a node-runtime required member (e.g. `runtime/`, `bin/`) is
+    # already refused by kind verification below. That refusal is the more
+    # fundamental one, and it is the shape #413's decoupling tests use. Any
+    # other module-bearing composition — including a `[plugin]` composition
+    # that carries only, say, `documents/` and `fleet/` — is a node artifact
+    # that forgot half its members, and is refused here.
+    already_kind_refused = (not claims_node) and bool(set(module_blocks) & node_roots)
+    if module_blocks and not already_kind_refused:
+        undeclared = [module for module in CORE_MODULES
+                      if not (bundle.get(module) or {}).get("path")]
+        if undeclared:
+            raise ValueError(
+                f"{bundle_path}: CORE_MODULES members {undeclared} have no "
+                f"`path` in the composition. The build would silently skip "
+                f"them; a composition that ships modules must declare all of "
+                f"them, or say `artifacts: [plugin]` and ship none.")
     if module_blocks:
-        if contract.NODE_RUNTIME in kinds:
-            undeclared = [module for module in CORE_MODULES
-                          if not (bundle.get(module) or {}).get("path")]
-            if undeclared:
-                raise ValueError(
-                    f"{bundle_path}: CORE_MODULES members {undeclared} have no "
-                    f"`path` in the composition. A node-runtime build would "
-                    f"silently skip them and the installed artifact would fail "
-                    f"to import what it ships.")
         orphaned = sorted(set(module_blocks) - set(CORE_MODULES))
         if orphaned:
             raise ValueError(
@@ -1244,8 +1250,8 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
         for module in CORE_MODULES:
             module_rel = (bundle.get(module) or {}).get("path")
             if not module_rel:
-                # Only reachable for a plugin-only composition, whose module
-                # blocks are refused by `verify_artifact_kinds` below.
+                # Reachable only for the `already_kind_refused` shape above;
+                # `verify_artifact_kinds` refuses that payload below.
                 continue
             if module_rel != module:
                 raise ValueError(f"{module}: bundle path must be {module!r}, got {module_rel!r}")

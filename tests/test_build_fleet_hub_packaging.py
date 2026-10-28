@@ -194,15 +194,42 @@ class AMissingRegistrationFailsClosed(Fixture):
         self.assertIn("fleet_hub", str(caught.exception))
         self.assertIn("not in scripts/build.py#CORE_MODULES", str(caught.exception))
 
+    def test_a_plugin_composition_cannot_ship_half_the_modules(self):
+        """A `[plugin]` composition with non-node module blocks is still a node
+        artifact that forgot its members; the old gate skipped it because
+        `node-runtime` was not declared and no required member was carried."""
+        def half(document):
+            document["artifacts"] = ["plugin"]
+            keep = {"documents"}
+            for key in list(document):
+                value = document[key]
+                if isinstance(value, dict) and "path" in value and key not in keep:
+                    document.pop(key)
+        with self.assertRaises(ValueError) as caught:
+            self.plan(temp_bundle(self.base, half))
+        self.assertIn("no `path` in the composition", str(caught.exception))
+
     def test_a_product_directory_cannot_be_packaged_as_core(self):
         """`reports` is a product layer; a path block must not make it core."""
+        layers = yaml.safe_load(LAYERS.read_text(encoding="utf-8"))
+        reports = (layers.get("directories") or {}).get("reports")
+        if isinstance(reports, str):
+            self.assertNotEqual(reports, "L1")
+        elif isinstance(reports, dict):
+            self.assertNotIn("L1", reports.get("parts") or {})
+        self.assertNotIn("reports", build.CORE_MODULES)
+        self.assertNotIn("reports", bundle_document())
+
         def add_product(document):
             document["reports"] = {"path": "reports"}
+        before = hashlib.sha256(LAYERS.read_bytes()).hexdigest()
         with self.assertRaises(ValueError) as caught:
             self.plan(temp_bundle(self.base, add_product), face="node-runtime")
         self.assertIn("reports", str(caught.exception))
         self.assertIn("not in scripts/build.py#CORE_MODULES", str(caught.exception))
         self.assertNotIn("reports", build.CORE_MODULES)
+        self.assertEqual(hashlib.sha256(LAYERS.read_bytes()).hexdigest(), before,
+                         "a packaging attempt must not touch the layer table")
 
     def test_a_plugin_only_root_composition_is_not_a_node_artifact(self):
         """No module blocks ⇒ nothing to agree about; it still builds.
@@ -237,22 +264,25 @@ class PackagingDoesNotChangeLayerAuthority(Fixture):
         self.plan(BUNDLE, face="node-runtime")
         self.assertEqual(hashlib.sha256(LAYERS.read_bytes()).hexdigest(), before)
 
-    def test_fleet_hub_is_not_registered_as_l1_or_product(self):
-        """#414 owns the table. This test refuses a packaging-side layer claim.
+    def test_fleet_hub_is_registered_as_an_l2_directory(self):
+        """#414 owns the table; this lane only refuses a layer claim.
 
-        `fleet_hub` is not registered yet on this tree (the D2 registration is
-        #414's); when it is, it must be an L2-hub directory, never L1/product.
+        Red until #414 registers `fleet_hub`. When it lands, the entry must be
+        an L2-hub directory and never L1 or product — the shape is not guessed
+        here, so a split entry with other L2 part names is accepted.
         """
         layers = yaml.safe_load(LAYERS.read_text(encoding="utf-8"))
         entry = (layers.get("directories") or {}).get("fleet_hub")
-        if entry is None:
-            self.skipTest("fleet_hub is not registered yet; #414 owns layers.yaml")
-        parts = entry if isinstance(entry, dict) else {"parts": entry}
-        names = parts.get("parts", {})
-        if isinstance(names, dict):
-            self.assertEqual(set(names), {"L2-hub"})
-        else:
-            self.assertEqual(entry, "L2")
+        self.assertIsNotNone(
+            entry,
+            "`fleet_hub` is packaged but unregistered in layers.yaml; #414 owns "
+            "that file and must register it as an L2-hub directory")
+        names = {entry} if isinstance(entry, str) else set(
+            (entry.get("parts") or {}))
+        self.assertNotIn("L1", names, "fleet_hub is not an L1 directory")
+        self.assertNotIn("product", names, "fleet_hub is not a product directory")
+        self.assertTrue(any(name.startswith("L2") for name in names),
+                        f"fleet_hub must live at L2; got {sorted(names)}")
 
     def test_packaging_list_contains_no_product_display_directory(self):
         for product in ("reports", "cards", "notifications"):
