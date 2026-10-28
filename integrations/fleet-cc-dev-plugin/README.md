@@ -304,6 +304,32 @@ verified layout is:
 skills/<name>/SKILL.md         # the same eight shared Skills
 ```
 
+### Re-verified on 2026-10-27 against codex-cli 0.163.0
+
+The layout above was inspected against 0.160.0. It was re-checked against
+`codex-cli 0.163.0` in a fresh `CODEX_HOME`, using the real generated adapter
+rather than the fixture:
+
+```sh
+python3 integrations/fleet-cc-dev-plugin/build_codex_plugin.py \
+    --out <empty-dir> --next-mcp-url https://<next-ingress>.ts.net/mcp
+codex plugin marketplace add <dir-containing-.agents/plugins/marketplace.json>
+codex plugin add serveros-fleet-codex-dev@<market>
+codex plugin list
+codex mcp list
+```
+
+Observed: the marketplace added; the plugin installed, enabled, at version
+`0.0.1`; all eight `skills/<name>/SKILL.md` present in
+`$CODEX_HOME/plugins/cache/...`; and `codex mcp list` reporting
+`serveros-fleet … enabled  Not logged in`.
+
+That is a **packaging and discovery** result only. It is not a tool call and not
+a model turn, and it does not change the boundary: the remote verbs stay
+unavailable until OAuth sign-in, which stays `BLOCKED_OWNER_OAUTH`. A newer
+Codex reading this layout is not evidence that a `.codex-plugin` directory is a
+**release** format — see `docs/claude-codex-parity.md`.
+
 A local marketplace `.agents/plugins/marketplace.json` points at the plugin so
 an isolated `CODEX_HOME` can install it without touching `~/.codex`:
 

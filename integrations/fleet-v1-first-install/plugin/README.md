@@ -40,6 +40,42 @@ read.
 3. Nothing else is configured here. The device allow-lists, project allow-lists
    and per-session grants live on the Fleet server, not in this package.
 
+## Updating and rolling back
+
+This package is **data**: two manifests, eight Skill documents and two images. An
+update replaces those bytes and nothing else. It does not restart the device
+runtime, the hub, or any session, and a Skill edit does not change the MCP URL or
+the scope string, so it does not ask you to sign in again.
+
+### Updating
+
+1. Advance the package `version` in the source manifest and rebuild. A Skill or
+   README edit **without** a version advance is an edit many clients never pick
+   up: Claude Code's install/update path keys on the version, so the fix would
+   ship and nobody would receive it.
+2. Reinstall from the same marketplace. The client fetches the new version into
+   its own cache; the previous version stays addressable until it is replaced.
+
+### Rolling back
+
+1. Pin the previous version and reinstall it from the marketplace (or from the
+   source revision that produced it — see `../README.md` for the build command).
+2. Verify the two version carriers agree again: the plugin manifest and the
+   marketplace entry must name the same version, and the Skills must be
+   byte-identical to that revision's source.
+
+Rollback is a reinstall, not an undo: the package keeps no state, and the server
+keeps the ledger. A milestone that was already reported is not re-reported by a
+rollback — that record lives on the Fleet side, not here.
+
+### What neither one does
+
+- No `serverosd` restart, no service reload, no device credential change.
+- No scope change. Scopes are fixed at authorization; a package update cannot
+  widen them, and rolling back does not narrow them.
+- No session is created, interrupted or resumed by installing, updating or
+  rolling back this package.
+
 ## Privacy
 
 The package contains no executable code and no telemetry. It sends data only to
