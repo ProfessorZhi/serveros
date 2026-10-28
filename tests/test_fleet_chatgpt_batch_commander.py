@@ -45,11 +45,8 @@ def snapshot() -> dict:
             "device:win": {"compat": {"state": "READY", "effective": True,
                                       "granted": True, "stale": False}},
         },
-        "models": {
-            "device:tokyo": {"claude": ["sonnet", "opus"],
-                             "codex": ["gpt-6.1-sol"]},
-            "device:dell": {"claude": ["sonnet"]},
-            "device:win": {"claude": ["sonnet"], "codex": ["gpt-6.1-sol"]},
+        "create_allow": {
+            "p1": {"models": []}, "p2": {"models": []}, "p3": {"models": []},
         },
         "grants": {
             "device:tokyo": {"claude": ["send", "create"],
@@ -78,8 +75,7 @@ def task(**overrides) -> dict:
         "acceptance": "tests pass and artifact is read",
         "tests": "pytest tests/test_slice.py", "report": "artifacts/t1.json",
         "idempotency_key": "idem-t1", "required_roles": ["development-primary"],
-        "required_ability": "build", "required_model": "sonnet",
-        "required_grant": "send",
+        "required_ability": "build", "required_grant": "send",
     }
     base.update(overrides)
     return base
@@ -129,16 +125,22 @@ class TheBatchPlanIsChecked(unittest.TestCase):
             task(task_id="T2", device_ref="device:dell", runtime="claude",
                  project_id="p2", session_ref="device:dell|claude|s2",
                  worktree="wt/t2", required_roles=["gpu-compute-worker"],
-                 required_ability="gpu-test", required_model="sonnet",
+                 required_ability="gpu-test",
                  required_grant="send", idempotency_key="idem-t2"),
             task(task_id="T3", device_ref="device:win", runtime="codex",
                  project_id="p3", session_ref="device:win|codex|s3",
                  worktree="wt/t3", required_roles=["corporate-workstation"],
-                 required_ability="compat", required_model="gpt-6.1-sol",
+                 required_ability="compat",
                  required_grant="send", idempotency_key="idem-t3"),
         ]}
         result = contract.validate_batch(batch, snapshot())
         self.assertEqual(result["verdict"], "PASS", result["blocked"])
+        self.assertEqual(result["provider_calls"], 0)
+        for task_id in ("T1", "T2", "T3"):
+            self.assertEqual(result["model_decisions"][task_id]["decision"],
+                             "PROVIDER_DEFAULT")
+            self.assertEqual(result["model_decisions"][task_id]["model_identity"],
+                             "UNKNOWN")
 
     def test_misselected_device_is_refused(self) -> None:
         batch = {"batch_id": "B", "tasks": [
@@ -155,10 +157,29 @@ class TheBatchPlanIsChecked(unittest.TestCase):
         self.assertIn("STALE_CAPABILITY",
                       {row["code"] for row in result["blocked"]})
 
-    def test_model_limit_is_refused_without_fallback(self) -> None:
+    def test_missing_model_evidence_is_unverified_not_unavailable(self) -> None:
+        snap = snapshot()
+        snap["create_allow"]["p1"]["models"] = ["sonnet"]
         result = contract.validate_batch(
-            {"batch_id": "B", "tasks": [task(required_model="haiku")]}, snapshot())
-        self.assertIn("MODEL_NOT_AVAILABLE",
+            {"batch_id": "B", "tasks": [task(required_model="sonnet")]}, snap)
+        self.assertIn("MODEL_EVIDENCE_MISSING",
+                      {row["code"] for row in result["blocked"]})
+        self.assertEqual(result["model_decisions"]["T1"]["model_identity"],
+                         "UNKNOWN")
+
+    def test_project_grant_denies_before_evidence(self) -> None:
+        snap = snapshot()
+        snap["create_allow"]["p1"]["models"] = []
+        result = contract.validate_batch(
+            {"batch_id": "B", "tasks": [task(required_model="sonnet")]}, snap)
+        self.assertIn("MODEL_POLICY_DENIED",
+                      {row["code"] for row in result["blocked"]})
+
+    def test_require_explicit_without_model_fails_closed(self) -> None:
+        result = contract.validate_batch(
+            {"batch_id": "B", "tasks": [task(require_explicit_model=True)]},
+            snapshot())
+        self.assertIn("MODEL_NOT_NAMED",
                       {row["code"] for row in result["blocked"]})
 
     def test_missing_grant_is_refused(self) -> None:
