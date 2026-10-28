@@ -30,10 +30,16 @@ It is deliberately not:
     no credential, no provider, no capability probe and no transport;
   * a scheduler — it does not read a source, wake itself, or decide when to
     look. The bounded runner (#446) or any caller drives it after a tick;
-  * a second state file — a member's verdict is recomputed from the report, and
-    what was already SENT is the ledger's answer, so this module persists
-    nothing of its own. Deleting the process must not resend, and a test proves
-    it.
+  * a second DELIVERY state — a member's verdict is recomputed from the report,
+    and what was already SENT is the ledger's answer, so this module persists
+    nothing about delivery. Deleting the process must not resend, and a test
+    proves it.
+
+The one thing that IS durable is the DECLARATION, and it belongs to
+`registration.py` beside this file: the Batch ID and its members are what the
+dispatcher asserted at ACK time, and without that record a dispatch is only
+knowable to the chat that issued it. That is an input, never a claim about
+delivery, and the aggregator never reads it to decide what was sent.
 
 WHY THE SETTLEMENT IS BY OUTCOME, NOT BY DELIVERY STATE
 -------------------------------------------------------
@@ -54,7 +60,7 @@ informs.
 
 THE ONE SEAM IT NEEDS FROM #423
 -------------------------------
-#423 has no public way to send a caller-authored sentence: `observed()` derives
+#423 has no public way to send a caller-authored sentence: `observe()` derives
 the whole message from a payload, and `_send` is private. A batch summary is not
 a milestone — it is a sentence about several of them — so this module needs one
 public method and refuses to reach past it:
@@ -63,7 +69,9 @@ public method and refuses to reach past it:
 
 The exact patch is in this directory's README. Until its owner lands it,
 `BatchAggregator` raises `NOTIFIER_SEAM_MISSING` at construction rather than
-writing a second path to the one provider.
+writing a second path to the one provider. That absence is a BLOCKED state and
+is recorded as one: this module never calls `_send`, `_now` or
+`_prior_observation`, and a test pins that no private name appears here.
 
 AUTHORITY BOUNDARY
 ------------------
@@ -99,12 +107,13 @@ ATTENTION = "ATTENTION"    # YELLOW: decided, needs a person, not an alert
 FAILED = "FAILED"          # RED
 UNKNOWN = "UNKNOWN"        # decided, but the evidence does not establish an outcome
 OFFLINE = "OFFLINE"        # the window or the batch deadline ended with no fact
+UNOBSERVED = "UNOBSERVED"  # the deadline passed and no Run was ever issued for it
 SKIPPED = "SKIPPED"        # the caller declared this ref non-qualifying
 
 VERDICTS = (PENDING, VERIFIED, GREEN, ATTENTION, FAILED, UNKNOWN, OFFLINE,
-            SKIPPED)
+            UNOBSERVED, SKIPPED)
 SETTLED_VERDICTS = frozenset(VERDICTS) - {PENDING}
-ACTIONABLE = frozenset({FAILED, UNKNOWN, OFFLINE})
+ACTIONABLE = frozenset({FAILED, UNKNOWN, OFFLINE, UNOBSERVED})
 
 # -- #428's row words this module branches on ------------------------------- #
 #
@@ -163,10 +172,22 @@ UNCONFIRMED = "UNCONFIRMED"    # claimed, not confirmed; reconcile, never resend
 #: text on someone's phone.
 MAX_SUMMARY_LINES = 30
 
+#: #417 asks for *finite* actionable alerts ("有限 actionable 告警"). One alert
+#: per silent member is already bounded by the batch size, but a 40-device
+#: dispatch that lost half its fleet would still be 20 notifications. Past this
+#: cap the remainder is counted in the one summary instead, so the owner always
+#: gets a bounded number of messages and never a stream.
+MAX_ALERTS = 10
+
+#: Where a declaration came from. `None` means the Batch was built by hand in a
+#: process and never filed: usable for a live tick, never a basis for saying a
+#: dispatch is still traceable after the chat that issued it exited.
+ORIGIN_REGISTRATION = "registration"
+
 _LABEL = {
     VERIFIED: "已验证", GREEN: "绿灯（门禁未取得）", ATTENTION: "需注意",
-    FAILED: "失败", UNKNOWN: "未确立", OFFLINE: "失联", SKIPPED: "不适用",
-    PENDING: "未结束",
+    FAILED: "失败", UNKNOWN: "未确立", OFFLINE: "失联", UNOBSERVED: "未观测",
+    SKIPPED: "不适用", PENDING: "未结束",
 }
 
 
@@ -246,30 +267,64 @@ def _iso(seconds: float) -> str:
 # --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class BatchMember:
-    """One ref of one dispatch, and the scope that may qualify it.
+    """One task of one dispatch, and the scope that may qualify it.
+
+    `ref` is the Run (or workflow-run) id, and it is `None` when the task was
+    dispatched but no Run exists for it yet — an ACK, a queued job, a task
+    whose dispatch the commander could not confirm. Such a member is still part
+    of the dispatch: the alternative, dropping it, would let a batch of three
+    report "2/2 verified" while the third was never issued, which is the
+    false-completion shape #456 refuses for one task and this module refuses
+    for a set of them.
 
     `role` is a person-facing label ("tokyo", "dell") and never reaches a
     payload: the summary names a member by role and ref, and carries no body.
     """
 
     source: str
-    ref: str
+    ref: str | None
     device_ref: str
     boot_id: str | None = None
     source_sha: str | None = None
     role: str = ""
     expires_at: str | None = None
+    #: The dispatcher's own task identity (#456's `task_id`). It is the only
+    #: stable name a member has before a Run exists, so it is what the key and
+    #: the alert key are built from in that window.
+    task_id: str = ""
 
     def __post_init__(self):
-        # Validated by #428's own `Watch`: a member is a watch plus a label.
-        self.watch()
+        if self.watchable:
+            # Validated by #428's own `Watch`: a member is a watch plus a label.
+            self.watch()
+            return
+        _text(self.task_id, "task_id", 128, code="BAD_MEMBER")
+        if self.source not in getattr(_observer(), "WATCH_SOURCES", ()):
+            raise BatchRefused("BAD_MEMBER", f"source {self.source!r} is not one "
+                                             f"#428 watches")
+
+    @property
+    def watchable(self) -> bool:
+        return self.ref is not None
 
     @property
     def key(self) -> str:
-        return f"{self.source}:{self.ref}"
+        """Stable for the member's whole life, and it changes only once.
+
+        Before a Run exists the key is the dispatcher's task id; once one does
+        it is `source:ref`, exactly the observer's key. `refresh` is the only
+        thing that may cross that line, and it refuses to cross it backwards.
+        """
+        if self.watchable:
+            return f"{self.source}:{self.ref}"
+        return f"{self.source}:task:{self.task_id}"
 
     def watch(self, expires_at: str | None = None):
         """The one watch this member implies. There is no second declaration."""
+        if not self.watchable:
+            raise BatchRefused(
+                "NO_RUN", f"task {self.task_id!r} has no Run; there is nothing "
+                          f"to watch and inventing a ref would watch a stranger")
         deadline = expires_at if expires_at is not None else self.expires_at
         try:
             return _observer().Watch(
@@ -293,6 +348,10 @@ class Batch:
     batch_id: str
     members: tuple[BatchMember, ...]
     expires_at: str | None = None
+    #: `ORIGIN_REGISTRATION` when this Batch was rebuilt from a filed
+    #: registration, `None` when the caller built it in-process. It is the only
+    #: word this contract has for "this dispatch outlives the chat".
+    origin: str | None = None
 
     def __post_init__(self):
         ident = _text(self.batch_id, "batch_id", 128, code="BAD_BATCH_ID")
@@ -305,6 +364,10 @@ class Batch:
                 "BAD_BATCH_ID", "batch_id may not contain ':'; the delivery "
                 "keys use it as the separator, so a colon could make two "
                 "different batches share one receipt")
+        if ident in (".", "..") or "/" in ident or "\\" in ident:
+            raise BatchRefused(
+                "BAD_BATCH_ID", "batch_id is also the registration's file name, "
+                "so it may not be a path")
         members = tuple(self.members)
         if not members:
             raise BatchRefused("NO_MEMBERS", "a batch needs at least one member")
@@ -318,6 +381,14 @@ class Batch:
                 f"two members name the same source:ref ({repeated[0]!r}); one "
                 f"tick cannot hold two facts about one ref, which is why #428 "
                 f"refuses two watches for it as well")
+        waiting = [member for member in members if not member.watchable]
+        if waiting and self.expires_at is None:
+            raise BatchRefused(
+                "NO_DEADLINE",
+                f"task {waiting[0].task_id!r} has no Run yet and the batch has "
+                f"no deadline; an unissued task with no deadline is an "
+                f"unbounded wait, which is the silence this contract exists to "
+                f"remove")
         object.__setattr__(self, "members", members)
 
     # -- keys are the whole dedupe design ----------------------------------
@@ -345,9 +416,19 @@ class Batch:
         return key
 
     def watches(self, expires_at: str | None = None):
-        """The observer's watches, derived — never a second list to keep in step."""
+        """The observer's watches, derived — never a second list to keep in step.
+
+        A member with no Run contributes no watch. That is the whole difference
+        between "queued" and "running": the dispatch is the same size either
+        way, but only the issued tasks are readable.
+        """
         return tuple(member.watch(member.expires_at or expires_at or self.expires_at)
-                     for member in self.members)
+                     for member in self.members if member.watchable)
+
+    @property
+    def unissued(self) -> tuple[BatchMember, ...]:
+        """Members the dispatcher declared but never issued."""
+        return tuple(member for member in self.members if not member.watchable)
 
 
 # --------------------------------------------------------------------------- #
@@ -432,6 +513,28 @@ class MemberState:
 
 
 @dataclass(frozen=True)
+class Receipt:
+    """What the provider said about one batch message. The only delivery claim.
+
+    It is a projection of #423's `Observation`, not a second record: the ledger
+    row is the fact, this is the shape the batch layer may state. `remote_id`
+    is the provider's message id and the only thing that may be called
+    delivered — a batch never reports a send as done on its own authority.
+    """
+
+    delivery_key: str | None
+    outcome: str | None
+    state: str | None            # #423's DELIVERED / DELIVERY_UNKNOWN / DUPLICATE
+    remote_id: str | None
+    transport_key: str | None
+    delivered: bool
+
+    @property
+    def confirmed(self) -> bool:
+        return self.state in (DELIVERED, DUPLICATE)
+
+
+@dataclass(frozen=True)
 class BatchTick:
     """What one correlation step established. A value, not an event."""
 
@@ -443,14 +546,31 @@ class BatchTick:
     summary: Any = None            # #423's Observation, when the batch settled
     alerts: tuple = ()
     observed_at: str = ""
+    #: Because the batch was rebuilt from a filed registration, or `None`.
+    origin: str | None = None
+    #: Silent members past `MAX_ALERTS`: counted in the summary, not sent.
+    suppressed: tuple = ()
 
     @property
     def verdicts(self) -> dict:
-        return {state.member.ref: state.verdict for state in self.members}
+        return {state.member.key: state.verdict for state in self.members}
 
     @property
     def verified(self) -> int:
         return self.counts.get(VERIFIED, 0)
+
+    @property
+    def receipts(self) -> tuple:
+        """Every message THIS TICK caused, with the provider's own answer."""
+        answers = (() if self.summary is None else (self.summary,)) + tuple(self.alerts)
+        return tuple(Receipt(
+            delivery_key=getattr(answer, "delivery_key", None),
+            outcome=getattr(answer, "outcome", None),
+            state=getattr(answer, "state", None),
+            remote_id=getattr(answer, "remote_id", None),
+            transport_key=getattr(answer, "transport_key", None),
+            delivered=bool(getattr(answer, "delivered", False)))
+            for answer in answers)
 
 
 def _label(verdict: str) -> str:
@@ -463,12 +583,16 @@ def _member_line(state: MemberState) -> str:
     return f"- {who}:{member.ref} {_label(state.verdict)} ({state.token})"
 
 
-def summary_text(batch: Batch, members, counts, total: int) -> str:
+def summary_text(batch: Batch, members, counts, total: int,
+                 suppressed: int = 0) -> str:
     """The one sentence about the whole dispatch. Deterministic, no model.
 
     It carries verdicts, refs, roles and codes — never a payload body, never a
     `why` string (a refusal's detail can quote the payload it refused). The
     absence of payload text is structural, not a scrub that could be forgotten.
+
+    `suppressed` is the number of silent members past `MAX_ALERTS`: the summary
+    is where the owner learns they exist, so the budget never becomes silence.
     """
     head = (f"批次 {batch.batch_id} 结束：{counts.get(VERIFIED, 0)}/{total} 已验证")
     rest = [f"{_label(verdict)} {counts[verdict]}" for verdict in VERDICTS
@@ -480,6 +604,8 @@ def summary_text(batch: Batch, members, counts, total: int) -> str:
         lines.append(_member_line(state))
     if len(members) > MAX_SUMMARY_LINES:
         lines.append(f"…等 {total} 项")
+    if suppressed:
+        lines.append(f"另有 {suppressed} 项未单独告警，见上行明细")
     return "\n".join(lines)
 
 
@@ -522,6 +648,58 @@ class BatchAggregator:
         #: Keys claimed but not confirmed. The next tick reconciles them under
         #: the SAME transport key; nothing is ever resent under a new one.
         self._unconfirmed: set[str] = set()
+        #: Alert keys this process has issued, and the members past the budget.
+        #: Both are recomputed from the same states after a restart, so the
+        #: budget cuts the same members in the same order every time.
+        self._alerted: set[str] = set()
+        self._suppressed: set[str] = set()
+
+    # -- a registration that learned a Run --------------------------------
+
+    def refresh(self, batch: "Batch") -> None:
+        """Adopt a declaration in which a queued task has learned its Run.
+
+        This is the ONLY change a live batch may undergo: a member that had no
+        Run may get one, and a member that had one may not become something
+        else. Everything else — the batch id, the member set, the order, the
+        deadline — is fixed, because the delivery keys and the summary's
+        identity are derived from them.
+
+        A member that already settled can never be refreshed: the owner has
+        been told what happened to it, and a later registration may not
+        retroactively make that untrue.
+        """
+        if not isinstance(batch, Batch):
+            raise BatchRefused("BAD_BATCH", "refresh needs a Batch declaration")
+        if batch.batch_id != self.batch.batch_id:
+            raise BatchRefused(
+                "BATCH_CHANGED",
+                f"this aggregator is correlating batch {self.batch.batch_id!r}; "
+                f"{batch.batch_id!r} is a different dispatch")
+        if batch.expires_at != self.batch.expires_at:
+            raise BatchRefused(
+                "BATCH_CHANGED", "the batch deadline is part of its identity")
+        if [member.task_id for member in batch.members] != \
+                [member.task_id for member in self.batch.members]:
+            raise BatchRefused(
+                "BATCH_CHANGED", "a refresh may not add, drop or reorder tasks")
+        for old, new in zip(self.batch.members, batch.members):
+            if (old.source, old.device_ref, old.role) != \
+                    (new.source, new.device_ref, new.role):
+                raise BatchRefused(
+                    "BATCH_CHANGED",
+                    f"task {old.task_id!r} changed its device, source or role")
+            if old.ref is not None and new.ref != old.ref:
+                raise BatchRefused(
+                    "BATCH_CHANGED",
+                    f"task {old.task_id!r} already names Run {old.ref!r}; a "
+                    f"refresh may only fill an empty ref")
+            if old.ref is None and new.ref is not None and old.key in self._frozen:
+                raise BatchRefused(
+                    "TOO_LATE",
+                    f"task {old.task_id!r} already settled {self._frozen[old.key].verdict}; "
+                    f"its Run cannot be adopted after the owner was told")
+        self.batch = batch
 
     # -- the step ----------------------------------------------------------
 
@@ -549,8 +727,12 @@ class BatchAggregator:
             # means, deterministically.
             by_ref[(str(row.get("source") or ""), str(row.get("ref") or ""))] = row
 
-        states = tuple(self._state_for(member, by_ref.get((member.source, member.ref)), now)
-                       for member in self.batch.members)
+        states = tuple(
+            self._state_for(member,
+                            by_ref.get((member.source, member.ref))
+                            if member.watchable else None,
+                            now)
+            for member in self.batch.members)
         counts = Counter(state.verdict for state in states)
         settled = all(state.settled for state in states)
 
@@ -565,14 +747,23 @@ class BatchAggregator:
 
         return BatchTick(batch_id=self.batch.batch_id, state=tick_state,
                          settled=settled, members=states, counts=dict(counts),
-                         summary=summary, alerts=alerts, observed_at=_iso(now))
+                         summary=summary, alerts=alerts, observed_at=_iso(now),
+                         origin=self.batch.origin,
+                         suppressed=tuple(sorted(self._suppressed)))
 
     def _state_for(self, member: BatchMember, row: Mapping | None,
                    now: float) -> MemberState:
         frozen = self._frozen.get(member.key)
         if frozen is not None:
             return frozen
-        if row is None:
+        if not member.watchable:
+            # Nothing was ever issued for this task. That is not a failure and
+            # it is not a success: it is a hole the deadline has to close.
+            state = MemberState(
+                member, PENDING, code="NEVER_ISSUED",
+                why=f"task {member.task_id!r} was dispatched but no Run was "
+                    f"ever issued, so no source can speak about it")
+        elif row is None:
             state = MemberState(member, PENDING,
                                 why="no row for this ref in this tick")
         else:
@@ -586,10 +777,16 @@ class BatchAggregator:
         if state.verdict == PENDING and self.batch.expires_at is not None:
             deadline = _parse_when(self.batch.expires_at)
             if deadline is not None and now >= deadline:
-                state = MemberState(
-                    member, OFFLINE, code="BATCH_DEADLINE",
-                    why=f"the batch deadline {self.batch.expires_at} passed "
-                        f"with no terminal fact for this ref")
+                if member.watchable:
+                    state = MemberState(
+                        member, OFFLINE, code="BATCH_DEADLINE",
+                        why=f"the batch deadline {self.batch.expires_at} passed "
+                            f"with no terminal fact for this ref")
+                else:
+                    state = MemberState(
+                        member, UNOBSERVED, code="NEVER_ISSUED",
+                        why=f"the batch deadline {self.batch.expires_at} passed "
+                            f"and task {member.task_id!r} never got a Run")
         if state.settled:
             self._frozen[member.key] = state
         return state
@@ -597,14 +794,17 @@ class BatchAggregator:
     # -- sending: one path, one key per message ----------------------------
 
     def _alerts(self, states) -> tuple:
-        """One message per member nothing else has spoken about.
+        """One message per member nothing else has spoken about, up to a budget.
 
         #423 already delivers a RED and an UNKNOWN as their own milestone
         messages, as they happen. Raising a batch alert for those would be the
         same fact twice, which is the noise this contract exists to remove. The
         members that would otherwise stay silent for ever are the ones the tick
         could not observe at all — a scope mismatch, a permanent refusal, an
-        expired window, a batch deadline. Those get the alert.
+        expired window, a batch deadline.
+
+        Past `MAX_ALERTS` the remaining members are NOT dropped: they are named
+        in the one summary, which is why the cap can never become silence.
         """
         out = []
         for state in states:
@@ -613,6 +813,11 @@ class BatchAggregator:
             key = self.batch.alert_key(state.key, state.verdict)
             if key in self._confirmed:
                 continue
+            if key not in self._alerted and len(self._alerted) >= MAX_ALERTS:
+                self._suppressed.add(state.key)
+                continue
+            self._alerted.add(key)
+            self._suppressed.discard(state.key)
             answer = self._deliver(
                 key=key, outcome=BATCH_ALERT,
                 text=alert_text(self.batch, state),
@@ -624,7 +829,8 @@ class BatchAggregator:
     def _summarise(self, states, counts) -> tuple:
         answer = self._deliver(
             key=self.batch.summary_key, outcome=BATCH_SUMMARY,
-            text=summary_text(self.batch, states, counts, len(states)),
+            text=summary_text(self.batch, states, counts, len(states),
+                              len(self._suppressed)),
             why=f"{counts.get(VERIFIED, 0)}/{len(states)} members verified")
         self._note(self.batch.summary_key, answer)
         state = getattr(answer, "state", None)
@@ -659,10 +865,11 @@ class BatchAggregator:
 
 __all__ = [
     "Batch", "BatchAggregator", "BatchMember", "BatchRefused", "BatchTick",
-    "MemberState", "verdict_for_row", "summary_text", "alert_text",
+    "MemberState", "Receipt", "verdict_for_row", "summary_text", "alert_text",
     "SCHEMA", "BATCH_SUMMARY", "BATCH_ALERT",
     "PENDING", "VERIFIED", "GREEN", "ATTENTION", "FAILED", "UNKNOWN", "OFFLINE",
-    "SKIPPED", "VERDICTS", "SETTLED_VERDICTS", "ACTIONABLE",
-    "OPEN", "SENT", "REPLAY", "UNCONFIRMED",
+    "UNOBSERVED", "SKIPPED", "VERDICTS", "SETTLED_VERDICTS", "ACTIONABLE",
+    "OPEN", "SENT", "REPLAY", "UNCONFIRMED", "MAX_ALERTS",
+    "ORIGIN_REGISTRATION",
     "NOT_A_FACT_STATES", "SCOPE_MISMATCH_CODES", "RETRYABLE_REFUSALS",
 ]
