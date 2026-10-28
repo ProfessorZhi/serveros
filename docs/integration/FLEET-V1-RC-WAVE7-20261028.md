@@ -119,6 +119,10 @@ snapshot that carries the session. Until then the RC's block is *exactly* those
 two ids, and the hosted run below reports them as the only NEW failures in the
 batch/plugin family.
 
+**Confirmed hosted** (run `40646194204`, §7): four shards, `NEW FAILURES` totals
+**2**, and the bidirectional id diff against #469's run has an **empty**
+regression side. The local reading above and the hosted reading agree id for id.
+
 ---
 
 ## 4. The two merge gates, re-evaluated on Wave 7
@@ -375,7 +379,7 @@ V2 Draft that a V1 cut would have to justify on its own.
 | --- | --- |
 | CODE | composed tree `4e31e4a2` on `4847eb5a`; three stacks extracted into a throwaway worktree with the file sets above; every dependency in §5 named by a failing test, then re-run |
 | UNIT | gates 22 passed (13 + 9); batch/plugin family 110 passed / 3 failed; hub 19 passed with an empty symmetric difference against the clean RC; receipt 64 passed matching #468's own tree; node 12 passed (15 after the Windows-only test fixes) |
-| HOSTED_CI | this branch's run — §7. #469's run was 4/7 with the four ids in §3. |
+| HOSTED_CI | this branch's run `40646194204` — §7: **4 → 2** baseline-external ids, zero regressions by bidirectional id diff, `+39` passed fully attributed. Run colour is `failure` because the two remaining ids are owned elsewhere. |
 | REAL_DEVICE | **not measured.** No device was contacted; the L2 artifacts were never installed on hardware. |
 | CLIENT_E2E | **not measured.** No browser, no plugin update, no IM delivery. |
 | PRODUCTION | **not measured, and out of scope for this lane.** |
@@ -392,9 +396,77 @@ Windows NOT_RUN (cannot be measured here, and are *not* claimed green):
 
 Branch `integrate/fleet-v1-rc-wave7-20261028`. Four shards; the reading that
 counts is the `== baseline gate ==` block per shard (`NEW FAILURES` are
-baseline-external ids only). Filled in from the run, below.
+baseline-external ids only).
 
-<!-- CI-READINGS -->
+Run `40646194204` (`Tests`, `pull_request`, head
+`eea1ee591bdd2bad6e321f3ce5ab5ad138d016a2`). Overall conclusion **failure**, and
+the only reason is the two baseline-external ids below — both owned elsewhere
+(§3). The gate is the authority here, not the run colour.
+
+| shard | job | pytest summary (main run) | `== baseline gate ==` | new ids |
+| --- | --- | --- | --- | --- |
+| 1/4 | `122675463946` | 16 failed, **2974 passed**, 42 skipped, 3341 subtests, 104.21s | `16 failing, 1 new` | `test_fleet_v1_milestone_batch_registration.py::TheLiveCommanderContractIsConsumedAsIs::test_a_plan_the_live_contract_accepts_becomes_a_registration` |
+| 2/4 | `122675463997` | 13 failed, **3408 passed**, 9 skipped, 2812 subtests, 131.86s | `11 failing, 1 new` | `test_fleet_next_plugin_package.py::ThisIsNotTheNativeServerOSPlugin::test_the_clean_package_is_not_caught_by_the_layout_rule` |
+| 3/4 | `122675464035` | 10 failed, **3338 passed**, 27 skipped, 1 xfailed, 2253 subtests, 263.78s | `10 failing, **0 new**` | — |
+| 4/4 | `122675464141` | 22 failed, **3014 passed**, 37 skipped, 3 xfailed, 1125 subtests, 212.26s | `22 failing, **0 new**` | — |
+
+### 7.1 The two `…_without_the_seam` ids are gone — hosted, not just locally
+
+Compared against #469's own run `40638310862` (same workflow, head
+`14306f36`), which reported the four ids the Wave 7 brief quoted:
+
+| shard | #469 `14306f36` gate | wave 7 `eea1ee5` gate |
+| --- | --- | --- |
+| 1/4 | `9 failing, 0 new` | `16 failing, 1 new` |
+| 2/4 | `17 failing, **2 new**` (clean-package 7≠6; `…_aggregator_refuses_a_notifier_without_the_seam`) | `11 failing, 1 new` |
+| 3/4 | `17 failing, **1 new**` (`…_real_notifier_without_the_seam_is_refused_up_front`) | `10 failing, **0 new**` |
+| 4/4 | `20 failing, **1 new**` (`…_a_plan_the_live_contract_accepts…`) + 2 flaky | `22 failing, **0 new**` |
+
+**4 → 2.** Both repaired ids are `…_without_the_seam` bridge tests, which is what
+`ccd0452` and #459's README predicted #470 would fix without touching a test:
+nothing in §2's diff edits them. Per-shard gate counts are **not** comparable
+across the two runs — the two new test files reshuffle `scripts/hermetic_tests.py`
+shards (the registration id moved from shard 4 to shard 1) — so the comparison is
+by id set, not by row.
+
+### 7.2 Per-test regression check — the bidirectional id diff
+
+Union of every `FAILED`/`ERROR` id across the four shards, prefix-stripped, both
+trees: #469 **61** distinct, wave 7 **57**.
+
+* **only on wave 7 (i.e. regressions): none.**
+* only on #469: 4 — the two repaired seam bridge tests, plus
+  `test_codex_app_server_provider.py::test_a_dead_server_is_a_stopped_provider_and_not_a_closed_session`
+  and `test_fleet_core_lite_transport.py::TheRealConnectorRefusesOnItsOwnTerms::test_a_badly_signed_request_does_not_reach_the_snapshot`,
+  the two shard-4 `FLAKY (passed on retry)` ids from #469's run. Both are green
+  outright here; wave 7's gate reports `0 flaky` in all four shards.
+
+### 7.3 Positive control: the new tests really ran
+
+Absence from `NEW FAILURES` is not evidence that a file executed, so the check is
+the four-shard **passed** total:
+
+```
+#469 14306f36 : 3198 + 2828 + 3181 + 3488 = 12695
+wave 7 eea1ee5: 2974 + 3408 + 3338 + 3014 = 12734      Δ = +39
+```
+
+and the Δ decomposes exactly, each term measured rather than assumed:
+
+| term | count | how measured |
+| --- | --- | --- |
+| `tests/test_fleet_v1_milestone_batch_e2e_integration.py` (#470, new file) | +26 | `pytest --collect-only` on both worktrees |
+| `tests/test_fleet_v1_rc_wave7_ledger.py` (this lane) | +9 | same |
+| the two repaired seam ids | +2 | id diff §7.2 |
+| #469's two flaky ids, now passing outright | +2 | gate line `0 flaky` |
+| **sum** | **+39** | matches the observed Δ |
+
+The other three workflows did **not** run for this PR and are NOT_RUN, not green:
+`serveros-native-linux-contract`, `serveros-native-windows-contract` and
+`fleet-next-isolated-contracts` are all path-filtered, and the diff against this
+PR's base (`integrate/fleet-v1-rc-next2-20261028`) touches none of their paths.
+#469's branch does trigger the linux contract because it is diffed against `main`,
+which is a different question from "did this composition break it".
 
 ---
 
