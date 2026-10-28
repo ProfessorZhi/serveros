@@ -1,0 +1,42 @@
+# Fleet Next local Goal Supervisor — USER-SCOPE unit template.
+#
+# This is NOT a root unit and NOT a legacy Fleet unit. Render it to
+#     ~/.config/systemd/user/fleet-next-local-goal-supervisor.service
+# with the @PLACEHOLDER@ values filled from the installed runtime copy.
+#
+# The name must stay distinct from serveros-fleet-mcp.service and
+# serveros-fleet-next-mcp.service: those are other owners' services, and this
+# unit only reads their outputs (through a snapshot file), never restarts them.
+[Unit]
+Description=Fleet Next V1 local Goal Supervisor (Tokyo, user scope)
+Documentation=file:@RUNTIME_ROOT@/README.md
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@RUNTIME_ROOT@
+ExecStart=@PYTHON@ @RUNTIME_ROOT@/supervisor.py --state-dir @STATE_DIR@ --config @CONFIG_FILE@ run
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=15
+KillMode=control-group
+
+# Bounded: a supervisor that competes with build Agents is a second problem.
+MemoryAccounting=yes
+MemoryMax=256M
+MemorySwapMax=0
+CPUAccounting=yes
+CPUQuota=20%
+TasksAccounting=yes
+TasksMax=64
+
+NoNewPrivileges=yes
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fleet-next-local-goal-supervisor
+
+[Install]
+WantedBy=default.target
