@@ -17,8 +17,9 @@ success, and a vocabulary without that word cannot say it by accident.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Iterator
 
 SCHEMA = "serveros/fleet-next-monitor-source-adapter.v1"
 OBSERVATION_SCHEMA = "serveros/fleet-next-monitor-observation.v1"
@@ -60,6 +61,19 @@ REASON_REMOTE_REFUSED = "REMOTE_REFUSED"
 REASON_UNKNOWN_STATUS = "UNKNOWN_STATUS"
 REASON_UNVERIFIED_CI = "UNVERIFIED_CI"
 REASON_DRAFT_CI = "DRAFT_CI"
+REASON_BAD_PAYLOAD = "BAD_PAYLOAD"
+
+#: The two words #493's monitor contract has and this one did not. They are
+#: adopted here rather than translated from matching strings on the other side:
+#: a denial and a wrong-commit answer are named facts, and a monitor that has to
+#: infer them from a neighbouring word will eventually infer wrong.
+#:
+#: Nothing in this package produces `NOT_GRANTED` on its own — the native
+#: refusal is an exception, which is the stronger form and is what the contract
+#: tests pin. `compat.CompatMonitorSource` is the view that renders it as an
+#: observation, because #493's core reads one.
+REASON_NOT_GRANTED = "NOT_GRANTED"
+REASON_SHA_MISMATCH = "SHA_MISMATCH"
 
 #: The only values a native `retryable` may take when it is relayed onward.
 #: Mirrored from the refusal convention: a missing `retryable: false` is what
@@ -207,8 +221,15 @@ NATIVE_IDENTITY_KEYS = (
 
 
 @dataclass(frozen=True)
-class Observation:
-    """One bounded read, and what it establishes. Never more than that."""
+class Observation(Mapping[str, Any]):
+    """One bounded read, and what it establishes. Never more than that.
+
+    The typed view and the wire payload are the same fact, so this object is
+    both: attributes for code that already holds one, and the mapping of
+    `as_dict()` for a consumer that was promised a mapping (#493's monitor reads
+    `observation["status"]` and `observation.get("reason")`). One object, one
+    truth — a second `as_dict()` call at every call site is how the two drift.
+    """
 
     view: str
     status: str
@@ -253,3 +274,20 @@ class Observation:
             "readings": list(self.readings),
             "readingsUsed": self.readings_used,
         }
+
+    # -- the mapping view ---------------------------------------------------
+    # Delegated to `as_dict()` on every call rather than cached: one of these
+    # objects is produced per read, and a cached dict shared with a caller would
+    # be a writable window into a frozen fact.
+
+    def __getitem__(self, key: str) -> Any:
+        try:
+            return self.as_dict()[key]
+        except KeyError:
+            raise KeyError(key) from None
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.as_dict())
+
+    def __len__(self) -> int:
+        return len(self.as_dict())

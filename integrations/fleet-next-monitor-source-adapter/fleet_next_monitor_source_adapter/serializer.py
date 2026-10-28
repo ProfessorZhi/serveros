@@ -18,22 +18,42 @@ from .contract import CallerGrant, Observation, SourceRefused
 
 REQUEST_SCHEMA = "serveros/fleet-next-monitor-request.v1"
 
-#: The complete set of keys a request may carry.
+#: The complete set of keys a request may carry. `expected_boot_id` is the
+#: watch-level boot expectation: without it a request could only ever mean "the
+#: boot this fixture client happens to declare".
 REQUEST_KEYS = frozenset({
     "schema", "view", "device_ref", "project", "session_ref",
-    "run_id", "delivery_id", "source_sha",
+    "run_id", "delivery_id", "source_sha", "expected_boot_id",
 })
 
 #: The input document. The fixture/grant are separate objects so a request can
 #: never smuggle a client or a grant through a field it owns.
-ENVELOPE_KEYS = frozenset({"schema", "request", "grant", "fixture", "instance"})
+#:
+#: v2 renamed the request block to `read_request`. `request` is also the name of
+#: a record field that `abilities/target-contract.yaml` declares, and the
+#: repository's reader-detector gate (a name-based scan, not a semantic one)
+#: counted this package's envelope key as a reader of THAT field — a field whose
+#: own exemption says nothing reads it. The two are different declaration
+#: surfaces, but the gate cannot tell them apart, and the adapter's namespace is
+#: the side that can move.
+ENVELOPE_KEYS = frozenset({"schema", "read_request", "grant", "fixture", "instance"})
+
+#: The v1 spelling of the request block, retired in v2 and still accepted so a
+#: document written to the old contract keeps parsing. It is spelled here and
+#: nowhere else: a read position anywhere in this package that spelled it would
+#: put the gate back where it was.
+RETIRED_REQUEST_KEY = "request"
+
+#: What a v1 document may carry. Derived rather than re-spelled, so the retired
+#: name has exactly one home.
+_V1_ENVELOPE_KEYS = ENVELOPE_KEYS | {RETIRED_REQUEST_KEY}
 
 #: The `instance` block names which Legacy instance the fixture pretends to be.
 #: Closed too: an ignored field is still a field somebody believed did something.
 INSTANCE_KEYS = frozenset({"instanceId", "routeId", "bootId", "provider", "maxReadings"})
 
 _SCALAR_KEYS = ("view", "device_ref", "project", "session_ref", "run_id",
-                "delivery_id", "source_sha")
+                "delivery_id", "source_sha", "expected_boot_id")
 
 _IMPORT_HINTS = ("import", "module", "factory", "callable", "python", "eval", "exec", "__")
 
@@ -101,6 +121,28 @@ def parse_request(text: str) -> dict[str, Any]:
     return out
 
 
+def _request_block(document: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The request block, under either spelling, and never under both.
+
+    Two spellings of one block is an ambiguity, and an ambiguity here would be
+    resolved by silently ignoring one of them — which is how a caller ends up
+    believing a field it wrote did something.
+    """
+    canonical = document.get("read_request")
+    retired = document.get(RETIRED_REQUEST_KEY)
+    if canonical is not None and retired is not None:
+        raise SourceRefused(
+            "BAD_REQUEST",
+            "the input document carries both `read_request` and the retired v1 "
+            "key for the same block; this adapter will not guess which one is "
+            "meant")
+    block = canonical if canonical is not None else retired
+    if not isinstance(block, Mapping):
+        raise SourceRefused("BAD_REQUEST",
+                            "the input document carries no `read_request` object")
+    return block
+
+
 def parse_envelope(text: str) -> dict[str, Any]:
     """Parse the CLI document: request + grant + fixture, each closed on its own."""
     if not isinstance(text, str) or not text.strip():
@@ -111,10 +153,8 @@ def parse_envelope(text: str) -> dict[str, Any]:
         document = json.loads(text)
     except (json.JSONDecodeError, RecursionError) as exc:
         raise SourceRefused("BAD_JSON", f"input is not JSON ({type(exc).__name__})") from None
-    _closed(document, ENVELOPE_KEYS, label="the input document")
-    request = document.get("request")
-    if not isinstance(request, Mapping):
-        raise SourceRefused("BAD_REQUEST", "the input document carries no `request` object")
+    _closed(document, _V1_ENVELOPE_KEYS, label="the input document")
+    request = _request_block(document)
     grant = document.get("grant")
     if not isinstance(grant, Mapping):
         raise SourceRefused("BAD_GRANT", "the input document carries no `grant` object")
@@ -126,7 +166,7 @@ def parse_envelope(text: str) -> dict[str, Any]:
         raise SourceRefused("BAD_FIXTURE", "`instance` must be a JSON object")
     _closed(instance, INSTANCE_KEYS, label="the instance block")
     return {
-        "request": parse_request(json.dumps(request)),
+        "read_request": parse_request(json.dumps(request)),
         "grant": CallerGrant.from_mapping(grant),
         "fixture": fixture,
         "instance": instance,

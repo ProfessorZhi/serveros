@@ -28,6 +28,7 @@ from typing import Any, Mapping, Protocol
 
 from .contract import (
     NATIVE_IDENTITY_KEYS,
+    REASON_BAD_PAYLOAD,
     REASON_BOOT_MISMATCH,
     REASON_DRAFT_CI,
     REASON_EXPIRED,
@@ -179,7 +180,8 @@ class LegacyReadOnlySourceAdapter:
 
     def _identity(self, *, device_ref: str | None, session_ref: str | None = None,
                   run_id: str | None = None, delivery_id: str | None = None,
-                  source_sha: str | None = None) -> Identity:
+                  source_sha: str | None = None,
+                  boot_id: str | None = None) -> Identity:
         instance = getattr(self._client, "fleet_instance_id", None)
         route = getattr(self._client, "route_id", None)
         if not isinstance(instance, str) or not instance:
@@ -196,7 +198,11 @@ class LegacyReadOnlySourceAdapter:
             session_ref=session_ref,
             run_id=run_id,
             delivery_id=delivery_id,
-            boot_id=getattr(self._client, "boot_id", None),
+            # A caller-supplied expectation wins over the client's own boot: the
+            # watch names the boot the RUN belongs to, and the client's boot is
+            # only a default for a caller that names none.
+            boot_id=(boot_id if boot_id is not None
+                     else getattr(self._client, "boot_id", None)),
             provider=getattr(self._client, "provider", None),
             source_sha=source_sha,
             observed_at=self._now(),
@@ -256,7 +262,7 @@ class LegacyReadOnlySourceAdapter:
         except Exception as exc:  # noqa: BLE001 - the class name is local, the message is not used
             return self._unknown(VIEW_SESSION, identity, f"REMOTE_{type(exc).__name__}", None)
         if not isinstance(payload, Mapping):
-            return self._unknown(VIEW_SESSION, identity, "BAD_PAYLOAD", None)
+            return self._unknown(VIEW_SESSION, identity, REASON_BAD_PAYLOAD, None)
         mismatch = self._identity_mismatch(payload, identity)
         if mismatch is not None:
             # Not this session's answer; its identifiers are not forwarded.
@@ -272,12 +278,38 @@ class LegacyReadOnlySourceAdapter:
     def observe_run(self, *, device_ref: str, session_ref: str,
                     run_id: str | None = None, delivery_id: str | None = None,
                     project: str | None = None,
-                    source_sha: str | None = None) -> Observation:
+                    source_sha: str | None = None,
+                    expected_boot_id: str | None = None,
+                    expected_source_sha: str | None = None) -> Observation:
+        """Read one run.
+
+        `expected_boot_id` and `expected_source_sha` are the watch's
+        expectations, as #493's `observe_watch` publishes them
+        (`integrations/fleet-next-agent-monitor/.../sources.py:494-504`). Both
+        are honoured here and neither is dropped:
+
+        *   `expected_boot_id` is the boot the run must belong to; it overrides
+            the client's own boot as the comparison target, so a watch that
+            outlives a reboot still refuses the previous boot's answer;
+        *   `expected_source_sha` is the same expectation `source_sha` already
+            carried, under the name the monitor calls it. Naming both with
+            different values is a mistake in the caller, not a preference, and
+            it is refused before any read rather than resolved by precedence.
+        """
+        if (source_sha is not None and expected_source_sha is not None
+                and source_sha != expected_source_sha):
+            raise SourceRefused(
+                "BAD_REQUEST",
+                f"`source_sha` and `expected_source_sha` name different commits "
+                f"({source_sha!r} and {expected_source_sha!r}); this adapter will "
+                f"not choose one for the caller")
+        expectation_sha = expected_source_sha if expected_source_sha is not None else source_sha
         self._authorize(view=VIEW_RUN, device_ref=device_ref,
                         session_ref=session_ref, project=project)
         identity = self._identity(device_ref=device_ref, session_ref=session_ref,
                                   run_id=run_id, delivery_id=delivery_id,
-                                  source_sha=source_sha)
+                                  source_sha=expectation_sha,
+                                  boot_id=expected_boot_id)
         if run_id is None and delivery_id is None:
             return self._unknown(VIEW_RUN, identity, "NO_IDENTIFIER", None)
         try:
@@ -319,8 +351,14 @@ class LegacyReadOnlySourceAdapter:
         except Exception as exc:  # noqa: BLE001 - never relay the message
             return self._unknown(VIEW_CI, identity, f"REMOTE_{type(exc).__name__}", None)
         if not isinstance(payload, Mapping):
-            return self._unknown(VIEW_CI, identity, "BAD_PAYLOAD", None)
-        answered_sha = _first(payload, "sourceSHA", "source_sha")
+            return self._unknown(VIEW_CI, identity, REASON_BAD_PAYLOAD, None)
+        # A pipeline answer names its commit under more than one key: #493's
+        # offline facts say `head_sha`, a GitHub-shaped answer says `headSHA`,
+        # and this adapter's own fixtures said `sourceSHA`. All three name the
+        # same fact, so all three are read — and an answer that names NONE of
+        # them is still a mismatch, not a benefit of the doubt.
+        answered_sha = _first(payload, "sourceSHA", "source_sha",
+                              "head_sha", "headSHA", "sha")
         if answered_sha != source_sha:
             # A result for another SHA; its identifiers are not forwarded.
             return self._unknown(VIEW_CI, identity, REASON_IDENTITY_MISMATCH, None)
@@ -328,10 +366,13 @@ class LegacyReadOnlySourceAdapter:
         conclusion = str(payload.get("conclusion") or "").lower()
         if conclusion in {"failure", "failed", "timed_out", "cancelled", "startup_failure"}:
             return self._observation(VIEW_CI, identity, STATUS_FAILED, native=native)
-        if payload.get("isDraft") is True:
+        if payload.get("isDraft") is True or payload.get("draft") is True:
             return self._unknown(VIEW_CI, identity, REASON_DRAFT_CI, None, native=native)
         if conclusion == "success":
-            if payload.get("verified") is True:
+            # `trusted` is the negative half of the same claim: an answer that
+            # says it was verified and separately says it is not trusted is not
+            # a verified pipeline, and the doubt wins.
+            if payload.get("verified") is True and payload.get("trusted") is not False:
                 return self._observation(VIEW_CI, identity, STATUS_TERMINAL_VERIFIED,
                                          native=native)
             return self._unknown(VIEW_CI, identity, REASON_UNVERIFIED_CI, None,
@@ -343,7 +384,7 @@ class LegacyReadOnlySourceAdapter:
 
     def _classify_run(self, payload: Any, identity: Identity) -> Observation:
         if not isinstance(payload, Mapping):
-            return self._unknown(VIEW_RUN, identity, "BAD_PAYLOAD", None)
+            return self._unknown(VIEW_RUN, identity, REASON_BAD_PAYLOAD, None)
         mismatch = self._identity_mismatch(payload, identity)
         if mismatch is not None:
             # The answer names another instance/device/session/run/boot. Its
@@ -371,26 +412,53 @@ class LegacyReadOnlySourceAdapter:
                              native=native)
 
     @staticmethod
-    def _has_native_evidence(payload: Mapping[str, Any], identity: Identity) -> bool:
+    def _bound_artifact(artifact: Any, identity: Identity) -> bool:
+        """A verified artifact that belongs to the commit this read expects."""
+        if not isinstance(artifact, Mapping) or artifact.get("verified") is not True:
+            return False
+        artifact_sha = _first(artifact, "sourceSHA", "source_sha", "sha")
+        if identity.source_sha is not None:
+            return artifact_sha == identity.source_sha
+        return True
+
+    @classmethod
+    def _has_native_evidence(cls, payload: Mapping[str, Any],
+                             identity: Identity) -> bool:
         """A completed run is verified only by something it produced.
 
-        A transcript is native activity. A "verified artifact" must say so AND be
-        bound to the expected `sourceSHA`; an artifact that names no source, or a
-        different one, cannot verify this run.
+        Three admissible forms, all from the answer itself and all native
+        activity rather than a claim about it: a non-empty transcript, a
+        non-empty last assistant message (#493 reads the CloudCLI answer this
+        way, and it is the same fact), or an artifact the answer marks verified
+        *and* binds to the expected `sourceSHA`. An artifact naming no source, or
+        a different one, cannot verify this run.
+
+        A device note saying it had no readable message VETOES the message forms:
+        a device that tells us there was nothing is not evidence of output, and
+        its own words outrank a field that may have been filled by a wrapper.
         """
+        note = payload.get("note")
+        if isinstance(note, str) and "no readable assistant message" in note.lower():
+            return False
         transcript = _first(payload, "transcript", "messages")
         if isinstance(transcript, (list, tuple)) and len(transcript) > 0:
             return True
         if isinstance(transcript, str) and transcript.strip():
             return True
-        artifact = _first(payload, "verifiedArtifact", "verified_artifact",
-                          "verified_native_artifact")
-        if not isinstance(artifact, Mapping) or artifact.get("verified") is not True:
-            return False
-        artifact_sha = _first(artifact, "sourceSHA", "source_sha")
-        if identity.source_sha is not None:
-            return artifact_sha == identity.source_sha
-        return True
+        message = _first(payload, "lastAssistantMessage", "last_assistant_message")
+        if isinstance(message, Mapping):
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return True
+        for name in ("verifiedArtifact", "verified_artifact", "verified_native_artifact"):
+            if cls._bound_artifact(payload.get(name), identity):
+                return True
+        artifacts = payload.get("artifacts")
+        if isinstance(artifacts, (list, tuple)):
+            for artifact in artifacts:
+                if cls._bound_artifact(artifact, identity):
+                    return True
+        return False
 
     # -- constructors -------------------------------------------------------
 

@@ -114,7 +114,7 @@ one constructor call plus the client above.
 
 | layer | status |
 |---|---|
-| **CODE / UNIT / CI** | **done** — RED (package absent → `ModuleNotFoundError`) → GREEN `35 passed, 11 subtests` |
+| **CODE / UNIT / CI** | **done** — RED (package absent → `ModuleNotFoundError`) → GREEN `80 passed, 21 subtests` (35 original + 45 for the compat view and the wiring) |
 | **REAL_DEVICE / CLIENT_E2E** | **not done** — no Legacy service, no CloudCLI, no credential |
 | **PRODUCTION** | **not done** — no deploy, no scheduler, no service, no main merge |
 | **AGENT MONITOR INTEGRATION** | **BLOCKED_UPSTREAM** (see §5) |

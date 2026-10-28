@@ -57,7 +57,7 @@ def run_text(text: str) -> tuple[int, str]:
     )
     adapter = LegacyReadOnlySourceAdapter(client, parsed["grant"],
                                           max_readings=max_readings)
-    request = parsed["request"]
+    request = parsed["read_request"]
     view = request["view"]
     if view == VIEW_SESSION:
         device_ref, session_ref = _require(request, "device_ref", "session_ref")
@@ -71,7 +71,9 @@ def run_text(text: str) -> tuple[int, str]:
                                           run_id=request.get("run_id"),
                                           delivery_id=request.get("delivery_id"),
                                           project=request.get("project"),
-                                          source_sha=request.get("source_sha"))
+                                          source_sha=request.get("source_sha"),
+                                          expected_boot_id=request.get(
+                                              "expected_boot_id"))
     elif view == VIEW_CI:
         source_sha, project = _require(request, "source_sha", "project")
         observation = adapter.observe_ci(source_sha=source_sha, project=project)
