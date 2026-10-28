@@ -1,33 +1,33 @@
-"""Materialise the four pinned PR trees, so the QA tests exercise real code.
+"""Materialise the real Wave 14 RC and the historical notifier pin.
 
-Why this exists
----------------
-The four PRs under acceptance are not on ``main`` and are not on one branch:
+Why the baseline moved
+----------------------
+#495 v1 composed four per-PR heads and pinned #423 at ``d9b2948``. That head has
+no ``send_text``, so the Batch lane correctly refused it with
+``NOTIFIER_SEAM_MISSING`` — but the refusal was a **pin artefact**, not a defect
+in the composed product. Wave 14 RC #494 at ``00503f9`` carries #460's public
+seam ``4fc9fcb`` through #481's merge ``ba76a80``; its notifier blob is
+``7df27cb``. The old pin's blob is ``72fcec8``. The RC also carries #493, #488
+and #490 at the exact commits #495 pinned, with byte-identical blobs.
 
-```
-#493  feat/fleet-next-agent-monitor-core-20261028    @ 4f5320d
-#488  feat/next-monitor-activation-batch-cli         @ 009662f   (base: #481 chain)
-#490  feat/fleet-next-monitor-source-adapter-20261028@ 06a8be6
-#423  feat/fleet-v1-milestone-notify-20261027        @ d9b2948
-```
+So the code under test is now the **#494 tree**, and the old #423 head is kept
+only as a historical control. A test that still expected
+``NOTIFIER_SEAM_MISSING`` from the RC would be measuring the old pin again; it
+is removed, and a RED→GREEN control proves the difference instead.
 
-A test that imported the nearest working tree would prove whichever branch
-happened to be checked out, not the combination. A test that copied snippets
-into fixtures would prove the snippets. So this module extracts **each exact
-commit** from git and puts the four integrations on ``sys.path`` side by side.
-Nothing is edited, rewritten or selected by hand.
-
-Local runs use the object database of the checkout the test lives in. CI runs
-on a shallow checkout that does not contain the four commits, so the same
-function fetches ``refs/pull/<n>/head`` into a throw-away bare repository and
-then *asserts* the fetched commit equals the pinned SHA. A drifted PR is a
-named failure, not a silent newer tree.
+CI
+--
+Local runs use the object database of the checkout this QA file lives in. CI
+runs on a shallow checkout, so the same function fetches
+``refs/pull/<n>/head`` into a throw-away bare repository and asserts the fetched
+commit equals the pinned SHA. A drifted PR is a named failure, not a silent
+newer tree.
 
 Baseline
 --------
-``FLEET_QA_BASELINE_ROOT=/path/to/pristine/main`` makes this module return that
-tree for every PR. The tests then fail with the monitor package absent — the
-before picture, recorded rather than assumed.
+``FLEET_QA_BASELINE_ROOT=/path/to/pristine/main`` returns that tree for the RC
+and disables the historical control. The tests then fail with the monitor
+package absent — the before picture, recorded rather than assumed.
 """
 from __future__ import annotations
 
@@ -40,14 +40,24 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-#: The exact heads named in the dispatch. These are the inputs; a QA run that
-#: substituted a branch tip would be measuring a different question.
+#: The real Wave 14 RC. Its tree is the composition under test.
+RC_PR = 494
+RC = "00503f91b019ce342af52f38b19bb3aa21dfff55"
+
+#: The author commits the RC carries. #493/#488/#490 are byte-identical in the
+#: RC (asserted by the test); #423 is the *historical* pin #495 v1 used.
 PINNED = {
+    RC_PR: RC,
     493: "4f5320de7e187daadd79adc92e7487facd7b1820",
     488: "009662f36a2a5f8e11c51ae517834379a91a7770",
     490: "06a8be67422f1320e7bdfee38410f8b24d27b501",
     423: "d9b2948a62609e16007f2fe0ae288f9652d64cd1",
 }
+
+#: The notifier the RC actually carries, through #460 → #481.
+COMPOSED_NOTIFIER = "4fc9fcbc677f278d10caeb34d55184545810a13a"
+COMPOSED_NOTIFIER_BLOB = "7df27cb36b169134ff279e43c0b9c329cf919fef"
+HISTORICAL_423_BLOB = "72fcec8d553f1568a114449d352e1803250d26cc"
 
 #: Where each integration package lives inside a checkout.
 INTEGRATION_DIRS = {
@@ -121,49 +131,52 @@ def _archive_remote(pr: int, sha: str, destination: Path,
     _extract(archive.stdout, destination)
 
 
-def materialize(root: str | Path | None = None) -> tuple[Path, dict[int, Path]]:
-    """Extract each pinned PR into its own directory.
+def _fetch_tree(pr: int, sha: str, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    local = repo_root()
+    if _has_commit(local, sha):
+        _archive_local(local, sha, target)
+    else:
+        _archive_remote(pr, sha, target, os.environ.get(
+            "FLEET_QA_REMOTE", DEFAULT_REMOTE))
 
-    Returns ``(root, {pr: checkout})``. ``root`` is the temporary parent; it is
-    owned by the caller, which may remove it at the end of the run.
+
+def materialize(root: str | Path | None = None
+                ) -> tuple[Path, Path, Path | None]:
+    """Extract the RC and the historical #423 pin.
+
+    Returns ``(root, rc_tree, historical_423_tree)``. The historical tree is
+    ``None`` in a baseline run; it exists only to keep the pin-artefact
+    correction falsifiable (the old file must still lack ``send_text``).
     """
     baseline = os.environ.get("FLEET_QA_BASELINE_ROOT")
     if baseline:
         pinned_root = Path(baseline).expanduser().resolve()
         if not pinned_root.is_dir():
             raise ComposeError(f"FLEET_QA_BASELINE_ROOT {pinned_root} is not a directory")
-        return pinned_root, {pr: pinned_root for pr in PINNED}
+        return pinned_root, pinned_root, None
 
     destination = Path(root) if root else Path(
         tempfile.mkdtemp(prefix="fleet-crosspr-qa-"))
     destination.mkdir(parents=True, exist_ok=True)
-    local = repo_root()
-    checkouts: dict[int, Path] = {}
-    for pr, sha in PINNED.items():
-        target = destination / f"pr{pr}"
-        target.mkdir(parents=True, exist_ok=True)
-        if _has_commit(local, sha):
-            _archive_local(local, sha, target)
-        else:
-            _archive_remote(pr, sha, target, os.environ.get(
-                "FLEET_QA_REMOTE", DEFAULT_REMOTE))
-        checkouts[pr] = target
-    return destination, checkouts
+    rc_tree = destination / f"rc{RC_PR}"
+    _fetch_tree(RC_PR, RC, rc_tree)
+    historical = destination / "historical-423"
+    _fetch_tree(423, PINNED[423], historical)
+    return destination, rc_tree, historical
 
 
-def integration_paths(checkouts: dict[int, Path]) -> list[str]:
+def integration_paths(rc_tree: Path) -> list[str]:
     """The four integration roots, plus the Batch lane, in import order.
 
-    Order matters in exactly one place: only #423's directory is added for the
-    module name ``milestone_notify``. #488's tree carries its own divergent copy
-    of that file; putting it on ``sys.path`` would silently choose a different
-    revision of the notifier than the one the dispatch pinned.
+    Order matters in exactly one place: only the RC's directory is added for
+    the module name ``milestone_notify``. The historical #423 tree is read as
+    text by the control test, never put on ``sys.path``.
     """
     paths: list[str] = []
     for pr in (423, 490, 493, 488):
-        root = checkouts[pr] / INTEGRATION_DIRS[pr]
-        paths.append(str(root))
-    paths.append(str(checkouts[488] / BATCH_DIR))
+        paths.append(str(rc_tree / INTEGRATION_DIRS[pr]))
+    paths.append(str(rc_tree / BATCH_DIR))
     return paths
 
 
@@ -171,9 +184,9 @@ def qa_dir() -> str:
     return str(Path(__file__).resolve().parent)
 
 
-def install(checkouts: dict[int, Path]) -> list[str]:
+def install(rc_tree: Path) -> list[str]:
     """Put the composition on ``sys.path`` and return the paths added."""
-    paths = [qa_dir(), *integration_paths(checkouts)]
+    paths = [qa_dir(), *integration_paths(rc_tree)]
     for path in reversed(paths):
         if path not in sys.path:
             sys.path.insert(0, path)

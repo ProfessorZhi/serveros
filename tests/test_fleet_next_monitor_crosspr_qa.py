@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Independent cross-PR acceptance for the Fleet Next Agent Monitor train.
 
-The four inputs are pinned by SHA in ``integrations/fleet-next-monitor-crosspr-qa/
-compose.py``. Nothing here imports a working tree's nearest copy: each exact
-commit is extracted and put on ``sys.path`` side by side, and the imported
-module's ``__file__`` is asserted to live under its own pinned checkout.
+The composition baseline is the **Wave 14 RC #494** at
+``00503f91b019ce342af52f38b19bb3aa21dfff55``. It carries #493, #488 and #490
+at the exact commits #495 v1 pinned, with byte-identical blobs, and it carries
+#460's public notifier seam ``4fc9fcb`` through #481's merge ``ba76a80``. The
+old #423 head ``d9b2948`` is kept only as a historical control: its notifier
+has no ``send_text``, so the old ``NOTIFIER_SEAM_MISSING`` was a pin artefact,
+not a defect in the RC.
 
 What this file is allowed to conclude
 -------------------------------------
@@ -13,21 +16,25 @@ What this file is allowed to conclude
 *   **REAL_DEVICE / PRODUCTION** are **NOT_RUN**. No timer is installed, no
     systemd unit is enabled, no live Legacy client is contacted.
 
-The blockers this run finds are written as:
+The remaining blockers this run finds are written as:
 *   a **characterisation test** that passes while pinning the observed defect
     (so CI keeps running the real code), and
 *   an ``expectedFailure`` test that states the behaviour the interface owes.
     If an owner fixes the seam, that test becomes an unexpected success and
-    fails, which is the signal to remove the exemption.
+    fails, which is the signal to remove the exemption. The count is not
+    reduced by hand: the three P0 owners (#493/#488/#490) have not published a
+    new HEAD, so their assertions stay blocked and are marked
+    ``BLOCKED_UPSTREAM`` in the report.
 
-The headline blocker is in ``MonitorCore``: a delivery that #423 recorded as
-``DELIVERY_UNKNOWN`` is reported as ``DUPLICATE`` on the next tick because the
-monitor's cursor was written *before* the hand-over. Two ticks later the state
-is ``SETTLED`` with no provider receipt. See
+The headline blocker is still in ``MonitorCore``: a delivery that #423
+recorded as ``DELIVERY_UNKNOWN`` is reported as ``DUPLICATE`` on the next tick
+because the monitor's cursor was written *before* the hand-over. Two ticks
+later the state is ``SETTLED`` with no provider receipt. See
 ``docs/integration/FLEET-NEXT-MONITOR-CROSSPR-QA-20261028.md``.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -68,6 +75,8 @@ STATE_SCHEMA = "serveros/fleet-next-agent-monitor-state.v1"
 
 M: dict[str, object] = {}
 COMPOSE_ROOT: Path | None = None
+PRIMARY: Path | None = None
+HISTORICAL_423: Path | None = None
 CHECKOUTS: dict[int, Path] = {}
 ADDED_PATHS: list[str] = []
 
@@ -83,15 +92,19 @@ def _load(name: str, path: Path):
 
 
 def setUpModule() -> None:  # noqa: N802 - unittest protocol
-    global COMPOSE_ROOT, CHECKOUTS, ADDED_PATHS
-    COMPOSE_ROOT, CHECKOUTS = compose.materialize()
-    ADDED_PATHS = compose.install(CHECKOUTS)
+    global COMPOSE_ROOT, PRIMARY, HISTORICAL_423, CHECKOUTS, ADDED_PATHS
+    COMPOSE_ROOT, PRIMARY, HISTORICAL_423 = compose.materialize()
+    # The RC carries #493/#488/#490 at the pinned commits. Point every author
+    # key at the one composed tree so a test cannot accidentally import a
+    # different branch's copy.
+    CHECKOUTS = {pr: PRIMARY for pr in (493, 488, 490, 423)}
+    ADDED_PATHS = compose.install(PRIMARY)
 
-    monitor_package = CHECKOUTS[493] / compose.INTEGRATION_DIRS[493]
+    monitor_package = PRIMARY / compose.INTEGRATION_DIRS[493]
     if not monitor_package.is_dir():
         raise RuntimeError(
             "BASELINE_RED: integrations/fleet-next-agent-monitor is absent from "
-            f"{CHECKOUTS[493]}; this is the pre-fix state, not a pass")
+            f"{PRIMARY}; this is the pre-fix state, not a pass")
 
     import fleet_next_agent_monitor as monitor
     import fleet_next_agent_monitor.runtime as monitor_runtime
@@ -108,10 +121,10 @@ def setUpModule() -> None:  # noqa: N802 - unittest protocol
     from fleet_next_agent_monitor.sources import observe_watch
 
     batch = _load("serveros_fleet_v1_milestone_batch",
-                  CHECKOUTS[488] / compose.BATCH_DIR / "batch.py")
+                  PRIMARY / compose.BATCH_DIR / "batch.py")
     registration = _load(
         "serveros_fleet_v1_milestone_batch_registration",
-        CHECKOUTS[488] / compose.BATCH_DIR / "registration.py")
+        PRIMARY / compose.BATCH_DIR / "registration.py")
 
     M.update({
         "monitor": monitor,
@@ -159,8 +172,7 @@ def _clean_env() -> dict[str, str]:
 
 
 def _composed_pythonpath() -> str:
-    parts = [str(QA_DIR), *compose.integration_paths(CHECKOUTS),
-             str(CHECKOUTS[488] / compose.BATCH_DIR)]
+    parts = [str(QA_DIR), *compose.integration_paths(PRIMARY)]
     return os.pathsep.join(parts)
 
 
@@ -263,8 +275,7 @@ class Scenario:
     def run_activation(self, *, configured: bool = True, ticks: int = 1,
                        extra_env: dict | None = None,
                        timeout: float = 120.0) -> tuple[int, dict, subprocess.CompletedProcess]:
-        roots = [str(QA_DIR), *compose.integration_paths(CHECKOUTS),
-                 str(CHECKOUTS[488] / compose.BATCH_DIR)]
+        roots = [str(QA_DIR), *compose.integration_paths(PRIMARY)]
         args = [
             sys.executable, str(QA_DIR / "run_activation.py"),
             "--legacy-root", str(self.legacy),
@@ -373,9 +384,14 @@ def ci_for_490(*, head_sha: str = SHA, draft: bool = False,
             "conclusion": "success", "isDraft": draft, "verified": verified}
 
 
+def _git_blob_sha(data: bytes) -> str:
+    return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+
+
 class CompositionTests(unittest.TestCase):
-    def test_each_pinned_commit_supplied_the_module_it_is_imported_from(self):
+    def test_the_rc_carries_the_three_author_commits_and_the_composed_notifier(self):
         self.assertEqual(compose.PINNED, {
+            494: "00503f91b019ce342af52f38b19bb3aa21dfff55",
             493: "4f5320de7e187daadd79adc92e7487facd7b1820",
             488: "009662f36a2a5f8e11c51ae517834379a91a7770",
             490: "06a8be67422f1320e7bdfee38410f8b24d27b501",
@@ -383,10 +399,47 @@ class CompositionTests(unittest.TestCase):
         })
         if os.environ.get("FLEET_QA_BASELINE_ROOT"):
             self.skipTest("baseline run: no PR tree to inspect")
-        _assert_under(self, M["monitor"].__file__, CHECKOUTS[493])
-        _assert_under(self, M["source_adapter"].__file__, CHECKOUTS[490])
-        _assert_under(self, M["notify"].__file__, CHECKOUTS[423])
-        _assert_under(self, M["activation"].__file__, CHECKOUTS[488])
+        _assert_under(self, M["monitor"].__file__, PRIMARY)
+        _assert_under(self, M["source_adapter"].__file__, PRIMARY)
+        _assert_under(self, M["notify"].__file__, PRIMARY)
+        _assert_under(self, M["activation"].__file__, PRIMARY)
+
+        record = json.loads((PRIMARY / "integrations" / "fleet-next-rc-wave14"
+                             / "composition.json").read_text(encoding="utf-8"))
+        authors = {entry["pr"]: entry["commit"] for entry in record["authors"]}
+        self.assertEqual(authors["#493"], compose.PINNED[493])
+        self.assertEqual(authors["#488"], compose.PINNED[488])
+        self.assertEqual(authors["#490"], compose.PINNED[490])
+
+        notifier_path = (PRIMARY / compose.INTEGRATION_DIRS[423]
+                         / "milestone_notify.py")
+        notifier = notifier_path.read_bytes()
+        self.assertIn(b"def send_text", notifier)
+        self.assertEqual(_git_blob_sha(notifier), compose.COMPOSED_NOTIFIER_BLOB)
+        self.assertEqual(record["notifier"]["blob"], compose.COMPOSED_NOTIFIER_BLOB)
+
+        # The historical pin is kept falsifiable: its file must still lack the
+        # seam. If this ever changes, the RED half of the correction is gone.
+        if HISTORICAL_423 is not None:
+            old = (HISTORICAL_423 / compose.INTEGRATION_DIRS[423]
+                   / "milestone_notify.py").read_bytes()
+            self.assertNotIn(b"def send_text", old)
+            self.assertEqual(_git_blob_sha(old), compose.HISTORICAL_423_BLOB)
+
+    def test_494_composition_record_names_the_old_notifier_head_but_the_new_blob(self):
+        """#494's own record is half-stale: blob 7df27cb, head d9b2948.
+
+        The blob is authoritative and is what reaches the tree; the ``head``
+        field still names #423's original head. This is a documentation defect
+        in the RC record, not a reason to keep #495's old pin.
+        """
+        if os.environ.get("FLEET_QA_BASELINE_ROOT"):
+            self.skipTest("baseline run: no RC record to inspect")
+        record = json.loads((PRIMARY / "integrations" / "fleet-next-rc-wave14"
+                             / "composition.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["notifier"]["head"], compose.PINNED[423])
+        self.assertEqual(record["notifier"]["blob"], compose.COMPOSED_NOTIFIER_BLOB)
+        self.assertNotEqual(record["notifier"]["blob"], compose.HISTORICAL_423_BLOB)
 
     def test_no_status_word_means_done(self):
         contract = M["contract"]
@@ -511,22 +564,36 @@ class InterfaceDriftTests(unittest.TestCase):
         self.assertNotIn("SHA_MISMATCH", dir(M["contract"]))
         self.assertIn("SHA_MISMATCH", M["contract"].REASONS)
 
-    def test_batch_aggregator_refuses_423_head_without_send_text(self):
-        # #488's Batch CLI needs MilestoneNotifier.send_text (batch.py:676-682).
-        # #423's pinned head d9b2948 does not have it; #488's own tree carries a
-        # 72-line later copy. This is the cross-PR dependency conflict.
+    def test_notifier_seam_is_green_in_the_rc_and_red_in_the_old_pin(self):
+        """RED→GREEN for the one blocker #495 v1 got wrong.
+
+        The RC's notifier (blob 7df27cb, #460's seam) constructs the real
+        ``BatchAggregator``. The historical #423 head (blob 72fcec8) still
+        refuses it. The old refusal is therefore a pin artefact, not an RC
+        defect; the test keeps both halves so the correction stays falsifiable.
+        """
         scenario = Scenario(self)
-        notifier = M["notify"].MilestoneNotifier(
+        current = M["notify"].MilestoneNotifier(
             M["qa_fakes"].JournalProvider(scenario.journal_path),
             scenario.ledger_path, conversation_ref="chat:qa")
-        self.assertFalse(hasattr(notifier, "send_text"))
-
+        self.assertTrue(callable(getattr(current, "send_text", None)))
         path, filed = self._file_batch(scenario)
-        with self.assertRaises(M["batch"].BatchRefused) as caught:
-            M["batch"].BatchAggregator(filed.batch, notifier=notifier)
-        self.assertEqual(caught.exception.code, "NOTIFIER_SEAM_MISSING")
-        self.assertIn("send_text", caught.exception.why)
+        aggregate = M["batch"].BatchAggregator(filed.batch, notifier=current)
+        self.assertIsNotNone(aggregate)
         self.assertTrue(path.exists())
+
+        if HISTORICAL_423 is None:
+            self.skipTest("baseline run: no historical pin to compare")
+        historical_path = (HISTORICAL_423 / compose.INTEGRATION_DIRS[423]
+                           / "milestone_notify.py")
+        historical = _load("qa_historical_milestone_notify", historical_path)
+        old = historical.MilestoneNotifier(
+            M["qa_fakes"].JournalProvider(scenario.journal_path),
+            scenario.dir / "old-ledger.sqlite", conversation_ref="chat:qa")
+        self.assertFalse(hasattr(old, "send_text"))
+        with self.assertRaises(M["batch"].BatchRefused) as caught:
+            M["batch"].BatchAggregator(filed.batch, notifier=old)
+        self.assertEqual(caught.exception.code, "NOTIFIER_SEAM_MISSING")
 
     @staticmethod
     def _file_batch(scenario: Scenario):
@@ -794,6 +861,36 @@ class MonitorNotifierIntegrationTests(unittest.TestCase):
         self.assertEqual(tick["delivered"], 1)
         self.assertEqual(tick["unknown_receipts"], 0)
 
+    def test_control_423_delivers_ci_when_given_a_typed_device(self):
+        """Negative control: #423 is not the reason CI fails.
+
+        With ``device_ref: "device:ci"`` the real #494 notifier normalises and
+        delivers the same CI payload. The empty string is #493's defect, not a
+        missing #423 capability.
+        """
+        scenario = Scenario(self)
+        notifier = M["notify"].MilestoneNotifier(
+            M["qa_fakes"].JournalProvider(scenario.journal_path),
+            scenario.ledger_path, conversation_ref="chat:qa")
+        answer = notifier.observe_payload("github_actions", {
+            "device_ref": "device:ci",
+            "observed_at": "2026-10-28T09:00:00Z",
+            "source_trusted": True,
+            "milestone": True,
+            "gates_required": ["exact-sha"],
+            "gates_passed": ["exact-sha"],
+            "summary": None,
+            "refs": [f"sha:{SHA}"],
+            "workflow_run": {"id": "99", "name": "ci", "status": "completed",
+                             "conclusion": "success", "head_sha": SHA},
+        })
+        self.assertEqual(answer.state, "DELIVERED")
+        self.assertTrue(answer.delivered)
+        self.assertEqual(len(scenario.journal()), 1)
+        rows = scenario.ledger_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["state"], "DELIVERED")
+
 
 class CrossProcessTests(unittest.TestCase):
     def test_three_activation_processes_deliver_once_and_keep_identities_apart(self):
@@ -928,7 +1025,7 @@ class CrossProcessTests(unittest.TestCase):
         })
         batch_args = [
             sys.executable,
-            str(CHECKOUTS[488] / compose.BATCH_DIR / "cli.py"),
+            str(PRIMARY / compose.BATCH_DIR / "cli.py"),
             "--registration", str(path),
             "--ledger", str(scenario.ledger_path),
             "--state", str(scenario.batch_state),
