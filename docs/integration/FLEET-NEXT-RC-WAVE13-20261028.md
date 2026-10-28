@@ -189,11 +189,31 @@ tests/test_fleet_next_rc_wave12_ledger.py   12 passed, 20 subtests passed
 tests/test_fleet_next_rc_wave13_ledger.py    9 passed, 17 subtests passed
 ```
 
-### 7.3 Negative controls
+### 7.3 Targeted suite on the composed tree
 
-Recorded in §4; results appended when the runs complete.
+```text
+#477 + #481 + #480 producers, both ledgers, Wave 7 ledger, plugin package,
+# registration and the batch family
+198 passed, 111 subtests passed
+# batch + ledger-section suites
+ 47 passed,  3 subtests passed
+```
 
-### 7.4 Hosted CI
+### 7.4 Negative controls
+
+Each mutation was made in a throwaway worktree at this head and then reverted;
+`git worktree remove --force` removed the scratch tree. The point is that a
+wrong tree turns the ledger red, so the green above is a reading, not a
+constant.
+
+| mutation | observed |
+| --- | --- |
+| append one byte to the Batch README | **2 failed** — `test_each_file_holds_its_authors_blob[README]` and `test_the_readme_moved_between_the_two_tree_scopes` |
+| replace the README with the Wave 12 bytes | **2 failed** — the same two; the Wave 12 digest is a different tree's fact, not a fallback |
+| rebuild #480 by cherry-pick (byte-identical, no author ancestry) | **1 failed** — only `test_every_author_head_is_an_ancestor_of_the_rc[#480]`; the per-file assertions stay green because the bytes are the same. That is the property ancestry alone can catch |
+| edit one `fleet_mcp/` file and commit it | **2 failed** — `test_no_legacy_path_is_in_the_composition_delta` and `test_the_fleet_mcp_tree_is_byte_identical` |
+
+### 7.5 Hosted CI
 
 The run URL and shard readings for the final head are in the draft PR
 description. Until that run exists, no green is claimed.
