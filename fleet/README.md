@@ -96,3 +96,26 @@ controllers, one layer further down. It is why `fleet_presence` has no default
 in the availability table: nothing local distinguishes a healthy endpoint from
 a functionally offline one, so a default of `KNOWN_ONLINE` would have been
 wrong for the exact incident that motivated writing this section.
+## Retirement status (D5/D6, #429)
+
+`layers.yaml` still records this directory as split: L0 identity/topology and an
+L2 old control plane. **The L2 part is retained, not deleted**, because the
+consumer census found no Fleet MCP replacement for it — `fleet_mcp/` is the
+Tokyo hub's remote `fleet_*` plane, while these modules are the device's local
+admission plane over `serverosd`.
+
+The reviewable record is:
+
+* `fleet/old-control-retirement.yaml` — every path, its live consumers, the
+  replacement (none), and the exact condition that would unblock retirement;
+* `docs/fleet-old-control-retirement.md` — the consumer matrix, the old→new
+  capability comparison, and the blocked ids;
+* `tests/test_fleet_old_control_retirement.py` — re-derives the consumers from
+  the tree, pins the refusal/authority semantics and the plugin's single
+  control surface, and fails if `layers.yaml` drops the split while these files
+  still exist.
+
+Nothing here is a licence to `git rm`: the plugin bundle declares
+`serveros-agent`, the router is loaded at `mcp/agent_mcp.py` module scope, and
+`fleet_mcp/registry.py` imports the L0 `fleet/transport.py` (#407). Each of
+those is an explicit precondition in the manifest.
