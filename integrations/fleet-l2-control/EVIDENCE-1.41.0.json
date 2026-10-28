@@ -1,0 +1,1060 @@
+{
+ "schema": "serveros/cloudcli-native-evidence.v1",
+ "note": "SHAPES ONLY. Derived from #411's verbatim captures; no message text, transcript or identifier is carried. Re-derive with integrations/fleet-l2-control/evidence.py.",
+ "source": {
+  "package": "1.41.0",
+  "protocol_version": "2025-06-18",
+  "captured_at_utc": "2026-10-27T08:12:00Z",
+  "tools_list_capture": "capture-cloudcli-1.41.0-tools-list-2026-10-27.json",
+  "tools_list_sha256": "24e0bef7ce297e0c8a65fa6b7dc22c54c6ec12eb975339d4d31728461da21bbc",
+  "roundtrips_capture": "capture-cloudcli-1.41.0-v1-roundtrips-2026-10-27.json",
+  "roundtrips_sha256": "bdcf042471e6548d8d0aae9a8f65909f87f4bc0278f5d3876a695c8caae96e1a"
+ },
+ "tools": {
+  "approval_answer": {
+   "required": [
+    "allow",
+    "requestId"
+   ],
+   "properties": [
+    "allow",
+    "answers",
+    "correlationId",
+    "message",
+    "requestId"
+   ],
+   "types": {
+    "allow": "boolean",
+    "answers": null,
+    "correlationId": "string",
+    "message": "string",
+    "requestId": "string"
+   }
+  },
+  "approvals_list": {
+   "required": [],
+   "properties": [
+    "session"
+   ],
+   "types": {
+    "session": "string"
+   }
+  },
+  "changes": {
+   "required": [],
+   "properties": [
+    "cursor",
+    "kinds",
+    "limit",
+    "projects",
+    "since"
+   ],
+   "types": {
+    "cursor": "string",
+    "kinds": "array",
+    "limit": "integer",
+    "projects": "array",
+    "since": "string"
+   }
+  },
+  "draft_get": {
+   "required": [
+    "session"
+   ],
+   "properties": [
+    "session"
+   ],
+   "types": {
+    "session": "string"
+   }
+  },
+  "draft_set": {
+   "required": [
+    "session",
+    "text"
+   ],
+   "properties": [
+    "session",
+    "text"
+   ],
+   "types": {
+    "session": "string",
+    "text": "string"
+   }
+  },
+  "draft_submit": {
+   "required": [
+    "session"
+   ],
+   "properties": [
+    "session"
+   ],
+   "types": {
+    "session": "string"
+   }
+  },
+  "mcp_usage_stats": {
+   "required": [
+    "groupBy"
+   ],
+   "properties": [
+    "correlationId",
+    "groupBy",
+    "since",
+    "until"
+   ],
+   "types": {
+    "correlationId": "string",
+    "groupBy": "string",
+    "since": "string",
+    "until": "string"
+   }
+  },
+  "overview": {
+   "required": [],
+   "properties": [
+    "project"
+   ],
+   "types": {
+    "project": null
+   }
+  },
+  "projects_list": {
+   "required": [],
+   "properties": [
+    "includeArchived"
+   ],
+   "types": {
+    "includeArchived": "boolean"
+   }
+  },
+  "quay_snapshot": {
+   "required": [],
+   "properties": [
+    "project",
+    "refresh"
+   ],
+   "types": {
+    "project": "string",
+    "refresh": "boolean"
+   }
+  },
+  "run_get": {
+   "required": [],
+   "properties": [
+    "deliveryId",
+    "run",
+    "runId",
+    "session",
+    "wait",
+    "waitSeconds"
+   ],
+   "types": {
+    "deliveryId": "string",
+    "run": "string",
+    "runId": "string",
+    "session": "string",
+    "wait": "boolean",
+    "waitSeconds": "number"
+   }
+  },
+  "session_background": {
+   "required": [
+    "session"
+   ],
+   "properties": [
+    "session",
+    "stopTaskId"
+   ],
+   "types": {
+    "session": "string",
+    "stopTaskId": "string"
+   }
+  },
+  "session_cancel_queued": {
+   "required": [
+    "messageUuid",
+    "session"
+   ],
+   "properties": [
+    "messageUuid",
+    "session"
+   ],
+   "types": {
+    "messageUuid": "string",
+    "session": "string"
+   }
+  },
+  "session_close": {
+   "required": [
+    "session"
+   ],
+   "properties": [
+    "force",
+    "session"
+   ],
+   "types": {
+    "force": "boolean",
+    "session": "string"
+   }
+  },
+  "session_create": {
+   "required": [
+    "project"
+   ],
+   "properties": [
+    "correlationId",
+    "lifecycleMode",
+    "message",
+    "model",
+    "permissionMode",
+    "project",
+    "provider"
+   ],
+   "types": {
+    "correlationId": "string",
+    "lifecycleMode": "string",
+    "message": "string",
+    "model": "string",
+    "permissionMode": "string",
+    "project": "string",
+    "provider": "string"
+   }
+  },
+  "session_get": {
+   "required": [
+    "session"
+   ],
+   "properties": [
+    "session"
+   ],
+   "types": {
+    "session": "string"
+   }
+  },
+  "session_interrupt": {
+   "required": [
+    "session"
+   ],
+   "properties": [
+    "session"
+   ],
+   "types": {
+    "session": "string"
+   }
+  },
+  "session_read": {
+   "required": [
+    "session"
+   ],
+   "properties": [
+    "after",
+    "aroundId",
+    "before",
+    "cursor",
+    "limit",
+    "mode",
+    "session"
+   ],
+   "types": {
+    "after": "number",
+    "aroundId": "string",
+    "before": "number",
+    "cursor": "string",
+    "limit": "integer",
+    "mode": "string",
+    "session": "string"
+   }
+  },
+  "session_reconfigure": {
+   "required": [
+    "session"
+   ],
+   "properties": [
+    "effort",
+    "model",
+    "permissionMode",
+    "session"
+   ],
+   "types": {
+    "effort": "string",
+    "model": "string",
+    "permissionMode": "string",
+    "session": "string"
+   }
+  },
+  "session_search": {
+   "required": [
+    "query"
+   ],
+   "properties": [
+    "cursor",
+    "limit",
+    "mode",
+    "project",
+    "provider",
+    "query",
+    "since",
+    "speaker",
+    "until"
+   ],
+   "types": {
+    "cursor": "string",
+    "limit": "integer",
+    "mode": "string",
+    "project": null,
+    "provider": "string",
+    "query": "string",
+    "since": "string",
+    "speaker": "string",
+    "until": "string"
+   }
+  },
+  "session_send": {
+   "required": [
+    "message",
+    "session"
+   ],
+   "properties": [
+    "correlationId",
+    "message",
+    "session",
+    "waitSeconds"
+   ],
+   "types": {
+    "correlationId": "string",
+    "message": "string",
+    "session": "string",
+    "waitSeconds": "number"
+   }
+  },
+  "session_start": {
+   "required": [
+    "session"
+   ],
+   "properties": [
+    "session"
+   ],
+   "types": {
+    "session": "string"
+   }
+  },
+  "sessions_list": {
+   "required": [],
+   "properties": [
+    "correlationId",
+    "limit",
+    "project",
+    "state"
+   ],
+   "types": {
+    "correlationId": "string",
+    "limit": "integer",
+    "project": "string",
+    "state": "string"
+   }
+  },
+  "ui_clients_list": {
+   "required": [],
+   "properties": [],
+   "types": {}
+  },
+  "ui_focus_turn": {
+   "required": [
+    "session",
+    "turnId"
+   ],
+   "properties": [
+    "client",
+    "correlationId",
+    "session",
+    "turnId"
+   ],
+   "types": {
+    "client": "string",
+    "correlationId": "string",
+    "session": "string",
+    "turnId": "string"
+   }
+  },
+  "ui_last_opened_session": {
+   "required": [],
+   "properties": [],
+   "types": {}
+  },
+  "ui_open_session": {
+   "required": [
+    "session"
+   ],
+   "properties": [
+    "at",
+    "client",
+    "correlationId",
+    "session"
+   ],
+   "types": {
+    "at": null,
+    "client": "string",
+    "correlationId": "string",
+    "session": "string"
+   }
+  },
+  "ui_open_task": {
+   "required": [
+    "session",
+    "taskId"
+   ],
+   "properties": [
+    "client",
+    "correlationId",
+    "session",
+    "taskId"
+   ],
+   "types": {
+    "client": "string",
+    "correlationId": "string",
+    "session": "string",
+    "taskId": "string"
+   }
+  },
+  "ui_selected_text": {
+   "required": [],
+   "properties": [
+    "client"
+   ],
+   "types": {
+    "client": "string"
+   }
+  },
+  "ui_show_diff": {
+   "required": [
+    "filePath",
+    "session"
+   ],
+   "properties": [
+    "client",
+    "correlationId",
+    "filePath",
+    "session"
+   ],
+   "types": {
+    "client": "string",
+    "correlationId": "string",
+    "filePath": "string",
+    "session": "string"
+   }
+  },
+  "ui_visible_context": {
+   "required": [],
+   "properties": [
+    "client",
+    "navigationId"
+   ],
+   "types": {
+    "client": "string",
+    "navigationId": "string"
+   }
+  }
+ },
+ "declared_by_release": {
+  "1.39.0": [
+   "approval_answer",
+   "approvals_list",
+   "overview",
+   "projects_list",
+   "quay_snapshot",
+   "run_get",
+   "session_background",
+   "session_cancel_queued",
+   "session_close",
+   "session_create",
+   "session_get",
+   "session_interrupt",
+   "session_read",
+   "session_reconfigure",
+   "session_search",
+   "session_send",
+   "session_start",
+   "sessions_list",
+   "ui_clients_list",
+   "ui_last_opened_session",
+   "ui_open_session",
+   "ui_visible_context"
+  ],
+  "1.40.0": [
+   "approval_answer",
+   "approvals_list",
+   "changes",
+   "draft_get",
+   "draft_set",
+   "draft_submit",
+   "mcp_usage_stats",
+   "overview",
+   "project_create",
+   "project_delete",
+   "projects_list",
+   "quay_snapshot",
+   "run_get",
+   "session_background",
+   "session_cancel_queued",
+   "session_close",
+   "session_create",
+   "session_get",
+   "session_interrupt",
+   "session_read",
+   "session_reconfigure",
+   "session_search",
+   "session_send",
+   "session_start",
+   "sessions_list",
+   "ui_clients_list",
+   "ui_focus_turn",
+   "ui_last_opened_session",
+   "ui_open_session",
+   "ui_open_task",
+   "ui_selected_text",
+   "ui_show_diff",
+   "ui_visible_context"
+  ],
+  "1.41.0": [
+   "approval_answer",
+   "approvals_list",
+   "changes",
+   "draft_get",
+   "draft_set",
+   "draft_submit",
+   "mcp_usage_stats",
+   "overview",
+   "projects_list",
+   "quay_snapshot",
+   "run_get",
+   "session_background",
+   "session_cancel_queued",
+   "session_close",
+   "session_create",
+   "session_get",
+   "session_interrupt",
+   "session_read",
+   "session_reconfigure",
+   "session_search",
+   "session_send",
+   "session_start",
+   "sessions_list",
+   "ui_clients_list",
+   "ui_focus_turn",
+   "ui_last_opened_session",
+   "ui_open_session",
+   "ui_open_task",
+   "ui_selected_text",
+   "ui_show_diff",
+   "ui_visible_context"
+  ]
+ },
+ "cases": {
+  "close_per_run_refused": {
+   "tool": "session_close",
+   "arguments": [
+    "force",
+    "session"
+   ],
+   "isError": true,
+   "result_keys": [
+    "code"
+   ],
+   "code": "LIFECYCLE_MODE_NOT_RESIDENT",
+   "retryable": null,
+   "details_keys": []
+  },
+  "close_resident": {
+   "tool": "session_close",
+   "arguments": [
+    "force",
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "closeReason",
+    "hostId",
+    "leases",
+    "mode",
+    "sessionId"
+   ]
+  },
+  "codex_run_completed_without_message": {
+   "tool": "run_get",
+   "arguments": [
+    "runId",
+    "waitSeconds"
+   ],
+   "isError": false,
+   "result_keys": [
+    "activityNote",
+    "bootId",
+    "completedAt",
+    "deliveryId",
+    "elapsedMs",
+    "explanation",
+    "idKind",
+    "lastAssistantMessage",
+    "note",
+    "outcome",
+    "phase",
+    "reason",
+    "runId",
+    "sessionId",
+    "source",
+    "startedAt",
+    "status",
+    "toolName"
+   ]
+  },
+  "codex_session_read_outline": {
+   "tool": "session_read",
+   "arguments": [
+    "limit",
+    "mode",
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "content",
+    "mode",
+    "session"
+   ]
+  },
+  "create_no_message_claude_per_run": {
+   "tool": "session_create",
+   "arguments": [
+    "lifecycleMode",
+    "project",
+    "provider"
+   ],
+   "isError": false,
+   "result_keys": [
+    "sessionId"
+   ]
+  },
+  "create_no_message_codex_per_run": {
+   "tool": "session_create",
+   "arguments": [
+    "lifecycleMode",
+    "project",
+    "provider"
+   ],
+   "isError": false,
+   "result_keys": [
+    "sessionId"
+   ]
+  },
+  "create_project_path_with_backslashes": {
+   "tool": "session_create",
+   "arguments": [
+    "lifecycleMode",
+    "permissionMode",
+    "project",
+    "provider"
+   ],
+   "isError": true,
+   "result_keys": [
+    "code",
+    "details",
+    "retryable"
+   ],
+   "code": "PROJECT_NOT_FOUND",
+   "retryable": false,
+   "details_keys": [
+    "candidates",
+    "kind",
+    "query"
+   ]
+  },
+  "create_project_path_with_forward_slashes": {
+   "tool": "session_create",
+   "arguments": [
+    "lifecycleMode",
+    "permissionMode",
+    "project",
+    "provider"
+   ],
+   "isError": true,
+   "result_keys": [
+    "code",
+    "details",
+    "retryable"
+   ],
+   "code": "UNSUPPORTED_PERMISSION_MODE",
+   "retryable": false,
+   "details_keys": [
+    "supported"
+   ]
+  },
+  "create_with_message_claude_per_run": {
+   "tool": "session_create",
+   "arguments": [
+    "correlationId",
+    "lifecycleMode",
+    "message",
+    "permissionMode",
+    "project",
+    "provider"
+   ],
+   "isError": false,
+   "result_keys": [
+    "deliveryId",
+    "runId",
+    "sessionId"
+   ]
+  },
+  "interrupt_idle": {
+   "tool": "session_interrupt",
+   "arguments": [
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "aborted"
+   ]
+  },
+  "interrupt_running": {
+   "tool": "session_interrupt",
+   "arguments": [
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "aborted"
+   ]
+  },
+  "reconfigure_supported_mode": {
+   "tool": "session_reconfigure",
+   "arguments": [
+    "permissionMode",
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "applied",
+    "liveSupported",
+    "ok",
+    "session",
+    "stored"
+   ]
+  },
+  "reconfigure_unsupported_mode": {
+   "tool": "session_reconfigure",
+   "arguments": [
+    "permissionMode",
+    "session"
+   ],
+   "isError": true,
+   "result_keys": [
+    "code",
+    "details",
+    "retryable"
+   ],
+   "code": "UNSUPPORTED_PERMISSION_MODE",
+   "retryable": false,
+   "details_keys": [
+    "supported"
+   ]
+  },
+  "run_get_both_ids": {
+   "tool": "run_get",
+   "arguments": [
+    "deliveryId",
+    "runId"
+   ],
+   "isError": true,
+   "result_keys": [
+    "code",
+    "details",
+    "retryable"
+   ],
+   "code": "INVALID_ARGUMENT",
+   "retryable": false,
+   "details_keys": [
+    "fields"
+   ]
+  },
+  "run_get_delivery_miss": {
+   "tool": "run_get",
+   "arguments": [
+    "deliveryId"
+   ],
+   "isError": true,
+   "result_keys": [
+    "code",
+    "details",
+    "retryable"
+   ],
+   "code": "RUN_NOT_FOUND",
+   "retryable": false,
+   "details_keys": [
+    "bootId",
+    "deliveryId",
+    "fallback",
+    "idKind",
+    "reason",
+    "runId"
+   ]
+  },
+  "run_get_hit_aborted": {
+   "tool": "run_get",
+   "arguments": [
+    "runId",
+    "waitSeconds"
+   ],
+   "isError": false,
+   "result_keys": [
+    "activityNote",
+    "bootId",
+    "completedAt",
+    "deliveryId",
+    "elapsedMs",
+    "explanation",
+    "idKind",
+    "lastAssistantMessage",
+    "note",
+    "outcome",
+    "phase",
+    "reason",
+    "runId",
+    "sessionId",
+    "source",
+    "startedAt",
+    "status",
+    "toolName"
+   ]
+  },
+  "run_get_hit_completed": {
+   "tool": "run_get",
+   "arguments": [
+    "runId",
+    "waitSeconds"
+   ],
+   "isError": false,
+   "result_keys": [
+    "activityNote",
+    "bootId",
+    "completedAt",
+    "deliveryId",
+    "elapsedMs",
+    "explanation",
+    "idKind",
+    "lastAssistantMessage",
+    "note",
+    "outcome",
+    "phase",
+    "reason",
+    "runId",
+    "sessionId",
+    "source",
+    "startedAt",
+    "status",
+    "toolName"
+   ]
+  },
+  "run_get_legacy_aliases_accepted_run_expired": {
+   "tool": "run_get",
+   "arguments": [
+    "runId",
+    "session",
+    "wait"
+   ],
+   "isError": true,
+   "result_keys": [
+    "code",
+    "details",
+    "retryable"
+   ],
+   "code": "RUN_NOT_FOUND",
+   "retryable": false,
+   "details_keys": [
+    "bootId",
+    "deliveryId",
+    "fallback",
+    "idKind",
+    "reason",
+    "runId"
+   ]
+  },
+  "run_get_neither_id": {
+   "tool": "run_get",
+   "arguments": [],
+   "isError": true,
+   "result_keys": [
+    "code",
+    "details",
+    "retryable"
+   ],
+   "code": "INVALID_ARGUMENT",
+   "retryable": false,
+   "details_keys": [
+    "fields"
+   ]
+  },
+  "run_get_run_hit_from_queued_send": {
+   "tool": "run_get",
+   "arguments": [
+    "runId"
+   ],
+   "isError": false,
+   "result_keys": [
+    "activityNote",
+    "bootId",
+    "completedAt",
+    "deliveryId",
+    "elapsedMs",
+    "explanation",
+    "idKind",
+    "lastAssistantMessage",
+    "note",
+    "phase",
+    "reason",
+    "runId",
+    "sessionId",
+    "source",
+    "startedAt",
+    "status",
+    "toolName"
+   ]
+  },
+  "send_busy_per_run": {
+   "tool": "session_send",
+   "arguments": [
+    "message",
+    "session"
+   ],
+   "isError": true,
+   "result_keys": [
+    "code",
+    "details",
+    "retryable"
+   ],
+   "code": "SESSION_BUSY",
+   "retryable": true,
+   "details_keys": [
+    "hint",
+    "runId"
+   ]
+  },
+  "send_per_run": {
+   "tool": "session_send",
+   "arguments": [
+    "message",
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "blockedBy",
+    "deliveryId",
+    "queued",
+    "queuedMessageUuid",
+    "runId",
+    "source"
+   ]
+  },
+  "send_resident_first": {
+   "tool": "session_send",
+   "arguments": [
+    "message",
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "blockedBy",
+    "deliveryId",
+    "queued",
+    "queuedMessageUuid",
+    "runId",
+    "source"
+   ]
+  },
+  "send_resident_queued": {
+   "tool": "session_send",
+   "arguments": [
+    "message",
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "blockedBy",
+    "deliveryId",
+    "queued",
+    "queuedMessageUuid",
+    "runId",
+    "source"
+   ]
+  },
+  "session_get_idle_no_host": {
+   "tool": "session_get",
+   "arguments": [
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "host",
+    "hostNote",
+    "pendingInteraction",
+    "run",
+    "session"
+   ]
+  },
+  "session_get_resident_host": {
+   "tool": "session_get",
+   "arguments": [
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "host",
+    "hostNote",
+    "run"
+   ]
+  },
+  "session_read_around_unknown": {
+   "tool": "session_read",
+   "arguments": [
+    "aroundId",
+    "mode",
+    "session"
+   ],
+   "isError": true,
+   "result_keys": [
+    "code",
+    "retryable"
+   ],
+   "code": "INTERNAL_ERROR",
+   "retryable": false,
+   "details_keys": []
+  },
+  "session_read_latest": {
+   "tool": "session_read",
+   "arguments": [
+    "limit",
+    "mode",
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "content",
+    "mode",
+    "session"
+   ]
+  },
+  "session_read_outline": {
+   "tool": "session_read",
+   "arguments": [
+    "limit",
+    "mode",
+    "session"
+   ],
+   "isError": false,
+   "result_keys": [
+    "content",
+    "mode",
+    "session"
+   ]
+  }
+ }
+}
