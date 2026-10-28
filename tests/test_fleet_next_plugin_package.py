@@ -238,7 +238,40 @@ class ThisIsNotTheNativeServerOSPlugin(unittest.TestCase):
         members = [p.relative_to(package.root).as_posix()
                    for p in bz.collect(package.root)]
         self.assertIn("plugin.json", members)
-        self.assertEqual(len(members), 6)
+        self.assertEqual(set(members), set(bz.PAYLOAD_MEMBERS))
+        self.assertEqual(len(members), len(bz.PAYLOAD_MEMBERS))
+
+    def test_an_unlisted_skill_member_is_refused_not_silently_packed(self):
+        package = _TempPackage(self)
+        (package.root / "skills" / "fleet-ability-routing" / "EXTRA.md").write_text(
+            "not part of the release", encoding="utf-8")
+        with self.assertRaises(bz.Refused) as caught:
+            bz.collect(package.root)
+        self.assertIn("unexpected payload member", str(caught.exception))
+        self.assertIn("EXTRA.md", str(caught.exception))
+
+    def test_a_rogue_skill_directory_is_refused(self):
+        package = _TempPackage(self)
+        (package.root / "skills" / "rogue").mkdir()
+        (package.root / "skills" / "rogue" / "SKILL.md").write_text(
+            "---\nname: rogue\ndescription: no\n---\n", encoding="utf-8")
+        with self.assertRaises(bz.Refused) as caught:
+            bz.collect(package.root)
+        self.assertIn("skills/rogue/SKILL.md", str(caught.exception))
+
+    def test_a_missing_declared_skill_is_refused(self):
+        package = _TempPackage(self)
+        shutil.rmtree(package.root / "skills" / "fleet-batch-commander")
+        with self.assertRaises(bz.Refused) as caught:
+            bz.collect(package.root)
+        self.assertIn("missing payload member", str(caught.exception))
+
+    def test_an_extra_top_level_file_is_not_packed(self):
+        package = _TempPackage(self)
+        (package.root / "EXTRA.md").write_text("not payload", encoding="utf-8")
+        result = bz.build(package.root, package.root / "dist")
+        self.assertNotIn("EXTRA.md", result["members"])
+        self.assertEqual(set(result["members"]), set(bz.PAYLOAD_MEMBERS))
 
 
 class TheSkillSourceIsComplete(unittest.TestCase):
