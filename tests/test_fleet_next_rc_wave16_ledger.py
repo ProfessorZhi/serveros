@@ -40,6 +40,11 @@ REPO = Path(__file__).resolve().parents[1]
 
 BASE = "00503f91b019ce342af52f38b19bb3aa21dfff55"
 BASE_TREE = "1c58a45912ef7ebb0b76b7dee7f087262ae62463"
+
+#: The Wave 16 ledger head. Wave 18 legitimately adds P0 fixes to files this
+#: wave recorded; every byte claim here belongs to this tree, not to whatever a
+#: later wave composes on top of it. Same tree-scoping rule as Wave 14.
+WAVE16_HEAD = "80220a4ad1b009946f11bda0ce96dd8ff8e05468"
 COMPOSED_SOURCE = "f02fa1688827111698062813eb94d1e86040cfd5"
 COMPOSED_SOURCE_TREE = "d45cf478bcf829ae3d851974a1e7da018de58989"
 
@@ -234,26 +239,22 @@ class TheManifestNamesEachOwnIncrement(unittest.TestCase):
             for relative in paths:
                 with self.subTest(author=commit[:9], file=relative):
                     self.assertEqual(
-                        _blob_digest(f"HEAD:{relative}"),
+                        _blob_digest(f"{WAVE16_HEAD}:{relative}"),
                         _blob_digest(f"{commit}:{relative}"),
-                        f"{relative} no longer holds {commit}'s blob")
+                        f"{relative} did not hold {commit}'s blob on the Wave "
+                        "16 head")
                     self.assertEqual(
                         entries[relative],
                         _blob_digest(f"{commit}:{relative}"))
 
     def test_the_wave16_delta_is_exactly_the_recorded_files(self):
         changed = set(
-            _git("diff", "--name-only", f"{BASE}..HEAD")
-            .decode().splitlines())
-        changed |= set(
-            _git("diff", "--name-only", "HEAD").decode().splitlines())
-        changed |= set(
-            _git("ls-files", "--others", "--exclude-standard")
+            _git("diff", "--name-only", f"{BASE}..{WAVE16_HEAD}")
             .decode().splitlines())
         expected = {path for paths in AUTHOR_FILES.values() for path in paths}
         expected |= set(OWN_FILES)
         expected.add(MODIFIED_LEDGER)
-        self.assertEqual({p for p in changed if p}, expected)
+        self.assertEqual(changed, expected)
 
     def test_the_increments_do_not_overlap(self):
         seen: dict[str, str] = {}
@@ -326,12 +327,12 @@ class TheNotifierAndLarkFixesAreNotReintroduced(unittest.TestCase):
 class TheLegacyBoundaryIsUntouched(unittest.TestCase):
     def test_no_legacy_path_moved(self):
         changed = _git(
-            "diff", "--name-only", f"{BASE}..HEAD").decode().splitlines()
+            "diff", "--name-only", f"{BASE}..{WAVE16_HEAD}").decode().splitlines()
         offenders = sorted(
             p for p in changed if p.startswith(LEGACY_PREFIXES))
         self.assertEqual(offenders, [])
         self.assertEqual(_git("rev-parse", f"{BASE}:fleet_mcp").strip(),
-                         _git("rev-parse", "HEAD:fleet_mcp").strip())
+                         _git("rev-parse", f"{WAVE16_HEAD}:fleet_mcp").strip())
 
     def test_483_is_still_additive(self):
         status = _git(

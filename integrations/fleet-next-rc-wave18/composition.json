@@ -1,0 +1,300 @@
+{
+  "schema": "serveros/fleet-next-rc-wave18-composition.v1",
+  "date": "2026-10-29",
+  "base": {
+    "pr": 500,
+    "commit": "80220a4ad1b009946f11bda0ce96dd8ff8e05468",
+    "tree": "42a2f984bb1ab54623c30b8a01a14bc93b729599",
+    "hosted_ci": {
+      "run": "40694269346",
+      "jobs": "4/5",
+      "new": "3 #498 runtime-tick tests, fixed by #503"
+    }
+  },
+  "composed_source": {
+    "commit": "1543d1782aba9b01a4e6ec6952fd085eae0c95ac",
+    "tree": "5d6d478419294742f8b071cc4f2a119fbf3a4428"
+  },
+  "authors": [
+    {
+      "pr": "#503",
+      "head": "b7f1f6134a1e3dcee4b916068c693ff059c097bd",
+      "tree": "dfab4d38ce1a1615e85061460d234504d10163c3",
+      "merge_base": "0096ba695f6c7bcd35dbb5a82957a1f5631d9058",
+      "merge": "f94b9c71060db684369a5809feffcd6560661070",
+      "commits": [
+        {
+          "commit": "b7f1f6134a1e3dcee4b916068c693ff059c097bd",
+          "tree": "dfab4d38ce1a1615e85061460d234504d10163c3",
+          "subject": "test(next-monitor): measure the tick's clock \u2014 the composition's three failures were the test's ABI (#500 CI)"
+        }
+      ],
+      "files": [
+        {
+          "path": "tests/test_fleet_next_agent_monitor_activation_runtime_tick.py",
+          "sha256": "a987c56dfc15f50e98a651416eb92d80b4e5ed037cf4246b773be9f935584de1"
+        }
+      ],
+      "stats": "1 file changed, 132 insertions(+), 15 deletions(-)"
+    },
+    {
+      "pr": "#504",
+      "head": "6286bfbc885771a45415efcb33405bb21a841fde",
+      "tree": "c008528b0a87cc3e97b8817a08656a648719ff8c",
+      "merge_base": "3db8ebf107f83981965cc888269b3b90d89ecb72",
+      "merge": "1543d1782aba9b01a4e6ec6952fd085eae0c95ac",
+      "commits": [
+        {
+          "commit": "6286bfbc885771a45415efcb33405bb21a841fde",
+          "tree": "c008528b0a87cc3e97b8817a08656a648719ff8c",
+          "subject": "fix(monitor): a typed subject is not an authorization, and blind is not zero"
+        }
+      ],
+      "files": [
+        {
+          "path": "integrations/fleet-next-agent-monitor/README.md",
+          "sha256": "b039d9dc3c42dd956d2d21abc0103d1dd56728e194d7bb78be267a14d8ef62ae"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/contract.py",
+          "sha256": "f4fbe2029923dc9602acabe49f973cb330a0dbcc92a32a31c111646550c869a2"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/core.py",
+          "sha256": "0bdfd5d19e3ceb7fb58112d1eaff9084a5fc1a3eba8d5fa822210e1e90329e80"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/notifier.py",
+          "sha256": "80309c1841c02955eb03244b847b85776ef23f901f8ada4b9ebb53b1c84b84a7"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/sources.py",
+          "sha256": "37cb9151c546929dd6f263b8d34e63996718826eef9cda6c6f8e1c93c46ff21b"
+        },
+        {
+          "path": "tests/test_fleet_next_agent_monitor_core.py",
+          "sha256": "eb29fd3550754d756b16247b9341521dec5d410cf6e2d816afd257875ae33ed7"
+        }
+      ],
+      "stats": "6 files changed, 600 insertions(+), 17 deletions(-)"
+    }
+  ],
+  "history": {
+    "wave12": {
+      "path": "tests/test_fleet_next_rc_wave12_ledger.py",
+      "blob": "1265351b07280ae2243f7f1897e58b6b22cdbab4",
+      "unchanged": true
+    },
+    "wave13": {
+      "path": "tests/test_fleet_next_rc_wave13_ledger.py",
+      "blob": "6d1be1e88698a1ee64930e80a7af2793b55ec6da",
+      "unchanged": true
+    },
+    "wave14": {
+      "path": "tests/test_fleet_next_rc_wave14_ledger.py",
+      "blob": "ee4e64a20638982e3bfd90e58ad2d25d60a182e8",
+      "unchanged": true
+    },
+    "wave16": {
+      "path": "tests/test_fleet_next_rc_wave16_ledger.py",
+      "historical_head": "80220a4ad1b009946f11bda0ce96dd8ff8e05468",
+      "original_blob": "c00d4c0bbd1e27b529b5e8b8607c95b965aafb50",
+      "modified_blob": "245679b47bec5a74ccf8e1edbff241a644913236",
+      "change": "byte claims and composition delta re-scoped from HEAD to WAVE16_HEAD=80220a4; author heads/blobs and the #498 block record kept",
+      "author_blobs_preserved": true
+    }
+  },
+  "notifier": {
+    "seam": "4fc9fcbc677f278d10caeb34d55184545810a13a",
+    "blob": "7df27cb36b169134ff279e43c0b9c329cf919fef",
+    "reintroduced": false
+  },
+  "lark": {
+    "fix": "dd5919a9256246570e611a7fa86aea28b46ef14d",
+    "ancestor": true,
+    "reintroduced": false
+  },
+  "legacy": {
+    "fleet_mcp_tree": "fcc3a9f59f5f50d675fa1da9d92df752ce2e3ef9",
+    "fleet_mcp_unchanged": true,
+    "v2_not_ancestors": [
+      407,
+      473,
+      474
+    ],
+    "483_additive": true
+  },
+  "p0": {
+    "503": {
+      "reading": "3 passed",
+      "tests": [
+        "test_three_processes_report_the_blocked_tick_and_none_of_them_flattens_it",
+        "test_a_configured_tick_carries_its_vitals_through_the_wrapper",
+        "test_a_second_process_does_not_inherit_the_first_ones_verdict"
+      ],
+      "note": "the three #500 composition failures are green; the test now measures the tick's clock"
+    },
+    "504": {
+      "reading": "52 passed, 4 subtests passed",
+      "tests": [
+        "test_a_ci_watch_must_not_deliver_under_an_ungranted_device",
+        "test_a_typed_ci_subject_is_not_authorized_by_being_typed",
+        "test_an_expired_run_never_leaves_the_tick_at_exit_zero",
+        "test_an_unobservable_run_never_leaves_the_tick_at_exit_zero",
+        "test_a_delivery_id_only_watch_is_delivered_under_the_native_run_id",
+        "test_one_blind_watch_makes_the_whole_tick_unconfirmed",
+        "test_the_real_wrapper_never_reports_an_unobserved_watch_as_exit_zero"
+      ],
+      "note": "#501 P0-A unauthorized CI device, P0-B UNKNOWN/EXPIRED exit 0, P1 deliveryId-only"
+    },
+    "499": {
+      "reading": "80 passed, 21 subtests passed"
+    },
+    "480_483": {
+      "reading": "86 passed, 11 subtests passed",
+      "tests": [
+        "tests/test_fleet_next_parallel_plugin.py",
+        "tests/test_fleet_next_legacy_survival.py"
+      ]
+    },
+    "historical_ledgers": "70 passed, 196 subtests passed",
+    "targeted": "287 passed, 269 subtests passed"
+  },
+  "governance": {
+    "declared_implementations": "3 failed, all baseline entries 51-53",
+    "two_490_failures_gone": true,
+    "loader_identity": "2 failed, baseline entries 66-67",
+    "repository_layers": "10 passed, 37 subtests passed",
+    "no_node_absolute_paths": "5 passed, 5 subtests passed"
+  },
+  "gate_matrix": {
+    "CODE": {
+      "status": "PASS",
+      "evidence": "composed source 1543d17, both author heads are merge parents"
+    },
+    "UNIT": {
+      "status": "PASS_TARGETED",
+      "evidence": "297 P0 tests + 287 targeted; baseline differential declared"
+    },
+    "CI": {
+      "status": "TARGET_5_OF_5",
+      "claims_5of5": false,
+      "evidence": "exact final head run is recorded in the draft PR description"
+    },
+    "RELEASE_ARTIFACT": {
+      "status": "NOT_RUN",
+      "owner": "separate release lane"
+    },
+    "REAL_DEVICE": {
+      "status": "NOT_RUN",
+      "evidence": "no device access in this task"
+    },
+    "PRODUCTION": {
+      "status": "NOT_RUN",
+      "evidence": "no deploy/install/main merge"
+    }
+  },
+  "release_matrix": {
+    "issue_425": {
+      "gates": {
+        "A_legacy_control_preserved": {
+          "status": "SOURCE_ONLY",
+          "evidence": "no fleet_mcp delta; real reachability NOT_RUN"
+        },
+        "B_next_side_by_side_artifact": {
+          "status": "NOT_RUN",
+          "evidence": "no install/switch"
+        },
+        "C_agent_monitor_e2e": {
+          "status": "PASS_SOURCE",
+          "evidence": "#503 3/3; #504 core 52/4; #499 80/21"
+        },
+        "D_real_coinstall_im_switch": {
+          "status": "NOT_RUN",
+          "evidence": "needs separate authorization"
+        },
+        "E_final_rc_legacy_preserved": {
+          "status": "SOURCE_GATE_PASS",
+          "evidence": "#483 additive; fleet_mcp unchanged"
+        }
+      },
+      "hosted_ci_5of5": {
+        "status": "TARGET",
+        "evidence": "exact final head reading in the PR description"
+      }
+    },
+    "issue_478": {
+      "legacy_version": "0.1.0",
+      "legacy_preserved": true,
+      "legacy_tree_unchanged": true,
+      "v2_candidates_not_merged": [
+        407,
+        473,
+        474
+      ],
+      "source_gate": "PASS: no fleet_mcp delta; #483 only adds",
+      "real_gates_not_run": [
+        "real Legacy/Next co-install",
+        "Timer install",
+        "App1 IM",
+        "main merge"
+      ]
+    },
+    "issue_434": {
+      "status": "NOT_RUN",
+      "evidence": "no release artifact, real device, model, OAuth or four-line closure"
+    },
+    "blockers": [
+      {
+        "id": "ci-5of5",
+        "owner": "Wave18 integrator",
+        "status": "TARGET",
+        "evidence": "exact final head CI pending"
+      },
+      {
+        "id": "#501-findings",
+        "owner": "#504 author",
+        "status": "ADDRESSED",
+        "evidence": "unauthorized CI device, UNKNOWN/EXPIRED exit 0, deliveryId-only P1"
+      },
+      {
+        "id": "release-artifact",
+        "owner": "separate release lane",
+        "status": "NOT_RUN",
+        "evidence": "no package build in this task"
+      },
+      {
+        "id": "real-gates",
+        "owner": "user authorization",
+        "status": "NOT_RUN",
+        "evidence": "co-install, Timer, App1 IM, main merge"
+      }
+    ]
+  },
+  "qa_inputs": {
+    "501": {
+      "head": "5ef2f42a5f1a7b24b40cca36252038ac19a289f3",
+      "status": "findings addressed by #504"
+    },
+    "495": {
+      "head": "f600fe6622b1e6942de79c90dca66abfa5f2b7ff",
+      "status": "independent, not edited"
+    }
+  },
+  "modified_paths": [
+    "tests/test_fleet_next_rc_wave16_ledger.py"
+  ],
+  "not_run": [
+    "real Legacy/Next co-install",
+    "Timer install",
+    "App1 IM",
+    "main merge",
+    "release artifact",
+    "real install",
+    "service start",
+    "OAuth/credential",
+    "Feishu/IM send",
+    "paid model",
+    "GPU"
+  ]
+}
