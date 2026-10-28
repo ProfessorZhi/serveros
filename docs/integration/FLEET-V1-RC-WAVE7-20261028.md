@@ -469,21 +469,23 @@ signal: in run `40647887120` the same two ids failed once and passed on retry,
 so that run's Δ is `+37`. The **id** diff in §7.2, not the Δ, is what answers
 "did anything break" — the Δ only answers "did the new files run".
 
-### 7.4 The branch tip repeats the same two ids
+### 7.4 The branch tip repeats the same two ids — three runs
 
-The run above is on `eea1ee5`, the lane's last content commit. Run
-`40647887120` is on the tip `d037588`, which adds only this section's prose:
+The table in §7 is on `eea1ee5`, the lane's last content commit. Two further
+runs are on doc-only commits (`d037588` adds §7's prose, `ed0b404` adds this
+subsection):
 
-| shard | summary | gate |
-| --- | --- | --- |
-| 1/4 | 16 failed, 2974 passed, 3341 subtests | `16 failing, 1 new` — registration id |
-| 2/4 | 13 failed, 3408 passed, 2812 subtests | `11 failing, 1 new` — clean-package id |
-| 3/4 | 10 failed, 3338 passed, 2253 subtests | `10 failing, 0 new` |
-| 4/4 | 24 failed, 3012 passed, 1125 subtests | `24 failing, 0 new, 2 flaky` |
+| run | head | shard 1 | shard 2 | shard 3 | shard 4 |
+| --- | --- | --- | --- | --- | --- |
+| `40646194204` | `eea1ee5` | `16/1` | `11/1` | `10/0` | `22/0` |
+| `40647887120` | `d037588` | `16/1` | `11/1` | `10/0` | `24/0, **2 flaky**` |
+| `40649149374` | `ed0b404` | `16/1` | `11/1` | `10/0` | `22/0` |
 
-Two runs, same tree modulo prose, **the same two ids**. That is the stability
-reading: the block is not noise, and neither run has a baseline-external id this
-lane introduced.
+**Three runs, the same two ids, the same passed totals in the stable shards.**
+That is the stability reading: the block is not noise, and no run carries a
+baseline-external id this lane introduced. The `2 flaky` in the middle run are
+§7.2's pre-existing pair — intermittent in the direction of *failing*, on files
+nothing here touches.
 
 The other three workflows did **not** run for this PR and are NOT_RUN, not green:
 `serveros-native-linux-contract`, `serveros-native-windows-contract` and
