@@ -1971,7 +1971,7 @@ class TheRecoveryFaceTests(unittest.TestCase):
         THE EXPECTED STRING IS COMPUTED IN ASIA/SHANGHAI AND THE RENDERER TAKES
         THE MACHINE'S ZONE, which on this node is the same one (`timedatectl`,
         2026-10-04: `Time zone: Asia/Shanghai`). They agree here and they are
-        not the same guarantee: `runtime/business_calendar.py` states the rule
+        not the same guarantee: `runtime/reports/business_calendar.py` states the rule
         for the day window — «the zone the window is read in is the calendar's,
         not the reader's», 「本机不拿自己的时区替它作答」 — and this face has no
         declaration behind it to read one from. So if this goes red on a host

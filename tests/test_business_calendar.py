@@ -470,7 +470,13 @@ class ThePublishedSentencesComeFromTheDesign(unittest.TestCase):
             self.assertIn(section, text)
 
     def test_the_thirteen_is_derived_from_the_window_and_not_repeated(self):
-        source = (ROOT / "runtime" / "business_calendar.py").read_text()
+        # Read where the module now LIVES, not where it used to. D3 moved the
+        # implementation to `runtime/reports/` and left a facade at the old
+        # path; the facade forwards attributes, so the derivation is not in its
+        # source. Asserting it there would have gone red for the wrong reason
+        # and would have frozen the stub instead of the rule.
+        source = (ROOT / "runtime" / "reports" / "business_calendar.py").read_text(
+            encoding="utf-8")
         self.assertIn(
             "ROUTINE_UPDATES_PER_WORKDAY = WINDOW_LAST_HOUR - WINDOW_FIRST_HOUR + 1",
             source, "the count is no longer the window's consequence")

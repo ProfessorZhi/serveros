@@ -137,7 +137,8 @@ def _load(name: str, path: Path):
 
 
 def _calendar():
-    return _load("serveros_runtime_business_calendar", _HERE / "business_calendar.py")
+    return _load("serveros_runtime_business_calendar",
+                 _HERE / "reports" / "business_calendar.py")
 
 
 def _delivery():

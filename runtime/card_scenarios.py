@@ -263,7 +263,7 @@ def model_for(scenario: dict, *, at: str | None = None,
         declared = scenario.get("calendar") or document().get("calendar")
         if declared is not None:
             calendar = _load("serveros_runtime_business_calendar",
-                             "business_calendar.py")
+                             "reports/business_calendar.py")
             calendar_reading = {"state": "READ",
                                 "declaration": calendar.declaration(declared),
                                 "reason": "", "detail": "", "path": ""}

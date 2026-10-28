@@ -716,7 +716,8 @@ def _preview_period(at):  # pragma: no cover - hand check helper
     reading whole makes every day UNKNOWN, which is a silent way to lose the
     period identity, so it is unwrapped here.
     """
-    calendar = _load("serveros_runtime_business_calendar", _HERE / "business_calendar.py")
+    calendar = _load("serveros_runtime_business_calendar",
+                     _HERE / "reports" / "business_calendar.py")
     try:
         reading = calendar.read_declaration()
         return card_period.period_at(
