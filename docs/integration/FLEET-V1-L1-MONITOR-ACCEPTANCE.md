@@ -1,9 +1,18 @@
 # FLEET-V1 L1 — monitor-only acceptance, offline
 
-> **What this document is.** The record of one deterministic, offline acceptance
-> of the L1 resident monitor: build the package, unpack it into a temporary
-> revisions root, run five ticks against a **fake** service manager, read the
-> status socket back, stop it, and roll back. It is a **CODE / UNIT** result.
+> **What this document is.** The record of an offline acceptance of the L1
+> resident monitor, in **three judged runs plus two identity checks** — not one
+> run that does everything:
+>
+> 1. **resident run** — five ticks against a fake service manager, status read
+>    back while it is alive, exited by `--max-ticks`;
+> 2. **stop run** — resident, then `SIGTERM`, judged through the same acceptance
+>    with `stopped=True`;
+> 3. **refusal runs** — each of the nine action switches, one process each;
+> 4. **rollback identity** — two revision manifests compared, no process;
+> 5. **package identity** — name, one actuator, every member's digest.
+>
+> It is a **CODE / UNIT** result.
 > **No device was installed, started, stopped, reloaded or configured**, and
 > nothing here is evidence about one.
 
@@ -42,8 +51,9 @@ One run on Dell/fjd, Linux, `-j2`, package built from this tree:
 
 ```
 package      11 checks, 0 failures   (name, one actuator, every member's digest)
-monitor-run  16 checks, 0 failures
-monitor      rss_kb 5016 · cpu_ms_total 3 · tick_ms 7       profile "monitor-only"
+monitor-run  17 checks, 0 failures   (profile, mode, ticks, observations, verbs,
+                                      costs ×3, plan floor, failed-unit observation)
+monitor      rss_kb 4980–5016 · cpu_ms_total 3 · tick_ms 1–7   profile "monitor-only"
 plan         actions 1, refusals []                         ← the planner SAW work
 calls        5 × `--user --no-pager --quiet show --property=…`   ← and did none of it
 services     toy.service → failed                            ← observed, not repaired
@@ -70,9 +80,24 @@ one that checks nothing. Five runs exist to fail:
 The stub control earned its keep immediately: the first version of the fake
 service manager was written with Python `%`-formatting over a shell script that
 itself contains `printf '%s'`, so the fake logged its own format string and
-recorded no argv. The control could not fail, and said so. (The same mistake was
-made twice, once in a scratch driver — worth writing down because it is invisible
-in review and obvious to a negative control.)
+recorded no argv — the control could not fail, and said so. (The same mistake was
+made twice, once in a scratch driver; it is invisible in review and obvious to a
+negative control.)
+
+Four more controls were added after a read-only review pointed out that the
+first set could not fail for the reasons it named:
+
+| added control | what it fixes |
+|---|---|
+| a status with a **failed row** but `profile: serve` | the old acting-profile control failed on its *empty* services list too, so it would have passed with the profile checks deleted |
+| `stopped=False` | the stop clause was never fed a run that was not stopped |
+| `plan.actions = 0` | the plan check was a type test, so "planned 0, executed 0" passed |
+| `try-restart` / `reload-or-restart` / `mask` | the verb vocabulary knew only the short spellings |
+
+and one assertion was split in two: the status document read *while resident*
+reports the ticks finished at that instant (one), while the **five** are counted
+from the service-manager calls — one `show` per tick — which the process's own
+summary cannot fake.
 
 ## What a green run does **not** say
 
@@ -106,8 +131,15 @@ in review and obvious to a negative control.)
 ## Running it
 
 ```sh
-python3 -m unittest tests.test_fleet_v1_monitor_acceptance -v
+python3 -B -m unittest tests.test_fleet_v1_monitor_acceptance -v
 ```
+
+`-B` matters: without it the interpreter writes
+`tests/__pycache__/test_fleet_v1_monitor_acceptance.*.pyc` **inside the
+repository**, because a module's bytecode is cached before its body runs — so the
+`sys.dont_write_bytecode` line in the file cannot cover the file itself. It is
+gitignored, and it does not make the tree dirty, but "everything it writes goes
+to a temporary directory" is only true with `-B`.
 
 It builds the package itself (a C++ toolchain is a CODE dependency, not a device
 one) and skips with a named reason where `g++`/`make` are absent. Everything it

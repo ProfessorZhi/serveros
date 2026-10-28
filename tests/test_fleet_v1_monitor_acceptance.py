@@ -47,6 +47,11 @@ MAKEFILE = ROOT / "serverosd" / "Makefile"
 
 
 def _load(name: str, path: Path):
+    # Read the cache before writing it, which is this tree's own shape (185
+    # sites): a synthetic module name is process-wide, and a second writer takes
+    # the name from the first — the two copies then carry different classes.
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
@@ -77,7 +82,10 @@ exit 0
 
 def build_package(destination: Path) -> Path:
     """Build the real package. Returns the directory that is the payload."""
-    env = {**os.environ}
+    # `make` evaluates `SOURCE_DIRTY` with `git status`, which may refresh
+    # `.git/index` — a write to the repository by a test that promises to write
+    # only to a temp directory. The lock opt-out is the documented fix.
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
     proc = subprocess.run(["make", "-f", str(MAKEFILE), f"OUT={destination}", "-j2", "dist"],
                           cwd=str(ROOT), capture_output=True, text=True, timeout=900, env=env)
     if proc.returncode != 0:
@@ -86,8 +94,16 @@ def build_package(destination: Path) -> Path:
     return destination / "dist"
 
 
+_SOCKET_COUNTER = iter(range(1000))
+
+
 def _free_port_path(directory: Path) -> Path:
-    return directory / "s.sock"
+    """A fresh path per test.
+
+    A killed process can leave its socket behind, and binding an existing path is
+    refused — so reusing one name would turn a crashed test into a hung one.
+    """
+    return directory / f"s-{next(_SOCKET_COUNTER)}.sock"
 
 
 class MonitorAcceptanceTest(unittest.TestCase):
@@ -177,9 +193,14 @@ class MonitorAcceptanceTest(unittest.TestCase):
 
         reports = [
             acceptance.evaluate_package(rev, self.manifest),
-            acceptance.evaluate_monitor_run(status, log.read_text(encoding="utf-8").splitlines(),
-                                            exit_code=proc.returncode, stopped=True,
-                                            ticks_expected=1),
+            acceptance.evaluate_monitor_run(
+                status, log.read_text(encoding="utf-8").splitlines(),
+                exit_code=proc.returncode, stopped=True,
+                # Read while resident: one tick had finished. The FIVE are the
+                # calls below — a `show` per tick — which is what the process's
+                # own summary cannot fake.
+                ticks_expected=1, observations_expected=5,
+                expect_planned_actions=1),
         ]
         result = acceptance.receipt(reports, provenance={
             "source_commit": subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
@@ -204,15 +225,43 @@ class MonitorAcceptanceTest(unittest.TestCase):
         proc = subprocess.Popen(self._argv(rev / "bin" / "serveros-native-core", sock, systemctl),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                 env=self._env())
-        self._read_status(sock)                   # it is resident
+        status = self._read_status(sock)          # it is resident
         began = time.time()
         proc.terminate()
         stdout, stderr = proc.communicate(timeout=30)
         elapsed = time.time() - began
-        self.assertEqual(proc.returncode, 0, stderr)
+
+        calls = log.read_text(encoding="utf-8").splitlines()
+        # A `show` must have HAPPENED before "no restart" means anything: on an
+        # empty log that assertion passes without the monitor having done a thing.
+        self.assertTrue(calls, "the monitor observed nothing before it was stopped")
+
+        # Judged through the acceptance rather than with ad-hoc asserts, so the
+        # stop clause is the acceptance's `stopped`, fed by a run that really was
+        # asked to stop.
+        report = acceptance.evaluate_monitor_run(
+            status, calls, exit_code=proc.returncode, stopped=True,
+            ticks_expected=1, expect_planned_actions=1)
+        self.assertTrue(report.ok, report.failures)
         self.assertLess(elapsed, 5.0, "the monitor did not honour SIGTERM promptly")
         self.assertIn("stopped_by_request=1", stdout + stderr)
-        self.assertNotIn("restart", log.read_text(encoding="utf-8"))
+
+    def test_a_run_that_had_to_be_killed_fails_the_stop_clause(self):
+        """The other half of the stop clause, which no run above can exercise."""
+        status = {"profile": "monitor-only", "mode": "observe-only", "ticks": 5,
+                  "monitor": {"rss_kb": 1000, "cpu_ms_total": 10, "tick_ms": 1},
+                  "plan": {"actions": 1},
+                  "services": [{"unit": "toy.service", "active": "failed"}]}
+        calls = ["--user --no-pager --quiet show --property=ActiveState -- toy.service"]
+        self.assertTrue(acceptance.evaluate_monitor_run(
+            status, calls, exit_code=0, stopped=True, ticks_expected=1,
+            expect_planned_actions=1).ok)
+        killed = acceptance.evaluate_monitor_run(
+            status, calls, exit_code=0, stopped=False, ticks_expected=1,
+            expect_planned_actions=1)
+        self.assertFalse(killed.ok)
+        self.assertTrue(any("stopped when asked" in failure for failure in killed.failures),
+                        killed.failures)
 
     def test_every_action_switch_is_refused_by_name(self):
         log = self.root / "calls-refuse.log"
@@ -262,6 +311,85 @@ class MonitorAcceptanceTest(unittest.TestCase):
         self.assertTrue(any("no verb" in failure for failure in report.failures),
                         report.failures)
 
+    def test_a_planner_that_saw_nothing_fails(self):
+        """"planned 0, executed 0" is also what a blind planner produces."""
+        status = {"profile": "monitor-only", "mode": "observe-only", "ticks": 5,
+                  "monitor": {"rss_kb": 1000, "cpu_ms_total": 10, "tick_ms": 1},
+                  "plan": {"actions": 0},
+                  "services": [{"unit": "toy.service", "active": "failed"}]}
+        calls = ["--user --no-pager --quiet show --property=ActiveState -- toy.service"]
+        self.assertFalse(acceptance.evaluate_monitor_run(
+            status, calls, exit_code=0, stopped=True, ticks_expected=1,
+            expect_planned_actions=1).ok)
+
+    def test_a_run_that_observed_once_in_five_ticks_fails(self):
+        status = {"profile": "monitor-only", "mode": "observe-only", "ticks": 5,
+                  "monitor": {"rss_kb": 1000, "cpu_ms_total": 10, "tick_ms": 1},
+                  "plan": {"actions": 1},
+                  "services": [{"unit": "toy.service", "active": "failed"}]}
+        once = ["--user --no-pager --quiet show --property=ActiveState -- toy.service"]
+        self.assertFalse(acceptance.evaluate_monitor_run(
+            status, once, exit_code=0, stopped=True, ticks_expected=5,
+            expect_planned_actions=1).ok)
+
+    def test_a_hyphenated_restart_is_a_verb(self):
+        """`try-restart` and `reload-or-restart` are restarts with longer names."""
+        status = {"profile": "monitor-only", "mode": "observe-only", "ticks": 5,
+                  "monitor": {"rss_kb": 1000, "cpu_ms_total": 10, "tick_ms": 1},
+                  "plan": {"actions": 1},
+                  "services": [{"unit": "toy.service", "active": "failed"}]}
+        for verb in ("try-restart", "reload-or-restart", "mask"):
+            with self.subTest(verb=verb):
+                calls = ["--user --no-pager --quiet show -- toy.service",
+                         f"--user --no-pager --quiet {verb} -- toy.service"]
+                self.assertFalse(acceptance.evaluate_monitor_run(
+                    status, calls, exit_code=0, stopped=True, ticks_expected=1,
+                    expect_planned_actions=1).ok, verb)
+
+    def test_a_unit_named_like_a_verb_is_not_a_verb(self):
+        """The operand side of `--` is never a verb."""
+        status = {"profile": "monitor-only", "mode": "observe-only", "ticks": 5,
+                  "monitor": {"rss_kb": 1000, "cpu_ms_total": 10, "tick_ms": 1},
+                  "plan": {"actions": 1},
+                  "services": [{"unit": "stop.service", "active": "failed"}]}
+        calls = ["--user --no-pager --quiet show --property=ActiveState -- stop.service"]
+        self.assertTrue(acceptance.evaluate_monitor_run(
+            status, calls, exit_code=0, stopped=True, ticks_expected=1,
+            expect_planned_actions=1).ok)
+
+    def test_a_doctored_refusal_fails(self):
+        good = acceptance.evaluate_refusal("--lease", 2,
+                                           "--monitor-only refuses --lease: no")
+        self.assertTrue(good.ok, good.failures)
+        self.assertFalse(acceptance.evaluate_refusal("--lease", 0, "").ok)
+        self.assertFalse(acceptance.evaluate_refusal("--lease", 2, "unknown option").ok)
+
+    def test_a_wrong_digest_fails_the_package(self):
+        rev = self._revision("rev-digest")
+        tampered = json.loads(json.dumps(self.manifest))
+        for member in tampered["members"]:
+            if member["role"] == "actuator":
+                member["sha256"] = "0" * 64
+        report = acceptance.evaluate_package(rev, tampered)
+        self.assertFalse(report.ok)
+        self.assertTrue(any("matches its digest" in failure for failure in report.failures),
+                        report.failures)
+
+    def test_the_action_switch_list_is_the_one_the_binary_refuses(self):
+        """The list here is checked against the C++, so adding a tenth switch in
+        the binary without adding it here fails a test — which is the claim the
+        module's comment makes."""
+        source = (ROOT / "native/node-core/supervisor/src/main.cpp").read_text(encoding="utf-8")
+        pushed = set()
+        for line in source.splitlines():
+            if "acting_flags.push_back(flag)" in line:
+                pushed.add(line)
+        self.assertTrue(pushed, "the binary no longer records acting flags")
+        for flag in acceptance.ACTION_FLAGS:
+            with self.subTest(flag=flag):
+                self.assertIn(flag, source,
+                              f"{flag} is in the acceptance's list but not in the binary")
+
     def test_one_appended_verb_fails_a_good_run(self):
         """Mutation control: the judgement is not vacuous."""
         calls = ["--user --no-pager --quiet show --property=ActiveState -- toy.service"]
@@ -275,9 +403,13 @@ class MonitorAcceptanceTest(unittest.TestCase):
             status, doctored, exit_code=0, stopped=True, ticks_expected=1).ok)
 
     def test_an_acting_profile_is_not_a_monitor_run(self):
-        status = {"profile": "serve", "mode": "act", "ticks": 3,
+        # Every OTHER check must pass, so that the profile and mode checks are
+        # the ones doing the rejecting. With `services: []` the failed-unit check
+        # would fail too, and this control would pass with both checks deleted.
+        status = {"profile": "serve", "mode": "act", "ticks": 5,
                   "monitor": {"rss_kb": 1000, "cpu_ms_total": 10, "tick_ms": 1},
-                  "plan": {"actions": 1}, "services": []}
+                  "plan": {"actions": 1},
+                  "services": [{"unit": "toy.service", "active": "failed"}]}
         report = acceptance.evaluate_monitor_run(
             status, ["--user --no-pager --quiet show -- toy.service"],
             exit_code=0, stopped=True, ticks_expected=1)

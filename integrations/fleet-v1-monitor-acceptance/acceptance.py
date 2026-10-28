@@ -51,8 +51,16 @@ ACTION_FLAGS = (
 )
 
 #: Words a service manager is asked with, as opposed to `show`, which asks it
-#: nothing. A monitor may only observe.
-VERBS = ("start", "restart", "stop", "enable", "disable", "reset-failed", "kill")
+#: nothing. A monitor may only observe. The hyphenated forms are separate
+#: entries because `try-restart` and `reload-or-restart` are mutating verbs whose
+#: names are not `restart`; a scanner that only knew the short spellings would
+#: call a restart a non-event.
+VERBS = frozenset({
+    "start", "stop", "restart", "reload", "try-restart", "reload-or-restart",
+    "reload-or-try-restart", "enable", "disable", "mask", "unmask", "isolate",
+    "set-property", "reset-failed", "kill", "reboot", "poweroff", "halt",
+    "kexec", "emergency", "rescue", "default", "suspend", "hibernate",
+})
 
 #: Bounds for the resident profile, in the units the status document reports.
 #: Generous on purpose: they catch a monitor that forks per tick or holds a
@@ -93,9 +101,16 @@ class Report:
 # one resident run
 # --------------------------------------------------------------------------- #
 def _verb_of(argv_line: str) -> str:
-    """The systemctl verb in one recorded argv line, or "" when there is none."""
-    words = argv_line.split()
-    for word in words:
+    """The systemctl verb in one recorded argv line, or "" when there is none.
+
+    Only the words BEFORE `--` are considered. `systemctl [options] VERB [--]
+    [unit…]`, so everything after the separator is an operand — which is what
+    keeps a unit named `stop.service` from being read as a verb. Within the head,
+    an exact match against the closed vocabulary; no substring guessing, because
+    a guess that is too clever in this direction turns unit names into verbs.
+    """
+    head = argv_line.split(" -- ", 1)[0].split()
+    for word in head:
         if word in VERBS:
             return word
     return ""
@@ -103,6 +118,8 @@ def _verb_of(argv_line: str) -> str:
 
 def evaluate_monitor_run(status: dict, calls: list[str], *, exit_code: int,
                          stopped: bool, ticks_expected: int,
+                         observations_expected: int | None = None,
+                         expect_planned_actions: int | None = None,
                          bounds: dict | None = None) -> Report:
     """One resident monitor run, judged from what it left behind."""
     bounds = {**DEFAULT_BOUNDS, **(bounds or {})}
@@ -134,11 +151,18 @@ def evaluate_monitor_run(status: dict, calls: list[str], *, exit_code: int,
         if measured:
             report.add(f"{key} within {ceiling}", value <= ceiling, f"{key}={value}")
 
-    # The planner may SEE work; the run must not DO it. Both halves are checked
-    # because either one alone is satisfiable by a broken binary.
+    # The planner may SEE work; the run must not DO it. BOTH halves are checked,
+    # and the first one has to be a floor rather than a type test: "planned 0,
+    # executed 0" is also what a planner that saw nothing produces, so a type
+    # check would accept a broken binary and call the shape proven.
     plan = status.get("plan") or {}
-    report.add("the plan is reported", isinstance(plan.get("actions"), int),
-               f"plan.actions={plan.get('actions')!r}")
+    actions = plan.get("actions")
+    report.add("the plan reports a count", isinstance(actions, int),
+               f"plan.actions={actions!r}")
+    if expect_planned_actions is not None:
+        report.add(f"the plan saw at least {expect_planned_actions} action(s)",
+                   isinstance(actions, int) and actions >= expect_planned_actions,
+                   f"plan.actions={actions!r}")
 
     verbs = [_verb_of(line) for line in calls]
     offending = [line for line, verb in zip(calls, verbs) if verb]
@@ -146,6 +170,14 @@ def evaluate_monitor_run(status: dict, calls: list[str], *, exit_code: int,
                "no observation happened at all, so 'no verbs' proves nothing")
     report.add("no verb was issued", not offending,
                f"the monitor issued {offending[:3]}")
+    # The document was read WHILE the process was resident, so it reports the
+    # ticks that had finished at that instant — one, not the five the run later
+    # completed. The observation count is the separate, checkable half of "five
+    # ticks": one `show` per tick, so a run that ticked once cannot pass a
+    # five-tick claim by exiting with a large number in its own summary.
+    wanted = observations_expected if observations_expected is not None else ticks_expected
+    report.add(f"it observed at least {wanted} time(s)", len(calls) >= wanted,
+               f"{len(calls)} call(s) recorded, expected at least {wanted}")
 
     services = status.get("services") or []
     failed = [row for row in services if row.get("active") == "failed"]
@@ -160,7 +192,7 @@ def evaluate_monitor_run(status: dict, calls: list[str], *, exit_code: int,
 def evaluate_refusal(flag: str, exit_code: int, stderr: str) -> Report:
     report = Report(f"refuse {flag}")
     report.add("it refused", exit_code == 2, f"exit {exit_code}")
-    report.add("the refusal names the profile", "--monitor-only" in stderr,
+    report.add("the refusal is the profile's", "--monitor-only refuses" in stderr,
                stderr.strip()[:160])
     report.add("the refusal names the flag", flag in stderr, stderr.strip()[:160])
     return report
@@ -213,7 +245,6 @@ def evaluate_rollback(previous: dict, current: dict) -> Report:
     answer: are these two different builds, each with its own identity.
     """
     report = Report("rollback")
-    before = (current.get("members") or [{}])
     report.add("the current revision has a manifest", bool(current.get("members")),
                "no members recorded")
     report.add("the previous revision has a manifest", bool(previous.get("members")),
@@ -233,20 +264,33 @@ def evaluate_rollback(previous: dict, current: dict) -> Report:
 # one receipt
 # --------------------------------------------------------------------------- #
 def receipt(reports: list[Report], *, provenance: dict) -> dict:
+    """One verdict over several reports.
+
+    `ok` uses `Report.ok`, not `not report.failures`: a report that ran no checks
+    has no failures and is not a pass, and the two guards disagreeing is how a
+    receipt says PASS over an empty judgement.
+    """
+    verdict = bool(reports) and all(report.ok for report in reports)
     failures = [failure for report in reports for failure in report.failures]
     return {
         "schema": SCHEMA,
-        "ok": not failures and bool(reports),
+        "ok": verdict and not failures,
         "provenance": provenance,
-        # THE LAYER, said out loud. Everything above is CODE/UNIT; the device
-        # column stays NOT_RUN because nothing here touches a device.
+        # THE LAYERS, said out loud. `code` and `unit` are both computed from this
+        # one offline suite: nothing here installs a systemd unit, so "UNIT" means
+        # "the suite's assertions about the run", not "a unit was exercised".
+        # `real_device` and `production` are hardcoded NOT_RUN because this
+        # acceptance never touches a device and must not be read as if it did.
         "layers": {
-            "code": "PASS" if not failures else "FAIL",
-            "unit": "PASS" if not failures else "FAIL",
+            "code": "PASS" if verdict else "FAIL",
+            "unit": "PASS" if verdict else "FAIL",
             "hosted_ci": provenance.get("hosted_ci", "NOT_RUN"),
             "real_device": "NOT_RUN",
             "production": "NOT_RUN",
         },
+        "layers_note": ("code and unit are this offline suite; no systemd unit is "
+                        "installed, started or stopped, so real_device and "
+                        "production stay NOT_RUN"),
         "reports": [report.as_dict() for report in reports],
         "failures": failures,
     }
