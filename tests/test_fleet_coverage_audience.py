@@ -69,7 +69,7 @@ monitor = _load("serveros_fleet_monitor_card", RUNTIME / "fleet_monitor_card.py"
 source = _load("serveros_fleet_monitor_source", RUNTIME / "fleet_monitor_source.py")
 plan = _load("serveros_fleet_monitor_plan", RUNTIME / "fleet_monitor_plan.py")
 audience = _load("serveros_fleet_audience",
-                  RUNTIME / "fleet_hub" / "fleet_audience.py")
+                  ROOT / "fleet_hub" / "fleet_audience.py")
 
 
 def md_all(node, out=None):
