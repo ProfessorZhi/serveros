@@ -211,6 +211,36 @@ def _optional_text(value: Any, name: str, maximum: int = 280) -> str | None:
     return _scrub(text) or None
 
 
+def _body_text(value: Any, name: str, maximum: int = 2000) -> str:
+    """A bounded message BODY: newlines are structure, other controls are not.
+
+    `_text` refuses every character below space because it validates
+    **identities**: a device ref or a run id containing a newline is corrupt.
+    A message body is the opposite — `compose()` builds milestone text out of
+    newline-separated labelled lines — so validating a body with `_text` refused
+    every real batch summary.
+
+    The two checks are deliberately separate rather than one relaxed check used
+    for both. Relaxing `_text` would have let a newline into a delivery key,
+    where it would change the identity and therefore the dedupe.
+
+    Controls other than LF are **refused**, not stripped: a caller sending a CR
+    or a TAB has a bug, and silently repairing it hides the bug in a message a
+    person then reads. `_scrub` still redacts credentials afterwards.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise MilestoneRefused(f"{name} is required")
+    text = value.strip()
+    if len(text) > maximum:
+        raise MilestoneRefused(f"{name} exceeds {maximum} characters")
+    bad = sorted({ch for ch in text if ch != "\n" and ord(ch) < 32})
+    if bad:
+        raise MilestoneRefused(
+            f"{name} contains control characters other than newline: "
+            f"{[hex(ord(ch)) for ch in bad]}")
+    return _scrub(text)
+
+
 def _bool(value: Any, name: str) -> bool:
     if not isinstance(value, bool):
         raise MilestoneRefused(f"{name} must be a boolean")
@@ -1137,7 +1167,7 @@ class MilestoneNotifier:
                 f"sends batch summaries and alerts, and a milestone is chosen by "
                 f"the classifier from evidence, not by a caller "
                 f"({sorted(NON_MILESTONE_OUTCOMES)})")
-        text = _text(text, "text", 2000)
+        text = _body_text(text, "text", 2000)
         why = _scrub(_text(why, "why", 240))
 
         transport = transport_key_for(delivery_key)
