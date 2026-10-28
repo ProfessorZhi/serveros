@@ -1,0 +1,269 @@
+{
+  "schema": "serveros/fleet-next-wave15-prereq-qa.v1",
+  "date": "2026-10-28",
+  "gate_base": {
+    "branch": "main",
+    "commit": "e69fc0337ae5d33000478e3d5162077f525bc8cc",
+    "note": "independent gate; the RC is read by SHA, not merged into this branch"
+  },
+  "rc": {
+    "pr": 494,
+    "head": "00503f91b019ce342af52f38b19bb3aa21dfff55",
+    "composed_source": "7ff573db7300867fd37b673a59b0101e7f87dab6",
+    "composed_tree": "4f28f4ef78e47790f874fe046a457c2d3defc7d0",
+    "hosted_ci": {
+      "run": "40669351645",
+      "jobs": "4/5",
+      "new_failures": 2,
+      "baseline_gate": "25 failing, 2 new, 1 flaky, 0 listed-but-passing",
+      "note": "the two new failures are #490's request naming collision; this gate does not claim 5/5"
+    }
+  },
+  "qa_input": {
+    "pr": 495,
+    "head": "75e25724424f430c9058638f059cc8787f4ab963",
+    "finding": "NOTIFIER_SEAM_MISSING",
+    "pinned_notifier": {
+      "pr": 423,
+      "head": "d9b2948a62609e16007f2fe0ae288f9652d64cd1",
+      "blob": "72fcec8d553f1568a114449d352e1803250d26cc",
+      "send_text": false
+    },
+    "verdict": "QA_PIN_ARTIFACT: #495 pinned #423's original head, not the composed notifier"
+  },
+  "notifier": {
+    "single_source": true,
+    "path": "integrations/fleet-v1-milestone-notify/milestone_notify.py",
+    "composed": {
+      "commit": "4fc9fcbc677f278d10caeb34d55184545810a13a",
+      "blob": "7df27cb36b169134ff279e43c0b9c329cf919fef",
+      "send_text": true,
+      "merged_into_481_by": "ba76a80411ca4fa3d94f05105877bc1e8fb377ff"
+    },
+    "optional_final": {
+      "pr": 460,
+      "head": "1dbeda5f87bce23b2134f869f6379667bc9847b9",
+      "blob": "8ff93b0e34f335d4b6903c8ef75bf8636117b3a6",
+      "delta": "newline fix on top of the public send seam",
+      "in_rc": false,
+      "merge_into_rc": "clean"
+    },
+    "qa_pin_artifact": true,
+    "correction": "materialise 4fc9fcb (blob 7df27cb) or read the #494 tree; re-run #495 \u00a74.3"
+  },
+  "pins": {
+    "423": "d9b2948a62609e16007f2fe0ae288f9652d64cd1",
+    "460_seam": "4fc9fcbc677f278d10caeb34d55184545810a13a",
+    "460_head": "1dbeda5f87bce23b2134f869f6379667bc9847b9",
+    "481": "9b7710a26180e1e6d00ce597827d447d0d2348b7",
+    "488": "009662f36a2a5f8e11c51ae517834379a91a7770",
+    "493": "4f5320de7e187daadd79adc92e7487facd7b1820",
+    "490": "06a8be67422f1320e7bdfee38410f8b24d27b501",
+    "483": "644ee4a8e35b770426841929d5989bcfad128bef",
+    "415": "dd5919a9256246570e611a7fa86aea28b46ef14d",
+    "492": "a00fabc87fff65aeb50a851536b3314be8399090",
+    "494": "00503f91b019ce342af52f38b19bb3aa21dfff55"
+  },
+  "dependency_order": [
+    {
+      "pr": "#423",
+      "commit": "d9b2948a62609e16007f2fe0ae288f9652d64cd1",
+      "role": "notifier base",
+      "in_rc": true
+    },
+    {
+      "pr": "#460",
+      "commit": "4fc9fcbc677f278d10caeb34d55184545810a13a",
+      "role": "public send_text seam",
+      "in_rc": true,
+      "via": "#481 merge ba76a80411ca4fa3d94f05105877bc1e8fb377ff"
+    },
+    {
+      "pr": "#481",
+      "commit": "9b7710a26180e1e6d00ce597827d447d0d2348b7",
+      "role": "Batch CLI",
+      "in_rc": true
+    },
+    {
+      "pr": "#488",
+      "commit": "009662f36a2a5f8e11c51ae517834379a91a7770",
+      "role": "activation/batch adapter",
+      "in_rc": true
+    }
+  ],
+  "optional_order": [
+    {
+      "pr": "#460",
+      "commit": "1dbeda5f87bce23b2134f869f6379667bc9847b9",
+      "role": "newline fix",
+      "in_rc": false,
+      "merge_into_rc": "clean"
+    }
+  ],
+  "rc_composition_order": [
+    {
+      "step": 0,
+      "pr": "#492",
+      "commit": "a00fabc87fff65aeb50a851536b3314be8399090",
+      "role": "Wave 13 RC base"
+    },
+    {
+      "step": 1,
+      "pr": "#493",
+      "commit": "4f5320de7e187daadd79adc92e7487facd7b1820",
+      "merge": "b23cda6bbecff7ecbb0636beb56b491de3061cd3"
+    },
+    {
+      "step": 2,
+      "pr": "#488",
+      "commit": "009662f36a2a5f8e11c51ae517834379a91a7770",
+      "merge": "efde75022a308680b3920277401517cd312e3c4b"
+    },
+    {
+      "step": 3,
+      "pr": "#490",
+      "commit": "06a8be67422f1320e7bdfee38410f8b24d27b501",
+      "merge": "a5e55b93a97e17e97853e2be2c3715526f9ed226"
+    },
+    {
+      "step": 4,
+      "pr": "#483",
+      "commit": "644ee4a8e35b770426841929d5989bcfad128bef",
+      "merge": "7ff573db7300867fd37b673a59b0101e7f87dab6"
+    },
+    {
+      "step": 5,
+      "pr": "#494",
+      "commit": "00503f91b019ce342af52f38b19bb3aa21dfff55",
+      "role": "Wave 14 ledger head"
+    }
+  ],
+  "pending_fixes": [
+    {
+      "id": "#490-request-naming",
+      "owner": "#490 author, with the separate fix Agent",
+      "status": "PENDING_NO_SHA",
+      "why": "two new DeclaredFieldsHaveReaders failures at #494 shard 4; Wave 14 BLOCKED_OWNER"
+    },
+    {
+      "id": "#493-unconfirmed-settled",
+      "owner": "#493 author",
+      "status": "PENDING_NO_SHA",
+      "why": "#495 \u00a74.1: UNCONFIRMED becomes SETTLED"
+    },
+    {
+      "id": "#493-ci-device-ref",
+      "owner": "#493 and #423 authors",
+      "status": "PENDING_NO_SHA",
+      "why": "#495 \u00a74.2: empty device_ref"
+    },
+    {
+      "id": "#490-493-signature",
+      "owner": "#490 and #493 authors",
+      "status": "PENDING_NO_SHA",
+      "why": "#495 \u00a74.4/4.5: kwargs and reason drift"
+    },
+    {
+      "id": "#488-activation-false-success",
+      "owner": "#488 author",
+      "status": "PENDING_NO_SHA",
+      "why": "#495 \u00a74.6: blocked tick reported as exit 0"
+    },
+    {
+      "id": "#495-notifier-pin",
+      "owner": "#495 QA",
+      "status": "QA_ARTIFACT",
+      "why": "seam RED/GREEN in this gate; pin 4fc9fcb, not d9b2948"
+    }
+  ],
+  "release_matrix": {
+    "issue_425": {
+      "url": "https://github.com/ProfessorZhi/serveros/issues/425",
+      "gates": {
+        "A_legacy_control_preserved": {
+          "status": "SOURCE_ONLY",
+          "evidence": "no fleet_mcp delta; real reachability NOT_RUN"
+        },
+        "B_next_side_by_side_artifact": {
+          "status": "NOT_RUN",
+          "evidence": "no real install or switch"
+        },
+        "C_agent_monitor_e2e": {
+          "status": "PARTIAL",
+          "evidence": "#495 reports 25 pass and 5 blocked; one blocked is the #495 pin artifact"
+        },
+        "D_real_coinstall_im_switch": {
+          "status": "NOT_RUN",
+          "evidence": "requires separate user authorization"
+        },
+        "E_final_rc_legacy_preserved": {
+          "status": "SOURCE_GATE_PASS",
+          "evidence": "#483 additive; fleet_mcp tree unchanged"
+        }
+      },
+      "hosted_ci_5of5": {
+        "status": "NOT_MET",
+        "reading": "4/5 at 00503f9",
+        "run": "40669351645",
+        "new_failures": 2
+      }
+    },
+    "issue_478": {
+      "url": "https://github.com/ProfessorZhi/serveros/issues/478",
+      "legacy_version": "0.1.0",
+      "legacy_preserved": true,
+      "legacy_tree_unchanged": true,
+      "v2_candidates_not_merged": [
+        407,
+        473,
+        474
+      ],
+      "source_gate": "PASS: no fleet_mcp delta; #483 only adds",
+      "real_gates_not_run": [
+        "real Legacy/Next co-install",
+        "Timer install",
+        "App1 IM",
+        "main merge"
+      ]
+    },
+    "blockers": [
+      {
+        "id": "hosted-5of5",
+        "owner": "#490 author with the separate fix Agent",
+        "status": "BLOCKED",
+        "evidence": "two new DeclaredFieldsHaveReaders failures"
+      },
+      {
+        "id": "#495-seam",
+        "owner": "#495 QA",
+        "status": "QA_ARTIFACT",
+        "evidence": "old #423 head pin; RED/GREEN in this gate"
+      },
+      {
+        "id": "#415-lark-window",
+        "owner": "n/a",
+        "status": "RESOLVED_IN_RC",
+        "evidence": "dd5919a ancestor; test blob identical"
+      },
+      {
+        "id": "#493/#488/#490-source-fixes",
+        "owner": "their authors",
+        "status": "PENDING",
+        "evidence": "#495 \u00a74.1/4.2/4.4/4.5/4.6; no published fix SHA"
+      }
+    ]
+  },
+  "not_run": [
+    "real Legacy/Next co-install",
+    "Timer install",
+    "App1 IM",
+    "main merge",
+    "real install",
+    "release",
+    "service start",
+    "OAuth/credential",
+    "Feishu/IM send",
+    "paid model",
+    "GPU"
+  ]
+}
