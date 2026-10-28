@@ -53,6 +53,21 @@ PERSONAL = "personal-idle"
 COMPANY = "company"
 WORK_ENGINE = "work-engine"
 
+#: The repository-local bootstrap Skills. `authority.local_skills` may not
+#: introduce a name outside this set: a free-form local list would be a second
+#: catalogue smuggled in through the authority block.
+LOCAL_BOOTSTRAP = frozenset({"serveros"})
+
+#: What a personal idle task may attach. Report/work abilities are excluded so
+#: the attach set cannot contradict the task's own `forbid` list.
+PERSONAL_ATTACH = frozenset({
+    "serveros", "runtime-management", "workspace-management", "test-management",
+})
+
+#: Words a caller may echo as a device observation. They are not claims this
+#: module makes, and `installed/ready/effective` stay UNKNOWN/null regardless.
+DEVICE_STATES = frozenset({"UNKNOWN", "OBSERVED", "NOT_OBSERVED"})
+
 #: A personal idle task must say all of these, in data, or loading fails.
 PERSONAL_FORBID = frozenset({
     "b3_requirement_board",
@@ -116,6 +131,20 @@ def validate(document: Mapping, catalogue: Iterable[str]) -> dict:
         raise Refused("the catalogue is empty; nothing can be resolved")
     local = frozenset(_names(authority.get("local_skills"),
                              "authority.local_skills"))
+    outside = sorted(local - LOCAL_BOOTSTRAP)
+    if outside:
+        raise Refused(
+            f"authority.local_skills adds {outside}; only the repository "
+            f"bootstrap {sorted(LOCAL_BOOTSTRAP)} may be local, or the "
+            "catalogue is no longer the one authority")
+    policy = document.get("policy") or {}
+    personal_attach = frozenset(_names(
+        policy.get("personal_attach_allowed") or sorted(PERSONAL_ATTACH),
+        "policy.personal_attach_allowed"))
+    if not personal_attach <= LOCAL_BOOTSTRAP | names:
+        raise Refused("policy.personal_attach_allowed names an unresolvable ability")
+    forbidden_everywhere = _names(document.get("forbidden_everywhere"),
+                                  "forbidden_everywhere")
     known = names | local
 
     native_ids = set((document.get("native_observations") or {}))
@@ -187,6 +216,14 @@ def validate(document: Mapping, catalogue: Iterable[str]) -> dict:
                 if task.get("data_boundary") != "local_only":
                     raise Refused(f"{role_name}/{task_name}: personal data must be "
                                   "local_only")
+                if not set(attach) <= personal_attach:
+                    raise Refused(
+                        f"{role_name}/{task_name}: a personal task may attach "
+                        f"only {sorted(personal_attach)}; got "
+                        f"{sorted(set(attach) - personal_attach)}")
+                if set(attach) & set(reports):
+                    raise Refused(f"{role_name}/{task_name}: a personal task "
+                                  "attaches an ability it forbids reporting with")
             if task.get("attach_all") or "*" in attach:
                 raise Refused(f"{role_name}/{task_name}: attach-all is not a role")
     for observation in native_ids:
@@ -196,12 +233,15 @@ def validate(document: Mapping, catalogue: Iterable[str]) -> dict:
                 "(catalogue or local); a native capability must not be packaged "
                 "as a second identity")
     return {"roles": roles, "gaps": gaps, "native": native_ids,
-            "catalogue": names, "local": local}
+            "catalogue": names, "local": local,
+            "forbidden_everywhere": forbidden_everywhere,
+            "personal_attach": personal_attach}
 
 
 def plan(document: Mapping, *, role: str, task: str, catalogue: Iterable[str],
          catalogue_revision: str, acceptance: Mapping | None = None,
-         approval: bool | None = None, company_active: bool = False,
+         approval: bool | None = None, company_active: bool | None = None,
+         requirement_ref: str | None = None,
          device_state: str = "UNKNOWN", requested_sync: Iterable[str] = (),
          ) -> dict:
     """Resolve one role/task into an attach set and an admission answer.
@@ -229,9 +269,14 @@ def plan(document: Mapping, *, role: str, task: str, catalogue: Iterable[str],
             f"cross-device sync to {sync} is not a role side effect; data moves "
             "only by an explicit, separately authorized operation")
 
+    if device_state not in DEVICE_STATES:
+        raise Refused(f"device_state must be one of {sorted(DEVICE_STATES)}")
     # -- admission: company load first; personal needs approval + idle --------
     if priority == PERSONAL:
-        if company_active:
+        if company_active is None:
+            decision, why = "REFUSED_COMPANY_LOAD_UNKNOWN", (
+                "whether company work is idle must be stated, not assumed")
+        elif company_active:
             decision, why = "DEFER_COMPANY_FIRST", (
                 "company GPU work is active; a personal idle job waits")
         elif approval is not True:
@@ -255,19 +300,30 @@ def plan(document: Mapping, *, role: str, task: str, catalogue: Iterable[str],
         work_item["why"] = "no acceptance from the Work Engine was presented"
     elif not isinstance(acceptance, Mapping):
         raise Refused("acceptance must be a mapping")
+    elif not isinstance(requirement_ref, str) or not requirement_ref.strip():
+        work_item["why"] = ("this task needs the requirement_ref it is planned "
+                            "for; an acceptance cannot be checked without it")
     elif acceptance.get("authority") != WORK_ENGINE:
         work_item["why"] = (f"acceptance came from {acceptance.get('authority')!r}, "
                             "not the Work Engine")
     elif acceptance.get("accepted") is not True:
         work_item["why"] = "the Work Engine did not accept the requirement"
+    elif acceptance.get("requirement_ref") != requirement_ref:
+        work_item["why"] = (
+            f"the acceptance names {acceptance.get('requirement_ref')!r}, not "
+            f"the requirement {requirement_ref!r} being planned")
     else:
-        ref = _text(acceptance.get("canonical_ref"), "acceptance.canonical_ref")
-        work_item.update(creates=True, canonical_ref=ref,
-                         why="the Work Engine accepted the requirement")
+        ref = acceptance.get("canonical_ref")
+        if not isinstance(ref, str) or not ref.strip():
+            work_item["why"] = "the acceptance names no canonical Work Item"
+        else:
+            work_item.update(creates=True, canonical_ref=ref.strip(),
+                             why="the Work Engine accepted this requirement")
 
     reports = [] if priority == PERSONAL else _names(
         spec.get("reports"), "reports")
     forbidden = sorted(set(_names(spec.get("forbid"), "forbid"))
+                       | set(checked["forbidden_everywhere"])
                        | {"install_registry", "automatic_cross_device_sync",
                           "automatic_cross_domain_data_sync"})
 
@@ -279,6 +335,7 @@ def plan(document: Mapping, *, role: str, task: str, catalogue: Iterable[str],
         "device_class": (document.get("devices") or {}).get(
             roles[role]["device"], {}).get("class"),
         "priority": priority,
+        "requirement_ref": requirement_ref,
         "catalogue_revision": revision,
         "attach": sorted(spec["attach"]),
         "native": sorted(_names(roles[role].get("native"),

@@ -11,7 +11,7 @@ defines an Ability, installs a payload, samples a GPU, or creates a Work Item.
 | --- | --- |
 | `role-overlays.yaml` | the data: three roles, their per-task attach sets, native observations and three GPU gaps |
 | `role_overlays.py` | a resolver that validates against a pinned catalogue and returns an attach set + an admission answer |
-| `../../tests/test_fleet_v1_role_overlays.py` | 26 offline tests, including the two behaviours below |
+| `../../tests/test_fleet_v1_role_overlays.py` | 37 offline tests, including the two behaviours below |
 
 ```python
 plan(document, role="dell-gpu-compute", task="company_model_serving",
@@ -47,7 +47,8 @@ the resolvable catalogue, and the union across all roles is still strict.
   writes it.
 * **#421 (runtime-truth).** A source-level plan says nothing about an installed
   face. `observation.installed/ready` are `UNKNOWN` and `effective` is null; a
-  device report is still required.
+  device report is still required. `device_state` may only echo `UNKNOWN`,
+  `OBSERVED` or `NOT_OBSERVED`; any other word is refused.
 * **#437 (local package).** The package carries bytes and hashes; the overlay
   carries names and task policy. The overlay does not install, roll back or
   claim a package version.
@@ -57,8 +58,11 @@ the resolvable catalogue, and the union across all roles is still strict.
   set just because the same device may later write a report.
 * **L1 native GPU observation.** `gpu.readonly` and `core-lite.status` are
   observations from
-  `native/node-core/contract/core-lite-status.v1.md`; a Windows host uses the
-  Windows adapter. The overlay lists them under `native`, and validation refuses
+  `native/node-core/contract/core-lite-status.v1.md` §6c; a Windows host uses
+  the Windows adapter. The producer exists, but the same contract's §6d records
+  the Fleet **reader** side of `gpu.readonly` as `STILL A GAP` — the overlay
+  consumes the observation when present and does not claim the read path is
+  wired. The overlay lists them under `native`, and validation refuses
   a native id that is also a catalogue Skill — wrapping native telemetry in a
   Skill would create a second identity for one provider. No GPU is sampled here.
 * **A4 / A7 / A8.** The GPU gaps name the existing seams they consume:
@@ -71,29 +75,40 @@ the resolvable catalogue, and the union across all roles is still strict.
 * **ability-management #39.** The registry, revision, compatibility, adoption
   and desired state remain ability-management's. This overlay is ServerOS
   selection policy over that one catalogue; it embeds no ability definition.
+  `authority.local_skills` may only name the repository bootstrap (`serveros`);
+  any other local name is refused, so a second catalogue cannot be smuggled in
+  through the authority block.
+* **`forbidden_everywhere`.** The document-level list is enforced into every
+  plan (not inert data), and a plan may not omit it.
 
 ## The two non-negotiables
 
 **NEGATIVE — personal GPU.** On the company A6000, `personal_idle_experiment`
-requires `owner_approval` and `company_idle`. While company work is active the
-answer is `DEFER_COMPANY_FIRST`; without approval it is
-`REFUSED_APPROVAL_REQUIRED`. When allowed, it still creates **no canonical Work
-Item** — a Work Engine acceptance record handed to it is ignored — writes no
-company report, sends nothing to Feishu, forbids B3/B4, is `local_only`, and
-cannot request a cross-device sync (the resolver refuses one).
+requires `owner_approval` and a **stated** `company_idle`. An omitted company
+load is `REFUSED_COMPANY_LOAD_UNKNOWN` (idle is not assumed); active company work
+is `DEFER_COMPANY_FIRST`; a non-`True` approval (including `"yes"`) is
+`REFUSED_APPROVAL_REQUIRED`. Its attach set is restricted to the personal
+allowlist (`serveros`, runtime/workspace/test) — a report ability cannot be
+attached to a task that forbids reporting. When allowed, it still creates **no
+canonical Work Item** — a Work Engine acceptance record handed to it is ignored
+— writes no company report, sends nothing to Feishu, forbids B3/B4, is
+`local_only`, and cannot request a cross-device sync (the resolver refuses one).
 
 **POSITIVE — Tokyo company requirement.** `company_requirement` never creates an
 item on its own. It creates exactly one canonical Work Item only when the caller
-presents `acceptance.authority == "work-engine"`, `accepted: true` and a
-`canonical_ref`. A foreign authority, a refusal, or no acceptance leaves the
-item uncreated. The same Work Engine owns the item either way.
+presents the **requirement it is planning** plus an
+`acceptance.authority == "work-engine"`, `accepted is True` (exactly `True`), a
+non-empty `canonical_ref` and a matching `requirement_ref`. A foreign authority,
+a truthy non-bool, a refusal, no acceptance, an empty item ref or an acceptance
+for another requirement leaves the item uncreated, and the reason names which
+test failed. The same Work Engine owns the item either way.
 
 ## Evidence
 
 | level | state |
 | --- | --- |
 | CODE | this directory |
-| UNIT | `python3 -m unittest -v tests.test_fleet_v1_role_overlays` — 26 PASS |
+| UNIT | `python3 -m unittest -v tests.test_fleet_v1_role_overlays` — 37 PASS |
 | HOSTED_CI | the Draft PR's workflow |
 | INSTALLED / READY / EFFECTIVE | **NOT CLAIMED** — source-level plan only |
 | REAL_DEVICE / GPU | **NOT_RUN** — no model, no GPU allocation, no service |

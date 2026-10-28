@@ -100,19 +100,31 @@ class TheOverlayIsADataContract(unittest.TestCase):
                                 "gpu.benchmark-acceptance"})
 
     def test_the_gaps_reuse_native_telemetry_and_a4_a7_a8(self):
-        doc = document()
-        reuse = " ".join(str(value) for gap in doc["gaps"]
-                         for value in (gap.get("reuses") or {}).values())
-        for marker in ("gpu.readonly", "A4", "A7", "A8"):
-            self.assertIn(marker, reuse)
+        by_id = {gap["id"]: gap for gap in document()["gaps"]}
+        lifecycle = by_id["gpu.model-serving-lifecycle"]["reuses"]
+        self.assertEqual(lifecycle["lease"], "A4")
+        self.assertEqual(lifecycle["acceptance"], "A7")
+        self.assertEqual(lifecycle["rollback"], "A8")
+        self.assertIn("§6c", lifecycle["telemetry"])
+        isolated = by_id["gpu.isolated-environment"]["reuses"]
+        self.assertEqual(isolated["lease"], "A4")
+        benchmark = by_id["gpu.benchmark-acceptance"]["reuses"]
+        self.assertEqual(benchmark["acceptance"], "A7")
+        self.assertEqual(benchmark["rollback"], "A8")
         self.assertTrue(GPU_CONTRACT.is_file())
         contract = GPU_CONTRACT.read_text(encoding="utf-8")
         self.assertIn("gpu.readonly", contract)
         self.assertIn("Windows adapter", contract)
         abilities = ABILITIES.read_text(encoding="utf-8")
-        self.assertIn("## A4", abilities)
-        self.assertIn("## A7", abilities)
-        self.assertIn("## A8", abilities)
+        self.assertIn("## A4 Runtime & Resource Management", abilities)
+        self.assertIn("## A7 Automated Testing & Acceptance", abilities)
+        self.assertIn("## A8 Build & Release", abilities)
+
+    def test_the_reader_side_gpu_gap_is_not_overclaimed(self):
+        contract = GPU_CONTRACT.read_text(encoding="utf-8")
+        self.assertIn("STILL A GAP", contract,
+                      "the producer exists, but the Fleet reader is still a gap; "
+                      "the overlay must not claim it is wired")
 
 
 class ValidationIsNotVacuous(unittest.TestCase):
@@ -145,7 +157,9 @@ class ValidationIsNotVacuous(unittest.TestCase):
         doc["authority"]["local_skills"].append("gpu.readonly")
         with self.assertRaises(roles.Refused) as caught:
             roles.validate(doc, CATALOGUE)
-        self.assertIn("second identity", str(caught.exception))
+        # A local skill outside the bootstrap set is refused before the
+        # native-id check; both paths prove the catalogue is not widened.
+        self.assertIn("only the repository bootstrap", str(caught.exception))
 
     def test_a_personal_task_must_forbid_the_company_side_effects(self):
         doc = copy.deepcopy(document())
@@ -186,7 +200,7 @@ class AttachIsPerTaskNotTheRegistry(unittest.TestCase):
 class CompanyGPUIsAModelServingTask(unittest.TestCase):
     def test_it_attaches_minimally_and_names_the_three_gaps(self):
         state = plan("dell-gpu-compute", "company_model_serving",
-                     acceptance=ACCEPTED)
+                     acceptance=ACCEPTED, requirement_ref="req:R-1")
         self.assertEqual(state["attach"],
                          ["runtime-management", "serveros", "test-management"])
         self.assertEqual(state["gaps"], ["gpu.benchmark-acceptance",
@@ -199,17 +213,18 @@ class CompanyGPUIsAModelServingTask(unittest.TestCase):
         self.assertEqual(state["cross_device_sync"], [])
 
     def test_a_work_item_needs_the_work_engine(self):
-        no_accept = plan("dell-gpu-compute", "company_model_serving")
+        no_accept = plan("dell-gpu-compute", "company_model_serving",
+                         requirement_ref="req:R-1")
         self.assertFalse(no_accept["work_item"]["creates"])
         foreign = plan("dell-gpu-compute", "company_model_serving",
                        acceptance={"authority": "role", "accepted": True,
                                    "canonical_ref": "item:X"})
         self.assertFalse(foreign["work_item"]["creates"])
         refused = plan("dell-gpu-compute", "company_model_serving",
-                       acceptance={**ACCEPTED, "accepted": False})
+                       acceptance={**ACCEPTED, "accepted": False}, requirement_ref="req:R-1")
         self.assertFalse(refused["work_item"]["creates"])
         accepted = plan("dell-gpu-compute", "company_model_serving",
-                        acceptance=ACCEPTED)
+                        acceptance=ACCEPTED, requirement_ref="req:R-1")
         self.assertTrue(accepted["work_item"]["creates"])
         self.assertEqual(accepted["work_item"]["canonical_ref"], "item:WORK-0001")
 
@@ -225,7 +240,7 @@ class PersonalGPUProducesNothing(unittest.TestCase):
         for approval in (None, False):
             with self.subTest(approval=approval):
                 state = plan("dell-gpu-compute", "personal_idle_experiment",
-                             approval=approval)
+                             approval=approval, company_active=False)
                 self.assertEqual(state["admission"]["decision"],
                                  "REFUSED_APPROVAL_REQUIRED")
                 self.assertFalse(state["work_item"]["creates"])
@@ -233,7 +248,7 @@ class PersonalGPUProducesNothing(unittest.TestCase):
     def test_an_authorized_idle_job_creates_no_item_report_or_sync(self):
         state = plan("dell-gpu-compute", "personal_idle_experiment",
                      approval=True, company_active=False,
-                     acceptance=ACCEPTED)
+                     acceptance=ACCEPTED, requirement_ref="req:R-1")
         self.assertEqual(state["admission"]["decision"], "ALLOWED_PERSONAL_IDLE")
         # A valid acceptance is IGNORED: this is not a company requirement.
         self.assertFalse(state["work_item"]["creates"])
@@ -260,7 +275,7 @@ class TokyoCompanyRequirementIsWorkEngineAccepted(unittest.TestCase):
 
     def test_the_work_engine_acceptance_creates_the_canonical_item(self):
         state = plan("tokyo-development-primary", "company_requirement",
-                     acceptance=ACCEPTED)
+                     acceptance=ACCEPTED, requirement_ref="req:R-1")
         self.assertTrue(state["work_item"]["creates"])
         self.assertEqual(state["work_item"]["authority"], "work-engine")
         self.assertEqual(state["work_item"]["canonical_ref"], "item:WORK-0001")
@@ -277,7 +292,7 @@ class TokyoCompanyRequirementIsWorkEngineAccepted(unittest.TestCase):
 
     def test_the_report_task_does_not_mint_a_second_item(self):
         state = plan("tokyo-development-primary", "company_delivery_report",
-                     acceptance=ACCEPTED)
+                     acceptance=ACCEPTED, requirement_ref="req:R-1")
         self.assertFalse(state["work_item"]["creates"])
         self.assertTrue(state["work_item"]["acceptance_ignored"])
         self.assertEqual(state["reports"], ["feishu-report"])
@@ -286,12 +301,74 @@ class TokyoCompanyRequirementIsWorkEngineAccepted(unittest.TestCase):
 class WindowsNativeIsNotASkill(unittest.TestCase):
     def test_the_native_adapter_is_an_observation_not_a_packaged_skill(self):
         state = plan("work-fj-corporate-windows", "company_task",
-                     acceptance=ACCEPTED)
+                     acceptance=ACCEPTED, requirement_ref="req:R-1")
         self.assertIn("windows.core-lite-adapter", state["native"])
         self.assertNotIn("windows.core-lite-adapter", state["attach"])
         self.assertNotIn("windows.core-lite-adapter", CATALOGUE | LOCAL)
         self.assertTrue(state["work_item"]["creates"])
         self.assertEqual(state["cross_device_sync"], [])
+
+
+class AdditionalNegativesAreClosed(unittest.TestCase):
+    def test_a_personal_task_cannot_attach_a_report_ability(self):
+        doc = copy.deepcopy(document())
+        doc["roles"]["dell-gpu-compute"]["tasks"][
+            "personal_idle_experiment"]["attach"] = ["serveros", "feishu-report"]
+        with self.assertRaises(roles.Refused) as caught:
+            roles.validate(doc, CATALOGUE)
+        self.assertIn("may attach only", str(caught.exception))
+
+    def test_a_free_form_local_skill_is_refused(self):
+        doc = copy.deepcopy(document())
+        doc["authority"]["local_skills"].append("ghost-ability")
+        with self.assertRaises(roles.Refused) as caught:
+            roles.validate(doc, CATALOGUE)
+        self.assertIn("only the repository bootstrap", str(caught.exception))
+
+    def test_company_load_must_be_stated_for_a_personal_task(self):
+        state = plan("dell-gpu-compute", "personal_idle_experiment",
+                     approval=True)
+        self.assertEqual(state["admission"]["decision"],
+                         "REFUSED_COMPANY_LOAD_UNKNOWN")
+        self.assertFalse(state["work_item"]["creates"])
+
+    def test_truthy_non_bool_approval_is_not_approval(self):
+        state = plan("dell-gpu-compute", "personal_idle_experiment",
+                     approval="yes", company_active=False)
+        self.assertEqual(state["admission"]["decision"],
+                         "REFUSED_APPROVAL_REQUIRED")
+
+    def test_truthy_non_bool_acceptance_is_not_acceptance(self):
+        state = plan("tokyo-development-primary", "company_requirement",
+                     requirement_ref="req:R-1",
+                     acceptance={**ACCEPTED, "accepted": 1})
+        self.assertFalse(state["work_item"]["creates"])
+
+    def test_an_empty_canonical_ref_creates_nothing(self):
+        state = plan("tokyo-development-primary", "company_requirement",
+                     requirement_ref="req:R-1",
+                     acceptance={**ACCEPTED, "canonical_ref": "  "})
+        self.assertFalse(state["work_item"]["creates"])
+        self.assertIn("canonical Work Item", state["work_item"]["why"])
+
+    def test_an_acceptance_for_another_requirement_creates_nothing(self):
+        state = plan("tokyo-development-primary", "company_requirement",
+                     requirement_ref="req:OTHER",
+                     acceptance=ACCEPTED)
+        self.assertFalse(state["work_item"]["creates"])
+        self.assertIn("req:R-1", state["work_item"]["why"])
+
+    def test_an_arbitrary_device_state_word_is_refused(self):
+        with self.assertRaises(roles.Refused):
+            plan("dell-gpu-compute", "company_model_serving",
+                 requirement_ref="req:R-1", acceptance=ACCEPTED,
+                 device_state="READY_EFFECTIVE")
+
+    def test_forbidden_everywhere_is_enforced(self):
+        state = plan("tokyo-development-primary", "company_requirement",
+                     requirement_ref="req:R-1", acceptance=ACCEPTED)
+        for forbidden in document()["forbidden_everywhere"]:
+            self.assertIn(forbidden, state["forbidden"])
 
 
 class SourceIsNotADeviceState(unittest.TestCase):
@@ -300,7 +377,8 @@ class SourceIsNotADeviceState(unittest.TestCase):
             for task_name in role["tasks"]:
                 with self.subTest(role=role_name, task=task_name):
                     state = plan(role_name, task_name, approval=True,
-                                 acceptance=ACCEPTED)
+                                 company_active=False, acceptance=ACCEPTED,
+                                 requirement_ref="req:R-1")
                     observation = state["observation"]
                     self.assertEqual(observation["installed"], "UNKNOWN")
                     self.assertEqual(observation["ready"], "UNKNOWN")
@@ -322,7 +400,8 @@ class NothingSyncsAcrossDevices(unittest.TestCase):
             for task_name in role["tasks"]:
                 with self.subTest(role=role_name, task=task_name):
                     state = plan(role_name, task_name, approval=True,
-                                 acceptance=ACCEPTED)
+                                 company_active=False, acceptance=ACCEPTED,
+                                 requirement_ref="req:R-1")
                     self.assertEqual(state["cross_device_sync"], [])
 
 

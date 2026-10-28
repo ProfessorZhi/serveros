@@ -36,6 +36,13 @@ authority:
     ability definition here.
   work_item: work-engine
   device_state: fleet-observer
+policy:
+  # The only Skills a personal idle task may attach. A report/work ability in
+  # that set would let a personal job produce the company side effects the same
+  # task class forbids.
+  personal_attach_allowed: [serveros, runtime-management,
+                            workspace-management, test-management]
+
 principle:
   - select, do not define
   - attach per task, never install the registry
@@ -68,7 +75,7 @@ gaps:
   - id: gpu.model-serving-lifecycle
     state: GAP
     reuses:
-      telemetry: native/node-core/contract/core-lite-status.v1.md#6c (gpu.readonly)
+      telemetry: native/node-core/contract/core-lite-status.v1.md §6c (gpu.readonly)
       lease: A4
       acceptance: A7
       rollback: A8
@@ -78,7 +85,7 @@ gaps:
   - id: gpu.isolated-environment
     state: GAP
     reuses:
-      telemetry: native/node-core/contract/core-lite-status.v1.md#6c (gpu.readonly)
+      telemetry: native/node-core/contract/core-lite-status.v1.md §6c (gpu.readonly)
       lease: A4
       workspace: workspace-management
     note: >-
@@ -89,7 +96,7 @@ gaps:
     reuses:
       acceptance: A7
       rollback: A8
-      telemetry: native/node-core/contract/core-lite-status.v1.md#6c (gpu.readonly)
+      telemetry: native/node-core/contract/core-lite-status.v1.md §6c (gpu.readonly)
     note: >-
       Benchmark and acceptance semantics for a model-serving task: the verdict
       stays with A7, recoverable previous with A8.
