@@ -32,11 +32,13 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from .contract import (
+    BLOCKED_WORDS,
     DISPATCHABLE,
     EXIT_BLOCKED_INPUT,
     EXIT_REFUSED,
     EXIT_SETTLED,
     EXIT_UNCONFIRMED,
+    LIVE_STATUSES,
     NOT_SUCCESS,
     SCHEMA_TICK,
     STATE_BLOCKED_INPUT,
@@ -70,6 +72,7 @@ from .state import STALE_AFTER_SECONDS, DurableState
 #: a message every tick.
 WARN_STALE = "STALE_MONITOR"
 WARN_BACKLOG = "BACKLOG"
+WARN_UNOBSERVED = "UNOBSERVED"
 WARN_UNKNOWN_RECEIPTS = "UNKNOWN_RECEIPTS"
 WARN_UNKNOWN_OBSERVATION = "UNKNOWN_OBSERVATION"
 WARN_OFFLINE = "SOURCE_OFFLINE"
@@ -220,6 +223,17 @@ class MonitorCore:
                    "reason": reason, "dispatched": False, "receipt": None,
                    "confirmed": False}
 
+            if status == STATUS_DENIED:
+                # An authorization *claim* the source refused carries the delivery
+                # word it corresponds to (`BLOCKED_CI_SUBJECT`), so the tick says
+                # which dimension failed instead of a bare `DENIED`. It is a
+                # blocked subject: the fact is real and it may not be sent.
+                native = observation.get("native")
+                word = native.get("blocked") if isinstance(native, Mapping) else None
+                if isinstance(word, str) and word in BLOCKED_WORDS:
+                    row["receipt"] = word
+                    blocked_subject = True
+
             if status in (STATUS_UNKNOWN, STATUS_OFFLINE, STATUS_STALE, STATUS_DENIED):
                 # A correct UNKNOWN is the monitor *working*; only an exception
                 # escaping the source is a failure of the tick itself.
@@ -278,6 +292,18 @@ class MonitorCore:
 
         backlog = sum(1 for row in rows if row["status"] not in
                       (STATUS_TERMINAL_VERIFIED, STATUS_FAILED))
+        # A backlog is not one thing. "This run is still running" is *work in
+        # flight*: the monitor looked, it knows what it saw, and a supervisor may
+        # be told to look again. "I could not see" — UNKNOWN, OFFLINE, STALE,
+        # DENIED — is not work in flight and is not a verdict; it is a fact the
+        # monitor could not decide. #495 Wave 16 §4.2 measured the consequence of
+        # flattening the two: an expired or unobservable watch reached the
+        # supervisor as `TICKED` exit 0, which is the number that means "nothing
+        # to do here". So the two are counted apart and they leave by different
+        # doors, and RUNNING is never dressed up as FAILED to make a code say no.
+        unobserved = sum(1 for row in rows
+                         if row["status"] not in (STATUS_TERMINAL_VERIFIED, STATUS_FAILED)
+                         and row["status"] not in LIVE_STATUSES)
         ok = not blocked_ledger and not blocked_subject and not hard_failure
         self._state.tick(document, ok=ok, now=self._clock())
         age = self._state.cursor_age(document)
@@ -289,6 +315,11 @@ class MonitorCore:
         if backlog:
             warnings.append({"code": WARN_BACKLOG, "status": None, "reason": None,
                              "why": f"{backlog} watch(es) have no terminal verdict"})
+        if unobserved:
+            warnings.append({"code": WARN_UNOBSERVED, "status": None, "reason": None,
+                             "why": f"{unobserved} watch(es) have no terminal verdict "
+                                    f"and no work in flight; the monitor could not "
+                                    f"decide them, so this tick is not a success"})
         if blocked_ledger:
             warnings.append({"code": WARN_BLOCKED_LEDGER, "status": None, "reason": None,
                              "why": "a terminal fact is waiting and no #423 notifier is "
@@ -316,11 +347,20 @@ class MonitorCore:
             state, exit_code = STATE_UNCONFIRMED, EXIT_UNCONFIRMED
         elif stale:
             state, exit_code = STATE_UNCONFIRMED, EXIT_UNCONFIRMED
-        elif backlog == 0:
+        elif unobserved:
+            # No terminal verdict and no work in flight: the monitor looked and
+            # could not decide (expired, never issued, offline, denied, capped).
+            # That is `UNCONFIRMED`, never `SETTLED` and never a 0 a supervisor
+            # can read as "nothing here".
+            state, exit_code = STATE_UNCONFIRMED, EXIT_UNCONFIRMED
+        elif backlog:
+            # Every outstanding watch is real work still in flight, and nothing
+            # abnormal was seen: `TICKED`, and the tick's own `counts` say which
+            # progression statuses are live.
+            state, exit_code = STATE_TICKED, EXIT_SETTLED
+        else:
             # Every question has a terminal verdict and every delivery is settled.
             state, exit_code = STATE_SETTLED, EXIT_SETTLED
-        else:
-            state, exit_code = STATE_TICKED, EXIT_SETTLED
 
         return {
             "schema": SCHEMA_TICK,

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol
 
 from .contract import (
+    BLOCKED_CI_SUBJECT,
     REASON_BAD_PAYLOAD,
     REASON_BOOT_MISMATCH,
     REASON_DRAFT_CI,
@@ -255,10 +256,14 @@ class LegacyFactsSource:
             "readingsUsed": self._used,
         }
 
-    def _denied(self, *, view: str, why: str, identity: dict[str, Any]) -> dict[str, Any]:
+    def _denied(self, *, view: str, why: str, identity: dict[str, Any],
+                blocked: str | None = None) -> dict[str, Any]:
+        """A refusal before the read. `blocked` names the word the *delivery*
+        layer would use, so the tick can report the same refusal instead of a
+        bare `DENIED` with no hint about which dimension failed."""
         return self._observation(view=view, status=STATUS_DENIED, identity=identity,
                                  reason=REASON_NOT_GRANTED, retryable=False,
-                                 native={"why": why})
+                                 native={"why": why, "blocked": blocked})
 
     def _mismatch(self, payload: Mapping[str, Any], identity: dict[str, Any]) -> str | None:
         """A reason when the answer describes something other than the question."""
@@ -357,6 +362,15 @@ class LegacyFactsSource:
             return self._observation(view=VIEW_RUN, status=STATUS_UNKNOWN,
                                      identity=identity, reason=REASON_BOOT_MISMATCH,
                                      retryable=False)
+        # A `delivery_id`-only watch has no `run_id` of its own (#493 contract
+        # §155 allows it). The far end may answer with the run's own `runId`;
+        # adopting *that* is not inventing one — it is the answer saying which
+        # run this delivery is. A watch that already named a run keeps its own
+        # id, and `_mismatch` has already refused an answer that disagreed.
+        if identity.get("runId") is None:
+            native_run = _first(payload, "runId", "run_id")
+            if isinstance(native_run, str) and native_run.strip():
+                identity = dict(identity, runId=native_run.strip())
         if status in ("accepted",):
             return self._observation(view=VIEW_RUN, status=STATUS_ACCEPTED, identity=identity)
         if status in ("queued", "pending"):
@@ -413,7 +427,23 @@ class LegacyFactsSource:
 
     # -- ci -----------------------------------------------------------------
 
-    def observe_ci(self, *, source_sha: str, project: str | None = None) -> dict[str, Any]:
+    def observe_ci(self, *, source_sha: str, project: str | None = None,
+                   device_ref: str | None = None) -> dict[str, Any]:
+        """One pipeline fact, authorized on **both** dimensions before the read.
+
+        A CI watch may carry its own typed `device_ref` as the delivery subject
+        (#497). Declaring one is not the same as being granted one: the subject
+        is an authorization claim, and the grant is the only thing that can
+        answer it. So `device_ref`, when declared, is checked against
+        `grant.devices` here — before the budget is charged and before any
+        provider call — and a device outside the grant is `DENIED` with
+        `blocked=BLOCKED_CI_SUBJECT`. #495's Wave 16 §4.1 measured the defect
+        this closes: a granted project plus an ungranted declared device used to
+        produce a `DELIVERED` message about somebody else's device.
+
+        The project dimension is checked exactly as before; a watch needs both
+        dimensions to be authorized, never one of them.
+        """
         identity = self._identity(view=VIEW_CI, device_ref=None, source_sha=source_sha)
         if not isinstance(source_sha, str) or not source_sha.strip():
             return self._observation(view=VIEW_CI, status=STATUS_UNKNOWN,
@@ -422,6 +452,15 @@ class LegacyFactsSource:
         why = self._grant.permits(view=VIEW_CI, project=project)
         if why is not None:
             return self._denied(view=VIEW_CI, why=why, identity=identity)
+        if device_ref is not None:
+            why = self._grant.permits(view=VIEW_CI, device_ref=device_ref)
+            if why is not None:
+                # Zero reads: authorization precedes the budget and the client.
+                return self._denied(view=VIEW_CI, why=why, identity=identity,
+                                    blocked=BLOCKED_CI_SUBJECT)
+            # Only an *authorized* device is carried into the identity, because
+            # that identity is what the notifier checks before it sends.
+            identity = dict(identity, deviceRef=device_ref)
         try:
             self._charge()
         except _BudgetExhausted:
@@ -495,7 +534,8 @@ def observe_watch(source: LegacyFactsSource, watch: Mapping[str, Any]) -> dict[s
     """Sample one validated watch. The only place a watch becomes a read."""
     if watch["kind"] == VIEW_CI:
         return source.observe_ci(source_sha=watch["expected_source_sha"],
-                                 project=watch.get("project"))
+                                 project=watch.get("project"),
+                                 device_ref=watch.get("device_ref"))
     return source.observe_run(
         device_ref=watch["device_ref"], session_ref=watch["session_ref"],
         run_id=watch.get("run_id"), delivery_id=watch.get("delivery_id"),
