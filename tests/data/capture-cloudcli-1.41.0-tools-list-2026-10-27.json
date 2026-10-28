@@ -1,0 +1,4842 @@
+{
+  "schema": "serveros/cloudcli-tools-list-capture.v1",
+  "captured_at_utc": "2026-10-27T08:12:00Z",
+  "captured_from": "http://127.0.0.1:3001/mcp (MCP 2025-06-18, initialize -> notifications/initialized -> tools/list)",
+  "device": {
+    "class": "company Windows workstation",
+    "hostname": "FJ-NJ-CL-250028",
+    "windows_build": "10.0.19045",
+    "captured_by": "L2 CloudCLI compatibility lane (issue 409), read-only"
+  },
+  "cloudcli_package": {
+    "name": "@yalehwang/cloudcli",
+    "version": "1.41.0",
+    "install": "C:/develop/tools/cloudcli-nvme",
+    "patches": [
+      {
+        "id": "0001",
+        "what": "watcher file-sync coalescing",
+        "state": "PATCHED",
+        "sha256": "df0524bf1113a49d4961aafadbd1ad0895d37cb5058f406c8b90f2b5dd5327ee"
+      },
+      {
+        "id": "0002",
+        "what": "chunked transcript tail read (8 MiB)",
+        "state": "PATCHED",
+        "sha256": "93bfe7e90679701a5e316aa0beefe68cecddb7a0777cf35a0e6e257de63f622f"
+      },
+      {
+        "id": "0003",
+        "what": "user-level session defaults helpers",
+        "state": "PATCHED",
+        "sha256": "2b7e71f8116604eed6a29d14660e1a960b85e930842da6e833889217cc09d5a9"
+      },
+      {
+        "id": "0004",
+        "what": "MCP session_create inherits remembered defaults",
+        "state": "PATCHED",
+        "sha256": "057ae225ee5bb02ac5be35ad0c0cf8e5c306e4251e6fe06e584d19f10bbc5020"
+      },
+      {
+        "id": "0005",
+        "what": "HTTP POST /sessions records creator defaults",
+        "state": "PATCHED",
+        "sha256": "af47ae6a32068f6ad9d715582b7b8709f49eab1f38e1bdf91e012ff9759e57a2"
+      }
+    ],
+    "patch_check": "python patches/apply-patches.py --check -> 5/5 PATCHED (2026-10-27T08:12Z)"
+  },
+  "server": "claudecodeui-mcp-gateway",
+  "server_version": "0.1.0",
+  "protocolVersion": "2025-06-18",
+  "verbatim_fields": [
+    "name",
+    "annotations",
+    "execution",
+    "_meta",
+    "inputSchema",
+    "outputSchema"
+  ],
+  "omitted_fields": [
+    "description"
+  ],
+  "omitted_because": "Descriptions are long and prose-only; the semantics this lane relies on are quoted in docs/compat/cloudcli-windows-1.41.0.md.",
+  "tools": [
+    {
+      "name": "approval_answer",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "FORBIDDEN",
+          "APPROVAL_NOT_FOUND"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "allow": {
+            "type": "boolean"
+          },
+          "answers": {},
+          "message": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "requestId",
+          "allow"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "approvals_list",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "FORBIDDEN"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "approvals": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "requestId": {
+                  "type": "string"
+                },
+                "session": {
+                  "type": "string"
+                },
+                "toolName": {
+                  "type": "string"
+                },
+                "inputSummary": {
+                  "type": "string"
+                },
+                "interactive": {
+                  "type": "boolean"
+                },
+                "autoTimeoutMs": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "waitedMs": {
+                  "type": "number"
+                },
+                "questions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "question": {
+                        "type": "string"
+                      },
+                      "header": {
+                        "type": "string"
+                      },
+                      "options": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "label": {
+                              "type": "string"
+                            },
+                            "description": {
+                              "type": "string"
+                            },
+                            "multiSelect": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "label"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "question",
+                      "options"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "requestId",
+                "session",
+                "toolName",
+                "inputSummary",
+                "interactive",
+                "autoTimeoutMs",
+                "waitedMs"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "changes",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "since": {
+            "type": "string"
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "session",
+                "run",
+                "interaction",
+                "quay_task",
+                "quay_gate",
+                "commit"
+              ]
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "generatedAt": {
+            "type": "object",
+            "properties": {
+              "relative": {
+                "type": "string"
+              },
+              "iso": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "relative",
+              "iso"
+            ],
+            "additionalProperties": false
+          },
+          "bootId": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "session",
+                    "run",
+                    "interaction",
+                    "quay_task",
+                    "quay_gate",
+                    "commit"
+                  ]
+                },
+                "project": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title"
+                  ],
+                  "additionalProperties": false
+                },
+                "at": {
+                  "type": "object",
+                  "properties": {
+                    "relative": {
+                      "type": "string"
+                    },
+                    "iso": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "relative",
+                    "iso"
+                  ],
+                  "additionalProperties": false
+                },
+                "signal": {
+                  "type": "string",
+                  "enum": [
+                    "liveness",
+                    "progress",
+                    "blocked"
+                  ]
+                },
+                "ref": {
+                  "type": "object",
+                  "properties": {
+                    "sessionId": {
+                      "type": "string"
+                    },
+                    "runId": {
+                      "type": "string"
+                    },
+                    "taskId": {
+                      "type": "string"
+                    },
+                    "commit": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "db.sessions",
+                        "mem.runs",
+                        "mem.approvals",
+                        "quay.cache",
+                        "quay.index",
+                        "git"
+                      ]
+                    },
+                    "observedAt": {
+                      "type": "object",
+                      "properties": {
+                        "relative": {
+                          "type": "string"
+                        },
+                        "iso": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "relative",
+                        "iso"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "ageMs": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "observedAt",
+                    "ageMs"
+                  ],
+                  "additionalProperties": false
+                },
+                "transition": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "to": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "additionalProperties": false
+                },
+                "atSource": {
+                  "type": "string",
+                  "enum": [
+                    "record.updatedAt",
+                    "index.observedAt"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "project",
+                "at",
+                "signal",
+                "ref",
+                "summary",
+                "source"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "session",
+                    "run",
+                    "interaction",
+                    "quay_task",
+                    "quay_gate",
+                    "commit"
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "ready",
+                    "stale",
+                    "cold",
+                    "warming",
+                    "bootstrap",
+                    "rebase",
+                    "error"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "quay_task"
+                },
+                "project": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "ready",
+                    "stale",
+                    "cold",
+                    "warming",
+                    "bootstrap",
+                    "rebase",
+                    "error"
+                  ]
+                },
+                "coverage": {
+                  "type": "string",
+                  "const": "full"
+                },
+                "taskCount": {
+                  "type": "number"
+                },
+                "observedAt": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "relative": {
+                          "type": "string"
+                        },
+                        "iso": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "relative",
+                        "iso"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "ageMs": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "project",
+                "state",
+                "coverage",
+                "taskCount",
+                "observedAt",
+                "ageMs"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "draft_get",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "queuedMessage": {},
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "draft_set",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "text"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "cleared": {
+            "type": "boolean"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "draft_submit",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "SESSION_BUSY",
+          "DRAFT_EMPTY"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "deliveryId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "queued": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "mcp_usage_stats",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "since": {
+            "type": "string"
+          },
+          "until": {
+            "type": "string"
+          },
+          "groupBy": {
+            "type": "string",
+            "enum": [
+              "tool",
+              "error_code",
+              "client"
+            ]
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "groupBy"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "groupBy": {
+            "type": "string",
+            "enum": [
+              "tool",
+              "error_code",
+              "client"
+            ]
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "correlationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "number"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "n": {
+                  "type": "number"
+                },
+                "ok": {
+                  "type": "number"
+                },
+                "error": {
+                  "type": "number"
+                },
+                "denied": {
+                  "type": "number"
+                },
+                "p50": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "p95": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "max": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "bytesP50": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "bytesP95": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "key",
+                "n",
+                "ok",
+                "error",
+                "denied",
+                "p50",
+                "p95",
+                "max",
+                "bytesP50",
+                "bytesP95"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "overview",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "PROJECT_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "project": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "A project reference: an exact id, an absolute directory path, or a name. A name resolves most-specific-first (exact id, then full path, then an exact title, then a case-insensitive title substring); an ambiguous or unknown reference is refused, never guessed. Write tools accept only an exact id, path or title."
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "running": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "type": "string"
+                },
+                "projectId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "project": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "title": {
+                  "type": "string"
+                },
+                "phase": {
+                  "type": "string"
+                },
+                "elapsedMs": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "sessionId",
+                "projectId",
+                "project",
+                "title",
+                "phase",
+                "elapsedMs"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "awaitingPermission": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "type": "string"
+                },
+                "projectId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "project": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "title": {
+                  "type": "string"
+                },
+                "phase": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sessionId",
+                "projectId",
+                "project",
+                "title",
+                "phase"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "aborted": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "runId": {
+                  "type": "string"
+                },
+                "sessionId": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "startedAt": {
+                  "type": "number"
+                },
+                "completedAt": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "projectId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "project": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "runId",
+                "sessionId",
+                "status",
+                "startedAt",
+                "completedAt",
+                "projectId",
+                "project"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "hosts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "hostId": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "sessionId": {
+                  "type": "string"
+                },
+                "peerName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "leases": {
+                  "type": "array",
+                  "items": {}
+                },
+                "projectId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "project": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "hostId",
+                "state",
+                "sessionId",
+                "peerName",
+                "leases",
+                "projectId",
+                "project"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "quay": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "projectId": {
+                      "type": "string"
+                    },
+                    "project": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "no_quay_config"
+                    },
+                    "note": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "projectId",
+                    "project",
+                    "status",
+                    "note"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "projectId": {
+                      "type": "string"
+                    },
+                    "project": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unknown"
+                    },
+                    "note": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "projectId",
+                    "project",
+                    "status",
+                    "note"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "projectId": {
+                      "type": "string"
+                    },
+                    "project": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "cached"
+                    },
+                    "cached": {
+                      "type": "boolean"
+                    },
+                    "tasks": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "total": {
+                              "type": "number"
+                            },
+                            "ready": {
+                              "type": "number"
+                            },
+                            "needsHuman": {
+                              "type": "number"
+                            },
+                            "done": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "total",
+                            "ready",
+                            "needsHuman",
+                            "done"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "driver": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "suite": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "state": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "state"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "projectId",
+                    "project",
+                    "status",
+                    "cached",
+                    "tasks",
+                    "driver",
+                    "suite"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "archguard": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "projectId": {
+                  "type": "string"
+                },
+                "project": {
+                  "type": "string"
+                },
+                "hasArchguardCache": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "projectId",
+                "project",
+                "hasArchguardCache"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "projects_list",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "includeArchived": {
+            "type": "boolean"
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "projects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "sessionCount": {
+                  "type": "number"
+                },
+                "lastActivity": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "relative": {
+                          "type": "string"
+                        },
+                        "iso": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "relative",
+                        "iso"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "isArchived": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "name",
+                "path",
+                "sessionCount",
+                "lastActivity",
+                "isArchived"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "quay_snapshot",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "PROJECT_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "refresh": {
+            "type": "boolean"
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "snapshot": {},
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "run_get",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "RUN_NOT_FOUND",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "deliveryId": {
+            "type": "string"
+          },
+          "waitSeconds": {
+            "type": "number"
+          },
+          "session": {
+            "type": "string"
+          },
+          "run": {
+            "type": "string"
+          },
+          "wait": {
+            "type": "boolean"
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "run": {},
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_background",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "TASK_NOT_FOUND"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "stopTaskId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "session": {
+            "type": "string"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "state": {
+                    "type": "string"
+                  },
+                  "pid": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "state",
+                  "pid"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "recurring": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "recurring"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "stopped": {
+            "type": "boolean"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "remaining": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "recurring": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "recurring"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_cancel_queued",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "FORBIDDEN",
+          "QUEUED_MESSAGE_NOT_FOUND"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "messageUuid": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "messageUuid"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "cancelled",
+              "already-started"
+            ]
+          },
+          "session": {
+            "type": "string"
+          },
+          "messageUuid": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_close",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "force": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "hostId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "closeReason": {
+            "type": "string"
+          },
+          "leases": {
+            "type": "array",
+            "items": {}
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_create",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "PROJECT_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "lifecycleMode": {
+            "type": "string"
+          },
+          "permissionMode": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "deliveryId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_get",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "projectId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycleMode": {
+                "type": "string"
+              },
+              "hostState": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "running": {
+                "type": "boolean"
+              },
+              "awaitingUser": {
+                "type": "boolean"
+              },
+              "lastActivity": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "relative": {
+                        "type": "string"
+                      },
+                      "iso": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "relative",
+                      "iso"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "provider",
+              "projectId",
+              "lifecycleMode",
+              "hostState",
+              "running",
+              "awaitingUser",
+              "lastActivity"
+            ],
+            "additionalProperties": false
+          },
+          "pendingInteraction": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string"
+                  },
+                  "toolName": {
+                    "type": "string"
+                  },
+                  "inputSummary": {
+                    "type": "string"
+                  },
+                  "interactive": {
+                    "type": "boolean"
+                  },
+                  "autoTimeoutMs": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "waitedMs": {
+                    "type": "number"
+                  },
+                  "questions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "question": {
+                          "type": "string"
+                        },
+                        "header": {
+                          "type": "string"
+                        },
+                        "options": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "label": {
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "multiSelect": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "label"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "question",
+                        "options"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "toolName",
+                  "inputSummary",
+                  "interactive",
+                  "autoTimeoutMs",
+                  "waitedMs"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "hostId": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "pid": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "startedAt": {
+                    "type": "object",
+                    "properties": {
+                      "relative": {
+                        "type": "string"
+                      },
+                      "iso": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "relative",
+                      "iso"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "idleForMs": {
+                    "type": "number"
+                  },
+                  "peerName": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "leases": {
+                    "type": "array",
+                    "items": {}
+                  }
+                },
+                "required": [
+                  "hostId",
+                  "mode",
+                  "state",
+                  "pid",
+                  "startedAt",
+                  "idleForMs",
+                  "peerName",
+                  "leases"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hostNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "sessionId": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "startedAt": {
+                    "type": "object",
+                    "properties": {
+                      "relative": {
+                        "type": "string"
+                      },
+                      "iso": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "relative",
+                      "iso"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "lastSeq": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "sessionId",
+                  "provider",
+                  "startedAt",
+                  "lastSeq"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_interrupt",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "aborted": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_read",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "latest",
+              "outline",
+              "around"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "aroundId": {
+            "type": "string"
+          },
+          "before": {
+            "type": "number"
+          },
+          "after": {
+            "type": "number"
+          },
+          "cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_reconfigure",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "UNSUPPORTED_PERMISSION_MODE"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "effort": {
+            "type": "string"
+          },
+          "permissionMode": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "session": {
+            "type": "string"
+          },
+          "stored": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "applied": {
+            "type": "string"
+          },
+          "liveSupported": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_search",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Literal text to find in stored session transcripts and titles. Not semantic."
+          },
+          "project": {
+            "description": "Restrict to one project reference, or several to aggregate across.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "provider": {
+            "description": "Restrict to one provider.",
+            "type": "string",
+            "enum": [
+              "claude",
+              "codex"
+            ]
+          },
+          "speaker": {
+            "description": "Restrict matches to one speaker.",
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant",
+              "any"
+            ]
+          },
+          "limit": {
+            "description": "How many sessions to return, 1..50.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "description": "Continuation token from a previous call. Not stable across calls.",
+            "type": "string"
+          },
+          "since": {
+            "description": "Inclusive lower bound on a session last activity (ISO 8601). Out-of-window sessions are never scanned.",
+            "type": "string"
+          },
+          "until": {
+            "description": "Inclusive upper bound on a session last activity (ISO 8601). See `since`.",
+            "type": "string"
+          },
+          "mode": {
+            "description": "Reserved; the only accepted value is 'fulltext'.",
+            "type": "string",
+            "enum": [
+              "fulltext"
+            ]
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "totalMatches": {
+            "type": "number"
+          },
+          "totalResults": {
+            "type": "number"
+          },
+          "moreAvailable": {
+            "type": "boolean"
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "scannedThrough": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "relative": {
+                    "type": "string"
+                  },
+                  "iso": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "relative",
+                  "iso"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "byProject": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "projectId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "projectDisplayName": {
+                  "type": "string"
+                },
+                "count": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "projectId",
+                "projectDisplayName",
+                "count"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sessionId": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "projectId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "projectDisplayName": {
+                  "type": "string"
+                },
+                "sessionTitle": {
+                  "type": "string"
+                },
+                "lastActivity": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "relative": {
+                          "type": "string"
+                        },
+                        "iso": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "relative",
+                        "iso"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "score": {
+                  "type": "number"
+                },
+                "matches": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "messageId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "role": {
+                        "type": "string"
+                      },
+                      "timestamp": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "relative": {
+                                "type": "string"
+                              },
+                              "iso": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "relative",
+                              "iso"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "snippet": {
+                        "type": "string"
+                      },
+                      "highlights": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "start": {
+                              "type": "number"
+                            },
+                            "end": {
+                              "type": "number"
+                            }
+                          },
+                          "required": [
+                            "start",
+                            "end"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "turnIndex": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "messageId",
+                      "role",
+                      "timestamp",
+                      "snippet",
+                      "highlights",
+                      "turnIndex"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "sessionId",
+                "provider",
+                "projectId",
+                "projectDisplayName",
+                "sessionTitle",
+                "lastActivity",
+                "score",
+                "matches"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "nextCursor": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_send",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "SESSION_BUSY"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "waitSeconds": {
+            "type": "number"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "session",
+          "message"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "deliveryId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "queued": {
+            "type": "boolean"
+          },
+          "queuedMessageUuid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "type": "string"
+          },
+          "blockedBy": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string"
+                  },
+                  "toolName": {
+                    "type": "string"
+                  },
+                  "inputSummary": {
+                    "type": "string"
+                  },
+                  "interactive": {
+                    "type": "boolean"
+                  },
+                  "autoTimeoutMs": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "waitedMs": {
+                    "type": "number"
+                  },
+                  "questions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "question": {
+                          "type": "string"
+                        },
+                        "header": {
+                          "type": "string"
+                        },
+                        "options": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "label": {
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "multiSelect": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "label"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "question",
+                        "options"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "toolName",
+                  "inputSummary",
+                  "interactive",
+                  "autoTimeoutMs",
+                  "waitedMs"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run": {},
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "session_start",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": true
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "hostId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "pid": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "sessions_list",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "PROJECT_NOT_FOUND",
+          "TARGET_AMBIGUOUS"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "idle",
+              "resident",
+              "any"
+            ]
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "projectId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "lifecycleMode": {
+                  "type": "string"
+                },
+                "hostState": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "running": {
+                  "type": "boolean"
+                },
+                "awaitingUser": {
+                  "type": "boolean"
+                },
+                "lastActivity": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "relative": {
+                          "type": "string"
+                        },
+                        "iso": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "relative",
+                        "iso"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "title",
+                "provider",
+                "projectId",
+                "lifecycleMode",
+                "hostState",
+                "running",
+                "awaitingUser",
+                "lastActivity"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ui_clients_list",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "deviceId": {
+                  "type": "string"
+                },
+                "deviceName": {
+                  "type": "string"
+                },
+                "lastFocusedAt": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "visibility": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "visible",
+                        "hidden"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "hasFocus": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "navigationPolicy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "unresponsive": {
+                  "type": "boolean"
+                },
+                "tabs": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "tabId": {
+                        "type": "string"
+                      },
+                      "connectedAt": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "tabId",
+                      "connectedAt"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "deviceId",
+                "deviceName",
+                "lastFocusedAt",
+                "visibility",
+                "hasFocus",
+                "navigationPolicy",
+                "unresponsive",
+                "tabs"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ui_focus_turn",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "CLIENT_REQUIRED",
+          "NO_CLIENT",
+          "CLIENT_NOT_FOUND",
+          "RATE_LIMITED",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "turnId": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "session",
+          "turnId"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "navigationId": {
+            "type": "string"
+          },
+          "device": {
+            "type": "object",
+            "properties": {
+              "deviceId": {
+                "type": "string"
+              },
+              "deviceName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deviceId",
+              "deviceName"
+            ],
+            "additionalProperties": false
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "declined",
+              "pending_user",
+              "unresponsive",
+              "ignored",
+              "superseded",
+              "expired"
+            ]
+          },
+          "tabId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ui_last_opened_session",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {}
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "projectId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lifecycleMode": {
+                "type": "string"
+              },
+              "hostState": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "running": {
+                "type": "boolean"
+              },
+              "awaitingUser": {
+                "type": "boolean"
+              },
+              "lastActivity": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "relative": {
+                        "type": "string"
+                      },
+                      "iso": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "relative",
+                      "iso"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "provider",
+              "projectId",
+              "lifecycleMode",
+              "hostState",
+              "running",
+              "awaitingUser",
+              "lastActivity"
+            ],
+            "additionalProperties": false
+          },
+          "pendingInteraction": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string"
+                  },
+                  "toolName": {
+                    "type": "string"
+                  },
+                  "inputSummary": {
+                    "type": "string"
+                  },
+                  "interactive": {
+                    "type": "boolean"
+                  },
+                  "autoTimeoutMs": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "waitedMs": {
+                    "type": "number"
+                  },
+                  "questions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "question": {
+                          "type": "string"
+                        },
+                        "header": {
+                          "type": "string"
+                        },
+                        "options": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "label": {
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "multiSelect": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "label"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "question",
+                        "options"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "toolName",
+                  "inputSummary",
+                  "interactive",
+                  "autoTimeoutMs",
+                  "waitedMs"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "host": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "hostId": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string"
+                  },
+                  "pid": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "startedAt": {
+                    "type": "object",
+                    "properties": {
+                      "relative": {
+                        "type": "string"
+                      },
+                      "iso": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "relative",
+                      "iso"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "idleForMs": {
+                    "type": "number"
+                  },
+                  "peerName": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "leases": {
+                    "type": "array",
+                    "items": {}
+                  }
+                },
+                "required": [
+                  "hostId",
+                  "mode",
+                  "state",
+                  "pid",
+                  "startedAt",
+                  "idleForMs",
+                  "peerName",
+                  "leases"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hostNote": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "sessionId": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "startedAt": {
+                    "type": "object",
+                    "properties": {
+                      "relative": {
+                        "type": "string"
+                      },
+                      "iso": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "relative",
+                      "iso"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "lastSeq": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "sessionId",
+                  "provider",
+                  "startedAt",
+                  "lastSeq"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "openedAt": {
+            "type": "object",
+            "properties": {
+              "relative": {
+                "type": "string"
+              },
+              "iso": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "relative",
+              "iso"
+            ],
+            "additionalProperties": false
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ui_open_session",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "CLIENT_REQUIRED",
+          "NO_CLIENT",
+          "CLIENT_NOT_FOUND",
+          "RATE_LIMITED",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "latest": {
+                    "type": "boolean",
+                    "const": true
+                  }
+                },
+                "required": [
+                  "latest"
+                ]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "messageId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "messageId"
+                ]
+              }
+            ]
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "navigationId": {
+            "type": "string"
+          },
+          "device": {
+            "type": "object",
+            "properties": {
+              "deviceId": {
+                "type": "string"
+              },
+              "deviceName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deviceId",
+              "deviceName"
+            ],
+            "additionalProperties": false
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "declined",
+              "pending_user",
+              "unresponsive",
+              "ignored",
+              "superseded",
+              "expired"
+            ]
+          },
+          "tabId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ui_open_task",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "CLIENT_REQUIRED",
+          "NO_CLIENT",
+          "CLIENT_NOT_FOUND",
+          "RATE_LIMITED",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "session",
+          "taskId"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "navigationId": {
+            "type": "string"
+          },
+          "device": {
+            "type": "object",
+            "properties": {
+              "deviceId": {
+                "type": "string"
+              },
+              "deviceName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deviceId",
+              "deviceName"
+            ],
+            "additionalProperties": false
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "declined",
+              "pending_user",
+              "unresponsive",
+              "ignored",
+              "superseded",
+              "expired"
+            ]
+          },
+          "tabId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ui_selected_text",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "TARGET_AMBIGUOUS",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "deviceId": {
+                  "type": "string"
+                },
+                "deviceName": {
+                  "type": "string"
+                },
+                "lastFocusedAt": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "tabs": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "tabId": {
+                        "type": "string"
+                      },
+                      "deviceName": {
+                        "type": "string"
+                      },
+                      "unresponsive": {
+                        "type": "boolean"
+                      },
+                      "selectedText": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "text": {
+                                "type": "string"
+                              },
+                              "truncated": {
+                                "type": "boolean"
+                              },
+                              "region": {
+                                "type": "string",
+                                "const": "transcript"
+                              }
+                            },
+                            "required": [
+                              "text",
+                              "truncated",
+                              "region"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "string",
+                            "const": "withheld"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "tabId",
+                      "deviceName",
+                      "unresponsive",
+                      "selectedText"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "deviceId",
+                "deviceName",
+                "lastFocusedAt",
+                "tabs"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ui_show_diff",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "SESSION_NOT_FOUND",
+          "TARGET_AMBIGUOUS",
+          "CLIENT_REQUIRED",
+          "NO_CLIENT",
+          "CLIENT_NOT_FOUND",
+          "RATE_LIMITED",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "correlationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_.:-]+$"
+          }
+        },
+        "required": [
+          "session",
+          "filePath"
+        ]
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "navigationId": {
+            "type": "string"
+          },
+          "device": {
+            "type": "object",
+            "properties": {
+              "deviceId": {
+                "type": "string"
+              },
+              "deviceName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "deviceId",
+              "deviceName"
+            ],
+            "additionalProperties": false
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "declined",
+              "pending_user",
+              "unresponsive",
+              "ignored",
+              "superseded",
+              "expired"
+            ]
+          },
+          "tabId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "ui_visible_context",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      },
+      "_meta": {
+        "cloudcli/errorCodes": [
+          "INVALID_ARGUMENT",
+          "INSUFFICIENT_SCOPE",
+          "INTERNAL_ERROR",
+          "TARGET_AMBIGUOUS",
+          "MCP_TOOL_NOT_IMPLEMENTED"
+        ]
+      },
+      "inputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "client": {
+            "type": "string"
+          },
+          "navigationId": {
+            "type": "string"
+          }
+        }
+      },
+      "outputSchema": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "deviceId": {
+                  "type": "string"
+                },
+                "deviceName": {
+                  "type": "string"
+                },
+                "lastFocusedAt": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "tabs": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "tabId": {
+                        "type": "string"
+                      },
+                      "deviceName": {
+                        "type": "string"
+                      },
+                      "unresponsive": {
+                        "type": "boolean"
+                      },
+                      "navigationPolicy": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "visibility": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "visible",
+                              "hidden"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "hasFocus": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "lastFocusedAt": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "panel": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "selectedProject": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "selectedSession": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "visibleMessages": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "first": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "last": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "first",
+                              "last"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "pendingApprovals": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "queuedMessages": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "currentDiff": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "view": {
+                                "type": "string"
+                              },
+                              "files": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "commits": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": [
+                              "view",
+                              "files",
+                              "commits"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "currentTask": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "source": {
+                                "type": "string",
+                                "const": "taskmaster"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "source",
+                              "id",
+                              "title"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "tabId",
+                      "deviceName",
+                      "unresponsive",
+                      "navigationPolicy",
+                      "visibility",
+                      "hasFocus",
+                      "lastFocusedAt",
+                      "panel",
+                      "selectedProject",
+                      "selectedSession",
+                      "visibleMessages",
+                      "pendingApprovals",
+                      "queuedMessages",
+                      "currentDiff",
+                      "currentTask"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "deviceId",
+                "deviceName",
+                "lastFocusedAt",
+                "tabs"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "navigations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "navigationId": {
+                  "type": "string"
+                },
+                "deviceId": {
+                  "type": "string"
+                },
+                "deviceName": {
+                  "type": "string"
+                },
+                "tabId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "sessionId": {
+                  "type": "string"
+                },
+                "at": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "latest": {
+                          "type": "boolean",
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "latest"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "messageId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "messageId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "turnId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "turnId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "diffFile": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "diffFile"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "taskId": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "taskId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "requestedBy": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "requestedAt": {
+                  "type": "number"
+                },
+                "updatedAt": {
+                  "type": "number"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "applied",
+                    "declined",
+                    "pending_user",
+                    "ignored",
+                    "superseded",
+                    "expired"
+                  ]
+                }
+              },
+              "required": [
+                "navigationId",
+                "deviceId",
+                "deviceName",
+                "tabId",
+                "sessionId",
+                "at",
+                "requestedBy",
+                "requestedAt",
+                "updatedAt",
+                "status"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  ]
+}
