@@ -6,9 +6,12 @@ holds the part of that move that can be done without touching the layer table or
 the packaging lists, and it is written as the migration's evidence rather than
 as a description of it:
 
-  * WHERE THE FILE IS. The rule now lives in `runtime/fleet_hub/` and the old
-    path does not exist. The old path is deliberately not left behind as a
-    forwarder module, and `test_the_old_path_is_absent` states the reason: the
+  * WHERE THE FILE IS. The rule lives at the repository root, in
+    `fleet_hub/fleet_audience.py`, and BOTH paths it had before are gone: the
+    flat `runtime/fleet_audience.py`, and the nested `runtime/fleet_hub/` that
+    stage 1 used while the layer table (`#414`) and the packaging lists
+    (`#413`) were held by other changes. Neither is left behind as a forwarder
+    module, and `test_the_old_path_is_absent` states the reason: the
     verdict this module issues is an HMAC over a per-process key generated at
     import. A second copy of the file, loaded under a second path or a second
     name, is a second key — its verdicts are refused by the readers that hold
@@ -20,17 +23,22 @@ as a description of it:
     the name string, because the name is what makes identity work and the path
     is what changed.
 
-  * THE HUB REACHES NOTHING. Every file in `runtime/fleet_hub/` imports only the
-    standard library and loads nothing at all. That is what lets the package be
-    promoted to a top-level `fleet_hub/` later without dragging `runtime/`
-    along, and it is checkable now, while the package is still nested.
+  * THE HUB REACHES NOTHING. Every file in `fleet_hub/` imports only the
+    standard library and loads nothing at all. That is what made the promotion
+    a `git mv` plus two one-line registrations instead of a rewiring — and it
+    is asserted rather than assumed, because a hub that loaded `runtime/` would
+    have turned the same `git mv` into a closed loop.
 
-  * THE ARTIFACT STILL SHIPS IT. `tests/loader_graph.py` derives the packaged
-    surface from what the entry points actually load, so the moved file must
-    appear in `production_closure()`. If the move dropped out of the loader
-    graph the artifact would omit a module its surfaces load — the C4 defect
-    `plugin/bundle.yaml` documents — and that is a red here rather than a
-    discovery on an installed node.
+  * THE ARTIFACT STILL SHIPS IT, BUT NOT THROUGH `production_closure()`. The
+    monitor stack is not a declared production entry, so neither the rule nor
+    its callers are on the artifact's required set — measured, and
+    `test_the_monitor_stack_is_not_a_shipped_surface_today` is what keeps that
+    fact from expiring. They ship today only because `runtime/` is copied
+    recursively and the rule sat under it. At the repository root that accident
+    ends: the file ships if and only if `fleet_hub` is registered in BOTH
+    `CORE_MODULES` (`#413`) and `plugin/bundle.yaml` (this lane), and a missing
+    half is skipped in silence by `scripts/build.py`'s `continue`. That is why
+    the promotion carries a packaging gate rather than a promise.
 
 Two of these are guards rather than migrations: they pass before the move as
 well. They are labelled in their docstrings, and each carries a positive
@@ -49,8 +57,12 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 RUNTIME = REPO / "runtime"
-HUB = RUNTIME / "fleet_hub"
+HUB = REPO / "fleet_hub"
 MODULE = HUB / "fleet_audience.py"
+#: The path stage 1 used while the layer table and the packaging lists were held
+#: by other changes. Retired by this file's move; asserted absent for the same
+#: reason as `OLD_PATH` — a second copy under a second path is a second HMAC key.
+STAGE1_PATH = RUNTIME / "fleet_hub" / "fleet_audience.py"
 OLD_PATH = RUNTIME / "fleet_audience.py"
 
 #: The synthetic name every loader registers the rule under. The NAME is what
@@ -60,9 +72,9 @@ OLD_PATH = RUNTIME / "fleet_audience.py"
 MODULE_NAME = "serveros_fleet_audience"
 
 #: Top-level directories the hub must not reach into. `runtime` is on the list
-#: even though the hub currently sits inside it: the package may not load its
-#: way back out, which is what makes the later promotion a `git mv` plus two
-#: one-line registrations rather than a rewiring.
+#: first because the hub used to sit inside it: the package may not load its
+#: way back out, which is what made the promotion a `git mv` plus two one-line
+#: registrations rather than a rewiring.
 FORBIDDEN_TOPS = ("runtime", "fleet_mcp", "mcp", "fleet", "workengine", "reports")
 
 CODE_SUFFIXES = frozenset({".py"})
@@ -151,37 +163,59 @@ class TestTheRuleLivesInTheHubPackage:
             "D2 moves the audience rule into the hub package; "
             f"{MODULE.relative_to(REPO)} is where the loaders point")
 
-    def test_the_old_path_is_absent(self) -> None:
-        """No forwarder at the old path — and the reason is the HMAC key.
+    @pytest.mark.parametrize("retired", [STAGE1_PATH, OLD_PATH],
+                             ids=["stage1-nested", "flat"])
+    def test_the_old_path_is_absent(self, retired: Path) -> None:
+        """No forwarder at either retired path — and the reason is the HMAC key.
 
         A module that re-exported the moved one would keep old imports working
         only if it were the SAME file; two files are two `_VERDICT_KEY`s, and a
         verdict issued by the copy a caller happened to reach is refused by the
         reader holding the other. Failing to import is the honest outcome.
+
+        Both paths are checked, not just the older one: the nested package is
+        the recent retiree, and it is the one a half-finished migration would
+        most plausibly leave a forwarder in — a leftover `runtime/fleet_hub/`
+        that re-exported would fork the key just as surely as the flat one.
         """
-        assert not OLD_PATH.exists(), (
-            f"{OLD_PATH.relative_to(REPO)} must not exist: a forwarder here "
+        assert not retired.exists(), (
+            f"{retired.relative_to(REPO)} must not exist: a forwarder here "
             "would load a second copy with a second HMAC key, and verdicts "
             "would be refused for reasons no reader could see")
 
-    def test_a_stale_consumer_fails_at_import_rather_than_quietly_forking(self) -> None:
+    @pytest.mark.parametrize("retired", [STAGE1_PATH, OLD_PATH],
+                             ids=["stage1-nested", "flat"])
+    def test_a_stale_consumer_fails_at_import_rather_than_quietly_forking(
+            self, retired: Path) -> None:
+        # A distinct synthetic name per path: `_load` caches before it executes,
+        # so a failed probe leaves an empty husk under its name behind, and a
+        # shared name would make the second case pass on that husk instead of
+        # proving the path is gone.
+        name = "serveros_fleet_audience_stale_" + "_".join(
+            retired.relative_to(REPO).parts[:-1])
         with pytest.raises((FileNotFoundError, OSError)):
-            _load("serveros_fleet_audience_stale_probe", OLD_PATH)
+            _load(name, retired)
 
     def test_the_hub_package_is_not_a_second_import_route(self) -> None:
         """Nobody reaches the hub as a package; the path loader is the one route.
 
-        `import runtime.fleet_hub.fleet_audience` would work as a namespace
-        package and produce a second module object under a second name — the
-        exact fork `_load`'s single synthetic name prevents.
+        `import fleet_hub.fleet_audience` would work as a namespace package and
+        produce a second module object under a second name — the exact fork
+        `_load`'s single synthetic name prevents. The promotion made that easier
+        to do by accident, not harder: `fleet_hub` is now a root-level name, so
+        it is importable from anywhere the repository root is on `sys.path`.
         """
-        pattern = re.compile(r"^\s*(?:from|import)\s+runtime\.fleet_hub\b", re.M)
+        pattern = re.compile(r"^\s*(?:from|import)\s+fleet_hub\b", re.M)
         offenders = sorted(str(p.relative_to(REPO)) for p in _tracked(CODE_SUFFIXES)
                            if pattern.search(_text(p)))
         assert offenders == [], offenders
-        assert pattern.search("from runtime.fleet_hub import fleet_audience\n")
-        assert pattern.search("import runtime.fleet_hub.fleet_audience\n")
+        assert pattern.search("from fleet_hub import fleet_audience\n")
+        assert pattern.search("import fleet_hub.fleet_audience\n")
+        # The two near misses: the pre-move import shape, and a name that only
+        # starts with the package name (`_` is a word character, so `\b` keeps
+        # it out).
         assert not pattern.search("from runtime import fleet_audience\n")
+        assert not pattern.search("import fleet_hub_extra\n")
 
 
 class TestEveryLoaderSharesOneModule:
@@ -286,7 +320,7 @@ class TestTheHubReachesNothing:
 
 
 class TestTheArtifactStillShipsIt:
-    def test_the_loader_graph_follows_the_callers_to_the_nested_path(self) -> None:
+    def test_the_loader_graph_follows_the_callers_out_of_runtime(self) -> None:
         """The graph must see the edge through the subdirectory, not around it.
 
         `tests/loader_graph.py` is what derives the packaged surface, and its
@@ -295,7 +329,9 @@ class TestTheArtifactStillShipsIt:
         nothing, so the edge vanished and the closure stopped naming a module
         its callers load — C4 again, with the module present on disk. The
         scanner now tries the whole relative candidate first; this is the
-        measurement that it does.
+        measurement that it does. The promotion moves the target one directory
+        further out (`_HERE.parent` from `runtime/` is the repository root), so
+        the same edge is re-measured here rather than assumed to have survived.
         """
         from loader_graph import closure, module_refs
         hub = MODULE.relative_to(REPO).as_posix()
@@ -328,40 +364,78 @@ class TestTheArtifactStillShipsIt:
             "moving it to a top-level directory")
         assert MODULE.relative_to(REPO).as_posix() not in needed
 
-    def test_the_hosting_directory_is_what_ships_it(self) -> None:
-        """Why no packaging list has to learn a new name for this move.
+    def test_the_hub_directory_is_registered_before_it_ships(self) -> None:
+        """Integration-only, and red on purpose until `#413` lands.
 
-        `scripts/build.py` copies each `CORE_MODULES` entry recursively, so a
-        file under `runtime/` travels with `runtime/`. This is asserted rather
-        than assumed: it is the difference between this move being shippable
-        today and being blocked on a file another change owns.
+        Stage 1 needed no packaging change for a structural reason rather than a
+        lucky one: `scripts/build.py` copies each `CORE_MODULES` entry
+        recursively, so a file under `runtime/` travelled with `runtime/`. At the
+        repository root that accident is over. `fleet_hub/fleet_audience.py`
+        ships if and only if BOTH lists name the directory —
+
+          * `CORE_MODULES` (`scripts/build.py`, owned by `#413`) decides which
+            directories are visited, and
+          * `plugin/bundle.yaml` supplies each one's source path,
+
+        — and a member missing from the second is skipped in silence by the
+        loop's `continue` (`bundle.get(module, {}).get("path")` is `None`), so a
+        half registration builds, installs, and fails later at import. The
+        bundle half is in this lane and is asserted here; the `CORE_MODULES`
+        half is not, and this test is the red that names its owner instead of a
+        promise in a pull request body.
+
+        Deleting this assertion would make the branch green and would drop the
+        audience rule from every artifact — that is the trade it refuses.
         """
         sys.path.insert(0, str(REPO / "scripts"))
         try:
             import build
         finally:
             sys.path.pop(0)
-        assert "runtime" in build.CORE_MODULES
+
+        assert HUB.name in build.CORE_MODULES, (
+            f"`{HUB.name}` is not in scripts/build.py#CORE_MODULES, so the build "
+            "loop never visits it and the artifact ships no audience rule while "
+            "every source checkout keeps working. This lane may not edit that "
+            "list: it belongs to #413, and the request with the exact diff is "
+            "on that PR. BLOCKED_OWNER_HANDOFF until it lands.")
+
+        import yaml
+        bundle = yaml.safe_load(
+            (REPO / "plugin" / "bundle.yaml").read_text(encoding="utf-8"))
+        assert (bundle.get(HUB.name) or {}).get("path") == HUB.name, (
+            f"plugin/bundle.yaml must declare `{HUB.name}: {{path: {HUB.name}}}`; "
+            "without it the build loop's `continue` skips the module silently")
 
 
 class TestNoStalePathSurvives:
-    def test_no_code_or_config_names_the_old_path(self) -> None:
+    def test_no_code_or_config_names_a_retired_path(self) -> None:
         """The drift gate: a path that only some call sites were updated to.
 
         Scoped to executable and configured surfaces. `docs/` is out of scope on
         purpose — audit records are evidence of what was true when they were
         written, and rewriting them would delete that evidence rather than
         repair a caller.
+
+        Both retirements are scanned in one pass because they fail the same way
+        and fixing one does not imply the other: a loader updated from the flat
+        path to the nested one is exactly as stale after this move as one that
+        was never touched.
         """
-        pattern = re.compile(r"runtime/fleet_audience\.py")
+        pattern = re.compile(r"runtime/fleet_audience\.py"
+                             r"|runtime/fleet_hub/fleet_audience\.py")
         offenders = sorted(str(p.relative_to(REPO))
                            for p in _tracked(CODE_SUFFIXES | CONFIG_SUFFIXES,
                                              exclude_self=True)
                            if pattern.search(_text(p)))
         assert offenders == [], (
-            "these still name the pre-move path and would break on an installed "
+            "these still name a retired path and would break on an installed "
             f"node: {offenders}")
+        # One control per alternative: neither spelling contains the other, so a
+        # single control would leave one half of the pattern unproven.
         assert pattern.search('spec_from_file_location("x", "runtime/fleet_audience.py")')
+        assert pattern.search(
+            'spec_from_file_location("x", ROOT / "runtime/fleet_hub/fleet_audience.py")')
 
     def test_no_service_or_bundle_declares_the_rule_by_path(self) -> None:
         """Nothing configures the rule by path, so no unit can break on the move.
@@ -379,10 +453,17 @@ class TestNoStalePathSurvives:
 
 class TestTheHubDoesNotBecomeAConsumerOfTheControlPlane:
     def test_the_control_plane_does_not_load_the_hub(self) -> None:
-        """D2's acceptance rule, in its checkable form while the hub is nested."""
+        """D2's acceptance rule, and it survives the promotion unchanged.
+
+        Now that the hub is a root-level name, the control plane could reach it
+        by path without leaving its own directory — the shape this test exists
+        to keep out.
+        """
         pattern = re.compile(r"[\"']fleet_hub[\"'/]|[\"']fleet_hub[\"']\s*/")
         offenders = sorted(str(p.relative_to(REPO))
                            for p in (REPO / "fleet_mcp").rglob("*.py")
                            if pattern.search(_text(p)))
         assert offenders == [], offenders
         assert pattern.search('_load("x", _HERE / "fleet_hub" / "fleet_audience.py")')
+        assert pattern.search(
+            '_load("x", _HERE.parent / "fleet_hub" / "fleet_audience.py")')
