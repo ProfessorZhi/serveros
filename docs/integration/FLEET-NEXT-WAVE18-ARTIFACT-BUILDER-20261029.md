@@ -259,6 +259,18 @@ python3 -I integrations/fleet-next-wave18-artifact-builder/wave18_builder.py \
   --out /tmp/w18-evidence --json
 ```
 
+### 10.1 Commits and change surface
+
+| commit | what |
+|---|---|
+| `a50d2ec` | builder, tests, this report |
+| `19bcf95` | evidence pack, checksums table |
+
+`git diff --stat 3512c55..19bcf95` — 9 files, +3090 lines, no deletion outside
+the new paths. Changed-tree listing digest (SHA256 of `git ls-tree -r` over the
+three owned paths at `19bcf95`):
+`sha256:dca95a1740372e1103c73510fc92a041f72072243b36efa81d6cac8aef263298`.
+
 ## 11. Non-goals honoured
 
 * No `main` merge, no real install, no Legacy gateway/plugin/Creator update.
