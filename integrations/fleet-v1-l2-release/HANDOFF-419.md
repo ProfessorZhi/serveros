@@ -185,7 +185,26 @@ Aligned, verified:
 | an intra-package import the payload does not carry | their `uncarried` check |
 | both kinds' required members, platforms, layer separation | unchanged since `001eb7c` |
 
-Three divergences, all reported rather than patched:
+A fourth, found afterwards and **demonstrated** rather than argued: on Windows,
+`verify_l2_layer` refuses a byte-perfect artifact. `on_disk` is built as
+`{str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*") if p.is_file()}`
+(`845`, `1063`, `1068`, `1377`), which yields backslashes there, while `members`
+are POSIX paths — so every member is reported *missing* and every file *extra*:
+
+```
+$ # a correct l2-node artifact, extracted, verified by #436 @ 85493198 on Windows
+ok: False   problems: 2
+  - the payload is missing declared member(s) ['fleet_mcp/__init__.py', …]
+  - file present that the manifest did not declare: ['fleet_mcp\\__init__.py', …]
+$ # same artifact, same verifier, the four `str(relative_to(...))` → `.as_posix()`
+ok: True    problems: 0
+```
+
+Four call sites, one expression each; `.as_posix()` is what the tree-digest code
+already uses at `423`/`426`/`428`. Linux CI cannot see this, which is why it is
+worth fixing before an artifact is staged on a Windows machine.
+
+Three further divergences, all reported rather than patched:
 
 1. **Prerelease versions.** `L2_VERSION_RE` (`scripts/release.py:322`) is
    `^\d+\.\d+\.\d+(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$` — no `-rc.1` branch, while

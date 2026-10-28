@@ -116,10 +116,110 @@ node imports without a checkout today because the connector defers
 repository root, and nothing else in the node closure reaches `registry`.
 
 This whole paragraph is executable:
-`tests/test_fleet_l2_release_separation.py::test_cutting_the_connector_to_fleet_edge_flips_runtime_standalone`
+`tests/test_fleet_l2_release_separation.py::test_deleting_the_lazy_imports_on_a_copy_flips_the_packaging_flags`
 runs it and asserts the numbers above. If #407 changes A's shape, that test fails
 with "edge A has moved; re-measure HANDOFF-407 before trusting its table" rather
 than letting this document quietly become wrong.
+
+## Retraction, and the real patch — measured on your head `9538238d`
+
+**The table above measures packaging, and this document used to imply it
+measured the cut.** It does not. Deleting the three
+`from ..fleet import FleetService` statements leaves three call sites that name
+`FleetService` with nothing to resolve them, and I measured what that does:
+
+```
+$ git -C <copy at 9538238d> apply   # three statements deleted, nothing else
+$ python -m pytest -q tests/test_fleet_mcp_node.py::DeleteProjectHere
+8 failed  — NameError: name 'FleetService' is not defined  (connector.py:1372)
+```
+
+The artifact still builds, still verifies, `runtime_standalone` still flips to
+true — and the product raises on the first project delete. **A cut that only
+deletes imports is a packaging change that breaks the connector.** The rest of
+this section is the patch that is behaviour-preserving, measured the same way.
+
+### What the three call sites actually need
+
+| line at `9538238d` | call | what it needs |
+|---|---|---|
+| `1163-1164` | `FleetService._verify_owner_project(self.provider, project)` | one static helper |
+| `1374` | `FleetService._project_catalogue_row(self.provider, project_id, include_archived=True)` | one static helper |
+| `1423-1424` | `FleetService._verify_owner_project(self.provider, project)` | one static helper |
+
+Those three helpers are `FleetService._project_row`, `_project_catalogue_row` and
+`_verify_owner_project` (`fleet.py:358-408`). They take a provider, call
+`native_call("projects_list", …)`, and raise `refuse(WRITE_NOT_GRANTED, …)` —
+they touch no `FleetService` state and import nothing outside `.errors`, which
+both closures already carry.
+
+### The patch — three files, +70/−52, no new module, no new pin entry
+
+```
+integrations/fleet-v1-l2-release/L2-CUT-A.patch     (193 lines, `git apply --check` clean on 9538238d)
+```
+
+1. **`fleet_mcp/owner_access.py`** — the three helpers land here as module-level
+   functions (`project_row`, `project_catalogue_row`, `verify_owner_project`),
+   docstrings verbatim, plus `from .errors import WRITE_NOT_GRANTED, refuse`.
+   `owner_access` is already in the node's closure *and* already pinned, so this
+   adds **no module and no pin entry**.
+2. **`fleet_mcp/fleet.py`** — the three statics become one-line delegations, so
+   the four internal call sites (`1875`, `1923`, `2173`, `2505`) do not move.
+3. **`fleet_mcp/node/connector.py`** — the three lazy imports point at
+   `..owner_access`, and the three uses call the functions directly.
+
+### Measured on a copy at your head, with the patch applied
+
+| | `9538238d` as-is | + this patch |
+|---|---|---|
+| `l2-node` closure | 31 files | **26 files** |
+| `l2-hub` closure | 31 files | 31 files (unchanged — the hub keeps the control plane) |
+| modules in both | 29 | **24** |
+| node `external_in_repo` | `["fleet"]` | **`[]`** |
+| node external edges | `yaml`, `fleet.transport` (7 names) | **`yaml` only** |
+| `import_standalone` / `runtime_standalone` | true / **false** | true / **true** |
+| `install.independently_installable` | false | **true** |
+| pinned modules | 18 (17 + `principals`) | **13** |
+
+The pin movement is two separate things and both are mechanical: `+1`
+`fleet_mcp.principals` (new on your head, reached through `config.py:40` — the
+ratchet refuses to build until it is named), and `−5` `audit`, `dispatch`,
+`fleet`, `privacy`, `registry`, which the cut closure no longer reaches. The
+build names the five that leave; trim them in the same change.
+
+### Behaviour, measured
+
+| test file | as-is at `9538238d` | + patch |
+|---|---|---|
+| `test_fleet_mcp_node.py`, `test_fleet_node.py`, `test_fleet_node_owner_floor.py`, `test_fleet_refusal_audit.py`, `test_fleet_principal_context.py`, `test_fleet_v1_t10_legacy_compatibility.py` | 226 passed, 24 skipped | **226 passed, 24 skipped** |
+| 121 `test_fleet_*` / `test_node_*` / `test_v1_*` files (335 pre-existing platform failures on this Windows box) | 335 failed | **the same 335, byte-identical set** |
+| `DeleteProjectHere` (the falsifier) | 8 pass | **8 pass** |
+
+The 335 are the same failures with and without the patch — compared as sorted
+node-id lists, not as counts — so the patch changes no test outcome on the
+observable surface. `tests/test_l2_source_standalone_contract.py` turns those
+three properties into a RED → GREEN ratchet: three `xfail(strict=True)` tests
+that fail today, XPASS the moment the cut lands, and thereby force the marker
+removal in the same change.
+
+### What I did **not** do
+
+I did not apply any of this to `fleet_mcp/**`. Your comment on this handoff asked
+for an explicit per-file scope before that happens and it has not been given, so
+the state is **BLOCKED_KEEP_AND_GUARD**: the patch is published, checkable, and
+unapplied. If you want it, the smallest thing that works is **two commits**:
+
+1. `fleet_mcp/owner_access.py` + `fleet_mcp/fleet.py` — lift the three helpers,
+   leave the delegations. Behaviour-neutral on its own; the 226-test battery is
+   the acceptance and it is green before and after.
+2. `fleet_mcp/node/connector.py` — repoint the three call sites, plus the pin
+   trim in this directory (`NODE_SHARED_SURFACE`: `+fleet_mcp.principals`,
+   `−audit, −dispatch, −fleet, −privacy, −registry`) and deleting the three
+   `xfail` markers in `tests/test_l2_source_standalone_contract.py`.
+
+Commit 1 alone cannot break the node; commit 2 is the one whose blast radius is
+the node closure, and the contract tests name it precisely.
 
 ## What D7 asks of the change, in this directory's terms
 

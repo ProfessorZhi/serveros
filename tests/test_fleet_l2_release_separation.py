@@ -1087,16 +1087,24 @@ def test_a_pin_entry_that_is_present_but_unreachable_is_refused(tmp_path):
         l2.verify(l2.read_artifact(broken))
 
 
-def test_cutting_the_connector_to_fleet_edge_flips_runtime_standalone(tmp_path):
-    """`HANDOFF-407.md`'s blocked plan, executed on a copy: one file, three
-    statements, and the artifact becomes independently installable.
+def test_deleting_the_lazy_imports_on_a_copy_flips_the_packaging_flags(tmp_path):
+    """The **packaging** premise of edge A, measured on a copy: three import
+    statements, and the artifact's flags flip and it verifies.
 
-    The handoff is #407's to act on, so nothing in `fleet_mcp/` is edited here. But
-    a blocked plan that has never been run is a guess about how much work it is,
-    and "cut A is worth doing first" is a claim about a measurement. This makes the
-    claim executable: the edge is deleted in a temporary copy, the pin is trimmed
-    by exactly the modules the closure lost (the ratchet rule the build already
-    enforces), and the two flags are read back.
+    This is deliberately weaker than it looks, and the name says so. It proves
+    the *payload* stops needing the repository once nothing imports it; it does
+    **not** prove the product still works, because deleting the three
+    `from ..fleet import FleetService` statements leaves three call sites named
+    `FleetService` with nothing to resolve them. Measured on a copy at #407's head
+    `9538238d`, exactly that cut turns eight `DeleteProjectHere` tests red with
+    `NameError: name 'FleetService' is not defined` — packaging clean, product
+    broken.
+
+    The patch that is behaviour-preserving (it moves the three helpers the
+    connector needs into `fleet_mcp/owner_access.py`, which the node already
+    carries) is published unapplied as `L2-CUT-A.patch` and measured in
+    `HANDOFF-407.md`; `tests/test_l2_source_standalone_contract.py` is its
+    RED → GREEN acceptance. Nothing in `fleet_mcp/` is edited here or there.
     """
     import shutil
 

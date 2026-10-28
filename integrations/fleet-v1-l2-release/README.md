@@ -98,10 +98,29 @@ walks the payload by AST to check *reachable*, not merely present.
 
 Cutting the edges is #407's job and is written down in `HANDOFF-407.md` with the
 measured numbers (three cuts take the node artifact from 30 files to a standalone
-17). Cutting **A alone** — one file, three statements — is measured too, by
-`test_cutting_the_connector_to_fleet_edge_flips_runtime_standalone`: 25 files,
-`external_in_repo: []`, both flags true, `independently_installable: true`, 12
-pinned modules left, and the resulting artifact verifies.
+17). Cutting **A alone** is the one worth doing first, and its patch is
+published **unapplied** here as `L2-CUT-A.patch` (three files, +70/−52,
+`git apply --check` clean on #407's head `9538238d`).
+
+A correction that belongs in the record: A is **not** "delete three import
+statements". Deleting them leaves three call sites naming `FleetService` with
+nothing to resolve them — measured on a copy at `9538238d`, that turns eight
+`DeleteProjectHere` tests red with `NameError: name 'FleetService' is not
+defined`, while the artifact's flags flip and it still verifies. Packaging clean,
+product broken. The patch therefore moves the three helpers the connector needs
+(`_project_row`, `_project_catalogue_row`, `_verify_owner_project`) into
+`fleet_mcp/owner_access.py` — a module the node already carries and the pin
+already holds, so no new module and no new pin entry — and leaves one-line
+delegations in `fleet.py` so the FleetService call sites do not move.
+
+Measured on a copy at `9538238d` with that patch: `l2-node` **31 → 26 files**,
+`external_in_repo []`, the only remaining external edge `yaml`,
+`import_standalone`/`runtime_standalone` **true/true**,
+`independently_installable: true`, pinned **13** (18 after `+principals`, minus
+the five the cut releases), behaviour unchanged (226 passed / 24 skipped before
+and after; the same 335 pre-existing platform failures with and without it, as a
+set). `tests/test_l2_source_standalone_contract.py` is the RED → GREEN acceptance:
+three `xfail(strict=True)` tests that XPASS when the cut lands.
 
 ## The manifest
 
@@ -209,7 +228,10 @@ only protects the builder protects the thing that cannot lie.
 | the node's runtime path needs a checkout | **REAL** (`fleet_mcp.registry` raises `FleetRefusal` in the same sandbox) |
 | the repository dependency is one holder, one module, seven names | **REAL** (`EXTERNAL_EDGES`, pinned and re-checked on every verify) |
 | all 17 pinned modules are reachable from the entrypoint | **REAL** (AST walk, not a count) |
-| cutting edge A makes the node independently installable | **REAL ON A COPY** — 25 files, both flags true, verifies; the cut itself is #407's to make |
+| deleting A's imports alone is **not** behaviour-preserving | **REAL ON A COPY** at `9538238d` — 8 `DeleteProjectHere` tests go red with `NameError: FleetService` while the artifact still verifies; the retraction is in `HANDOFF-407.md` |
+| `L2-CUT-A.patch` is the behaviour-preserving version | **REAL ON A COPY** — 31 → 26 files, `external_in_repo []`, both flags true, installable, pin 13, `git apply --check` clean; the cut itself is #407's to make and is **NOT APPLIED** |
+| the cut changes no test outcome | **REAL** — 226 passed/24 skipped identical; the 335 pre-existing platform failures are the same set with and without the patch |
+| the cut is a RED → GREEN contract, not a promise | **REAL** — `tests/test_l2_source_standalone_contract.py`: 3 `xfail(strict=True)` fail today, pass on a patched copy (verified both ways with `--runxfail`), XPASS-strict when it lands |
 | `release.py` verifies `l2-node`/`l2-hub` | **NOT OURS** — #433/#436 own `scripts/release.py`; #436 @ `85493198` reads this manifest shape (see `HANDOFF-419.md` §9) |
 | installed on a node or the hub | **NOT_RUN** — this directory installs nothing |
 | signed artifacts | **NOT DONE** — digests are recorded, nothing is signed |
@@ -260,4 +282,11 @@ be tested without a machine.
   the node fall-through, and the `status` branch). Not written here because that
   file has an owner.
 - `HANDOFF-407.md` — the four measured edges that keep the node artifact from
-  being standalone, with line numbers and the file count after each cut.
+  being standalone, with line numbers and the file count after each cut, plus
+  (re-measured on #407's head `9538238d`) the behaviour-preserving patch, the
+  retraction of the "three deletions" reading, and the two commits it would take.
+- `L2-CUT-A.patch` — that patch, **unapplied**. Three files, `+70/−52`, no new
+  module, no new pin entry; `git apply --check` clean on `9538238d`. It is here
+  so the change is reviewable without a checkout of #407's branch — not as a
+  licence to apply it. Its acceptance is
+  `tests/test_l2_source_standalone_contract.py`, which is RED today.
