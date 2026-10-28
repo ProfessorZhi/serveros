@@ -405,6 +405,18 @@ def apply_patches(source: Source, repo: Path,
                 f"{spec['path']} is absent; this builder consumes #505's "
                 f"published patches rather than re-implementing a transform")
         data = patch.read_bytes()
+        target_paths = _patch_targets(data)
+        # This patch's actual input, not the source commit's file: CUT-B runs
+        # after CUT-A, and a provenance that hides the intermediate is a
+        # provenance a reader cannot re-apply.
+        pre: dict[str, tuple[str | None, str | None]] = {}
+        for rel in target_paths:
+            candidate = work / rel
+            if candidate.is_file():
+                pre[rel] = (sha256_bytes(candidate.read_bytes()),
+                            str(_git(work, "hash-object", rel)))
+            else:
+                pre[rel] = (None, None)
         checked = subprocess.run(
             ["git", "-C", str(work), "apply", "--check", str(patch)],
             capture_output=True, env=env)
@@ -420,7 +432,7 @@ def apply_patches(source: Source, repo: Path,
             raise Refused("BLOCKED_PATCH_FAILED",
                           f"{spec['id']}: {applied.stderr.decode()[:300]}")
         targets = []
-        for rel in _patch_targets(data):
+        for rel in target_paths:
             original_path = subprocess.run(
                 ["git", "-C", str(repo), "cat-file", "blob",
                  f"{source.commit}:{rel}"], capture_output=True)
@@ -437,6 +449,8 @@ def apply_patches(source: Source, repo: Path,
                     if original is not None else None),
                 "original_sha256": (sha256_bytes(original)
                                     if original is not None else None),
+                "input_sha256": pre[rel][0],
+                "input_blob_sha": pre[rel][1],
                 "result_sha256": sha256_bytes(result),
                 "result_blob_sha": str(_git(work, "hash-object", rel)),
             })

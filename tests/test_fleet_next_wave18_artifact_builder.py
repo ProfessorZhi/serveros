@@ -309,6 +309,23 @@ def test_provenance_records_owner_sha_original_and_result(built):
             if target["path"] != "fleet_mcp/providers/build.py":
                 assert target["original_sha256"]
                 assert target["original_blob_sha"]
+            assert "input_sha256" in target and "input_blob_sha" in target
+
+    # CUT-A's input is the source commit. CUT-B's input is CUT-A's result for
+    # the file both touch, and the source commit for the rest. A reader can
+    # replay the sequence from these fields alone.
+    cut_a_results = {target["path"]: target["result_sha256"]
+                     for target in patches["CUT-A"]["targets"]}
+    for target in patches["CUT-A"]["targets"]:
+        assert target["input_sha256"] == target["original_sha256"]
+    for target in patches["CUT-B"]["targets"]:
+        if target["path"] in cut_a_results:
+            assert target["input_sha256"] == cut_a_results[target["path"]]
+        elif target["path"] == "fleet_mcp/providers/build.py":
+            assert target["input_sha256"] is None
+            assert target["input_blob_sha"] is None
+        else:
+            assert target["input_sha256"] == target["original_sha256"]
 
 
 # ---------------------------------------------------------------------------

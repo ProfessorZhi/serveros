@@ -109,10 +109,16 @@ fleet_mcp/node/connector.py
 | `transform.patches[].sha256` | the reviewed patch file |
 | `transform.patches[].owner_commit` | CUT-A `b042f515…` (#461), CUT-B `3512c55…` (#505) |
 | `transform.patches[].rebased_to` | CUT-A `main@e69fc03`; CUT-B `null` |
-| `targets[].original_blob_sha` / `original_sha256` | the owner's file before the cut |
-| `targets[].result_sha256` / `result_blob_sha` | the file after the cut |
+| `targets[].original_blob_sha` / `original_sha256` | the owner's file at the source commit |
+| `targets[].input_sha256` / `input_blob_sha` | the file this patch actually received (CUT-B sees CUT-A's result) |
+| `targets[].result_sha256` / `result_blob_sha` | the file after this patch |
 | `applied_in` | `isolated git-archive copy` |
 | `live_tree_modified` | `false` |
+
+CUT-A is applied first. CUT-B's `input_sha256` for `fleet_mcp/fleet.py` is
+CUT-A's `result_sha256` for the same file; CUT-B's other targets enter with the
+source-commit bytes, and `providers/build.py` enters as a new file (`null`).
+The sequence is replayable from the fields alone.
 
 The builder refuses a dirty `fleet_mcp/` or `fleet/`; it never treats the
 working directory as a release input. A missing patch is
