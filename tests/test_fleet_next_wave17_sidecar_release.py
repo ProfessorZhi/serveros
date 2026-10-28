@@ -46,11 +46,16 @@ MODULE_PATH = (ROOT / "integrations" / "fleet-next-wave17-sidecar-release"
 #: `integrations/` has no `__init__.py`, so the module is loaded from its path.
 #: Registering it in `sys.modules` before `exec_module` is what lets the
 #: `@dataclass` decorators resolve their own module while the class body is
-#: still being built.
+#: still being built — but the name is process-wide, so it is **consulted**
+#: first and taken from whoever holds it, which is this tree's convention
+#: (`tests/test_loader_identity.py` enforces it) and also what keeps a second
+#: loader from getting a second copy with its own exception classes.
 _spec = importlib.util.spec_from_file_location("sidecar_release", MODULE_PATH)
-wave17 = importlib.util.module_from_spec(_spec)
-sys.modules["sidecar_release"] = wave17
-_spec.loader.exec_module(wave17)
+wave17 = sys.modules.get("sidecar_release")
+if wave17 is None:
+    wave17 = importlib.util.module_from_spec(_spec)
+    sys.modules["sidecar_release"] = wave17
+    _spec.loader.exec_module(wave17)
 m = wave17
 
 DEVICE = "device:wave17-test-01"

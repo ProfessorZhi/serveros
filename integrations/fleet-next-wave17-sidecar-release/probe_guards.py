@@ -83,10 +83,22 @@ PIPELINES = ("REVOKE_GUARDS", "RESTORE_GUARDS")
 
 
 def load_module(tests: Path):
-    spec = importlib.util.spec_from_file_location("wave17_probe_target", str(tests))
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["wave17_probe_target"] = module
-    spec.loader.exec_module(module)
+    """Load the test module, consulting the cache before taking its name.
+
+    The registration is needed — the module registers the sidecar under a
+    synthetic name itself, and `@dataclass` resolves through `sys.modules` —
+    but the name is process-wide, so it is read first. That is this tree's
+    convention (`tests/test_loader_identity.py`), and it also means a second
+    caller gets the same module object rather than a second copy with its own
+    classes.
+    """
+    name = "wave17_probe_target"
+    spec = importlib.util.spec_from_file_location(name, str(tests))
+    module = sys.modules.get(name)
+    if module is None:
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
     return module
 
 
