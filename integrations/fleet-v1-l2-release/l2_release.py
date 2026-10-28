@@ -26,21 +26,41 @@ reads them back without extracting them, and refuses the ways a package can lie:
 * a `depends_on` entry naming a module the payload does not carry;
 * a vendored copy of the CloudCLI tool schema (the provider forwards the live
   schema; a copy is the thing that goes stale silently);
-* a platform the payload claims but the kind does not support.
+* a platform the payload claims but the kind does not support, or one it fails to
+  claim although the kind ships there;
+* an intra-package import the payload does not carry (`from .report import x`
+  with no `fleet_mcp/report.py`);
+* an `l2` block that contradicts the payload — a node claiming the hub's
+  provides, a hub listing a shared surface;
+* `import_standalone`, `runtime_standalone`, the `probe` record or the `install`
+  block disagreeing with what the payload actually does when it is imported in a
+  fresh interpreter (`_verify_standalone`);
+* an external edge that is not the pinned one: `fleet` reached from a second
+  module, through a module other than `fleet.transport`, by `import`/`from fleet
+  import ...` rather than the pinned seven-name `ImportFrom`, or with a different
+  number of names (`EXTERNAL_EDGES`);
+* a pin entry the payload carries but never reaches, so `NODE_SHARED_SURFACE`
+  cannot rot into a list nobody checks — in either direction;
+* a member name with a second spelling (`fleet_mcp/./node/connector.py`), a
+  duplicate name, a link, or bytecode.
 
-It does not install anything, start anything, talk to anything, or read a
+It does not install anything, start anything, connect to anything, or read a
 credential. `pair()` and `rollback_target()` describe a rollback; they perform
-none.
+none. The one process it starts is a child interpreter running the fixed `_PROBE`
+source against a temporary copy of the payload — the only way to answer "does this
+import with nothing else on the path" without the answer depending on what this
+process has already imported.
 
 What it does NOT claim
 ----------------------
 The split is not real yet, and this module says so with numbers rather than with
-a disclaimer. On `main` today the node connector's import closure is **29**
-`fleet_mcp` modules and the hub's is **30** — they differ by `server.py`/
-`tools.py` on one side and `node/connector.py` on the other. The node drags in
-`fleet`, `audit`, `registry`, `dispatch`, `privacy`, `scopes`, `session_detail`,
-`feishu_sso`, `providers/fleet_node` and more because of three import edges that
-live in files #407 owns:
+a disclaimer. On `main` today both closures are **30 files** and they differ by
+two modules on each side (`node/{__init__,connector}.py` versus
+`{server,tools}.py`), so **28 modules are in both** — the `fleet_mcp` package is
+the release surface, not a shared subset of it. The node additionally drags in
+`fleet` (the repository root), `registry`, `audit`, `dispatch`, `privacy`,
+`scopes`, `session_detail`, `feishu_sso`, `providers/fleet_node` and more,
+because of three import edges that live in files #407 owns:
 
     fleet_mcp/node/connector.py  ->  ..fleet, ..config, ..providers.cloudcli
     fleet_mcp/providers/__init__ ->  providers.fleet_node
@@ -50,15 +70,42 @@ live in files #407 owns:
 Cutting those edges is a source change in files this package may not write. So
 this module PINS the shared surface (`NODE_SHARED_SURFACE`) instead of pretending
 it is zero: today's shape is legal and recorded, tomorrow's new coupling is a
-build failure that names the module. Shrinking the pin is always allowed. See
-HANDOFF-407.md for the exact edges.
+build failure that names the module. Shrinking the pin is always allowed — and a
+pin entry the closure no longer reaches is also a build failure, so the list
+cannot rot into a claim nobody checks. See HANDOFF-407.md for the exact edges.
 
-The manifest is `serveros/artifact.v1`, the same schema `scripts/release.py`
-reads and `scripts/build.py` writes. The two kinds are new, so the release tool
-refuses them by name today — deliberately, because its verifier dispatcher falls
-through to the node verifier for any kind it does not know. HANDOFF-419.md is the
-eight-line change that closes that hole; until it lands, an L2 artifact cannot be
-promoted by accident.
+The dependency on the repository is pinned the same way and with the same
+discipline: `EXTERNAL_EDGES` records **one** holder (`fleet_mcp.registry`), **one**
+module (`fleet.transport`) and **exactly seven** names, because "the node needs
+`fleet`" is a sentence that stays true forever and distinguishes nothing. Cutting
+edge A in HANDOFF-407 deletes that edge outright; while it exists, this module
+measures what it costs.
+
+Two flags, not one
+------------------
+`standalone: false` was too blunt to act on. There are two different questions and
+the node answers them differently:
+
+    import_standalone   can `import fleet_mcp.node.connector` succeed on a machine
+                        with this payload and nothing else?          node: TRUE
+    runtime_standalone  can the payload *run* — including the modules its runtime
+                        path reaches — on that machine?              node: FALSE
+
+The node imports because the connector defers `from ..fleet import FleetService`
+into function bodies; it cannot run because `fleet_mcp/registry.py:33` raises
+`FleetRefusal(INTERNAL)` without a checkout and `fleet_mcp/fleet.py` imports it at
+module level. The hub does neither: its import chain is eager, so it fails to
+import in the same sandbox. Both numbers are produced by importing the payload in
+a separate interpreter (`measure_standalone`), and the verifier re-runs the probe
+rather than reading the manifest's word for it.
+
+The manifest is `serveros/artifact.v1`: `scripts/build.py` writes it,
+`scripts/release.py` reads it. The two kinds are new, so the release tool refuses
+them by name today. The risk on the other side of registration is that
+`verify_revision` falls through to `verify_node_runtime` for any *registered*
+kind it does not name — an unknown kind is refused before dispatch
+(`release.py:620`), a registered one is not. HANDOFF-419.md is the change that
+closes that hole; until it lands, an L2 artifact cannot be promoted by accident.
 """
 from __future__ import annotations
 
@@ -68,12 +115,15 @@ import gzip
 import hashlib
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 #: The manifest file name and schema, byte for byte what `scripts/release.py`
 #: reads (`ARTIFACT_MANIFEST`, `ARTIFACT_MANIFEST_SCHEMA`). They are repeated
@@ -105,6 +155,12 @@ REQUIRED_MEMBERS = {
 #: refused, because "it packaged on Windows" is not "it runs there".
 PLATFORMS = {L2_NODE: ("linux", "windows"), L2_HUB: ("linux",)}
 
+#: What each kind is for. Stated once because the manifest writes it and the
+#: verifier compares it: a payload cannot describe itself as providing something
+#: the other kind provides.
+PROVIDES = {L2_NODE: {"node-connector": True},
+            L2_HUB: {"hub-ingress": True, "mcp-tools": True}}
+
 #: Never in a node artifact, whatever the closure says: these are the hub's own
 #: ingress and its operator face. The connector must not be able to start an MCP
 #: server, serve tools, or run OAuth because it was imported.
@@ -116,11 +172,21 @@ NODE_DENIED_MODULES = (
 )
 NODE_DENIED_PREFIXES = ("fleet_mcp/deploy/", "fleet_mcp/bin/")
 
+#: Anything under this package belongs to the node and needs no pin: a new
+#: node-private module is the node's own business, not evidence of hub coupling.
+NODE_PUBLIC_PREFIX = "fleet_mcp.node"
+
+#: Bytecode is build output, not source: a sourceless `fleet_mcp/server.pyc` is
+#: importable, so a rule about `server.py` that ignores `server.pyc` is a rule
+#: with a documented way around it.
+FORBIDDEN_SUFFIXES = (".pyc", ".pyo")
+
 #: The measured shared surface, frozen. These modules are in the node's closure
 #: today because the three edges in the module docstring pull them in. They are
-#: legal; a module NOT in this tuple is new coupling and fails the build. When an
-#: edge is cut, delete the entry here in the same PR — the build also reports the
-#: entries that are no longer reached, so this list cannot rot silently.
+#: legal; a module NOT in this tuple — and not under `NODE_PUBLIC_PREFIX` — is
+#: new coupling and fails the build. When an edge is cut, delete the entry here in
+#: the same change: an entry the closure no longer reaches is *also* a build
+#: failure, so this list cannot rot into a claim nobody checks.
 NODE_SHARED_SURFACE = (
     "fleet_mcp.audit",
     "fleet_mcp.cloudcli_native",
@@ -155,13 +221,46 @@ HUB_DENIED_PATTERNS = (
 #: with "token" in its name an argument with this guard instead of a decision.
 HUB_SECRET_PATTERNS = ("*credential*", "*token*")
 
-VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$")
+VERSION_RE = re.compile(
+    r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.\-]*)?(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$")
 
 #: A file that is a copy of the CloudCLI tool schema rather than a forwarder of
 #: it. The provider asks the running CLI; a payload that answers from a baked copy
 #: keeps answering after the CLI moves.
 SCHEMA_MARKER = "inputSchema"
 SCHEMA_TOOL_HINT = "run_get"
+
+#: The one edge out of `fleet_mcp` into the repository, measured on `main` and
+#: frozen: **one** holder, **one** module, **exactly seven** names.
+#:
+#:     fleet_mcp/registry.py:33   from fleet.transport import (
+#:                                    Availability, CapabilityAvailability, Device,
+#:                                    DeviceRef, DeviceRegistry, UnknownDevice,
+#:                                    canonical_level)
+#:
+#: This is not a limitation being celebrated. It is the narrowest possible form of
+#: a real dependency, and pinning it is what makes the dependency *countable*: the
+#: moment a second module reaches into `fleet`, or one of these seven becomes eight,
+#: or someone writes `import fleet.registry`, the artifact stops building and names
+#: the new edge. Without the pin, "the node needs `fleet`" is true forever and
+#: nothing distinguishes today's seven names from next month's twenty.
+#:
+#: The dictionary is keyed by the external package and is *complete*: a package
+#: reached but not listed here is new coupling and is refused, not inherited.
+EXTERNAL_EDGES = {
+    "fleet": {
+        "module": "fleet.transport",
+        "holder": "fleet_mcp.registry",
+        "symbols": ("Availability", "CapabilityAvailability", "Device", "DeviceRef",
+                    "DeviceRegistry", "UnknownDevice", "canonical_level"),
+    },
+}
+
+#: Import forms that reach an external package *more* broadly than one pinned
+#: `from <module> import (...)` line: `import fleet`, `import fleet.registry`,
+#: `from fleet import transport`. Each of them pulls something the seven-name pin
+#: does not describe, so they are refused by shape rather than by symbol count.
+EDGE_FORM = "from-module-import-names"
 
 
 class Refused(Exception):
@@ -180,13 +279,6 @@ class Closure:
     edges: dict[str, tuple[str, ...]] | None = None   # package -> importers
 
 
-def _module_name(path: Path, root: Path) -> str:
-    parts = path.relative_to(root).with_suffix("").parts
-    if parts and parts[-1] == "__init__":
-        parts = parts[:-1]
-    return ".".join(parts)
-
-
 def _resolve(dotted: str, root: Path) -> Path | None:
     base = root.joinpath(*dotted.split("."))
     if base.with_suffix(".py").is_file():
@@ -196,16 +288,17 @@ def _resolve(dotted: str, root: Path) -> Path | None:
     return None
 
 
-def _imports(path: Path, root: Path) -> list[str]:
-    """Every module name this file imports, relative imports made absolute.
+def _imports_of(data: bytes, member: str) -> list[str]:
+    """Every module name this source imports, relative imports made absolute.
 
-    `from ..errors import X` inside `fleet_mcp/node/connector.py` yields
-    `fleet_mcp.errors` — resolved here, because a closure that cannot resolve a
-    relative import reports a dependency on nothing and hides the very edge that
-    makes the two artifacts one.
+    `member` is the payload-relative path (`fleet_mcp/node/connector.py`), which is
+    what a relative import is resolved against. Reading from BYTES rather than
+    from a file on disk is what lets the same walk run over an artifact that was
+    never extracted — the build and the verifier both call it, so what a payload
+    is measured to import cannot depend on which side asked.
     """
-    tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
-    package = path.relative_to(root).parts[:-1]
+    tree = ast.parse(data.decode("utf-8", "replace"))
+    package = member.split("/")[:-1]
     out: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -219,6 +312,17 @@ def _imports(path: Path, root: Path) -> list[str]:
             out.append(module)
             out.extend(f"{module}.{alias.name}" for alias in node.names)
     return out
+
+
+def _imports(path: Path, root: Path) -> list[str]:
+    """`_imports_of` for a file in a source tree.
+
+    `from ..errors import X` inside `fleet_mcp/node/connector.py` yields
+    `fleet_mcp.errors` — resolved here, because a closure that cannot resolve a
+    relative import reports a dependency on nothing and hides the very edge that
+    makes the two artifacts one.
+    """
+    return _imports_of(path.read_bytes(), path.relative_to(root).as_posix())
 
 
 def _in_repo_packages(root: Path) -> dict[str, Path]:
@@ -310,14 +414,31 @@ def manifest_for(kind: str, version: str, *, root: Path,
         raise Refused(f"version {version!r} is not <major>.<minor>.<patch>[+<cachebuster>]")
 
     found = closure(ENTRY[kind], root)
+    if not found.files:
+        raise Refused(
+            f"{kind}'s entrypoint {ENTRY[kind]!r} does not resolve under {root}; a "
+            f"closure of zero modules would build an artifact of nothing and call "
+            f"it a release")
     members: dict[str, bytes] = {}
     for module, path in found.files.items():
         rel = path.relative_to(root).as_posix()
         data = path.read_bytes()
         members[rel] = data
 
+    absent = [rel for rel in REQUIRED_MEMBERS[kind] if rel not in members]
+    if absent:
+        raise Refused(
+            f"the {kind} closure of {ENTRY[kind]!r} does not contain its required "
+            f"member(s) {absent}; the kind is defined by the file it exists for and "
+            f"a payload without it is not that kind however it is named")
+
     _refuse_cross_layer(kind, members)
     _refuse_vendored_schema(members)
+    # The edge, before the allowance: an allowed package is still a package whose
+    # *shape* has to be the pinned one. Accepting that a payload needs `fleet` is a
+    # decision; needing it through `import fleet.registry` is a different decision
+    # and the allowance is not the place it is made.
+    holders = _verify_coupling(kind, members, third_party=found.third_party)
 
     undeclared = sorted(set(found.external_in_repo) - set(allow_external_in_repo))
     if undeclared:
@@ -329,16 +450,56 @@ def manifest_for(kind: str, version: str, *, root: Path,
             f"Shipping it would install a payload that raises at import on a "
             f"machine without this checkout. Either cut the edge, or build with "
             f"allow_external_in_repo=... and accept a non-standalone artifact.")
+    # An allowance is a named permission, not a standing one. Naming a package the
+    # closure does not reach would leave a permit in force for a dependency nobody
+    # has today, which is how a build grows a dependency without the manifest
+    # changing.
+    unused = sorted(set(allow_external_in_repo) - set(found.external_in_repo))
+    if unused:
+        raise Refused(
+            f"allow_external_in_repo names {unused}, which the {kind} closure does "
+            f"not reach; an allowance for a package nothing imports is a permit "
+            f"left in force, and the next dependency arrives under it")
+
+    standalone = measure_standalone(members, entry=ENTRY[kind])
+    blockers = [f"{holder} -> {EXTERNAL_EDGES[package]['module']} "
+                f"({len(EXTERNAL_EDGES[package]['symbols'])} symbols)"
+                for package in sorted(holders) for holder in holders[package]]
+    blockers += [f"depends_on {module} (not carried by this payload)"
+                 for module in depends_on]
+    # `standalone` is kept as the LEGACY spelling of the strong claim, because
+    # #433 and #436 have readers that look for it; the two fields below are what it
+    # means. Making `standalone` follow `import_standalone` instead would let a
+    # payload that cannot run describe itself as standalone on the strength of an
+    # import that happens to be deferred.
+    installable = standalone.runtime_imports and not blockers
 
     declared_platforms = tuple(platforms if platforms is not None else PLATFORMS[kind])
     unsupported = sorted(set(declared_platforms) - set(PLATFORMS[kind]))
     if unsupported:
         raise Refused(f"{kind} does not run on {unsupported}; it ships to "
                       f"{list(PLATFORMS[kind])}")
+    # The verifier requires every platform the kind supports, so a build that
+    # narrowed the list would produce an artifact its own verifier refuses. A
+    # build that can emit what the release path rejects is a build nobody can
+    # use; the rule lives in both places on purpose and is checked here first.
+    if not set(PLATFORMS[kind]) <= set(declared_platforms):
+        raise Refused(
+            f"{kind} must declare every platform it ships to, "
+            f"{list(PLATFORMS[kind])}; {list(declared_platforms)} would build a "
+            f"release that claims less than the kind does")
 
-    members_list = sorted(members)
-    member_sha256 = {rel: _sha(members[rel]) for rel in members_list}
-    entries = [{"path": rel, "sha256": member_sha256[rel]} for rel in members_list]
+    # `members` names the manifest itself, exactly as `scripts/build.py` does
+    # (`members = ... | {ARTIFACT_MANIFEST_NAME}`): a list of what was written
+    # that omitted one of the things written would be a false statement, and
+    # `scripts/release.py:739` compares this list against the files on disk with
+    # only `RELEASE.json` exempted — so an unlisted `ARTIFACT.json` would be
+    # reported as "present that the build did not produce". It carries no digest
+    # of its own, because a file cannot contain its own.
+    digests = sorted(members)
+    member_sha256 = {rel: _sha(members[rel]) for rel in digests}
+    entries = [{"path": rel, "sha256": member_sha256[rel]} for rel in digests]
+    members_list = sorted(set(digests) | {ARTIFACT_MANIFEST})
 
     manifest = {
         "schema": ARTIFACT_MANIFEST_SCHEMA,
@@ -363,7 +524,7 @@ def manifest_for(kind: str, version: str, *, root: Path,
         "member_sha256": member_sha256,
         "source": {
             "entry": ENTRY[kind],
-            "module_count": len(members_list),
+            "module_count": len(member_sha256),
             "tree_sha256": _tree_digest(entries),
         },
         "l2": {
@@ -380,17 +541,39 @@ def manifest_for(kind: str, version: str, *, root: Path,
             # and this comes from a checkout of this repository — the second is a
             # packaging defect that a dependency line would make look solved.
             "external_in_repo": list(found.external_in_repo),
-            "standalone": not found.external_in_repo and not depends_on,
+            # --- measured, not declared ---------------------------------------
+            # Every one of these was produced by importing the payload in a
+            # separate interpreter with nothing but the payload on `sys.path`, and
+            # the verifier re-runs the same probe. They are not author assertions.
+            "import_standalone": standalone.entry_imports,
+            "runtime_standalone": standalone.runtime_imports,
+            "standalone": standalone.runtime_imports,       # legacy, see above
+            "probe": dict(standalone.probe),
+            # Which module holds each external edge — the dependency named, not
+            # merely permitted. This is what `allow_external_in_repo` is NOT: an
+            # allowance says "the build may proceed", this says "specifically
+            # `fleet_mcp/registry.py` needs `fleet`, and nothing else does".
+            "install_requires_repo": {package: list(names)
+                                      for package, names in sorted(holders.items())},
+            "install": {
+                # The one field a deployment reader can act on. It is false
+                # whenever anything at all must come from the repository, so no
+                # combination of `external_in_repo` + a permissive build flag can
+                # make this artifact look installable on its own.
+                "independently_installable": installable,
+                "requires_repository": {package: list(names)
+                                        for package, names in sorted(holders.items())},
+                "blocked_by": blockers,
+            },
             "shared_surface": (list(NODE_SHARED_SURFACE) if kind == L2_NODE else []),
-            "provides": {"node-connector": True} if kind == L2_NODE
-                        else {"hub-ingress": True, "mcp-tools": True},
+            "provides": dict(PROVIDES[kind]),
         },
     }
     return manifest, members
 
 
 def _refuse_node_members(names) -> None:
-    """The node half of D7: no hub ingress, no unpinned coupling.
+    """The node half of D7: no hub ingress, no unpinned coupling, no stale pin.
 
     Takes MEMBER NAMES rather than a `Closure` because the build and the verifier
     must apply the same rule to the same thing. They used to hold two copies of
@@ -398,6 +581,7 @@ def _refuse_node_members(names) -> None:
     copies of a guard is a build that passes and a release that refuses, or the
     reverse.
     """
+    _refuse_bytecode(names, L2_NODE)
     denied = sorted({name for name in names
                      if _module_of(name) in NODE_DENIED_MODULES
                      or name.startswith(NODE_DENIED_PREFIXES)})
@@ -406,18 +590,47 @@ def _refuse_node_members(names) -> None:
             f"the node artifact reaches hub-side module(s) {denied}; the connector "
             f"must not import the hub's ingress. Cut the edge or move the import "
             f"behind a handoff.")
-    modules = {_module_of(name) for name in names}
-    unpinned = sorted((modules - set(NODE_EXCLUSIVE) - set(NODE_SHARED_SURFACE)) - {""})
+    modules = {_module_of(name) for name in names} - {""}
+    private = {module for module in modules
+               if module == NODE_PUBLIC_PREFIX
+               or module.startswith(NODE_PUBLIC_PREFIX + ".")}
+    unpinned = sorted(modules - private - set(NODE_EXCLUSIVE)
+                      - set(NODE_SHARED_SURFACE))
     if unpinned:
         raise Refused(
             f"new hub coupling in the node artifact: {unpinned}. The shared "
             f"surface is pinned because it is what makes the two artifacts one "
             f"release; a reviewed change adds the module to NODE_SHARED_SURFACE "
-            f"with the reason.")
+            f"with the reason, or puts it under {NODE_PUBLIC_PREFIX}/ if it is the "
+            f"node's own.")
+    unreached = sorted(set(NODE_SHARED_SURFACE) - modules)
+    if unreached:
+        raise Refused(
+            f"the pin lists module(s) the closure no longer reaches: {unreached}. "
+            f"An edge was cut and the pin was not trimmed with it; delete the "
+            f"entry in the same change, so the pin stays a measurement instead of "
+            f"a claim.")
+
+
+def _refuse_bytecode(names, kind: str) -> None:
+    """Sources ship, bytecode does not.
+
+    A sourceless `.pyc` is importable (`importlib.machinery.BYTECODE_SUFFIXES` is
+    `['.pyc']`), so on the hub side `fleet_mcp/server.pyc` would carry the
+    connector's counterpart past a deny-list written against `.py`, and on the
+    node side it would carry code the manifest's dependency check never parsed.
+    """
+    found = sorted(name for name in names if name.endswith(FORBIDDEN_SUFFIXES))
+    if found:
+        raise Refused(
+            f"the {kind} artifact ships bytecode {found}; bytecode is build output "
+            f"and it is importable without its source, so a payload that carries "
+            f"it can be something this build never checked.")
 
 
 def _refuse_hub_members(names) -> None:
     """The hub half: the hub is software, the device's state is not."""
+    _refuse_bytecode(names, L2_HUB)
     leaked = sorted(name for name in names if name.startswith(HUB_DENIED_PREFIXES))
     if leaked:
         raise Refused(
@@ -486,32 +699,372 @@ def _refuse_vendored_schema(members: dict[str, bytes]) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# the coupling, measured: the pinned edge, and the two kinds of "standalone"
+# --------------------------------------------------------------------------- #
+def _external_edges(members: dict[str, bytes]) -> dict[str, list[dict]]:
+    """Every place the payload leaves its own package, with the form it leaves by.
+
+    Measured over the payload's BYTES, not over the source tree, because the
+    question is "what does this artifact do", and an artifact is a set of bytes.
+
+    The answer is deliberately *wider* than `EXTERNAL_EDGES`: it lists every
+    top-level name outside `fleet_mcp` and the standard library, third-party or
+    not, and the caller decides which of them are in-repo. Narrowing the walk to
+    the pinned names would make the pin a filter instead of a check — a payload
+    could reach `runtime/` and the walk would report nothing at all.
+    """
+    stdlib = set(getattr(sys, "stdlib_module_names", frozenset()))
+    found: dict[str, list[dict]] = {}
+    for name in sorted(members):
+        if not name.endswith(".py"):
+            continue
+        try:
+            tree = ast.parse(members[name].decode("utf-8", "replace"))
+        except SyntaxError as exc:
+            raise Refused(f"{name} does not parse: {exc}") from exc
+        package = name.split("/")[:-1]
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top = alias.name.split(".")[0]
+                    if not top or top == "fleet_mcp" or top in stdlib:
+                        continue
+                    found.setdefault(top, []).append(
+                        {"holder": _module_of(name), "module": alias.name,
+                         "symbols": [], "form": "import"})
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    base = list(package[: len(package) - (node.level - 1)])
+                    module = ".".join(base + ([node.module] if node.module else []))
+                else:
+                    module = node.module or ""
+                top = module.split(".")[0]
+                if not top or top in ("fleet_mcp", "__future__") or top in stdlib:
+                    continue
+                # `from fleet.transport import X` names the module it wants.
+                # `from fleet import transport` does not: it asks for whatever
+                # `fleet/__init__` is willing to hand out, which is a wider
+                # dependency than the pin describes and a different one tomorrow.
+                form = (EDGE_FORM if "." in module else "from-package-import-names")
+                found.setdefault(top, []).append(
+                    {"holder": _module_of(name), "module": module,
+                     "symbols": sorted(alias.name for alias in node.names),
+                     "form": form})
+    return found
+
+
+def _refuse_external_edges(kind: str, members: dict[str, bytes],
+                           *, third_party=()) -> dict[str, list[str]]:
+    """The pinned edge, enforced. Returns {package: [holder modules]} as measured.
+
+    One holder, one module, the pinned symbols, and nothing else reaching out. A
+    package outside `EXTERNAL_EDGES` is acceptable only if the manifest declares it
+    as a *third-party* module — a wheel comes from pip, while anything in this
+    repository is a dependency on a checkout and has to be pinned. The pin is a
+    count: a second holder is how seven names become twenty without anyone
+    deciding to.
+    """
+    measured = _external_edges(members)
+    declared = set(third_party)
+    problems: list[str] = []
+    for package in sorted(measured):
+        edges = measured[package]
+        rule = EXTERNAL_EDGES.get(package)
+        if rule is None:
+            if package in declared:
+                continue
+            problems.append(
+                f"{package} <- {sorted({edge['holder'] for edge in edges})}: this "
+                f"package is neither a declared third-party module nor a pinned "
+                f"external edge, so the payload depends on the repository in a way "
+                f"no manifest records")
+            continue
+        holders = sorted({edge["holder"] for edge in edges})
+        if holders != [rule["holder"]]:
+            problems.append(
+                f"{package} is reached from {holders}; the pin says exactly one "
+                f"holder, {rule['holder']!r}")
+            continue
+        for edge in edges:
+            if edge["form"] != EDGE_FORM or edge["module"] != rule["module"]:
+                problems.append(
+                    f"{rule['holder']} enters {package} as `{edge['form']} "
+                    f"{edge['module']}`; the pinned edge is one `{EDGE_FORM} "
+                    f"{rule['module']}`")
+                continue
+            wanted, got = sorted(rule["symbols"]), edge["symbols"]
+            if got != wanted:
+                problems.append(
+                    f"{rule['holder']} imports {len(got)} name(s) from "
+                    f"{rule['module']}; the pin is exactly {len(wanted)}. Added: "
+                    f"{sorted(set(got) - set(wanted))}, removed: "
+                    f"{sorted(set(wanted) - set(got))}")
+                continue
+    if problems:
+        raise Refused(
+            f"the {kind} artifact's dependency on the repository is not the one that "
+            f"was pinned: " + "; ".join(problems) + ". The edge is pinned because "
+            f"'the node needs fleet' is true forever and distinguishes nothing — "
+            f"a reviewed change widens EXTERNAL_EDGES with the reason.")
+    # Only the pinned packages: `requires_repository` is about checkouts, and
+    # `yaml` is not one. A wheel is named in `requires.modules` and checked there.
+    return {package: sorted({edge["holder"] for edge in edges})
+            for package, edges in measured.items() if package in EXTERNAL_EDGES}
+
+
+def _reachable_from(entry: str, members: dict[str, bytes]) -> set[str]:
+    """The modules the payload really reaches from its entrypoint, walked by AST.
+
+    Membership and reachability are different claims. A pin entry that is *present*
+    but no longer imported is a module the artifact ships for no reason; a pin
+    entry that is absent is a cut edge whose list was not trimmed. This answers the
+    first question, `_refuse_node_members` answers the second.
+    """
+    index: dict[str, str] = {}
+    for name in members:
+        module = _module_of(name)
+        if module:
+            index[module] = name
+    seen: set[str] = set()
+    stack = [entry]
+    while stack:
+        module = stack.pop()
+        if module in seen or module not in index:
+            continue
+        seen.add(module)
+        parts = module.split(".")
+        stack.extend(".".join(parts[:depth]) for depth in range(1, len(parts)))
+        for imported in _imports_of(members[index[module]], index[module]):
+            if imported.startswith("fleet_mcp"):
+                stack.append(imported)
+    return seen
+
+
+def _refuse_pin_unreachable(kind: str, members: dict[str, bytes]) -> None:
+    """All 17 pinned modules are reachable from the entrypoint, not merely present."""
+    if kind != L2_NODE:
+        return
+    unreachable = sorted(set(NODE_SHARED_SURFACE) - _reachable_from(ENTRY[kind], members))
+    if unreachable:
+        raise Refused(
+            f"the pin lists module(s) the node payload carries but never reaches "
+            f"from {ENTRY[kind]!r}: {unreachable}. An artifact that ships a module "
+            f"nothing imports is carrying dead weight in a release and inflating the "
+            f"shared surface it reports")
+
+
+def _verify_coupling(kind: str, members: dict[str, bytes],
+                     *, third_party=()) -> dict[str, list[str]]:
+    """The build and the verifier call this one function, so they cannot disagree."""
+    holders = _refuse_external_edges(kind, members, third_party=third_party)
+    _refuse_pin_unreachable(kind, members)
+    return holders
+
+
+#: The child that answers "does this import with nothing but the payload beside
+#: it" — in a *separate process*, because the question is about a fresh
+#: interpreter with an empty `sys.path` cache, and because a probe that ran in
+#: this process could not un-import what the build already imported.
+_PROBE = r'''
+import importlib, json, os, sys
+root = sys.argv[1]
+# Only the payload. `-I` already dropped PYTHONPATH, the user site directory and
+# the cwd; the filter below additionally drops any site-packages that happens to
+# contain the package we are trying to prove is missing, because a probe that
+# finds `fleet/` in site-packages would report the opposite of the truth.
+sys.path[:] = [root] + [p for p in sys.path
+                        if p and os.path.abspath(p) != root
+                        and not os.path.isdir(os.path.join(p, "fleet"))]
+answer = {}
+for module in sys.argv[2:]:
+    try:
+        importlib.import_module(module)
+        answer[module] = ["imports", ""]
+    except BaseException as exc:            # noqa: BLE001 - the answer, not an error
+        answer[module] = [type(exc).__name__, str(getattr(exc, "name", "") or "")]
+print(json.dumps(answer))
+'''
+
+
+@dataclass(frozen=True)
+class Standalone:
+    """What a payload can do with nothing but itself on `sys.path`.
+
+    Two facts, deliberately separate, because one boolean cannot say both and the
+    gap between them is the whole of today's packaging defect:
+
+    * `entry_imports` — `import <entrypoint>` succeeds. The node's does; the hub's
+      does not, because the hub's import chain is eager and reaches `registry`.
+    * `runtime_imports` — the entrypoint *and* every module that holds an external
+      edge import. The node's does not: `fleet_mcp/registry.py` raises
+      `FleetRefusal(INTERNAL)` without `fleet`, and `fleet_mcp/fleet.py` imports it
+      at module level, so the first time the connector's runtime needs a fleet it
+      dies — later, on a device, instead of here.
+    """
+
+    entry: str
+    entry_imports: bool
+    runtime_imports: bool
+    probe: tuple[tuple[str, str], ...]      # module -> "imports" | "ExceptionClass"
+
+    def as_dict(self) -> dict:
+        return {"entry": self.entry,
+                "import_standalone": self.entry_imports,
+                "runtime_standalone": self.runtime_imports,
+                "probe": dict(self.probe)}
+
+
+_PROBE_CACHE: dict[str, Standalone] = {}
+
+
+def measure_standalone(members: dict[str, bytes], *, entry: str,
+                       timeout: float = 180.0) -> Standalone:
+    """Import the payload in a fresh interpreter with only the payload on the path.
+
+    Measured, never declared. A manifest field that says "standalone" and is not
+    re-measured by the verifier is a field an author writes by hand once and
+    nothing ever corrects — which is the exact failure this whole module exists to
+    refuse in other people's packages.
+    """
+    _refuse_unsafe_names(members)
+    # Only the edges into this repository are probed. A missing wheel (`yaml`) is a
+    # pip dependency the manifest declares in `requires.modules`; counting it here
+    # would make "standalone" mean "the environment is complete", which is a
+    # different and much less interesting question than "does this need a checkout".
+    holders = sorted({edge["holder"]
+                      for package, edges in _external_edges(members).items()
+                      if package in EXTERNAL_EDGES
+                      for edge in edges})
+    checks = tuple(sorted({entry, *holders}))
+    key = entry + "|" + _tree_digest(
+        [{"path": name, "sha256": _sha(members[name])} for name in sorted(members)])
+    cached = _PROBE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="l2-standalone-") as scratch:
+            root = Path(scratch) / "payload"
+            root.mkdir()
+            for name, data in members.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            # cwd is an empty directory that is not the payload: `-I` already keeps
+            # the cwd off `sys.path`, and this makes that independent of the flag.
+            empty = Path(scratch) / "cwd"
+            empty.mkdir()
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ("PYTHONPATH", "PYTHONHOME")}
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            done = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", _PROBE, str(root), *checks],
+                capture_output=True, text=True, cwd=empty, env=env, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise Refused(
+            f"the standalone probe could not run ({type(exc).__name__}: {exc}); an "
+            f"artifact whose isolation nothing measured cannot be described as one "
+            f"that was measured to be isolated") from exc
+
+    if done.returncode != 0:
+        raise Refused(
+            f"the standalone probe failed ({done.returncode}): "
+            f"{(done.stderr or done.stdout).strip()[-400:]}")
+    try:
+        answer = json.loads(done.stdout)
+    except json.JSONDecodeError as exc:
+        raise Refused(f"the standalone probe printed something that is not JSON: "
+                      f"{done.stdout[:200]!r}") from exc
+
+    missing = [module for module in checks if module not in answer]
+    if missing:
+        raise Refused(f"the standalone probe did not report {missing}")
+    probe = tuple((module, answer[module][0]) for module in checks)
+    verdict = Standalone(entry=entry,
+                         entry_imports=answer[entry][0] == "imports",
+                         runtime_imports=all(answer[module][0] == "imports"
+                                             for module in checks),
+                         probe=probe)
+    _PROBE_CACHE[key] = verdict
+    return verdict
+
+
+# --------------------------------------------------------------------------- #
 # deterministic archive
 # --------------------------------------------------------------------------- #
+def _refuse_unsafe_names(names) -> None:
+    """One canonical spelling per member, or no release.
+
+    `fleet_mcp/./node/connector.py` is the same file as
+    `fleet_mcp/node/connector.py` to every filesystem and a different string to
+    every guard that compares strings — which is how a deny-list written against
+    `fleet_mcp/node/` gets walked past. So the rule is not "reject the traversal
+    parts"; it is "accept exactly the canonical spelling and refuse the rest".
+    """
+    problems: list[str] = []
+    for name in names:
+        if not name or any(char in name for char in ("\0", "\n", "\r")):
+            problems.append(repr(name))
+        elif "\\" in name:
+            # A Windows separator inside a POSIX archive is at best a name no
+            # extractor agrees on, and at worst a second spelling of one file.
+            problems.append(name)
+        else:
+            path = PurePosixPath(name)
+            if path.is_absolute() or ".." in path.parts or path.as_posix() != name:
+                problems.append(name)
+    if problems:
+        raise Refused(
+            f"unsafe or non-canonical member name(s) {sorted(problems)}; a member "
+            f"name is a path inside the payload and it has exactly one spelling, so "
+            f"the guard and the filesystem are never looking at two names")
+
+
+def _refuse_duplicate_names(names, where: str) -> None:
+    duplicated = sorted({name for name in names if names.count(name) > 1}) \
+        if len(names) != len(set(names)) else []
+    if duplicated:
+        raise Refused(
+            f"{where} carries {duplicated} more than once; two members with one "
+            f"name means the payload's contents depend on which one wins, and a "
+            f"release whose contents depend on an extraction order is not the "
+            f"release that was verified")
+
+
 def write_artifact(manifest: dict, members: dict[str, bytes], output: Path) -> Path:
     """Write one `.tar.gz` whose bytes depend only on the manifest and members.
 
     No timestamp, no uid/gid, no hostile-to-diff metadata: two builds of the same
     tree produce the same file, so "did this artifact change" is a byte
-    comparison and not a conversation. The manifest is a member but is not listed
-    in `members` — a file cannot contain its own digest, and the release tool's
-    own tree hash has the same shape for the same reason.
+    comparison and not a conversation. The manifest is a member but carries no
+    digest — a file cannot contain its own, and `scripts/build.py` lists it in
+    `members` for the same reason `scripts/release.py` exempts only `RELEASE.json`
+    from its undeclared-file check.
     """
     payload = dict(members)
     payload[ARTIFACT_MANIFEST] = json.dumps(
         manifest, indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8") + b"\n"
+    _refuse_unsafe_names(payload)
     output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw,
-                           mtime=0, compresslevel=9) as gz:
-            with tarfile.open(fileobj=gz, mode="w", format=tarfile.USTAR_FORMAT) as tar:
-                for name in sorted(payload):
-                    data = payload[name]
-                    info = tarfile.TarInfo(name)
-                    info.size, info.mtime, info.mode = len(data), 0, 0o644
-                    info.uid = info.gid = 0
-                    info.uname = info.gname = ""
-                    tar.addfile(info, io.BytesIO(data))
+    try:
+        with output.open("wb") as raw:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=raw,
+                               mtime=0, compresslevel=9) as gz:
+                with tarfile.open(fileobj=gz, mode="w",
+                                  format=tarfile.USTAR_FORMAT) as tar:
+                    for name in sorted(payload):
+                        data = payload[name]
+                        info = tarfile.TarInfo(name)
+                        info.size, info.mtime, info.mode = len(data), 0, 0o644
+                        info.uid = info.gid = 0
+                        info.uname = info.gname = ""
+                        tar.addfile(info, io.BytesIO(data))
+    except ValueError as exc:
+        # USTAR is the deterministic format and it has a 100-byte name field;
+        # a deeply nested member overruns it. That is a refusal with a reason,
+        # not a traceback out of the packaging tool.
+        output.unlink(missing_ok=True)
+        raise Refused(f"cannot write {output} as a USTAR archive: {exc}") from exc
     return output
 
 
@@ -540,20 +1093,32 @@ def read_artifact(path: Path) -> Artifact:
     """
     try:
         with tarfile.open(path, "r:gz") as tar:
-            names = tar.getnames()
-            for name in names:
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise Refused(f"{path} contains unsafe member name {name!r}")
+            infos = tar.getmembers()
+            names = [info.name for info in infos]
+            _refuse_unsafe_names(names)
+            _refuse_duplicate_names(names, str(path))
+            # A directory, a symlink or a device node is not a member: the
+            # manifest describes file bytes and nothing else, so a payload that
+            # carries a link would be verified as the thing it points at and
+            # installed as the link.
+            other = sorted(info.name for info in infos if not info.isfile())
+            if other:
+                raise Refused(
+                    f"{path} carries member(s) that are not regular files "
+                    f"{other}; an artifact is a set of file bytes, and a link or a "
+                    f"directory is something the manifest cannot describe")
             if ARTIFACT_MANIFEST not in names:
                 raise Refused(f"{path} carries no {ARTIFACT_MANIFEST}")
             raw = tar.extractfile(ARTIFACT_MANIFEST).read()
             manifest = json.loads(raw)
             members = {name: tar.extractfile(name).read()
                        for name in names if name != ARTIFACT_MANIFEST}
-    except (tarfile.TarError, OSError, json.JSONDecodeError) as exc:
+    except (tarfile.TarError, OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise Refused(f"{path} is not a readable artifact: {exc}") from exc
 
-    recorded = manifest.get("member_sha256") or {}
+    recorded = manifest.get("member_sha256")
+    if not isinstance(recorded, dict):
+        recorded = {}      # a shape `verify` refuses; reading must not crash on it
     for name, data in members.items():
         if name not in recorded:
             continue          # an undeclared file is a `verify` problem, not a read one
@@ -613,38 +1178,245 @@ def verify(artifact: Artifact, *, expect_kind: str | None = None,
     if len(listed) != len(set(listed)):
         duplicated = sorted({item for item in listed if listed.count(item) > 1})
         raise Refused(f"the manifest lists {duplicated} more than once")
-    missing = sorted(set(listed) - set(artifact.members))
-    extra = sorted(set(artifact.members) - set(listed))
+    if ARTIFACT_MANIFEST not in listed:
+        raise Refused(
+            f"the member list omits {ARTIFACT_MANIFEST} itself; `scripts/release.py` "
+            f"compares this list against the files on disk and exempts only "
+            f"RELEASE.json, so a release staged from this payload would report its "
+            f"own manifest as a file the build did not produce")
+    # The manifest describes every member including itself; it is the one member
+    # that cannot carry a digest of its own.
+    digests = [name for name in listed if name != ARTIFACT_MANIFEST]
+    payload = set(artifact.members) | {ARTIFACT_MANIFEST}
+    missing = sorted(set(listed) - payload)
+    extra = sorted(payload - set(listed))
     if missing or extra:
         raise Refused(f"member list does not match the payload: missing {missing}, "
                       f"undeclared {extra}")
+    if sorted(recorded) != sorted(digests):
+        raise Refused(
+            f"member_sha256 covers {sorted(set(recorded) - set(digests)) or 'nothing'} "
+            f"extra and omits {sorted(set(digests) - set(recorded)) or 'nothing'}; "
+            f"every member except {ARTIFACT_MANIFEST} has exactly one digest")
 
-    for name in listed:
-        if _sha(artifact.members[name]) != recorded.get(name):
+    for name in digests:
+        if _sha(artifact.members[name]) != recorded[name]:
             raise Refused(f"{name} does not match the manifest entry")
 
-    if _tree_digest([{"path": name, "sha256": recorded.get(name, "")}
-                     for name in listed]) != manifest.get("source", {}).get("tree_sha256"):
+    if _tree_digest([{"path": name, "sha256": recorded[name]}
+                     for name in digests]) != manifest.get("source", {}).get("tree_sha256"):
         raise Refused("source.tree_sha256 does not describe this member list")
+    if manifest.get("source", {}).get("module_count") != len(digests):
+        raise Refused(
+            f"source.module_count says {manifest.get('source', {}).get('module_count')!r} "
+            f"and the member list carries {len(digests)}; a count that disagrees "
+            f"with the list it describes is a manifest written by hand")
 
     for required in REQUIRED_MEMBERS[kind]:
         if required not in artifact.members:
             raise Refused(f"{kind} artifact is missing its required member {required}")
 
+    block = _verify_l2_block(kind, manifest)
     _verify_layer(kind, artifact)
+    # Completeness first ("is this import declared at all?"), then shape ("is the
+    # declared dependency the ONE that was pinned?"). In the other order every new
+    # in-repo edge is reported as a pin violation, which is true but buries the
+    # simpler fact that the manifest does not mention it.
     _verify_dependencies(manifest, artifact)
+    holders = _verify_coupling(
+        kind, artifact.members,
+        third_party=(block.get("requires") or {}).get("modules") or [])
+    measured = _verify_standalone(kind, artifact, block, holders)
     _refuse_vendored_schema(artifact.members)
 
-    platforms = list(manifest.get("l2", {}).get("platforms") or [])
+    return {"ok": True, "kind": kind, "version": version,
+            "members": len(listed), "digest": artifact.digest,
+            # Both halves of the answer, never one: a reader that sees
+            # `import_standalone: true` and stops has read the half that says
+            # "it loads", not the half that says "it runs".
+            "import_standalone": measured.entry_imports,
+            "runtime_standalone": measured.runtime_imports,
+            "standalone": measured.runtime_imports,
+            "independently_installable": bool(
+                (block.get("install") or {}).get("independently_installable")),
+            "install_requires_repo": holders}
+
+
+def _verify_l2_block(kind: str, manifest: dict) -> dict:
+    """The `l2` block, checked against what the code says the kind is.
+
+    A block that restates the top level is not redundant if it is compared: the
+    top level is what other readers use, this is what this kind means, and the
+    failure mode being closed here is a manifest that says two things at once —
+    a hub listing the node's shared surface, a node claiming to run where it does
+    not, a payload whose `standalone` contradicts its own dependency lists.
+    """
+    block = manifest.get("l2")
+    if not isinstance(block, dict):
+        raise Refused("the manifest carries no l2 block; this is an L2 artifact and "
+                      "a payload that does not describe itself as one cannot be "
+                      "released as one")
+
+    if block.get("kind") != kind:
+        raise Refused(f"the l2 block says {block.get('kind')!r} and the kinds "
+                      f"list says {kind!r}")
+    if block.get("entrypoint") != ENTRY[kind]:
+        raise Refused(f"the l2 block names entrypoint {block.get('entrypoint')!r}; "
+                      f"{kind} is {ENTRY[kind]!r}")
+
+    platforms = list(block.get("platforms") or [])
     unsupported = sorted(set(platforms) - set(PLATFORMS[kind]))
     if unsupported:
         raise Refused(f"{kind} declares unsupported platform(s) {unsupported}")
-    if not set(PLATFORMS[kind]) <= set(platforms):
+    absent = sorted(set(PLATFORMS[kind]) - set(platforms))
+    if absent:
         raise Refused(f"{kind} must declare {list(PLATFORMS[kind])}, "
-                      f"declared {platforms}")
+                      f"declared {platforms} (missing {absent}); a payload that "
+                      f"claims fewer platforms than its kind ships to would install "
+                      f"on a machine its release does not describe")
 
-    return {"ok": True, "kind": kind, "version": version,
-            "members": len(recorded), "digest": artifact.digest}
+    # `standalone`, `import_standalone`, `runtime_standalone` and the `install`
+    # block are NOT checked by arithmetic here. They used to be, as
+    # `standalone == (not external_in_repo and not depends_on)` — true by
+    # definition, so a field that could never catch the thing it was named for.
+    # They are now compared to a probe that imports the payload, in
+    # `_verify_standalone`, which is the only kind of check worth having on a
+    # claim about isolation.
+    for field in ("external_in_repo", "depends_on", "shared_surface"):
+        value = block.get(field)
+        if value is not None and not (isinstance(value, list)
+                                      and all(isinstance(item, str) for item in value)):
+            raise Refused(f"the l2 block's {field} is {value!r}, not a list of "
+                          f"module names")
+
+    provides = block.get("provides")
+    if provides != PROVIDES[kind]:
+        raise Refused(f"{kind} must provide exactly {PROVIDES[kind]}, "
+                      f"declares {provides!r}")
+
+    shared = sorted(block.get("shared_surface") or [])
+    if kind == L2_NODE:
+        if shared != sorted(NODE_SHARED_SURFACE):
+            raise Refused(
+                f"the node artifact lists shared surface {shared}; this build's pin "
+                f"is {sorted(NODE_SHARED_SURFACE)}. An artifact is released against "
+                f"the pin it was built with, and a manifest that records a "
+                f"different one is describing a different release")
+    elif shared:
+        raise Refused(
+            f"the hub artifact lists a shared surface {shared}; the pin is the "
+            f"node's measurement of what it borrows from the hub, not the hub's")
+
+    requires = block.get("requires")
+    if not isinstance(requires, dict) or not isinstance(requires.get("modules"), list):
+        raise Refused("the l2 block declares no requires.modules; the dependency "
+                      "check has nothing to compare the payload's imports against")
+    # A repository package declared as a wheel. `pip install fleet` would find some
+    # unrelated distribution and the payload would import it; the dependency this
+    # artifact actually has is a checkout, and it is pinned as one.
+    disguised = sorted(set(requires["modules"]) & set(EXTERNAL_EDGES))
+    if disguised:
+        raise Refused(
+            f"the l2 block declares {disguised} under requires.modules; "
+            f"{disguised} is a package in this repository, not a wheel pip can "
+            f"install, and describing it as a third-party module hides the "
+            f"dependency instead of satisfying it")
+    return block
+
+
+def _verify_standalone(kind: str, artifact: Artifact, block: dict,
+                       holders: dict[str, list[str]]) -> Standalone:
+    """Re-measure isolation and compare it to what the manifest says.
+
+    Every field here is a claim about behaviour on a machine that has this payload
+    and nothing else, and every one of them is answered by running the payload
+    rather than by reading it. The verifier does not trust the build's answer for
+    the same reason a release does not trust a build: the manifest travels without
+    the code that wrote it.
+    """
+    measured = measure_standalone(artifact.members, entry=ENTRY[kind])
+    problems: list[str] = []
+
+    for field, actual in (("import_standalone", measured.entry_imports),
+                          ("runtime_standalone", measured.runtime_imports)):
+        declared = block.get(field)
+        if not isinstance(declared, bool):
+            problems.append(f"l2.{field} is {declared!r}, not a boolean")
+        elif declared != actual:
+            problems.append(
+                f"l2.{field} says {declared} and importing the payload in an "
+                f"interpreter with nothing but the payload on sys.path measures "
+                f"{actual} ({dict(measured.probe)})")
+
+    if block.get("standalone") != block.get("runtime_standalone"):
+        problems.append(
+            f"l2.standalone={block.get('standalone')!r} disagrees with "
+            f"l2.runtime_standalone={block.get('runtime_standalone')!r}; "
+            f"`standalone` is the legacy spelling of the same claim, and two "
+            f"spellings of one claim is how they come to differ")
+
+    declared_probe = block.get("probe")
+    if not isinstance(declared_probe, dict):
+        problems.append("the l2 block carries no probe record; the claim and the "
+                        "evidence for it are one field apart on purpose")
+    elif {str(name): str(verdict) for name, verdict in declared_probe.items()} \
+            != dict(measured.probe):
+        problems.append(
+            f"l2.probe records {dict(declared_probe)!r} and the payload measures "
+            f"{dict(measured.probe)!r}")
+
+    if block.get("install_requires_repo") != holders:
+        problems.append(
+            f"l2.install_requires_repo says {block.get('install_requires_repo')!r} "
+            f"and the payload reaches the repository from {holders!r}")
+
+    install = block.get("install")
+    # What an independent install needs, computed from the measurement and the
+    # declared dependencies — never read back from the manifest.
+    allowed = not holders and not (block.get("depends_on") or [])
+    expect_installable = measured.runtime_imports and allowed
+    if not isinstance(install, dict):
+        problems.append(
+            "the l2 block carries no install block; whether this artifact can be "
+            "installed on its own is the question a manifest exists to answer, and "
+            "leaving it to be inferred from `external_in_repo` is how a payload "
+            "that needs a checkout gets read as a payload that does not")
+    else:
+        declared_installable = install.get("independently_installable")
+        if not isinstance(declared_installable, bool):
+            problems.append(
+                f"install.independently_installable is {declared_installable!r}, "
+                f"not a boolean")
+        elif declared_installable and not expect_installable:
+            problems.append(
+                f"install.independently_installable says True and this payload "
+                f"cannot be: runtime_standalone={measured.runtime_imports}, "
+                f"repository dependencies {holders!r}, depends_on "
+                f"{block.get('depends_on')!r}. An artifact that needs a checkout "
+                f"beside it is not made installable by a manifest field, however "
+                f"permissively it was built")
+        elif declared_installable != expect_installable:
+            problems.append(
+                f"install.independently_installable says {declared_installable} and "
+                f"the payload measures {expect_installable}")
+        if install.get("requires_repository") != holders:
+            problems.append(
+                f"install.requires_repository says "
+                f"{install.get('requires_repository')!r} and the payload reaches "
+                f"{holders!r}")
+        blocked_by = install.get("blocked_by")
+        if not isinstance(blocked_by, list):
+            problems.append(f"install.blocked_by is {blocked_by!r}, not a list")
+        elif bool(blocked_by) == bool(expect_installable):
+            problems.append(
+                f"install.blocked_by is {blocked_by!r}; a payload that is "
+                f"independently installable ({expect_installable}) must name what "
+                f"blocks it exactly when something does")
+
+    if problems:
+        raise Refused(f"the {kind} artifact's isolation claim does not match what "
+                      f"the payload does: " + "; ".join(problems))
+    return measured
 
 
 def _verify_layer(kind: str, artifact: Artifact) -> None:
@@ -653,17 +1425,28 @@ def _verify_layer(kind: str, artifact: Artifact) -> None:
 
 
 def _module_of(name: str) -> str:
-    if not name.endswith(".py"):
+    """The dotted module a member would import as, or "" for a data file.
+
+    Sources and bytecode both count: `importlib.machinery.BYTECODE_SUFFIXES` is
+    `['.pyc']`, so a sourceless `fleet_mcp/server.pyc` imports as
+    `fleet_mcp.server`. A deny-list that reads only `.py` has a way around it.
+    """
+    for suffix in (".py", ".pyc", ".pyo", ".pyi"):
+        if name.endswith(suffix):
+            break
+    else:
         return ""
-    parts = name[:-3].split("/")
+    parts = name[: -len(suffix)].split("/")
     if parts[-1] == "__init__":
         parts = parts[:-1]
     return ".".join(parts)
 
 
 def _verify_dependencies(manifest: dict, artifact: Artifact) -> None:
-    declared = set(manifest.get("l2", {}).get("requires", {}).get("modules") or [])
+    block = manifest.get("l2", {})
+    declared = set(block.get("requires", {}).get("modules") or [])
     measured: set[str] = set()
+    internal: set[str] = set()
     stdlib = set(getattr(sys, "stdlib_module_names", frozenset()))
     for name, data in artifact.members.items():
         if not name.endswith(".py"):
@@ -685,23 +1468,40 @@ def _verify_dependencies(manifest: dict, artifact: Artifact) -> None:
                     modules = [node.module or ""]
             for module in modules:
                 top = module.split(".")[0]
-                if module.startswith("fleet_mcp") or not top:
+                if not top:
+                    continue
+                if module.startswith("fleet_mcp"):
+                    # An intra-package import is not a dependency, it is a claim
+                    # about the payload: `from .report import x` promises that
+                    # `fleet_mcp/report.py` is in this artifact. Nothing else
+                    # checks that — the member list only says what IS here.
+                    internal.add(module.rstrip("."))
                     continue
                 if top in stdlib or top == "__future__":
                     continue
                 measured.add(top)
-    external = set(manifest.get("l2", {}).get("external_in_repo") or [])
+    present = {_module_of(name) for name in artifact.members} - {""}
+    absent = sorted(module for module in internal if module not in present)
+    if absent:
+        raise Refused(
+            f"the payload imports {absent} from its own package but does not carry "
+            f"it; an artifact that names a module it does not contain imports into "
+            f"an ImportError on the machine, not in the build")
+
+    external = set(block.get("external_in_repo") or [])
     missing = sorted(measured - declared - external)
     if missing:
         raise Refused(f"artifact imports {missing} but its manifest declares only "
                       f"{sorted(declared)}; an artifact that does not name its "
                       f"dependencies installs into an ImportError")
 
-    for dependency in manifest.get("l2", {}).get("depends_on") or []:
-        wanted = f"{str(dependency).replace('.', '/')}.py"
-        if wanted not in artifact.members:
-            raise Refused(f"depends_on names {dependency!r}, which this payload "
-                          f"does not carry")
+    for dependency in block.get("depends_on") or []:
+        wanted = str(dependency).replace(".", "/")
+        if (f"{wanted}.py" in artifact.members
+                or f"{wanted}/__init__.py" in artifact.members):
+            continue
+        raise Refused(f"depends_on names {dependency!r}, which this payload "
+                      f"does not carry")
 
 
 # --------------------------------------------------------------------------- #
@@ -716,9 +1516,12 @@ def pair(previous: Path, current: Path, *, kind: str | None = None) -> dict:
     and installs nothing.
     """
     old, new = read_artifact(previous), read_artifact(current)
-    if kind is not None:
-        verify(old, expect_kind=kind)
-        verify(new, expect_kind=kind)
+    # Both are verified whether or not a kind was named: "the previous artifact is
+    # still readable and still verifies" is the entire property a rollback claim
+    # rests on, and reporting a rollback to an artifact this build refuses would
+    # be a rollback to something that was never a release.
+    verify(old, expect_kind=kind)
+    verify(new, expect_kind=kind)
     if old.kind != new.kind:
         raise Refused(f"cannot roll a {new.kind} back to a {old.kind}")
     return {
@@ -728,6 +1531,31 @@ def pair(previous: Path, current: Path, *, kind: str | None = None) -> dict:
         "rollback_to": old.version,
         "rollback_available": True,
     }
+
+
+def extract(artifact: Path, destination: Path) -> Path:
+    """Lay an artifact out as a directory, which is the shape `release.py` stages.
+
+    `scripts/release.py` copies a *directory* (`shutil.copytree`), not an archive,
+    so an artifact has to become one before it can be released. Extraction happens
+    only after `read_artifact` has refused unsafe names, duplicates, links and
+    tampered bytes: a reader that extracted first would have already written the
+    file it was about to reject.
+    """
+    read = read_artifact(artifact)
+    if destination.exists() and any(destination.iterdir()):
+        raise Refused(f"{destination} already has contents; an extracted artifact "
+                      f"is written into an empty directory so nothing of the last "
+                      f"one is mistaken for part of this one")
+    destination.mkdir(parents=True, exist_ok=True)
+    for name, data in read.members.items():
+        path = destination / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    (destination / ARTIFACT_MANIFEST).write_text(
+        json.dumps(read.manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8")
+    return destination
 
 
 def rollback_target(previous: Path, *, kind: str) -> Artifact:
@@ -767,6 +1595,14 @@ def main(argv: list[str] | None = None) -> int:
     both.add_argument("current", type=Path)
     both.add_argument("--kind", required=True, choices=L2_KINDS)
 
+    unpack = sub.add_parser("extract", help="write an artifact out as a directory")
+    unpack.add_argument("artifact", type=Path)
+    unpack.add_argument("destination", type=Path)
+
+    probe = sub.add_parser(
+        "measure", help="import a payload in isolation and report what it needs")
+    probe.add_argument("artifact", type=Path)
+
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
@@ -775,16 +1611,47 @@ def main(argv: list[str] | None = None) -> int:
                 depends_on=tuple(args.depends_on),
                 allow_external_in_repo=tuple(args.allow_external_in_repo))
             path = write_artifact(manifest, members, args.output)
+            block = manifest["l2"]
             print(json.dumps({"ok": True, "kind": args.kind, "version": args.version,
                               "members": len(members), "output": str(path),
-                              "standalone": manifest["l2"]["standalone"],
-                              "external_in_repo": manifest["l2"]["external_in_repo"],
-                              "shared_surface": len(manifest["l2"]["shared_surface"])},
+                              "import_standalone": block["import_standalone"],
+                              "runtime_standalone": block["runtime_standalone"],
+                              "standalone": block["standalone"],
+                              "independently_installable":
+                                  block["install"]["independently_installable"],
+                              "external_in_repo": block["external_in_repo"],
+                              "install_requires_repo": block["install_requires_repo"],
+                              "shared_surface": len(block["shared_surface"])},
                              indent=2))
         elif args.command == "verify":
             print(json.dumps(verify(read_artifact(args.artifact),
                                     expect_kind=args.kind,
                                     expect_version=args.version), indent=2))
+        elif args.command == "measure":
+            read = read_artifact(args.artifact)
+            if read.kind not in ENTRY:
+                raise Refused(f"{args.artifact} declares kind(s) "
+                              f"{read.manifest.get('kinds')!r}, which have no "
+                              f"entrypoint to import")
+            holders = _refuse_external_edges(
+                read.kind, read.members,
+                third_party=((read.manifest.get("l2") or {}).get("requires")
+                             or {}).get("modules") or [])
+            measured = measure_standalone(read.members, entry=ENTRY[read.kind])
+            depends_on = (read.manifest.get("l2") or {}).get("depends_on") or []
+            answer = measured.as_dict()
+            answer.update({
+                "ok": True, "kind": read.kind, "version": read.version,
+                "install_requires_repo": holders,
+                # Same expression the build writes into `install`, so this command
+                # cannot report a payload installable that the manifest refused to.
+                "independently_installable":
+                    measured.runtime_imports and not holders and not depends_on,
+            })
+            print(json.dumps(answer, indent=2))
+        elif args.command == "extract":
+            path = extract(args.artifact, args.destination)
+            print(json.dumps({"ok": True, "directory": str(path)}, indent=2))
         else:
             print(json.dumps(pair(args.previous, args.current, kind=args.kind), indent=2))
     except Refused as exc:
