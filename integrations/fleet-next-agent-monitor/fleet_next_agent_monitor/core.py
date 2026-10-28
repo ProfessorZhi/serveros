@@ -7,13 +7,19 @@ bus, and it owns no credential. What it owns is the *decision* about each fact:
     before it reads anything. A denied watch spends zero provider calls.
 2.  **Classify** into the vocabulary of `contract.py` — where `completed`
     without native activity is `UNKNOWN`, never success.
-3.  **Deduplicate** against the durable cursor: the fingerprint of the last fact
-    handed over is stored *before* the hand-over, so a crash between "sent" and
-    "recorded" reads as UNKNOWN afterwards, not as permission to send again.
+3.  **Deduplicate** against the durable cursor. The cursor distinguishes what
+    was *attempted* from what was *delivered*: a hand-over is recorded before
+    it is sent (so a crash leaves a claim, not an absence), and the claim only
+    becomes terminal when a real ledger receipt — `DELIVERED` or `DUPLICATE`,
+    naming *this* fact's delivery key — comes back. A claim without a receipt is
+    reconciled through the ledger's own `reconcile(delivery_key)`, never re-sent
+    blind, and never reported as settled.
 4.  **Hand over** only `TERMINAL_VERIFIED` and `FAILED`, through the single
-    injected #423 notifier. Nothing else is dispatchable.
-5.  **Report** its own vitals — `last_tick`, cursor age, backlog, consecutive
-    failures — plus bounded, de-bounced warnings for UNKNOWN/offline.
+    injected #423 notifier, under a typed subject the grant authorized. Nothing
+    else is dispatchable, and a watch with no authorized subject is a named
+    `BLOCKED_*` refusal rather than a message with an empty field.
+5.  **Report** its own vitals — `last_tick`, cursor age, backlog, unconfirmed
+    hand-overs, consecutive failures — plus bounded, de-bounced warnings.
 6.  **Save** the state atomically, then return a tick document.
 
 Nothing in this module sends a message, starts a process, or writes anywhere
@@ -22,6 +28,7 @@ except the one state file.
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from .contract import (
@@ -48,7 +55,13 @@ from .contract import (
     require_watch,
     watch_key,
 )
-from .notifier import BLOCKED_LEDGER, NotifierUnavailable, payload_for
+from .notifier import (
+    BLOCKED_LEDGER,
+    NotifierUnavailable,
+    delivery_subject,
+    payload_for,
+    receipt_identity,
+)
 from .sources import LegacyFactsSource, observe_watch
 from .state import STALE_AFTER_SECONDS, DurableState
 
@@ -62,7 +75,34 @@ WARN_UNKNOWN_OBSERVATION = "UNKNOWN_OBSERVATION"
 WARN_OFFLINE = "SOURCE_OFFLINE"
 WARN_DENIED = "SOURCE_DENIED"
 WARN_BLOCKED_LEDGER = "BLOCKED_LEDGER"
+WARN_BLOCKED_SUBJECT = "BLOCKED_SUBJECT"
 WARN_FAILURES = "CONSECUTIVE_FAILURES"
+
+#: The two states a ledger uses to say "this fact arrived". `DUPLICATE` counts
+#: because it means an earlier attempt of *this* delivery landed; both still
+#: need a delivery key that names this fact.
+CONFIRMING = frozenset({"DELIVERED", "DUPLICATE"})
+
+
+@dataclass(frozen=True)
+class _Receipt:
+    """What the ledger actually said, with nothing inferred."""
+    state: str
+    delivered: bool
+    remote_id: str | None
+    delivery_key: str | None
+    why: str | None = None
+
+
+@dataclass(frozen=True)
+class _Outcome:
+    """What this tick did about one dispatchable fact."""
+    sent: bool
+    receipt: str | None
+    confirmed: bool = False
+    remote_id: str | None = None
+    why: str | None = None
+    blocked: bool = False
 
 
 def _iso(now: float) -> str:
@@ -150,7 +190,8 @@ class MonitorCore:
         rows: list[dict] = []
         counts: dict[str, int] = {}
         dispatched = delivered = duplicate = unknown_receipts = 0
-        blocked_ledger = False
+        outstanding = 0
+        blocked_ledger = blocked_subject = False
         hard_failure = False
         dispatched_any = False
 
@@ -174,8 +215,10 @@ class MonitorCore:
             status = observation.get("status")
             reason = observation.get("reason")
             counts[status] = counts.get(status, 0) + 1
+            fingerprint = dispatch_fingerprint(observation)
             row = {"key": key, "view": observation.get("view"), "status": status,
-                   "reason": reason, "dispatched": False, "receipt": None}
+                   "reason": reason, "dispatched": False, "receipt": None,
+                   "confirmed": False}
 
             if status in (STATUS_UNKNOWN, STATUS_OFFLINE, STATUS_STALE, STATUS_DENIED):
                 # A correct UNKNOWN is the monitor *working*; only an exception
@@ -185,50 +228,57 @@ class MonitorCore:
                 self._alert(document, kind=kind, key=f"{key}|{status}|{reason}",
                             status=status, reason=reason, raised=warnings)
 
-            fingerprint = dispatch_fingerprint(observation)
-            already = self._state.dispatched(document, key, fingerprint)
-            if status in DISPATCHABLE and not already:
-                if self._notifier is None:
-                    blocked_ledger = True
-                    row["receipt"] = BLOCKED_LEDGER
-                else:
-                    source_name, payload = payload_for(observation, watch,
-                                                       observed_at=_iso(self._clock()))
-                    # Recorded BEFORE the hand-over: a crash in `observe_payload`
-                    # must read as UNKNOWN, never as "retry the send".
-                    self._state.record(document, key=key, fingerprint=fingerprint,
-                                       status=status, reason=reason)
-                    self._state.save(document)
-                    try:
-                        answer = self._notifier.observe_payload(source_name, payload)
-                        state, remote = _receipt(answer)
-                    except Exception as exc:  # noqa: BLE001 - the notifier is not ours
-                        state, remote = "DELIVERY_UNKNOWN", None
-                        row["receipt_why"] = f"{type(exc).__name__}: {exc}"[:200]
-                    dispatched += 1
-                    dispatched_any = True
-                    row["dispatched"] = True
-                    row["receipt"] = state
-                    if remote:
-                        row["remote_id"] = remote
-                    if state == "DELIVERED":
-                        delivered += 1
-                    elif state == "DUPLICATE":
-                        duplicate += 1
+            if status in DISPATCHABLE:
+                outcome = self._settle(key=key, fingerprint=fingerprint, watch=watch,
+                                       observation=observation, status=status,
+                                       reason=reason, row=row, document=document)
+                dispatched_any = dispatched_any or outcome.sent
+                dispatched += 1 if outcome.sent else 0
+                row["dispatched"] = outcome.sent
+                row["receipt"] = outcome.receipt
+                row["confirmed"] = outcome.confirmed
+                if outcome.remote_id:
+                    row["remote_id"] = outcome.remote_id
+                if outcome.why:
+                    row["receipt_why"] = outcome.why
+                if outcome.blocked:
+                    if outcome.receipt == BLOCKED_LEDGER:
+                        blocked_ledger = True
+                        blocked_kind = WARN_BLOCKED_LEDGER
                     else:
-                        unknown_receipts += 1
-                        self._alert(document, kind=WARN_UNKNOWN_RECEIPTS,
-                                    key=f"{key}|receipt|{state}", status=status,
-                                    reason=state, raised=warnings)
-            elif status in DISPATCHABLE and already:
-                row["receipt"] = "DUPLICATE"
-                duplicate += 1
+                        blocked_subject = True
+                        blocked_kind = WARN_BLOCKED_SUBJECT
+                    self._alert(document, kind=blocked_kind, key=f"{key}|{outcome.receipt}",
+                                status=status, reason=outcome.receipt, raised=warnings)
+                elif outcome.confirmed:
+                    if outcome.receipt == "DELIVERED":
+                        delivered += 1
+                    else:
+                        duplicate += 1
+                else:
+                    # Attempted (or reconciled) and still no receipt. This is the
+                    # #495 §4.1 defect made loud: it is NOT a duplicate and NOT
+                    # settled, however many ticks have seen the same fact.
+                    unknown_receipts += 1
+                    outstanding += 1
+                    self._alert(document, kind=WARN_UNKNOWN_RECEIPTS,
+                                key=f"{key}|receipt|{outcome.receipt}", status=status,
+                                reason=outcome.receipt, raised=warnings)
+            else:
+                # A watch that may not be handed over still owes the operator an
+                # answer about an earlier hand-over of the *same* fact.
+                claim = self._state.claim(document, key, fingerprint)
+                if claim is not None and not self._state.confirmation(claim):
+                    outstanding += 1
+                    row["receipt"] = "DELIVERY_UNKNOWN"
+                    row["receipt_why"] = ("an earlier hand-over of this fact was never "
+                                          "confirmed by the ledger")
 
             rows.append(row)
 
         backlog = sum(1 for row in rows if row["status"] not in
                       (STATUS_TERMINAL_VERIFIED, STATUS_FAILED))
-        ok = not blocked_ledger and not hard_failure
+        ok = not blocked_ledger and not blocked_subject and not hard_failure
         self._state.tick(document, ok=ok, now=self._clock())
         age = self._state.cursor_age(document)
         stale = age is not None and age > self._stale_after
@@ -244,15 +294,25 @@ class MonitorCore:
                              "why": "a terminal fact is waiting and no #423 notifier is "
                                     "bound; nothing was delivered and nothing will be "
                                     "substituted for it"})
+        if blocked_subject:
+            warnings.append({"code": WARN_BLOCKED_SUBJECT, "status": None, "reason": None,
+                             "why": "a terminal fact has no typed, authorized delivery "
+                                    "subject; nothing was sent and none was invented"})
+        if outstanding:
+            warnings.append({"code": WARN_UNKNOWN_RECEIPTS, "status": None, "reason": None,
+                             "why": f"{outstanding} fact(s) were handed over and have no "
+                                    f"ledger receipt; they are not settled"})
         failures = int(document.get("consecutive_failures") or 0)
         if failures:
             warnings.append({"code": WARN_FAILURES, "status": None, "reason": None,
                              "why": f"{failures} consecutive tick(s) did not succeed"})
         self._state.save(document)
 
-        if blocked_ledger:
+        if blocked_ledger or blocked_subject:
             state, exit_code = STATE_BLOCKED_INPUT, EXIT_BLOCKED_INPUT
-        elif unknown_receipts:
+        elif unknown_receipts or outstanding:
+            # §4.1: a durable cursor entry is an attempt until the ledger says
+            # otherwise. An unconfirmed hand-over keeps the tick out of SETTLED.
             state, exit_code = STATE_UNCONFIRMED, EXIT_UNCONFIRMED
         elif stale:
             state, exit_code = STATE_UNCONFIRMED, EXIT_UNCONFIRMED
@@ -275,6 +335,7 @@ class MonitorCore:
             "delivered": delivered,
             "duplicate": duplicate,
             "unknown_receipts": unknown_receipts,
+            "unsettled": outstanding,
             "backlog": backlog,
             "watches": rows,
             "dispatched_any": dispatched_any,
@@ -288,27 +349,187 @@ class MonitorCore:
             "warnings": warnings[: self._max_warnings],
         }
 
+    # -- one fact -----------------------------------------------------------
 
-def _receipt(answer: Any) -> tuple[str, str | None]:
+    def _settle(self, *, key: str, fingerprint: str, watch: Mapping[str, Any],
+                observation: Mapping[str, Any], status: str, reason: str | None,
+                row: dict, document: dict[str, Any]) -> _Outcome:
+        """Decide what to do about one dispatchable fact, and record what is true."""
+        prior = self._state.claim(document, key, fingerprint)
+        if prior is not None:
+            if self._state.confirmation(prior):
+                # A receipt for exactly this fact already exists. Nothing is sent
+                # again — and nothing has to be asked, because the answer is on
+                # disk with the ledger's own delivery key beside it.
+                row["attempts"] = int(prior.get("attempts") or 0)
+                return _Outcome(sent=False, receipt="DUPLICATE", confirmed=True,
+                                remote_id=prior.get("remote_id"),
+                                why="a ledger receipt for this fact is already recorded")
+            return self._reconcile(key=key, fingerprint=fingerprint, prior=prior,
+                                   row=row, document=document)
+
+        if self._notifier is None:
+            return _Outcome(sent=False, receipt=BLOCKED_LEDGER, blocked=True,
+                            why="no #423 notifier is bound; nothing was delivered and "
+                                "nothing will be substituted for it")
+        try:
+            source_name, payload = payload_for(observation, watch,
+                                               observed_at=_iso(self._clock()))
+            subject = delivery_subject(observation, watch)
+        except MonitorRefused as refusal:
+            # No authorized subject is a *refusal*, not a payload with an empty
+            # field: nothing reaches the ledger and the tick says why.
+            row["receipt_why"] = refusal.why
+            return _Outcome(sent=False, receipt=refusal.code, blocked=True,
+                            why=refusal.why)
+
+        # The claim is written before the send, and it says ATTEMPTED. A crash
+        # from here on leaves an outstanding claim a later tick can reconcile —
+        # not an empty cursor that reads as "never tried" and invites a blind
+        # second message.
+        self._state.begin(document, key=key, fingerprint=fingerprint,
+                          status=status, reason=reason)
+        self._state.save(document)
+        try:
+            answer = self._notifier.observe_payload(source_name, payload)
+        except Exception as exc:  # noqa: BLE001 - the notifier is not ours
+            receipt = _Receipt("DELIVERY_UNKNOWN", False, None, None,
+                               f"{type(exc).__name__}: {exc}"[:200])
+        else:
+            receipt = _receipt(answer)
+        return self._judge(key=key, fingerprint=fingerprint, source=source_name,
+                           subject=subject, receipt=receipt, row=row,
+                           document=document, attempts=1, sent=True)
+
+    def _judge(self, *, key: str, fingerprint: str, source: str, subject: str,
+               receipt: _Receipt, row: dict, document: dict[str, Any],
+               attempts: int, sent: bool) -> _Outcome:
+        """Turn a ledger answer into a cursor fact — green only with a real receipt."""
+        expected = receipt_identity(source, subject)
+        keyed = receipt.delivery_key
+        if keyed is not None and not keyed.startswith(expected):
+            why = (f"the receipt names {keyed[:80]!r}, not this fact "
+                   f"({expected}...); a receipt for another delivery does not settle "
+                   f"this one")
+            self._state.settle_unconfirmed(
+                document, key=key, fingerprint=fingerprint,
+                delivery_state="IDENTITY_MISMATCH", delivery_key=None,
+                attempts=attempts, why=why)
+            return _Outcome(sent=sent, receipt="IDENTITY_MISMATCH", confirmed=False,
+                            why=why)
+
+        if receipt.state in CONFIRMING and receipt.delivered and keyed is not None:
+            self._state.confirm(document, key=key, fingerprint=fingerprint,
+                                delivery_state=receipt.state, delivery_key=keyed,
+                                remote_id=receipt.remote_id, attempts=attempts)
+            return _Outcome(sent=sent, receipt=receipt.state, confirmed=True,
+                            remote_id=receipt.remote_id)
+
+        why = receipt.why
+        if keyed is None and receipt.state in CONFIRMING:
+            why = (f"the ledger said {receipt.state} but named no delivery key; a "
+                   f"receipt with no identity cannot be bound to this fact")
+        reported = "DELIVERY_UNKNOWN" if receipt.state in CONFIRMING else receipt.state
+        self._state.settle_unconfirmed(
+            document, key=key, fingerprint=fingerprint,
+            delivery_state=receipt.state, delivery_key=keyed,
+            attempts=attempts, why=why)
+        return _Outcome(sent=sent, receipt=reported, confirmed=False, why=why)
+
+    def _reconcile(self, *, key: str, fingerprint: str, prior: dict[str, Any],
+                   row: dict, document: dict[str, Any]) -> _Outcome:
+        """Re-ask the ledger about the SAME delivery. Never a blind re-send.
+
+        #423's `reconcile(delivery_key)` re-issues the same call under the same
+        transport key inside its dedupe window; that is the only retry this
+        monitor is allowed to make, because it is the ledger's decision and not
+        an assumption here. A notifier that cannot be asked, or a claim that
+        never learned its key (the send died before an answer existed), leaves
+        the fact unconfirmed: there is nothing to ask about.
+        """
+        attempts = int(prior.get("attempts") or 0) + 1
+        row["attempts"] = attempts
+        stored = prior.get("delivery_key")
+        stored = stored if isinstance(stored, str) and stored.strip() else None
+        reconcile = (getattr(self._notifier, "reconcile", None)
+                     if self._notifier is not None else None)
+        if stored is None or not callable(reconcile):
+            why = ("this fact was handed over and no receipt came back. "
+                   + ("No delivery key was ever recorded, so there is nothing to ask "
+                      "the ledger about" if stored is None else
+                      "The bound notifier cannot be re-asked about a delivery key")
+                   + ", and nothing is re-sent: an unconfirmed hand-over stays "
+                     "unconfirmed until a receipt exists.")
+            self._state.settle_unconfirmed(
+                document, key=key, fingerprint=fingerprint,
+                delivery_state=prior.get("delivery_state") or "DELIVERY_UNKNOWN",
+                delivery_key=stored, attempts=attempts, why=why)
+            return _Outcome(sent=False, receipt="DELIVERY_UNKNOWN", confirmed=False,
+                            why=why)
+
+        try:
+            receipt = _receipt(reconcile(stored))
+        except Exception as exc:  # noqa: BLE001 - the notifier is not ours
+            receipt = _Receipt("DELIVERY_UNKNOWN", False, None, stored,
+                               f"{type(exc).__name__}: {exc}"[:200])
+        if receipt.delivery_key is not None and receipt.delivery_key != stored:
+            why = ("the ledger answered a different delivery key than the one it was "
+                   "asked about; that receipt cannot settle this fact")
+            self._state.settle_unconfirmed(
+                document, key=key, fingerprint=fingerprint,
+                delivery_state="IDENTITY_MISMATCH", delivery_key=stored,
+                attempts=attempts, why=why)
+            return _Outcome(sent=False, receipt="IDENTITY_MISMATCH", confirmed=False,
+                            why=why)
+
+        if receipt.state in CONFIRMING and receipt.delivered:
+            self._state.confirm(document, key=key, fingerprint=fingerprint,
+                                delivery_state=receipt.state, delivery_key=stored,
+                                remote_id=receipt.remote_id, attempts=attempts)
+            return _Outcome(sent=False, receipt=receipt.state, confirmed=True,
+                            remote_id=receipt.remote_id,
+                            why="the ledger confirmed the earlier hand-over")
+
+        reported = "DELIVERY_UNKNOWN" if receipt.state in CONFIRMING else receipt.state
+        self._state.settle_unconfirmed(
+            document, key=key, fingerprint=fingerprint,
+            delivery_state=receipt.state, delivery_key=stored,
+            attempts=attempts, why=receipt.why)
+        return _Outcome(sent=False, receipt=reported, confirmed=False,
+                        why=receipt.why)
+
+
+def _receipt(answer: Any) -> _Receipt:
     """Read a #423 Observation (or a mapping) for its delivery state.
 
-    Only an explicit `DELIVERED` with a remote id counts. A notifier that
-    returned nothing says UNKNOWN — it does not say "probably fine".
+    Only an explicit `DELIVERED`/`DUPLICATE` carrying `delivered is True` *and*
+    a delivery key counts. A notifier that returned nothing says UNKNOWN — it
+    does not say "probably fine" — and a state without the flag is a claim
+    without the receipt.
     """
     if answer is None:
-        return "DELIVERY_UNKNOWN", None
+        return _Receipt("DELIVERY_UNKNOWN", False, None, None,
+                        "the notifier returned nothing")
     state = getattr(answer, "state", None)
     delivered = getattr(answer, "delivered", None)
     remote = getattr(answer, "remote_id", None)
+    key = getattr(answer, "delivery_key", None)
+    why = getattr(answer, "why", None)
     if isinstance(answer, Mapping):
         state = answer.get("state", state)
         delivered = answer.get("delivered", delivered)
         remote = answer.get("remote_id", remote)
+        key = answer.get("delivery_key", key)
+        why = answer.get("why", why)
     state = str(state or "DELIVERY_UNKNOWN")
-    if state == "DELIVERED" and delivered is not True:
+    key = key.strip() if isinstance(key, str) and key.strip() else None
+    remote = remote if isinstance(remote, str) else None
+    why = why if isinstance(why, str) else None
+    if state in CONFIRMING and delivered is not True:
         # A state without the flag is a claim without the receipt.
-        return "DELIVERY_UNKNOWN", remote
-    return state, remote if isinstance(remote, str) else None
+        return _Receipt("DELIVERY_UNKNOWN", False, remote, key,
+                        why or f"{state} without delivered=True is a claim, not a receipt")
+    return _Receipt(state, delivered is True, remote, key, why)
 
 
 def notifier_or_none(spec: Any | None, *, config: Mapping[str, Any] | None = None

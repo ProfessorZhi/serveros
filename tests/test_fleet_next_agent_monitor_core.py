@@ -39,6 +39,24 @@ SHA_OTHER = "b" * 40
 # --------------------------------------------------------------------------- #
 # notifier bindings, resolved by the SUBPROCESS through `--notifier-entry`
 # --------------------------------------------------------------------------- #
+def delivery_key_for(source, payload):
+    """The identity shape #423's `delivery_key_for` writes.
+
+    `milestone:<source>:<subject>:<kind>:<fact>:<outcome>`. The monitor only
+    checks the `milestone:<source>:<subject>:` prefix, because the suffix is
+    #423's business and re-deriving it here would be a second copy of a
+    contract this PR does not own. Every fake below therefore produces a *real*
+    shape, and the fakes that break it do so deliberately.
+    """
+    subject = payload.get("device_ref") or "device:?"
+    if source == "github_actions":
+        run = payload.get("workflow_run") or {}
+        return (f"milestone:{source}:{subject}:CI_PASSED:"
+                f"{run.get('name')}:{run.get('id')}:VERIFIED_GREEN")
+    run = payload.get("run") or {}
+    return f"milestone:{source}:{subject}:RUN_COMPLETED:{run.get('runId')}:VERIFIED_GREEN"
+
+
 class _JournalNotifier:
     """Appends one line per hand-over. A real file, so two processes share it."""
 
@@ -49,7 +67,9 @@ class _JournalNotifier:
         with open(self.path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps({"source": source, "payload": payload},
                                     sort_keys=True) + "\n")
-        return {"state": "DELIVERED", "delivered": True, "remote_id": f"om_{source}"}
+        return {"state": "DELIVERED", "delivered": True,
+                "remote_id": f"om_{source}",
+                "delivery_key": delivery_key_for(source, payload)}
 
 
 class _RaisingNotifier:
@@ -68,8 +88,124 @@ class _RaisingNotifier:
 class _UnknownNotifier:
     """A provider that answers without a receipt: not delivered, not refused."""
 
+    def observe_payload(self, source, payload):
+        return {"state": "DELIVERY_UNKNOWN", "delivered": False, "remote_id": None,
+                "delivery_key": delivery_key_for(source, payload)}
+
+
+class _ForeignReceiptNotifier:
+    """`DELIVERED`, but the receipt names somebody else's delivery.
+
+    #423 hands back the key of the milestone it settled. A receipt whose key
+    is not this watch's fact is evidence about a *different* delivery, however
+    green it looks.
+    """
+
     def observe_payload(self, source, payload):  # noqa: ARG002
-        return {"state": "DELIVERY_UNKNOWN", "delivered": False, "remote_id": None}
+        return {"state": "DELIVERED", "delivered": True, "remote_id": "om_elsewhere",
+                "delivery_key": "milestone:cloudcli:device:someone-else:RUN_COMPLETED:"
+                                "run-other:VERIFIED_GREEN"}
+
+
+class _AnonymousReceiptNotifier:
+    """`DELIVERED` with no identity at all: a claim with nothing behind it."""
+
+    def observe_payload(self, source, payload):  # noqa: ARG002
+        return {"state": "DELIVERED", "delivered": True, "remote_id": "om_anon"}
+
+
+class _Ledger:
+    """A file-backed stand-in for #423's ledger, and nothing more.
+
+    It is deliberately NOT a second sender: it models the three answers
+    `MilestoneNotifier` can give — `observe_payload` (claim, then attempt),
+    `reconcile(delivery_key)` (re-ask the *same* key) and a ledger row that
+    says `DELIVERED` or `DELIVERY_UNKNOWN`. The journal records every *provider
+    call*, which is what a real Feishu send would cost.
+    """
+
+    def __init__(self, journal: str | Path, ledger: str | Path,
+                 mode: str | Path) -> None:
+        self.journal = Path(journal)
+        self.ledger = Path(ledger)
+        self.mode_path = Path(mode)
+
+    def mode(self) -> str:
+        try:
+            return self.mode_path.read_text(encoding="utf-8").strip() or "deliver"
+        except OSError:
+            return "deliver"
+
+    def rows(self) -> list[dict]:
+        if not self.ledger.exists():
+            return []
+        return [json.loads(line) for line in
+                self.ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def get(self, key: str) -> dict | None:
+        for row in self.rows():
+            if row["delivery_key"] == key:
+                return row
+        return None
+
+    def put(self, row: dict) -> None:
+        kept = [r for r in self.rows() if r["delivery_key"] != row["delivery_key"]]
+        kept.append(row)
+        self.ledger.write_text(
+            "".join(json.dumps(r, sort_keys=True) + "\n" for r in kept),
+            encoding="utf-8")
+
+    def call(self, source: str, payload: dict, key: str) -> str:
+        """One provider call. The only place a message could be sent twice."""
+        with open(self.journal, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"source": source, "payload": payload},
+                                    sort_keys=True) + "\n")
+        if self.mode() == "deliver":
+            remote = f"om_{len(self.rows()) + 1}"
+            self.put({"delivery_key": key, "state": "DELIVERED", "remote_id": remote,
+                      "source": source, "payload": payload})
+            return "DELIVERED"
+        self.put({"delivery_key": key, "state": "DELIVERY_UNKNOWN", "remote_id": None,
+                  "source": source, "payload": payload})
+        return "DELIVERY_UNKNOWN"
+
+
+class _LedgerNotifier:
+    """#423's notifier *shape*: `observe_payload` and `reconcile`."""
+
+    def __init__(self, journal: str | Path, ledger: str | Path, mode: str | Path):
+        self.store = _Ledger(journal, ledger, mode)
+
+    def observe_payload(self, source, payload):
+        key = delivery_key_for(source, payload)
+        prior = self.store.get(key)
+        if prior and prior["state"] == "DELIVERED":
+            return {"state": "DUPLICATE", "delivered": True,
+                    "delivery_key": key, "remote_id": prior["remote_id"]}
+        state = self.store.call(source, payload, key)
+        return {"state": state, "delivered": state == "DELIVERED",
+                "delivery_key": key,
+                "remote_id": (self.store.get(key) or {}).get("remote_id")}
+
+    def reconcile(self, delivery_key):
+        prior = self.store.get(delivery_key)
+        if prior is None:
+            return {"state": "MISSING", "delivered": False,
+                    "delivery_key": delivery_key, "remote_id": None}
+        if prior["state"] == "DELIVERED":
+            return {"state": "DUPLICATE", "delivered": True,
+                    "delivery_key": delivery_key, "remote_id": prior["remote_id"]}
+        if self.store.mode() != "deliver":
+            # The provider still has no receipt. Nothing is re-sent: the ledger
+            # has authorised no second message.
+            return {"state": "DELIVERY_UNKNOWN", "delivered": False,
+                    "delivery_key": delivery_key, "remote_id": None}
+        # The provider now answers. The ledger re-issues the SAME key, which is
+        # what #423 does inside its dedupe window.
+        state = self.store.call(prior["source"], prior["payload"], delivery_key)
+        return {"state": state, "delivered": state == "DELIVERED",
+                "delivery_key": delivery_key,
+                "remote_id": (self.store.get(delivery_key) or {}).get("remote_id")}
 
 
 def journal_factory(config=None):  # noqa: ARG001 - the binding takes a mapping
@@ -82,6 +218,20 @@ def raising_factory(config=None):  # noqa: ARG001
 
 def unknown_factory(config=None):  # noqa: ARG001
     return _UnknownNotifier()
+
+
+def foreign_receipt_factory(config=None):  # noqa: ARG001
+    return _ForeignReceiptNotifier()
+
+
+def anonymous_receipt_factory(config=None):  # noqa: ARG001
+    return _AnonymousReceiptNotifier()
+
+
+def ledger_factory(config=None):  # noqa: ARG001
+    return _LedgerNotifier(os.environ["FNAM_TEST_JOURNAL"],
+                           os.environ["FNAM_TEST_LEDGER"],
+                           os.environ["FNAM_TEST_MODE"])
 
 
 def no_entry(*_args, **_kwargs):  # never called; the module has no such factory
@@ -98,6 +248,8 @@ class MonitorProcessTest(unittest.TestCase):
         self.dir = Path(self._tmp.name)
         self.state = self.dir / "state.json"
         self.journal = self.dir / "journal.jsonl"
+        self.ledger = self.dir / "ledger.jsonl"
+        self.mode = self.dir / "mode.txt"
         self.config = self.dir / "config.json"
         self.facts = self.dir / "facts.json"
 
@@ -118,7 +270,7 @@ class MonitorProcessTest(unittest.TestCase):
         }
 
     def config_document(self, watches, *, views=("run", "ci"), sessions=("ses-1",),
-                        devices=("dev-1",), projects=("proj",)):
+                        devices=("device:dev-1",), projects=("proj",)):
         return {
             "schema": "serveros/fleet-next-agent-monitor-config.v1",
             "grant": {"principal": "owner", "devices": list(devices),
@@ -130,7 +282,7 @@ class MonitorProcessTest(unittest.TestCase):
     # -- the one door ------------------------------------------------------
 
     def run_cli(self, *, notifier="journal_factory", extra_args=(),
-                config=None, facts=None):
+                config=None, facts=None, extra_env=None):
         if config is not None:
             self.write(self.config, config)
         if facts is not None:
@@ -139,6 +291,9 @@ class MonitorProcessTest(unittest.TestCase):
         env["PYTHONPATH"] = os.pathsep.join([
             str(PACKAGE_PARENT), str(TESTS_DIR)])
         env["FNAM_TEST_JOURNAL"] = str(self.journal)
+        env["FNAM_TEST_LEDGER"] = str(self.ledger)
+        env["FNAM_TEST_MODE"] = str(self.mode)
+        env.update(extra_env or {})
         entry = (f"{__name__}:{notifier}" if notifier else None)
         argv = [sys.executable, "-m", "fleet_next_agent_monitor",
                 "--config", str(self.config), "--state", str(self.state),
@@ -172,8 +327,20 @@ class MonitorProcessTest(unittest.TestCase):
         return [json.loads(line) for line in
                 self.journal.read_text(encoding="utf-8").splitlines() if line.strip()]
 
+    def ledger_rows(self) -> list[dict]:
+        if not self.ledger.exists():
+            return []
+        return [json.loads(line) for line in
+                self.ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def set_mode(self, mode: str) -> None:
+        self.mode.write_text(mode + "\n", encoding="utf-8")
+
+    def state_document(self) -> dict:
+        return json.loads(self.state.read_text(encoding="utf-8"))
+
     def run_watch(self, **overrides):
-        watch = {"kind": "run", "device_ref": "dev-1", "session_ref": "ses-1",
+        watch = {"kind": "run", "device_ref": "device:dev-1", "session_ref": "ses-1",
                  "run_id": "run-1", "expected_boot_id": "boot-1", "major": True}
         watch.update(overrides)
         return watch
@@ -190,7 +357,7 @@ class NoFalseSuccessTest(MonitorProcessTest):
         completed = self.run_cli(
             config=self.config_document([self.run_watch()]),
             facts=self.facts_document(runs={"run-1": {
-                "instanceId": "legacy-01", "deviceRef": "dev-1",
+                "instanceId": "legacy-01", "deviceRef": "device:dev-1",
                 "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
                 "status": "completed"}}))
         tick = self.document(completed)
@@ -206,7 +373,7 @@ class NoFalseSuccessTest(MonitorProcessTest):
         completed = self.run_cli(
             config=self.config_document([self.run_watch()]),
             facts=self.facts_document(runs={"run-1": {
-                "instanceId": "legacy-01", "deviceRef": "dev-1",
+                "instanceId": "legacy-01", "deviceRef": "device:dev-1",
                 "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
                 "status": "completed",
                 "lastAssistantMessage": {"content": "ignored"},
@@ -220,7 +387,7 @@ class NoFalseSuccessTest(MonitorProcessTest):
         completed = self.run_cli(
             config=self.config_document([self.run_watch()]),
             facts=self.facts_document(runs={"run-1": {
-                "instanceId": "legacy-01", "deviceRef": "dev-1",
+                "instanceId": "legacy-01", "deviceRef": "device:dev-1",
                 "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
                 "status": "completed",
                 "lastAssistantMessage": {"content": "real output"}}}))
@@ -238,7 +405,7 @@ class FencingTest(MonitorProcessTest):
         completed = self.run_cli(
             config=self.config_document([self.run_watch(expected_boot_id="boot-2")]),
             facts=self.facts_document(runs={"run-1": {
-                "instanceId": "legacy-01", "deviceRef": "dev-1",
+                "instanceId": "legacy-01", "deviceRef": "device:dev-1",
                 "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
                 "status": "completed",
                 "lastAssistantMessage": {"content": "output from another boot"}}}))
@@ -315,7 +482,7 @@ class CiTest(MonitorProcessTest):
 class ProcessBoundaryTest(MonitorProcessTest):
     def green_run(self):
         return self.facts_document(runs={"run-1": {
-            "instanceId": "legacy-01", "deviceRef": "dev-1", "sessionRef": "ses-1",
+            "instanceId": "legacy-01", "deviceRef": "device:dev-1", "sessionRef": "ses-1",
             "runId": "run-1", "bootId": "boot-1", "status": "completed",
             "lastAssistantMessage": {"content": "output"}}})
 
@@ -408,6 +575,263 @@ class ProcessBoundaryTest(MonitorProcessTest):
 
 
 # --------------------------------------------------------------------------- #
+# #495 §4.1 — a receipt settles a fact; a cursor does not. Each tick below is a
+# separate interpreter, because the bug is about what a *second process* reads.
+# --------------------------------------------------------------------------- #
+class ReceiptTest(MonitorProcessTest):
+    """An unconfirmed hand-over must never become `SETTLED` on the next tick."""
+
+    def green_run(self):
+        return self.facts_document(runs={"run-1": {
+            "instanceId": "legacy-01", "deviceRef": "device:dev-1",
+            "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
+            "status": "completed", "lastAssistantMessage": {"content": "output"}}})
+
+    def typed_watch(self, **overrides):
+        return self.run_watch(device_ref="device:dev-1", **overrides)
+
+    def test_unconfirmed_delivery_never_settles_across_four_processes(self):
+        """The reported bug: tick1 UNCONFIRMED, tick2 must not say SETTLED.
+
+        Four *separate* interpreters share one durable state file and one
+        file-backed ledger. The provider answers "no receipt" for the first two
+        ticks and then answers; only the third and fourth ticks may be green.
+        """
+        self.set_mode("unknown")
+        first = self.run_cli(notifier="ledger_factory",
+                             config=self.config_document([self.typed_watch()]),
+                             facts=self.green_run())
+        tick1 = self.document(first)
+        self.assertEqual(tick1["state"], "UNCONFIRMED")
+        self.assertEqual(first.returncode, 4, "an unconfirmed hand-over is not exit 0")
+        self.assertEqual(tick1["dispatched"], 1)
+        self.assertEqual(tick1["delivered"], 0)
+        self.assertEqual(tick1["unknown_receipts"], 1)
+        self.assertEqual(tick1["watches"][0]["receipt"], "DELIVERY_UNKNOWN")
+        self.assertEqual(len(self.journal_rows()), 1, "the first attempt did not run")
+        self.assertEqual([r["state"] for r in self.ledger_rows()], ["DELIVERY_UNKNOWN"])
+
+        # Same provider answer, a different process: the durable cursor says
+        # "attempted", and that is all it may say.
+        second = self.run_cli(notifier="ledger_factory")
+        tick2 = self.document(second)
+        self.assertEqual(tick2["state"], "UNCONFIRMED",
+                         "an unconfirmed delivery was reported as settled")
+        self.assertEqual(second.returncode, 4)
+        self.assertEqual(tick2["delivered"], 0)
+        self.assertEqual(tick2["unknown_receipts"], 1)
+        self.assertEqual(len(self.journal_rows()), 1,
+                         "an outstanding claim was re-sent without a receipt")
+
+        # Now the provider answers. Only the ledger may unlock green.
+        self.set_mode("deliver")
+        third = self.run_cli(notifier="ledger_factory")
+        tick3 = self.document(third)
+        self.assertEqual(tick3["state"], "SETTLED")
+        self.assertEqual(third.returncode, 0)
+        states = [r["state"] for r in self.ledger_rows()]
+        self.assertEqual(states, ["DELIVERED"], "the ledger holds two rows for one fact")
+
+        # A settled fact is not re-delivered by a later process.
+        sent = len(self.journal_rows())
+        fourth = self.run_cli(notifier="ledger_factory")
+        tick4 = self.document(fourth)
+        self.assertEqual(tick4["state"], "SETTLED")
+        self.assertEqual(fourth.returncode, 0)
+        self.assertEqual(tick4["dispatched"], 0, "a settled fact was dispatched again")
+        self.assertEqual(len(self.journal_rows()), sent,
+                         "a settled fact produced a second message")
+
+    def test_a_foreign_receipt_never_settles(self):
+        """`DELIVERED` for somebody else's delivery is not this fact's receipt."""
+        completed = self.run_cli(
+            notifier="foreign_receipt_factory",
+            config=self.config_document([self.typed_watch()]),
+            facts=self.green_run())
+        tick = self.document(completed)
+        self.assertEqual(tick["delivered"], 0,
+                         "a receipt naming another delivery was counted as delivered")
+        self.assertEqual(tick["state"], "UNCONFIRMED")
+        self.assertEqual(completed.returncode, 4)
+
+    def test_a_receipt_without_an_identity_is_not_a_receipt(self):
+        """A `DELIVERED` claim with no delivery key has nothing to bind it to."""
+        completed = self.run_cli(
+            notifier="anonymous_receipt_factory",
+            config=self.config_document([self.typed_watch()]),
+            facts=self.green_run())
+        tick = self.document(completed)
+        self.assertEqual(tick["delivered"], 0)
+        self.assertEqual(tick["state"], "UNCONFIRMED")
+        self.assertEqual(completed.returncode, 4)
+
+    def test_an_unknown_receipt_is_still_unconfirmed_without_a_ledger(self):
+        """No reconcile, no receipt: the fact stays unconfirmed, never green."""
+        self.set_mode("unknown")
+        first = self.run_cli(notifier="ledger_factory",
+                             config=self.config_document([self.typed_watch()]),
+                             facts=self.green_run())
+        self.assertEqual(first.returncode, 4)
+        # A notifier that can neither confirm nor be re-asked: the honest answer
+        # is still UNCONFIRMED, and nothing is sent a second time.
+        second = self.run_cli(notifier="raising_factory")
+        tick = self.document(second)
+        self.assertEqual(tick["state"], "UNCONFIRMED")
+        self.assertEqual(second.returncode, 4)
+        self.assertEqual(tick["dispatched"], 0)
+
+
+class CiSubjectTest(MonitorProcessTest):
+    """#495 §4.2 — a CI event needs a typed subject, and never an empty string."""
+
+    def ci_watch(self, sha=SHA_GREEN, **overrides):
+        watch = {"kind": "ci", "project": "proj", "expected_source_sha": sha,
+                 "major": True}
+        watch.update(overrides)
+        return watch
+
+    def green_ci(self, sha=SHA_GREEN, **overrides):
+        payload = {"status": "completed", "conclusion": "success",
+                   "head_sha": sha, "id": 13, "name": "proj"}
+        payload.update(overrides)
+        return {sha: payload}
+
+    def test_the_ci_subject_is_the_granted_project_container(self):
+        completed = self.run_cli(
+            config=self.config_document([self.ci_watch()]),
+            facts=self.facts_document(ci=self.green_ci()))
+        tick = self.document(completed)
+        self.assertEqual(tick["delivered"], 1)
+        rows = self.journal_rows()
+        self.assertEqual(len(rows), 1)
+        subject = rows[0]["payload"]["device_ref"]
+        self.assertEqual(subject, "device:ci:proj",
+                         "the CI event did not carry a typed container subject")
+        self.assertTrue(subject.startswith("device:"),
+                        "an untyped or empty subject cannot reach #423")
+
+    def test_a_ci_event_on_the_exact_sha_reaches_the_ledger(self):
+        self.set_mode("deliver")
+        completed = self.run_cli(
+            notifier="ledger_factory",
+            config=self.config_document([self.ci_watch()]),
+            facts=self.facts_document(ci=self.green_ci()))
+        tick = self.document(completed)
+        self.assertEqual(tick["state"], "SETTLED")
+        self.assertEqual(completed.returncode, 0)
+        rows = self.ledger_rows()
+        self.assertEqual([r["state"] for r in rows], ["DELIVERED"])
+        self.assertEqual(rows[0]["payload"]["workflow_run"]["head_sha"], SHA_GREEN)
+        self.assertEqual(rows[0]["delivery_key"].split(":")[2], "device")
+
+    def test_a_ci_draft_never_reaches_the_notifier(self):
+        completed = self.run_cli(
+            config=self.config_document([self.ci_watch()]),
+            facts=self.facts_document(ci=self.green_ci(draft=True)))
+        tick = self.document(completed)
+        self.assertEqual(tick["watches"][0]["reason"], "DRAFT_CI")
+        self.assertEqual(self.journal_rows(), [])
+        self.assertEqual(tick["dispatched"], 0)
+
+    def test_a_ci_green_on_another_sha_never_reaches_the_notifier(self):
+        completed = self.run_cli(
+            config=self.config_document([self.ci_watch()]),
+            facts=self.facts_document(ci={SHA_GREEN: {
+                "status": "completed", "conclusion": "success",
+                "head_sha": SHA_OTHER, "id": 14, "name": "proj"}}))
+        tick = self.document(completed)
+        self.assertEqual(tick["watches"][0]["reason"], "SHA_MISMATCH")
+        self.assertEqual(self.journal_rows(), [])
+
+    def test_a_ci_watch_with_no_authorised_subject_is_blocked_not_sent(self):
+        """No project, no declared subject: refuse, do not invent one."""
+        completed = self.run_cli(
+            config=self.config_document([{"kind": "ci",
+                                          "expected_source_sha": SHA_GREEN}]),
+            facts=self.facts_document(ci=self.green_ci()))
+        tick = self.document(completed)
+        self.assertEqual(tick["state"], "BLOCKED_INPUT")
+        self.assertEqual(completed.returncode, 3)
+        self.assertEqual(tick["dispatched"], 0)
+        self.assertEqual(tick["watches"][0]["receipt"], "BLOCKED_CI_SUBJECT")
+        self.assertEqual(self.journal_rows(), [],
+                         "a CI fact with no subject was sent anyway")
+
+    def test_a_declared_ci_subject_must_already_be_typed(self):
+        completed = self.run_cli(
+            config=self.config_document([self.ci_watch(device_ref="proj")]),
+            facts=self.facts_document(ci=self.green_ci()))
+        tick = self.document(completed)
+        self.assertEqual(tick["state"], "BLOCKED_INPUT")
+        self.assertEqual(completed.returncode, 3)
+        self.assertEqual(self.journal_rows(), [],
+                         "an untyped subject was repaired by synthesising a device")
+
+    def test_a_ci_watch_never_borrows_a_run_watch_identity(self):
+        """Two watches, one config: the CI subject is the project, not the device."""
+        run_watch = self.run_watch(device_ref="device:dev-1")
+        completed = self.run_cli(
+            config=self.config_document([run_watch, self.ci_watch()],
+                                        devices=("device:dev-1",)),
+            facts=self.facts_document(
+                runs={"run-1": {"instanceId": "legacy-01",
+                                "deviceRef": "device:dev-1", "sessionRef": "ses-1",
+                                "runId": "run-1", "bootId": "boot-1",
+                                "status": "completed",
+                                "lastAssistantMessage": {"content": "output"}}},
+                ci=self.green_ci()))
+        subjects = [row["payload"].get("device_ref") for row in self.journal_rows()]
+        self.assertIn("device:ci:proj", subjects)
+        self.assertIn("device:dev-1", subjects)
+        for row in self.journal_rows():
+            self.assertNotEqual(
+                (row["payload"].get("device_ref"), row["source"]),
+                ("device:dev-1", "github_actions"),
+                "the CI fact carried the run watch's device")
+
+
+class DeviceSubjectTest(MonitorProcessTest):
+    """The same rule on the run view: a bare device id is not a #423 subject."""
+
+    def test_a_bare_device_ref_is_blocked_and_never_synthesised(self):
+        completed = self.run_cli(
+            config=self.config_document([self.run_watch(device_ref="dev-1")],
+                                        devices=("dev-1",)),
+            facts=self.facts_document(runs={"run-1": {
+                "instanceId": "legacy-01", "deviceRef": "dev-1",
+                "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
+                "status": "completed",
+                "lastAssistantMessage": {"content": "output"}}}))
+        tick = self.document(completed)
+        self.assertEqual(tick["state"], "BLOCKED_INPUT")
+        self.assertEqual(completed.returncode, 3)
+        self.assertEqual(tick["dispatched"], 0)
+        self.assertEqual(tick["watches"][0]["receipt"], "BLOCKED_SUBJECT")
+        self.assertEqual(self.journal_rows(), [],
+                         "a bare device id was sent to a ledger that refuses it")
+
+    def test_a_typed_device_ref_is_passed_through_unchanged(self):
+        completed = self.run_cli(
+            config=self.config_document([self.run_watch(device_ref="device:dev-1")]),
+            facts=self.facts_document(runs={"run-1": {
+                "instanceId": "legacy-01", "deviceRef": "device:dev-1",
+                "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
+                "status": "completed",
+                "lastAssistantMessage": {"content": "output"}}}))
+        tick = self.document(completed)
+        self.assertEqual(tick["delivered"], 1)
+        row = self.journal_rows()[0]
+        self.assertEqual(row["payload"]["device_ref"], "device:dev-1")
+        # The boot identity travels as its own field, never folded into the
+        # subject: #495 §4.7's caveat is that a watch-level boot expectation and
+        # the device's own boot are different facts about different things.
+        self.assertEqual(row["payload"]["bound_boot_id"], "boot-1")
+        self.assertEqual(row["payload"]["run"]["bootId"], "boot-1")
+        self.assertNotEqual(row["payload"]["run"]["bootId"],
+                            row["payload"]["device_ref"])
+
+
+# --------------------------------------------------------------------------- #
 # the #488 contract: a ZERO-ARGUMENT tick, in a separate interpreter
 # --------------------------------------------------------------------------- #
 class ActivationEntryTest(MonitorProcessTest):
@@ -415,7 +839,7 @@ class ActivationEntryTest(MonitorProcessTest):
         config = self.config_document([self.run_watch()])
         self.write(self.config, config)
         self.write(self.facts, self.facts_document(runs={"run-1": {
-            "instanceId": "legacy-01", "deviceRef": "dev-1", "sessionRef": "ses-1",
+            "instanceId": "legacy-01", "deviceRef": "device:dev-1", "sessionRef": "ses-1",
             "runId": "run-1", "bootId": "boot-1", "status": "completed",
             "lastAssistantMessage": {"content": "output"}}}))
         env = dict(os.environ)
