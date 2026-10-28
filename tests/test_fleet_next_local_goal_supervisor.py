@@ -492,3 +492,30 @@ def test_ci_command_failure_is_unknown_not_pass(sv):
     ci = sv.observe_ci(repo="r", prs=[509], runner=runner)
     assert ci["state"] == "UNKNOWN"
     assert ci["prs"]["509"]["verdict"] == "UNKNOWN"
+
+
+def test_task_key_is_stable_when_session_order_changes(sv):
+    """A reordered snapshot must not turn one intent into two task keys."""
+    config = sv.default_config()
+    config["dispatch"]["enabled"] = True
+    config["dispatch"]["provider"] = "verified-test-provider"
+    state = sv.new_state(goal_id="g", boot_epoch="b")
+    a = {"session_ref": "device:d|claude|a", "classification": "MANAGED_IDLE"}
+    b = {"session_ref": "device:d|claude|b", "classification": "MANAGED_IDLE"}
+
+    first = sv.plan_tick(
+        observation=_obs(fleet={"state": "FRESH", "sessions": [a, b]}),
+        state=state,
+        config=config,
+        now="t",
+    )
+    second = sv.plan_tick(
+        observation=_obs(fleet={"state": "FRESH", "sessions": [b, a]}),
+        state=state,
+        config=config,
+        now="t",
+    )
+
+    keys_first = {x["session_ref"]: x["task_key"] for x in first["would_dispatch"]}
+    keys_second = {x["session_ref"]: x["task_key"] for x in second["would_dispatch"]}
+    assert keys_first == keys_second

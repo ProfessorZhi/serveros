@@ -571,10 +571,11 @@ def compute_backoff(attempt: int, base: int = 60, cap: int = 1800) -> int:
     return min(cap, base * (2**attempt))
 
 
-def _task_key(session_ref: str, head_sha: str | None, index: int) -> str:
-    # Deterministic: the same cursor and the same idle owner produce the same
-    # key, so a restart cannot turn one intent into two dispatches.
-    return f"continue:{session_ref}:{head_sha or 'unknown'}:{index}"
+def _task_key(session_ref: str, head_sha: str | None) -> str:
+    # Deterministic on identity, not on position: a reordered snapshot or a
+    # restart must not turn one intent into two dispatches, so the session's
+    # own ref and the cursor are the only inputs.
+    return f"continue:{session_ref}:{head_sha or 'unknown'}"
 
 
 def plan_tick(
@@ -651,7 +652,7 @@ def plan_tick(
     candidates: list[dict[str, Any]] = []
     refused: dict[str, str] = {}
     head_sha = observation.get("github", {}).get("head_sha")
-    for index, session in enumerate(sessions):
+    for session in sessions:
         ref = session.get("session_ref")
         classification = session.get("classification")
         if not ref:
@@ -660,7 +661,7 @@ def plan_tick(
             refused[ref] = "RUNNING_AGENT"
             continue
         if classification in DISPATCHABLE_CLASSES:
-            key = _task_key(ref, head_sha, index)
+            key = _task_key(ref, head_sha)
             if key in ledger:
                 base["already_known"].append(key)
                 continue
