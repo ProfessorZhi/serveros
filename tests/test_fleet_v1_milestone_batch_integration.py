@@ -652,17 +652,19 @@ class AMixedBatchSpeaksOnceAboutEachMember(Base):
 # the seam this all rests on
 # --------------------------------------------------------------------------- #
 class TheSeamIsHonest(Base):
-    def test_the_real_notifier_without_the_seam_is_refused_up_front(self):
-        # #423 @ d9b2948a: the public method does not exist. Recorded as
-        # BLOCKED, not worked around.
+    def test_the_real_notifier_is_now_accepted_by_the_aggregator(self):
+        # The tripwire this replaces said "#423 has landed send_text — delete
+        # PublicSeamStub and the BLOCKED note, and pass the real notifier".
+        # It landed (#460), so the stub is no longer what production paths take;
+        # `test_fleet_v1_milestone_batch_e2e_integration.py` runs the chain with
+        # the real notifier and the real `_send`, and this asserts the door is
+        # open rather than that it is shut.
         real = m.MilestoneNotifier(self.provider, self.ledger_path,
                                    conversation_ref=RECIPIENT, clock=self.clock)
-        self.assertFalse(hasattr(real, "send_text"),
-                         "#423 has landed send_text — delete PublicSeamStub "
-                         "and the BLOCKED note, and pass the real notifier")
-        with self.assertRaises(batch.BatchRefused) as caught:
-            batch.BatchAggregator(self.file().batch, notifier=real)
-        self.assertEqual(caught.exception.code, "NOTIFIER_SEAM_MISSING")
+        self.assertTrue(callable(getattr(real, "send_text", None)))
+        batch.BatchAggregator(self.file().batch, notifier=real,
+                              clock=self.clock)
+        self.assertEqual(self.provider.calls, [])
 
     def test_the_sealed_stub_refuses_a_private_reach_through(self):
         stub = self.notifier()

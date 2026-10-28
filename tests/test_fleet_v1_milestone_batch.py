@@ -872,14 +872,22 @@ class TheBoundsAreReal(Base):
         self.assertEqual(len(self.summary_calls(declaration)), 1)
 
     def test_the_aggregator_refuses_a_notifier_without_the_seam(self):
+        # #460 has landed, so the refusal is no longer demonstrated with the
+        # real notifier (that would now be refused for the wrong reason). It is
+        # still the rule: a notifier without a public `send_text` is refused up
+        # front, not at the moment a summary is due, because reaching into
+        # #423's private `_send` would be a second write path to its provider.
         declaration = self.three_devices()
         plain = m.MilestoneNotifier(self.provider, self.ledger,
                                     conversation_ref=RECIPIENT, clock=self.clock)
+        self.assertTrue(callable(plain.send_text), "#460 is in the tree")
+        without_seam = type("NotifierWithoutSeam", (), {
+            name: getattr(plain, name)
+            for name in ("observe", "reconcile", "ledger", "provider")})
         with self.assertRaises(batch.BatchRefused) as caught:
-            batch.BatchAggregator(declaration, notifier=plain, clock=self.clock)
+            batch.BatchAggregator(declaration, notifier=without_seam(),
+                                  clock=self.clock)
         self.assertEqual(caught.exception.code, "NOTIFIER_SEAM_MISSING")
-        # Refused up front, not at the moment a summary is due: reaching into
-        # #423's private `_send` would be a second write path to its provider.
         self.assertEqual(self.provider.calls, [])
 
     def test_the_retryable_set_matches_the_observers_transient_codes(self):

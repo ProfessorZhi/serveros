@@ -179,6 +179,12 @@ MAX_SUMMARY_LINES = 30
 #: gets a bounded number of messages and never a stream.
 MAX_ALERTS = 10
 
+#: The most characters one seam body may carry. #460's `send_text` validates
+#: its body with #423's `_text`, whose cap is 2000; this leaves room for the
+#: truncation tail and refuses to discover the cap at send time, which would
+#: turn a large batch into a refusal instead of a receipt.
+MAX_SEAM_TEXT = 1600
+
 #: Where a declaration came from. `None` means the Batch was built by hand in a
 #: process and never filed: usable for a live tick, never a basis for saying a
 #: dispatch is still traceable after the chat that issued it exited.
@@ -617,6 +623,45 @@ def alert_text(batch: Batch, state: MemberState) -> str:
             f"{_label(state.verdict)}（{state.verdict}, {state.token}）")
 
 
+def seam_text(text: str, *, maximum: int = MAX_SEAM_TEXT) -> str:
+    """The one bounded LINE a seam body may be. Deterministic, order-preserving.
+
+    #460's `send_text` validates its body with #423's `_text`, which refuses
+    every control character — a newline included. #423's own `observe()` hands
+    the SAME provider `headline + "\\n" + detail` with no such check, and its
+    `_scrub` deliberately preserves `\\n` for message text, so the restriction
+    is an artefact of how the seam validates its body rather than a limit of
+    the transport. Until it is relaxed (the owner handoff diff in this PR), the
+    batch flattens its document to one line here.
+
+    This is a *format* adapter, not a probe: it never asks the seam what it
+    accepts and never changes its answer according to an experiment, and it is
+    applied to every body. The `；` join keeps the member order, and the
+    truncation tail means a large dispatch still produces a receipt instead of
+    a `MilestoneRefused` at 2000 characters.
+    """
+    segments = []
+    for line in str(text).splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            line = line[2:]
+        if line:
+            segments.append(line)
+    if not segments:
+        return "(empty)"
+    line = "；".join(segments)
+    if len(line) <= maximum:
+        return line
+    kept = list(segments)
+    while kept:
+        kept.pop()
+        tail = f"…等 {len(segments) - len(kept)} 项未列出"
+        candidate = "；".join(kept + [tail])
+        if len(candidate) <= maximum:
+            return candidate
+    return "…"
+
+
 class BatchAggregator:
     """Correlate one dispatch's refs from #428's report; send each message once.
 
@@ -820,7 +865,7 @@ class BatchAggregator:
             self._suppressed.discard(state.key)
             answer = self._deliver(
                 key=key, outcome=BATCH_ALERT,
-                text=alert_text(self.batch, state),
+                text=seam_text(alert_text(self.batch, state)),
                 why=f"member {state.key} settled {state.verdict}")
             self._note(key, answer)
             out.append(answer)
@@ -829,8 +874,8 @@ class BatchAggregator:
     def _summarise(self, states, counts) -> tuple:
         answer = self._deliver(
             key=self.batch.summary_key, outcome=BATCH_SUMMARY,
-            text=summary_text(self.batch, states, counts, len(states),
-                              len(self._suppressed)),
+            text=seam_text(summary_text(self.batch, states, counts,
+                                        len(states), len(self._suppressed))),
             why=f"{counts.get(VERIFIED, 0)}/{len(states)} members verified")
         self._note(self.batch.summary_key, answer)
         state = getattr(answer, "state", None)
@@ -869,7 +914,8 @@ __all__ = [
     "SCHEMA", "BATCH_SUMMARY", "BATCH_ALERT",
     "PENDING", "VERIFIED", "GREEN", "ATTENTION", "FAILED", "UNKNOWN", "OFFLINE",
     "UNOBSERVED", "SKIPPED", "VERDICTS", "SETTLED_VERDICTS", "ACTIONABLE",
-    "OPEN", "SENT", "REPLAY", "UNCONFIRMED", "MAX_ALERTS",
+    "OPEN", "SENT", "REPLAY", "UNCONFIRMED", "MAX_ALERTS", "MAX_SEAM_TEXT",
+    "seam_text",
     "ORIGIN_REGISTRATION",
     "NOT_A_FACT_STATES", "SCOPE_MISMATCH_CODES", "RETRYABLE_REFUSALS",
 ]
