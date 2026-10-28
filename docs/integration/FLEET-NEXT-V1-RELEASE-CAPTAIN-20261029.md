@@ -139,6 +139,7 @@ Every named head was checked at
 | #506 | ✅ | ✅ | ✅ | ❌ (1 new) | ✅ | red |
 | #507 | ✅ | ✅ | ⏳ | ⏳ | ✅ | pending |
 | #508 | ✅ | ⏳ | ⏳ | ⏳ | ✅ | pending |
+| #510 (this PR) | ⏳ | ✅ | ✅ | ❌ (1 new) | ✅ | red |
 
 The #500 failures are exactly the three `test_fleet_next_agent_monitor_activation_runtime_tick.py`
 cases that #503 exists to fix. The recurring "1 new" failure on #504 / #505 /
@@ -150,6 +151,34 @@ a known one. It is named here rather than folded into "flaky".
 **Consequence:** `BLOCKED_CI` on every head. No installation, no canary, no
 plugin registration. Waiting for exact heads and a true 5/5 is the correct
 state, not a delay to work around.
+
+### 5.1 One of those reds is on `main`, and it is a clock
+
+The recurring "1 new" failure on #504 / #505 / #506 — and the shard-4 failure
+on this PR — is **not** caused by any of those branches:
+
+```text
+tests/test_direct_lark_notify.py::CardCreateThenPatchTest::test_create_returns_an_id_and_patch_names_it
+AssertionError: 'FAILED' != 'DELIVERED'
+```
+
+It reproduces on a pristine `main` checkout at `e69fc03` with none of this
+lane's files present. `runtime/message_transport.py` enforces the message
+service's own 14-day card-update window (`CARD_UPDATE_WINDOW_DAYS = 14`), and
+the test pins `sent_at = "2026-10-13T06:00:00Z"`. That instant left the window
+at **`2026-10-27T06:00:00Z`**. `main`'s last green CI started at
+`2026-10-27T02:18:48Z` — it passed by under four hours.
+
+Measured at `2026-10-28T18:47:31Z`: age **15.533 days** against a **14-day**
+window.
+
+So no exact head can reach 5/5 after that instant. This lane did not edit the
+transport or the test (other lanes' files) and did not add the test to
+`tests/hermetic-known-failures.txt` (the campaign forbids new baseline
+exceptions). The named handoff is in
+`integrations/fleet-next-v1-release-captain/evidence/PRE-EXISTING-EXPIRED-CARD-PATCH-WINDOW-2026-10-29.md`.
+The fix belongs in the test — derive `sent_at` from the current time for the
+in-window path, and pin the out-of-window refusal separately.
 
 ---
 
@@ -251,7 +280,7 @@ tests/test_repository_layers.py tests/test_no_node_absolute_paths.py tests/test_
 | item | state | why |
 | --- | --- | --- |
 | composed release tree | `BLOCKED_UNKNOWN` | no composition accepted |
-| hosted CI 5/5 on an exact head | `BLOCKED_CI` | every head red or pending |
+| hosted CI 5/5 on an exact head | `BLOCKED_CI` | every head red or pending — and one red is on `main` itself (expired 14-day card-patch window) |
 | independent QA on that head | `BLOCKED_UNKNOWN` | #508 reports 43 passed locally; hosted CI unfinished |
 | release artifacts + provenance | `BLOCKED_UNKNOWN` | nothing built for this release |
 | Legacy pre snapshot | `BLOCKED_UNKNOWN` | not collected; identity never observed this round |

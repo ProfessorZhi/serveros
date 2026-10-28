@@ -1,6 +1,6 @@
 {
   "schema": "serveros/fleet-next-v1-release-captain.ci-snapshot.v1",
-  "captured_at": "2026-10-29T02:40:00Z",
+  "captured_at": "2026-10-28T18:55:00Z",
   "repository": "ProfessorZhi/serveros",
   "source": "gh api repos/ProfessorZhi/serveros/commits/<sha>/check-runs",
   "verdict": "NO_EXACT_HEAD_IS_5_OF_5_GREEN",
@@ -12,11 +12,31 @@
       "run_id": 40694269346,
       "run_url": "https://github.com/ProfessorZhi/serveros/actions/runs/40694269346",
       "jobs": [
-        {"name": "Claude Code plugin matches its source", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 1/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 2/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 3/4)", "status": "completed", "conclusion": "failure"},
-        {"name": "Suite (shard 4/4)", "status": "completed", "conclusion": "success"}
+        {
+          "name": "Claude Code plugin matches its source",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 1/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 2/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 3/4)",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "name": "Suite (shard 4/4)",
+          "status": "completed",
+          "conclusion": "success"
+        }
       ],
       "baseline_gate": "17 failing, 3 new, 0 flaky, 0 listed-but-passing",
       "new_failures": [
@@ -33,11 +53,31 @@
       "run_id": 40702481188,
       "run_url": "https://github.com/ProfessorZhi/serveros/actions/runs/40702481188",
       "jobs": [
-        {"name": "Claude Code plugin matches its source", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 1/4)", "status": "completed", "conclusion": "failure"},
-        {"name": "Suite (shard 2/4)", "status": "completed", "conclusion": "failure"},
-        {"name": "Suite (shard 3/4)", "status": "completed", "conclusion": "failure"},
-        {"name": "Suite (shard 4/4)", "status": "completed", "conclusion": "failure"}
+        {
+          "name": "Claude Code plugin matches its source",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 1/4)",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "name": "Suite (shard 2/4)",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "name": "Suite (shard 3/4)",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "name": "Suite (shard 4/4)",
+          "status": "completed",
+          "conclusion": "failure"
+        }
       ],
       "baseline_gate": "26 failing, 14 new, 0 flaky, 0 listed-but-passing (shards 1-2 observed)",
       "note": "A standalone PR branch is not the composed release tree; its failures are not evidence either way about the composition."
@@ -49,11 +89,31 @@
       "run_id": 40702652945,
       "run_url": "https://github.com/ProfessorZhi/serveros/actions/runs/40702652945",
       "jobs": [
-        {"name": "Claude Code plugin matches its source", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 1/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 2/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 3/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 4/4)", "status": "completed", "conclusion": "failure"}
+        {
+          "name": "Claude Code plugin matches its source",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 1/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 2/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 3/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 4/4)",
+          "status": "completed",
+          "conclusion": "failure"
+        }
       ],
       "baseline_gate": "13 failing, 1 new, 0 flaky, 0 listed-but-passing",
       "new_failures": [
@@ -67,11 +127,31 @@
       "run_id": 40703721481,
       "run_url": "https://github.com/ProfessorZhi/serveros/actions/runs/40703721481",
       "jobs": [
-        {"name": "Claude Code plugin matches its source", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 1/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 2/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 3/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 4/4)", "status": "completed", "conclusion": "failure"}
+        {
+          "name": "Claude Code plugin matches its source",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 1/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 2/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 3/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 4/4)",
+          "status": "completed",
+          "conclusion": "failure"
+        }
       ],
       "baseline_gate": "18 failing, 1 new, 0 flaky, 0 listed-but-passing",
       "new_failures": [
@@ -85,11 +165,31 @@
       "run_id": 40715906054,
       "run_url": "https://github.com/ProfessorZhi/serveros/actions/runs/40715906054",
       "jobs": [
-        {"name": "Claude Code plugin matches its source", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 1/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 2/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 3/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 4/4)", "status": "completed", "conclusion": "failure"}
+        {
+          "name": "Claude Code plugin matches its source",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 1/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 2/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 3/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 4/4)",
+          "status": "completed",
+          "conclusion": "failure"
+        }
       ],
       "baseline_gate": "13 failing, 1 new, 0 flaky, 0 listed-but-passing",
       "new_failures": [
@@ -103,11 +203,31 @@
       "run_id": 40746216754,
       "run_url": "https://github.com/ProfessorZhi/serveros/actions/runs/40746216754",
       "jobs": [
-        {"name": "Claude Code plugin matches its source", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 1/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 2/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 3/4)", "status": "in_progress", "conclusion": null},
-        {"name": "Suite (shard 4/4)", "status": "in_progress", "conclusion": null}
+        {
+          "name": "Claude Code plugin matches its source",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 1/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 2/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 3/4)",
+          "status": "in_progress",
+          "conclusion": null
+        },
+        {
+          "name": "Suite (shard 4/4)",
+          "status": "in_progress",
+          "conclusion": null
+        }
       ],
       "note": "This is the only head that composes #500 + #503 + #504. Pending is not green."
     },
@@ -115,22 +235,111 @@
       "pr": 508,
       "role": "wave18-independent-qa",
       "head_sha": "3340a1e1af5c52cdb8cd8606f6f04685db8cb253",
-      "run_ids": [40746400630, 40746400678],
+      "run_ids": [
+        40746400630,
+        40746400678
+      ],
       "run_urls": [
         "https://github.com/ProfessorZhi/serveros/actions/runs/40746400630",
         "https://github.com/ProfessorZhi/serveros/actions/runs/40746400678"
       ],
       "jobs": [
-        {"name": "Claude Code plugin matches its source", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 1/4)", "status": "completed", "conclusion": "success"},
-        {"name": "Suite (shard 2/4)", "status": "in_progress", "conclusion": null},
-        {"name": "Suite (shard 3/4)", "status": "in_progress", "conclusion": null},
-        {"name": "Suite (shard 4/4)", "status": "in_progress", "conclusion": null},
-        {"name": "HOSTED_DAEMON complete daemon and native facts", "status": "completed", "conclusion": "success"},
-        {"name": "native-contract", "status": "in_progress", "conclusion": null}
+        {
+          "name": "Claude Code plugin matches its source",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 1/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 2/4)",
+          "status": "in_progress",
+          "conclusion": null
+        },
+        {
+          "name": "Suite (shard 3/4)",
+          "status": "in_progress",
+          "conclusion": null
+        },
+        {
+          "name": "Suite (shard 4/4)",
+          "status": "in_progress",
+          "conclusion": null
+        },
+        {
+          "name": "HOSTED_DAEMON complete daemon and native facts",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "native-contract",
+          "status": "in_progress",
+          "conclusion": null
+        }
       ],
       "note": "QA branch reports 43 passed locally but hosted CI is not finished."
+    },
+    {
+      "pr": 510,
+      "role": "release-captain-draft",
+      "head_sha": "a43adc360d2597c0dcabde78f13ccc515b6fdf25",
+      "run_id": 40747767730,
+      "run_url": "https://github.com/ProfessorZhi/serveros/actions/runs/40747767730",
+      "jobs": [
+        {
+          "name": "Claude Code plugin matches its source",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 1/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 2/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 3/4)",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Suite (shard 4/4)",
+          "status": "completed",
+          "conclusion": "failure"
+        }
+      ],
+      "baseline_gate": "13 failing, 1 new, 0 flaky, 0 listed-but-passing",
+      "new_failures": [
+        "tests/test_direct_lark_notify.py::CardCreateThenPatchTest::test_create_returns_an_id_and_patch_names_it"
+      ],
+      "note": "4/5. The shard-4 new failure is pre-existing on main; see pre_existing below."
     }
   ],
-  "conclusion": "Every named head either has a failing shard or is still running. A Draft PR existing is not release evidence; the release captain records BLOCKED_CI and installs nothing."
+  "conclusion": "Every named head either has a failing shard or is still running. A Draft PR existing is not release evidence; the release captain records BLOCKED_CI and installs nothing.",
+  "pre_existing": {
+    "id": "expired-card-patch-window",
+    "test": "tests/test_direct_lark_notify.py::CardCreateThenPatchTest::test_create_returns_an_id_and_patch_names_it",
+    "assertion": "AssertionError: 'FAILED' != 'DELIVERED'",
+    "cause": "runtime/message_transport.py CARD_UPDATE_WINDOW_DAYS = 14; the test pins sent_at = 2026-10-13T06:00:00Z",
+    "window_closed_at": "2026-10-27T06:00:00Z",
+    "measured_age_days": 15.533,
+    "measured_at": "2026-10-28T18:47:31Z",
+    "reproduces_on": "main e69fc0337ae5d33000478e3d5162077f525bc8cc, no files from this lane present",
+    "main_last_green_run_started": "2026-10-27T02:18:48Z",
+    "affects": [
+      504,
+      505,
+      506,
+      510
+    ],
+    "evidence": "evidence/PRE-EXISTING-EXPIRED-CARD-PATCH-WINDOW-2026-10-29.md",
+    "not_fixed_here": "runtime/** and tests/test_direct_lark_notify.py are other lanes' files; no baseline exception was added"
+  }
 }
