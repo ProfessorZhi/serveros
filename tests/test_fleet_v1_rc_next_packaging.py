@@ -61,9 +61,11 @@ BUNDLE = REPO / "plugin" / "bundle.yaml"
 
 
 def _load(name: str, path: Path):
-    module = sys.modules.get(name)
-    if module is not None:
-        return module
+    # A synthetic name is process-wide, so the consult and the write have to be
+    # one shape: `sys.modules.get(name)` alone does not stop a second writer
+    # from displacing the first (tests/loader_graph.py#unguarded_registrants).
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     # Registered before execution: `@dataclass` resolves annotations through
