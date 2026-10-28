@@ -37,7 +37,10 @@ arrived at a supervisor as exit 0. That is the one thing this wrapper may not do
 * a tick's control word is carried through; `BOUNDED_STOP` is emitted **only**
   for a green tick, and is the only word that comes with `completed: true`;
 * a row that names no readable state is `UNRECOGNISED`, never "probably fine";
-* staleness that nothing measured is `null`, never `false`.
+* staleness that nothing measured is `null`, never `false`;
+* a stale cursor outranks any success word, from either side of the seam: a
+  monitor whose cursor is past its bound has no knowledge of the batch, so the
+  run is `UNCONFIRMED` (exit 4) even when every tick said `TICKED` or `SETTLED`.
 
 The result is a closed schema: `RESULT_KEYS`, `TICK_RECORD_KEYS` and `HEALTH_KEYS`
 are checked by `_close`, so a field added in a hurry fails here rather than in a
@@ -459,21 +462,25 @@ def run_bounded(activation: Activation, *, monitor_entry: Any,
         return max(records, key=lambda r: (SEVERITY[_effective_state(r)], r["index"]))
 
     completed = bool(records) and all(record["completed"] for record in records)
-    if completed and health["stale"] is True:
-        # The producer called the tick green while its own cursor is older than
-        # the bound. A run that stale did not finish being watched.
-        state, completed = "UNCONFIRMED", False
-        why = (f"every tick was green, but the cursor is "
-               f"{int(health['cursor_age'])}s old"
-               if health["cursor_age"] is not None else
-               "every tick was green, but the monitor reports a stale cursor")
-    elif completed:
+    if completed:
         state = BOUNDED_STOP
         why = "bounded activation finished"
     else:
         deciding = _deciding()
         state = _effective_state(deciding)
         why = deciding["why"] or f"{state} at tick {deciding['index'] + 1}"
+
+    if health["stale"] is True and EXIT_FOR_STATE[state] == EXIT_OK:
+        # A measured stale cursor outranks any success word. The batch may well be
+        # running, but a monitor this stale has no knowledge of it — so the run is
+        # *unconfirmed*: not a stop, not a completion, and not a success, whichever
+        # side of the seam measured the age. Only a success would hide this, so
+        # only a success is overridden; a refusal keeps its own reason and word.
+        age = health["cursor_age"]
+        what = (f"the cursor is {int(age)}s old, past the bound"
+                if age is not None else "the monitor reports a stale cursor")
+        why = f"{what}; {state} was not a verdict on the batch"
+        state, completed = "UNCONFIRMED", False
 
     return _result(state, exit_code=EXIT_FOR_STATE[state], ticks=attempts or len(records),
                    completed=completed, why=why, health=health, warnings=warnings,

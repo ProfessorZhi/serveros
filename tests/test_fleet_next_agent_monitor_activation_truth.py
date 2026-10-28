@@ -204,6 +204,33 @@ class TheTickHealthIsCarriedVerbatim(Base):
         self.assertIs(result["completed"], False)
         self.assertEqual(result["state"], "UNCONFIRMED")
 
+    def test_a_stale_monitor_is_never_a_success_whatever_the_tick_said(self):
+        """Staleness is about knowledge, and a stale monitor has none.
+
+        A tick that says TICKED has not "failed" — but a supervisor reading exit 0
+        from a monitor whose cursor is two hours old would be told the batch is
+        being watched when nothing is. So a measured stale cursor outranks any
+        success word, from either side of the seam.
+        """
+        measured = self.m.run_bounded(
+            self.activation(), monitor_entry=lambda: {"state": "TICKED",
+                                                      "exit": 0, "backlog": 2},
+            legacy_read=lambda: True, next_write=lambda: False,
+            clock=lambda: 0.0, cursor_age_seconds=7200.0)
+        reported = self.run_one({"state": "TICKED", "exit": 0, "health": {
+            "last_tick": "2026-10-28T07:00:00+0000", "last_ok": None,
+            "cursor_age": 9000.0, "consecutive_failures": 0, "stale": True}})
+        for origin, result in (("the wrapper measured it", measured),
+                               ("the producer reported it", reported)):
+            with self.subTest(origin=origin):
+                self.assertEqual(result["state"], "UNCONFIRMED")
+                self.assertEqual(result["exit"], 4)
+                self.assertIs(result["completed"], False)
+                self.assertIn("STALE_MONITOR",
+                              [w["code"] for w in result["warnings"]])
+                self.assertEqual(result["ticks_report"][0]["state"], "TICKED",
+                                 "the tick's own word is still carried verbatim")
+
 
 class TheSchemaIsClosed(Base):
     SCENARIOS = (
