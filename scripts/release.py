@@ -319,7 +319,10 @@ L2_HUB_DENIED_PATTERNS = ("*.local.yaml", "*.local.yml", "bindings/*", "*.servic
 #: credential.
 L2_HUB_SECRET_PATTERNS = ("*credential*", "*token*")
 
-L2_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$")
+#: A release candidate is a version. #431 widened this after 2469ec5 and a
+#: verifier still using the old pattern refuses `1.4.0-rc.1` as malformed.
+L2_VERSION_RE = re.compile(
+    r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.\-]*)?(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$")
 #: A payload that forwards the CloudCLI tool schema asks the running CLI; one that
 #: carries a copy keeps answering after the CLI moves.
 L2_SCHEMA_MARKER = "inputSchema"
@@ -842,7 +845,7 @@ def verify_plugin(rev_dir: Path) -> dict:
                         "in this payload cannot be distinguished from declared ones")
     else:
         expected = set(recorded) | {TREE_MANIFEST}
-        actual = {str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*") if p.is_file()}
+        actual = {_relative_posix(p, rev_dir) for p in rev_dir.rglob("*") if p.is_file()}
         for rel in sorted(actual - expected):
             problems.append(f"file present that the build did not produce: {rel}")
 
@@ -869,6 +872,26 @@ def _l2_matches(path: str, pattern: str) -> bool:
 def _l2_tree_digest(entries) -> str:
     stream = "".join(f"{entry['sha256']}  {entry['path']}\n" for entry in entries)
     return hashlib.sha256(stream.encode("utf-8")).hexdigest()
+
+
+def _relative_posix(entry, root) -> str:
+    """A payload-relative path, always with `/` separators.
+
+    `str(Path.relative_to(root))` uses the OS separator, and member paths in an
+    artifact are POSIX — that is what an archive stores and what #431 writes. On
+    Windows the two never meet: every comparison against a declared member would
+    be against `fleet_mcp\\node\\connector.py` while the manifest says
+    `fleet_mcp/node/connector.py`, so a correct payload was reported as thirty
+    members missing and thirty undeclared. `as_posix()` is the only form that is
+    the same on both platforms.
+
+    THIS NORMALISES A PATH WE DERIVED, NEVER ONE WE WERE GIVEN. A member name
+    from the manifest is validated as written: `..\\x` is refused, not rewritten
+    into something that looks legal, and a backslash in a member name is a
+    refusal rather than a separator to convert. Sanitising an untrusted path into
+    a canonical one is how a traversal check becomes a traversal.
+    """
+    return entry.relative_to(root).as_posix()
 
 
 def _l2_layer_problems(kind: str, names) -> list[str]:
@@ -1060,12 +1083,12 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
     # "carry" a required member that lives outside the artifact entirely — and
     # the digest would match, because the bytes are the bytes. The native
     # verifier refuses a linked member for the same reason.
-    linked = sorted(str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*")
+    linked = sorted(_relative_posix(p, rev_dir) for p in rev_dir.rglob("*")
                     if p.is_symlink())
     for name in linked:
         problems.append(f"{name} is a symlink; a member must be a file in the payload")
 
-    on_disk = {str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*") if p.is_file()}
+    on_disk = {_relative_posix(p, rev_dir) for p in rev_dir.rglob("*") if p.is_file()}
     on_disk.discard(ARTIFACT_MANIFEST)
     # `RELEASE.json` is written by the promotion that follows, never by the build,
     # so it is the one file legitimately present that the manifest cannot list.
@@ -1166,9 +1189,15 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
                         f"carry those modules; it would raise at import")
 
     for dependency in l2.get("depends_on") or []:
-        wanted = f"{str(dependency).replace('.', '/')}.py"
-        if wanted not in files:
-            problems.append(f"depends_on names {dependency!r}, which the payload does not carry")
+        # A dependency may be a MODULE (`fleet_mcp.registry` -> .py) or a PACKAGE
+        # (`fleet_mcp` -> __init__.py). #431 widened this after 2469ec5; a
+        # verifier that only looked for `.py` refused a package the payload does
+        # carry, which is the worst kind of false negative — it blocks a correct
+        # artifact while claiming a missing file.
+        wanted = str(dependency).replace(".", "/")
+        if f"{wanted}.py" in files or f"{wanted}/__init__.py" in files:
+            continue
+        problems.append(f"depends_on names {dependency!r}, which the payload does not carry")
 
     platforms = list(l2.get("platforms") or [])
     unsupported = sorted(set(platforms) - set(L2_PLATFORMS[kind]))
@@ -1185,7 +1214,16 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
     # verification — and would put the release path at odds with the build's own
     # verifier, which believes it. The two are separate fields because they are
     # separate facts.
-    standalone = l2.get("standalone") is True and not external
+    # #431 @ 7dbac2b3 measures this instead of recomputing it: `runtime_standalone`
+    # is the answer to "can it RUN", which includes the modules its first fleet
+    # call imports, and `standalone` alone cannot see a payload that imports and
+    # then dies on that call. Prefer the measured field; fall back to the old
+    # arithmetic only for manifests written before it existed.
+    measured = l2.get("runtime_standalone")
+    if isinstance(measured, bool):
+        standalone = measured
+    else:
+        standalone = l2.get("standalone") is True and not external
     standalone_reasons: list[str] = []
     if not standalone:
         missing_packages = sorted(external)
@@ -1375,7 +1413,7 @@ def verify_native_runtime(rev_dir: Path) -> dict:
             files: set[str] = set()
             directories: set[str] = set()
             for entry in rev_dir.rglob("*"):
-                relative = str(entry.relative_to(rev_dir))
+                relative = _relative_posix(entry, rev_dir)
                 (directories if entry.is_dir() else files).add(relative)
             for rel in sorted(files - declared):
                 problems.append(f"file present that the package did not declare: {rel}")
