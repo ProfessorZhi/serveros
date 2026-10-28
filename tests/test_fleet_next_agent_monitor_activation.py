@@ -277,7 +277,10 @@ class TheProcessEntryReportsItsOwnVerdict(Base):
         module.tick = lambda: calls.append(1) or {"state": "SETTLED", "backlog": 0}
         module.probe_true = lambda: True
         module.probe_false = lambda: False
-        sys.modules[module.__name__] = module
+        # Read the cache before writing to it: the name is process-wide, and
+        # `tests/test_loader_identity.py` refuses an unguarded registration.
+        if module.__name__ not in sys.modules:
+            sys.modules[module.__name__] = module
         try:
             code = self.m.main(self._argv(
                 monitor_entry=module.__name__ + ":tick",

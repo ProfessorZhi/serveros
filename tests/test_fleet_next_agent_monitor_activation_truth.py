@@ -363,7 +363,10 @@ class TheCliPassesWhatItMeasured(Base):
         module.tick = tick
         module.probe_true = lambda: True
         module.probe_false = lambda: False
-        sys.modules[module.__name__] = module
+        # Read the cache before writing to it: the name is process-wide, and
+        # `tests/test_loader_identity.py` refuses an unguarded registration.
+        if module.__name__ not in sys.modules:
+            sys.modules[module.__name__] = module
         buffer = io.StringIO()
         previous = sys.stdout
         sys.stdout = buffer
