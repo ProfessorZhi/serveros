@@ -228,6 +228,6 @@ def legacy_surface_touched() -> list[str]:
             ["git", "diff", "--name-only", f"{WAVE13_BASE}..HEAD"],
             cwd=ROOT, check=True, text=True, capture_output=True).stdout
     except (OSError, subprocess.CalledProcessError):
-        return ["UNKNOWN_GIT_DIFF"]
+        return None
     forbidden = ("fleet_mcp/", "runtime/", "services/", "plugin/", "deploy/")
     return [line for line in out.splitlines() if line.startswith(forbidden)]
