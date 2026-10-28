@@ -65,6 +65,7 @@ from .version import SERVER_VERSION
 from .session_detail import normalize_detail
 from .privacy import clamp_limit, redact_payload, UNTRUSTED_NOTICE
 from .providers import DeviceProvider, ProviderHealth, build_providers
+from .providers.cloudcli import RECEIPT_NATIVE_FIELDS, receipt_truth
 from .registry import (
     authored_facts,
     load_registry,
@@ -177,6 +178,131 @@ def _session_project(detail) -> str | None:
                 if isinstance(value, str) and value:
                     return value
     return None
+
+
+# ---------------------------------------------------------------------------
+# What a device's answer establishes
+# ---------------------------------------------------------------------------
+# `accepted` is this layer's word, not a device field, and it used to default to
+# true: a reply that never mentioned acceptance was stored as accepted. The
+# provider layer stopped inventing that word first (#465 — its receipt carries
+# native identities and no `accepted` key at all), and this is the layer above
+# consuming that reading instead of re-deriving a friendlier one.
+#
+# Two rules, and they are the whole of it:
+#
+#   * a reply is not upgraded. Its acceptance class comes from the device's own
+#     fields, through the provider's ladder, and anything this file cannot read
+#     is `UNKNOWN` — which is never accepted;
+#   * the receipt says where the class came from, so `accepted: true` can no
+#     longer be mistaken for something the device said. Identities stay under
+#     their own names: a run, a delivery, a boot and a session are four
+#     different objects and none of them is a substitute for another.
+
+#: The classes that mean "the device took it". `UNKNOWN` and the two negatives
+#: are absent on purpose — this set is the only door to `accepted: true`.
+_ACCEPTED_CLASSES = frozenset(
+    ("STARTED", "QUEUED", "ACCEPTED_NO_RUN", "DELIVERY_ACCEPTED", "ADMITTED"))
+
+#: `receipt_truth`'s closed vocabulary, plus the two names this layer gives to
+#: shapes the provider's session-shaped ladder does not carry: a project create
+#: (no session and no run exist to classify) and a reply whose only identity is
+#: a delivery. They are reported under their own names rather than folded into
+#: `STARTED`, which is how a caller comes to poll a run that was never issued.
+_ACCEPTANCE_VALUES = frozenset(
+    ("FAILED", "UNKNOWN", "REJECTED", "QUEUED", "STARTED", "ACCEPTED_NO_RUN",
+     "DELIVERY_ACCEPTED", "ADMITTED"))
+
+#: The one native field whose value is a boolean. Everything else is an
+#: identifier, and a boolean there is a malformed reply rather than a short id.
+_BOOLEAN_NATIVE = frozenset(("queued",))
+
+_IDENTIFIER_MAX = 512
+
+
+def _native_identities(value) -> dict[str, Any]:
+    """The provider's whitelisted identities, each under its own name.
+
+    Names come from `RECEIPT_NATIVE_FIELDS`; values are kept only when they are
+    identifiers — a short string with no control characters, or the one boolean
+    the provider defines. Everything else in a reply (status text, error
+    details, whatever else a device chose to add) is dropped here rather than
+    copied into an answer a caller reads and an audit stores.
+    """
+    if not isinstance(value, dict):
+        return {}
+    kept: dict[str, Any] = {}
+    for name in RECEIPT_NATIVE_FIELDS:
+        if name not in value:
+            continue
+        item = value[name]
+        if isinstance(item, bool):
+            if name in _BOOLEAN_NATIVE:
+                kept[name] = item
+        elif (isinstance(item, str) and item and len(item) <= _IDENTIFIER_MAX
+                and not any(ord(c) < 32 for c in item)):
+            kept[name] = item
+    return kept
+
+
+def _names_only_native_identities(payload: dict) -> bool:
+    """True when a reply says nothing except which native objects it names.
+
+    Deliberately a shape test rather than a second ladder: any key that could
+    carry a verdict (`status`, `failed`, `code`, `accepted`) — or any content at
+    all — disqualifies the reply, and the provider's ladder decides instead.
+    """
+    return set(payload) <= (set(RECEIPT_NATIVE_FIELDS) | {"sessionId"})
+
+
+def _device_acceptance(payload) -> dict[str, Any]:
+    """What one device reply establishes, and the evidence it was read from.
+
+    `source` is the answer to "who says accepted?":
+
+      provider            the provider shipped its own projection (#465) and
+                          this layer consumed it without a second opinion;
+      provider-malformed  it shipped one this layer cannot read — `UNKNOWN`,
+                          because an unreadable claim is not a claim;
+      payload             read from the reply's own fields by the provider's
+                          `receipt_truth` ladder;
+      payload-identities  a reply made only of native identities, one of which
+                          is a delivery id: an admitted delivery, not a run;
+      project-fields      a project create, whose admission is its own fields
+                          (`projectId` / `path` / `freshDirectoryCreated` /
+                          `outcome`) and not a boolean;
+      none                there was no reply to read.
+    """
+    if not isinstance(payload, dict):
+        return {"acceptance": "UNKNOWN", "source": "none", "native": {}}
+    if "receipt" in payload:
+        provided = payload["receipt"]
+        native = (_native_identities(provided.get("native"))
+                  if isinstance(provided, dict) else {})
+        if (isinstance(provided, dict)
+                and provided.get("acceptance") in _ACCEPTANCE_VALUES
+                and isinstance(provided.get("native"), dict)):
+            return {"acceptance": provided["acceptance"], "source": "provider",
+                    "native": native}
+        return {"acceptance": "UNKNOWN", "source": "provider-malformed",
+                "native": native}
+    truth = receipt_truth(payload)
+    native = _native_identities(truth.get("native"))
+    acceptance, source = truth.get("acceptance", "UNKNOWN"), "payload"
+    if (acceptance == "UNKNOWN" and native.get("deliveryId")
+            and _names_only_native_identities(payload)):
+        acceptance, source = "DELIVERY_ACCEPTED", "payload-identities"
+    return {"acceptance": acceptance, "source": source, "native": native}
+
+
+def _stored_accepted(truth: dict[str, Any]) -> bool:
+    """`accepted`, the field older callers read. Always this layer's synthesis.
+
+    Named as a function so the one place that decides it is visible: the
+    boolean is *derived from* the device's class, never read from a reply that
+    did not state one.
+    """
+    return truth["acceptance"] in _ACCEPTED_CLASSES
 
 
 @dataclass(frozen=True)
@@ -1611,9 +1737,16 @@ class FleetService:
         project = _session_project(detail)
         project_context = {"project": project} if valid_ref(project) else {}
         payload = provider.send(key, message, idempotency_key=idempotency_key)
-        run_id = payload.get("runId") or payload.get("run_id") or (payload.get("run") or {}).get("id")
+        truth = _device_acceptance(payload)
+        # A provider that ships its own projection (#465) may name the
+        # identities only inside it; those are the same verbatim values, so they
+        # are read from there and nowhere else is invented.
+        run_id = (payload.get("runId") or payload.get("run_id")
+                  or (payload.get("run") or {}).get("id") or truth["native"].get("runId"))
         delivery = ({"delivery_id": payload.get("deliveryId", payload.get("delivery_id"))}
                     if "deliveryId" in payload or "delivery_id" in payload else {})
+        if delivery.get("delivery_id") is None and truth["native"].get("deliveryId"):
+            delivery["delivery_id"] = truth["native"]["deliveryId"]
         record = {
             **delivery,
             **context,
@@ -1622,8 +1755,18 @@ class FleetService:
             "principal_kind": principal.kind,
             "display_name": key.as_dict(),
             "run_id": run_id,
-            "queued_message_uuid": payload.get("queuedMessageUuid") or payload.get("queued_message_uuid"),
-            "accepted": payload.get("accepted", True),
+            "queued_message_uuid": (payload.get("queuedMessageUuid")
+                                    or payload.get("queued_message_uuid")
+                                    or truth["native"].get("queuedMessageUuid")),
+            # `accepted` is this layer's word, kept for callers that only know
+            # it: true only when the device's own fields establish that it took
+            # the message. `acceptance` is the device's class and
+            # `acceptance_source` names the evidence, so the boolean stops
+            # reading like a field the device sent.
+            "accepted": _stored_accepted(truth),
+            "acceptance": truth["acceptance"],
+            "acceptance_source": truth["source"],
+            "native": truth["native"],
             "raw": payload,
         }
         self._record_delivery_ack(claim, record, expect_execution=True)
@@ -1778,8 +1921,14 @@ class FleetService:
         if creator is None:
             raise refuse("CAPABILITY_UNSUPPORTED", "provider has no project creation operation")
         payload = creator(root=root, name=name, project_path=target, display_name=display_name)
+        # `accepted` is not a field of this verb's native ACK, and it never was:
+        # the device states a project id, the path it made, whether the directory
+        # was fresh and the outcome. Those four ARE the admission, so they are
+        # what this layer reads — an `accepted` key is honoured only when the
+        # device bothered to send one, and anything but a literal `True` there is
+        # a reply this layer will not guess about.
         if (not isinstance(payload, dict) or payload.get("freshDirectoryCreated") is not True
-                or payload.get("accepted", True) is not True
+                or ("accepted" in payload and payload["accepted"] is not True)
                 or not isinstance(payload.get("projectId"), str) or not payload["projectId"].strip()
                 or payload["projectId"] != payload["projectId"].strip() or len(payload["projectId"]) > 512
                 or payload.get("path") != target
@@ -1787,7 +1936,8 @@ class FleetService:
                 or payload.get("outcome", "created") != "created"):
             raise refuse(INTERNAL, "project creation may have happened but its fresh ACK is malformed",
                          retry_safe=False)
-        receipt = {"project_id": payload["projectId"], "project_path": target, "accepted": True}
+        receipt = {"project_id": payload["projectId"], "project_path": target, "accepted": True,
+                   "acceptance": "ADMITTED", "acceptance_source": "project-fields"}
         if claim is not None:
             self.dispatch.complete(claim, receipt)
         self.audit.record("fleet.project.create", principal=principal.name,
@@ -2179,6 +2329,7 @@ class FleetService:
             lifecycle_mode=lifecycle_mode,
             permission_mode=permission_mode,
         )
+        truth = _device_acceptance(payload)
         session_id = payload.get("sessionId") or payload.get("session_id")
         if not isinstance(session_id, str) or not session_id.strip():
             # A create that reports success must name what it created. There is
@@ -2194,10 +2345,14 @@ class FleetService:
         # multiplexed base uses the native family. This expected namespace was
         # fixed before the claim/IO; it never relabels a stored receipt.
         key = SessionKey.compose(device_ref, receipt_namespace, str(session_id))
-        run_id = payload.get("runId") or payload.get("run_id")
-        queued_message_uuid = payload.get("queuedMessageUuid", payload.get("queued_message_uuid"))
+        run_id = payload.get("runId") or payload.get("run_id") or truth["native"].get("runId")
+        queued_message_uuid = (payload.get("queuedMessageUuid")
+                               or payload.get("queued_message_uuid")
+                               or truth["native"].get("queuedMessageUuid"))
         delivery = ({"delivery_id": payload.get("deliveryId", payload.get("delivery_id"))}
                     if "deliveryId" in payload or "delivery_id" in payload else {})
+        if delivery.get("delivery_id") is None and truth["native"].get("deliveryId"):
+            delivery["delivery_id"] = truth["native"]["deliveryId"]
         record = {
             **delivery,
             **context,
@@ -2207,7 +2362,12 @@ class FleetService:
             "session": key.as_dict(),
             "run_id": run_id,
             "queued_message_uuid": queued_message_uuid,
-            "accepted": payload.get("accepted", True),
+            # See `_device_acceptance`: `accepted` is derived here, and the two
+            # keys beside it say which class the device's reply established.
+            "accepted": _stored_accepted(truth),
+            "acceptance": truth["acceptance"],
+            "acceptance_source": truth["source"],
+            "native": truth["native"],
             "raw": payload,
         }
         self._record_delivery_ack(claim, record,
@@ -2218,7 +2378,12 @@ class FleetService:
         # "permission-ready" is the exact inference this block exists to stop.
         effective_mode, readiness = self._read_effective_permission_mode(
             adapter, key, permission_mode)
-        readiness["run_started"] = bool(message and message.strip())
+        # `run_started` used to be `bool(message)`: the caller's ask, read back
+        # as the device's answer. A queued message started nothing, so the three
+        # device classes this verb can produce are reported as themselves.
+        readiness["run_started"] = truth["acceptance"] == "STARTED"
+        readiness["run_queued"] = truth["acceptance"] == "QUEUED"
+        readiness["acceptance"] = truth["acceptance"]
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
@@ -2307,7 +2472,13 @@ class FleetService:
                 raise refuse(BAD_SESSION_REF, "delivery metadata names another session family")
             self.audit.record("fleet.get_run", principal=principal.name, session_ref=key.ref,
                               delivery_id=delivery_id)
-            return {**payload, **key.as_dict(), "delivery_id": delivery_id, "run_id": payload.get("runId")}
+            # The device's own `status` is forwarded unchanged — rewriting it
+            # would be this layer asserting a fact about the device's state —
+            # and `receipt` says what that status establishes. A `completed`
+            # with no assistant message establishes nothing (#394).
+            return {**payload, **key.as_dict(), "delivery_id": delivery_id,
+                    "run_id": payload.get("runId"),
+                    "receipt": _device_acceptance(payload)}
         payload = provider.get_run(key, run_id, wait=wait, wait_seconds=wait_seconds)
         expected = {**key.as_dict(), "run_id": run_id, "runId": run_id, "sessionId": key.native_session_id}
         if payload.get("idKind") is not None and payload["idKind"] != "run":
@@ -2324,7 +2495,8 @@ class FleetService:
         self.audit.record(
             "fleet.get_run", principal=principal.name, session_ref=key.ref, run_id=run_id
         )
-        return {**payload, **key.as_dict(), "run_id": run_id}
+        return {**payload, **key.as_dict(), "run_id": run_id,
+                "receipt": _device_acceptance(payload)}
 
     def _event_visible(self, principal: Principal, event: dict) -> bool:
         """Current Fleet read boundary, also the seam for authored read restrictions.
