@@ -239,5 +239,5 @@ they build payloads through a `make_l2`/`reseal` pair that already excludes
 | | today | after this lands |
 |---|---|---|
 | `release.py` reads our manifest | refuses kinds by name | verifies both kinds |
-| `l2_release.py` verifies our manifest | **REAL** (77 tests: 76 pass, 1 skip) | unchanged, plus parity test stops skipping |
+| `l2_release.py` verifies our manifest | **REAL** (78 tests: 77 pass, 1 skip) | unchanged, plus parity test stops skipping |
 | our manifest shape matches yours | **REAL** (asserted), and re-checked against `#436 @ 85493198` in §9 | unchanged |

@@ -933,6 +933,24 @@ def test_the_dependency_on_the_repository_is_named_not_merely_permitted(tmp_path
 
 
 # --------------------------------------------------------------------------- #
+# what neither artifact carries
+# --------------------------------------------------------------------------- #
+def test_a_module_reachable_from_neither_entrypoint_is_a_named_decision():
+    """Both payloads are import closures, so a module nobody imports ships in
+    neither artifact. That is a decision; this is where it is written down.
+
+    Measured, not argued: `l2.orphaned_modules` walks the two closures and
+    subtracts them from the files on disk. The assertion is equality in both
+    directions, so the tuple cannot rot — a module that quietly stops being
+    imported fails here **by name**, and an entry that has since become
+    reachable fails too. (This is how #407's `fleet_mcp/events.py` and
+    `fleet_mcp/run_watcher.py` were found: on that head they are reachable only
+    from `runtime/fleet_mcp_owner.py`, which is outside every artifact.)
+    """
+    assert l2.orphaned_modules(ROOT) == tuple(sorted(l2.ORPHANS_UNDECIDED))
+
+
+# --------------------------------------------------------------------------- #
 # the pinned edge: one holder, one module, exactly seven names
 # --------------------------------------------------------------------------- #
 def test_the_pin_matches_the_source_it_was_measured_from():

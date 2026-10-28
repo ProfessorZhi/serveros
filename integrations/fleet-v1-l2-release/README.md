@@ -220,7 +220,7 @@ only protects the builder protects the thing that cannot lie.
 
 | claim | status |
 |---|---|
-| builds, reads back, verifies, refuses — both kinds | **REAL**, 77 tests (76 pass + 1 skip), offline |
+| builds, reads back, verifies, refuses — both kinds | **REAL**, 78 tests (77 pass + 1 skip), offline |
 | byte-identical rebuild | **REAL** (two builds compared) |
 | member list is the shape `release.py` consumes | **REAL** (`test_the_member_list_is_the_shape_the_release_reader_consumes`) |
 | the node imports without a checkout | **REAL** (`import_standalone: true`, measured by importing it in a separate interpreter) |
@@ -234,6 +234,7 @@ only protects the builder protects the thing that cannot lie.
 | the cut is a RED → GREEN contract, not a promise | **REAL** — `tests/test_l2_source_standalone_contract.py`: 3 `xfail(strict=True)` fail today, pass on a patched copy (verified both ways with `--runxfail`), XPASS-strict when it lands |
 | `#416` composes with the cut | **REAL ON A COPY** — disjoint files, `git apply --check` clean both ways; 226 passed/24 skipped with #416 alone, with the cut alone, and with both; node closure 31 → 26 only when the cut is present |
 | three modules on #407's head are in neither artifact | **REAL** at `9538238d` — `events`, `run_watcher`, `runtime` are reachable from no entrypoint and are the whole consumer set of `runtime/fleet_mcp_owner.py`; measured, not concluded; recorded in `HANDOFF-407.md` and reported to #407/#416 |
+| a module in neither artifact is a written-down decision | **REAL** (`ORPHANS_UNDECIDED` + `orphaned_modules`): equality in both directions, so a module that quietly stops being imported fails by name and a stale entry fails too; the probe was flipped both ways on a copy |
 | `release.py` verifies `l2-node`/`l2-hub` | **NOT OURS** — #433/#436 own `scripts/release.py`; #436 @ `85493198` reads this manifest shape (see `HANDOFF-419.md` §9) |
 | installed on a node or the hub | **NOT_RUN** — this directory installs nothing |
 | signed artifacts | **NOT DONE** — digests are recorded, nothing is signed |
