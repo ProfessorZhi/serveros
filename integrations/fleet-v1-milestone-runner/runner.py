@@ -525,10 +525,18 @@ class MilestoneRunner:
     def _sleep_once(self, seconds: float) -> None:
         if self._stop.is_set():
             raise _StopRequested(STOPPED)
+        wait = max(0.0, float(seconds))
+        if self._deadline is not None:
+            remaining = self._deadline - self._monotonic()
+            if remaining <= 0:
+                raise _StopRequested(BOUNDED_STOP)
+            # Do not sleep a full interval past the deadline: the bound is a
+            # ceiling, not an approximate one.
+            wait = min(wait, remaining)
         if self._sleep is not None:
-            self._sleep(seconds)
+            self._sleep(wait)
         else:
-            self._stop.wait(seconds)
+            self._stop.wait(wait)
         if self._stop.is_set():
             raise _StopRequested(STOPPED)
         if self._deadline is not None and self._monotonic() >= self._deadline:
@@ -567,13 +575,15 @@ class MilestoneRunner:
             for report in self.observer.run_periodic(
                     interval_seconds=self.config.interval_seconds,
                     sleep=self._sleep_once, max_ticks=self._tick_cap()):
-                if self._stop.is_set():
-                    state = STOPPED
-                    break
+                # Account for the tick BEFORE the stop check: a stop that lands
+                # during a tick must not erase what that tick observed/delivered.
                 summary = self._summary(report)
                 self.last = summary
                 self.ticks.append(summary)
                 self.tick_count += 1
+                if self._stop.is_set():
+                    state = STOPPED
+                    break
                 if self._deadline is not None and self._monotonic() >= self._deadline:
                     state = BOUNDED_STOP
                     break

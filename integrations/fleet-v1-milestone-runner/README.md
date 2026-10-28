@@ -91,9 +91,13 @@ runner 不重新分类里程碑，也不把异常升级成成功：
 - 源/provider 失败 → observer 的 typed UNKNOWN/REFUSED；不发送、不记 DELIVERED。
 - UNKNOWN delivery 的 reconcile 仍由 #428 observer 用同一 transport key 发起。
 - summarizer 抛错 → #423 的确定性模板仍发送（RED 的 `RUN_FAILED` 兜底）。
-- runner 自身的意外异常 → `RUNNER_ERROR`，exit 2；provider 没有被调用。
+- runner 自身的意外异常 → 顶层 `state: ERROR`（该 tick 记为 `RUNNER_ERROR`），
+  exit 2；错误路径不以成功收尾。测试中的错误在发送前抛出，因此不调用 provider；
+  这不是所有异常路径的普适保证。
 - 发送速率：`max_sends_per_minute` 的包装器在超限时返回 `delivered: false`，
-  #423 记为 `DELIVERY_UNKNOWN`，绝不伪造 DELIVERED。
+  #423 记为 `DELIVERY_UNKNOWN`，绝不伪造 DELIVERED。`0` 表示拒绝所有发送
+  （dry run；行仍是 DELIVERY_UNKNOWN，进程生命周期仍是 BOUNDED_STOP）；
+  `null` 表示不启用发送限速。
 - 两个 runner 用同一 ledger（不同锁）→ 第二个在账本上 DUPLICATE，不重发。
 
 ## 测试
@@ -102,7 +106,7 @@ runner 不重新分类里程碑，也不把异常升级成成功：
 python3 -m unittest -v tests.test_fleet_v1_milestone_runner
 ```
 
-15 个 offline tests，其中 **3 个独立 subprocess**：
+18 个 offline tests，其中 **3 个独立 subprocess**：
 
 1. `running → completed`：GPT 已结束的假源状态变更；runner tick 触发一次重大
    成功；重启同 ledger 不重发。
@@ -167,7 +171,7 @@ schtasks /Create /TN "ServerOS Milestone Runner" /SC MINUTE /MO 5 ^
 ## 证据分级
 
 - **CODE**：`integrations/fleet-v1-milestone-runner/runner.py`。
-- **offline fake E2E**：14 tests（含 3 subprocess），FakeProvider + scripted
+- **offline fake E2E**：18 tests（含 3 subprocess），FakeProvider + scripted
   FakeSource，无真实 Feishu/CloudCLI。
 - **SERVICE_NOT_INSTALLED**：未安装/未启停任何 unit/task。
 - **HOSTED_CI**：Draft PR 的 `Tests`。

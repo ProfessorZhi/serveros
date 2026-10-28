@@ -224,6 +224,55 @@ class OneActiveAndSharedLedger(Base):
         self.assertEqual(result["state"], runner.STOPPED)
         self.assertEqual(self.lines(), [], "a pre-run stop must not observe")
 
+    def test_runtime_bound_is_not_overshot_by_a_sleep(self):
+        instance = self.make(self.config(
+            sequence=[{"payload": "running"}], max_ticks=None,
+            max_runtime=0.2, interval=2.0))
+        started = time.monotonic()
+        result = instance.run()
+        elapsed = time.monotonic() - started
+        self.assertEqual(result["state"], runner.BOUNDED_STOP)
+        self.assertLess(elapsed, 1.0,
+                        "the runtime bound must cap the sleep, not wait a full interval")
+        self.assertEqual(self.lines(), [])
+
+    def test_stopped_runner_cannot_run(self):
+        instance = self.make(self.config(
+            sequence=[{"payload": "completed"}], max_ticks=1))
+        instance.start()
+        instance.stop()
+        with self.assertRaises(runner.RunnerStartRefused) as caught:
+            instance.run()
+        self.assertEqual(caught.exception.code, "RUNNER_STOPPED")
+        self.assertEqual(self.lines(), [])
+
+    def test_stop_during_a_tick_keeps_the_tick_accounting(self):
+        instance = self.make(self.config(
+            sequence=[{"payload": "completed"}], max_ticks=1))
+        instance.start()
+
+        class StopDuringTick:
+            def __init__(self, runner):
+                self.runner = runner
+
+            def run_periodic(self, **_kwargs):
+                self.runner.request_stop()
+                yield {"observed_at": "2026-10-28T00:00:00Z",
+                       "counts": {"DELIVERED": 1},
+                       "rows": [{"source": "cloudcli", "ref": RUN,
+                                 "state": "DELIVERED",
+                                 "outcome": "VERIFIED_GREEN",
+                                 "delivered": True,
+                                 "delivery_key": "milestone:x",
+                                 "code": None, "why": None}]}
+
+        instance.observer = StopDuringTick(instance)
+        result = instance.run()
+        self.assertEqual(result["state"], runner.STOPPED)
+        self.assertEqual(result["ticks"], 1,
+                         "the tick that completed before the stop is counted")
+        self.assertEqual(instance.last["counts"], {"DELIVERED": 1})
+
     def test_two_runners_with_distinct_locks_share_one_ledger(self):
         first = self.make(self.config(
             sequence=[{"payload": "completed"}], max_ticks=1))
@@ -437,12 +486,15 @@ class OfflineSubprocess(Base):
         self.assertIn("RUN_FAILED", lines[0]["text"])
         self.assertIn("Action required", lines[0]["text"])
 
+    @unittest.skipIf(os.name == "nt",
+                     "POSIX SIGTERM subprocess; the Windows-testable "
+                     "request_stop interface is covered in-process")
     def test_subprocess_sigterm_stops_and_second_lock_is_refused(self):
         config = self.green_config(
             "sigterm", sequence=[{"payload": "running"}])
         config["max_ticks"] = 1000
         config["interval_seconds"] = 0.2
-        config["max_runtime_seconds"] = 30
+        config["max_runtime_seconds"] = 10
         path = self.subprocess_config(config, "sigterm")
         env = os.environ.copy()
         env["PYTHONPATH"] = str(FAKES_DIR) + os.pathsep + env.get("PYTHONPATH", "")
@@ -451,7 +503,16 @@ class OfflineSubprocess(Base):
                    "--source-factory", "fakes:source"]
         first = subprocess.Popen(command, cwd=str(REPO), env=env, text=True,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.addCleanup(lambda: first.poll() is None and first.kill())
+
+        def cleanup_first():
+            if first.poll() is None:
+                first.kill()
+                try:
+                    first.communicate(timeout=5)
+                except Exception:  # noqa: BLE001 - best-effort cleanup only
+                    pass
+
+        self.addCleanup(cleanup_first)
         self.assertTrue(self.wait_for(self.lock.exists),
                         "the first runner never took its lock")
         second = subprocess.run(command, cwd=str(REPO), env=env, text=True,
