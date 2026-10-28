@@ -129,7 +129,8 @@ SUPERVISOR_SRC := \
   native/node-core/supervisor/src/receipt.cpp \
   native/node-core/supervisor/src/status.cpp \
   native/node-core/supervisor/src/serve.cpp \
-  native/node-core/supervisor/src/status_socket.cpp
+  native/node-core/supervisor/src/status_socket.cpp \
+  native/node-core/supervisor/src/capability.cpp
 
 CORELITE_SRC := \
   native/node-core/core-lite/src/profile.cpp \
