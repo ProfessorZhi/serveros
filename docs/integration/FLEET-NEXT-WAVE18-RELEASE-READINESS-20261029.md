@@ -344,8 +344,32 @@ forced through the environment.
 
 ## 10. CI for this PR
 
-Recorded from the branch's own checks, not inferred; see the PR body for the
-exact run and conclusion.
+Head `cce5f669aa843631adbb4aad7cf33147bf509ad6`, run
+[`40759176350`](https://github.com/ProfessorZhi/serveros/actions/runs/40759176350),
+read from each shard's own baseline-gate summary rather than its conclusion:
+
+| Shard | Gate summary | Job |
+|---|---|---|
+| 1/4 | 8 failing, **0 new**, 0 flaky | pass (5 m 18 s) |
+| 2/4 | 19 failing, **0 new**, 0 flaky | pass (1 m 19 s) |
+| 3/4 | 19 failing, **0 new**, 1 flaky | pass (2 m 32 s) |
+| 4/4 | 13 failing, **1 new**, 0 flaky | fail (2 m 16 s) |
+| `Claude Code plugin matches its source` | — | pass (17 s) |
+
+Shard 4's job is red and its gate is clean: `shard_files("4/4")` selects
+`files[3::4]` of the sorted `tests/test_*.py` list, and this PR's new test file
+sorts at index 143, so it runs in shard 4 — whose **only** new failure is the
+attributed date-window test
+`tests/test_direct_lark_notify.py::CardCreateThenPatchTest::test_create_returns_an_id_and_patch_names_it`.
+The file is not in the baseline, so any failure *or collection error* from it
+would have been counted as `new`; there is exactly one, and it is not this file.
+That is the same distinction this gate applies to the six pinned units in §4,
+applied to itself — a red job is not a red gate.
+
+The 60 baseline failures across the four shards are pre-existing: shard 1's
+`tests/test_verification_tool.py` reports `tests/test_coordination.py` missing
+from the tree, and the rest are the file's known entries. Nothing in this PR
+touches them.
 
 ## 11. What this does not certify
 
