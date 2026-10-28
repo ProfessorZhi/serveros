@@ -147,6 +147,34 @@ def test_every_core_module_declares_its_bundle_path() -> None:
         f"bundle path must equal the module name: {mismatched}")
 
 
+def test_a_bundle_path_names_a_directory_the_build_visits() -> None:
+    """The reverse direction, and it is deliberately not the same failure.
+
+    A `CORE_MODULES` member with no `path` is harmful: the artifact silently
+    loses the directory. A `path` with no member is only dead config — the loop
+    never asks for it, so an entry pointing at a retired directory is never read
+    and never raises. It is checked anyway because that is exactly how a
+    retirement becomes invisible: dropping a directory from `CORE_MODULES` and
+    leaving its bundle entry behind changes nothing observable, and the next
+    reader takes the surviving entry as evidence that the directory still ships.
+
+    Keys that are not module entries (`skills`, `default_prompt`, …) carry no
+    `path` and are out of scope. Measured: no orphan before the D2 stage-2 move,
+    and exactly one on it (`fleet_hub`) — red on purpose until `#413` lands, for
+    the same missing line as the other two, not for a fourth reason.
+    """
+    build = _build()
+    bundle = _bundle()
+    with_path = {k for k, v in bundle.items() if isinstance(v, dict) and "path" in v}
+    assert with_path, "no `path` entries parsed; the scan would certify nothing"
+
+    orphans = sorted(with_path - set(build.CORE_MODULES))
+    assert orphans == [], (
+        "these declare a source path in plugin/bundle.yaml but no CORE_MODULES "
+        "member ever asks for it, so nothing ships from them and nothing fails "
+        f"when the directory is retired: {orphans}")
+
+
 def test_the_packaging_list_is_not_a_layer_claim() -> None:
     """`CORE_MODULES` contains product directories, and that is correct.
 
