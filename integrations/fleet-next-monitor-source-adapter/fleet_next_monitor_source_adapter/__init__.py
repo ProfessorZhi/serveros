@@ -22,16 +22,19 @@ from .adapter import (
     RouteOffline,
     RunNotFound,
 )
+from .compat import COMPAT_SCHEMA, CompatMonitorSource
 
 __all__ = [
     "SCHEMA",
     "OBSERVATION_SCHEMA",
+    "COMPAT_SCHEMA",
     "CallerGrant",
     "Identity",
     "Observation",
     "SourceRefused",
     "LegacyReadOnlyClient",
     "LegacyReadOnlySourceAdapter",
+    "CompatMonitorSource",
     "FixtureLegacyClient",
     "RunNotFound",
     "RouteOffline",
