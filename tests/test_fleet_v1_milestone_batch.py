@@ -30,21 +30,26 @@ The matrix this file pins, all offline:
 EVIDENCE LABELS
 ---------------
 CODE + UNIT are this file. Every source is scripted, the provider is `FakeLark`
-and the notifier is #423's real `MilestoneNotifier` plus the exact two-method
-seam this PR proposes to it (`SeamedNotifier`, below). No network, no CLI, no
-credential, no service, no model, no real Feishu send.
+and the notifier is `SeamedNotifier`: a SEALED wrapper around #423's real
+`MilestoneNotifier` that adds the one public method this contract needs using
+only #423's public surface. No network, no CLI, no credential, no service, no
+model, no real Feishu send.
 
 HOSTED_CI is the PR's workflow. REAL_DEVICE, CLIENT_E2E and
 REAL_FEISHU_DELIVERY are NOT_RUN and are not claimed. Sending a test IM would
 need a separate owner decision and is not done here.
 
-THE ONE SEAM
-------------
+THE ONE SEAM — BLOCKED
+----------------------
 `BatchAggregator` never touches #423's ledger and never calls a private method.
-It calls `notifier.send_text(...)`, which #423 does not have yet; the patch that
-adds it is in this directory's README. `SeamedNotifier` is that patch, written
-out, so the behaviour is testable before its owner lands it — it wraps the two
-private names the proposal wraps (`_send`, `_now`) and nothing else.
+It calls `notifier.send_text(...)`, which #423 does not have yet: at
+`d9b2948a` the public surface is `observe` and the ledger, so the seam is
+BLOCKED on its owner (see the README, "BLOCKED"). `SeamedNotifier` stands in
+for it — and is deliberately SEALED: any attribute whose name starts with `_`
+is refused, so neither a test nor a production path can quietly turn into a
+second write path through `_send`. When the owner lands `send_text`, the
+production wiring swaps this class for the real notifier and nothing else
+changes.
 """
 from __future__ import annotations
 
@@ -98,6 +103,10 @@ def _load(name: str, path: Path):
 observer = _load("serveros_fleet_v1_milestone_observer", OBSERVER_MODULE)
 m = observer.NOTIFY  # #423's module, loaded once under its canonical name
 batch = _load("serveros_fleet_v1_milestone_batch", BATCH_MODULE)
+#: The stub's capability probe, loaded under the name the runtime imports it by
+#: so it is the same module object the observer's own probe resolves to.
+notifications = _load("serveros_runtime_notifications",
+                      REPO / "runtime" / "notifications.py")
 
 
 def fixture(source: str, name: str) -> dict:
@@ -198,42 +207,103 @@ class ScriptedSource:
         return copy.deepcopy(value)
 
 
-class SeamedNotifier(m.MilestoneNotifier):
-    """The exact patch this PR proposes to #423, written out.
+class SeamedNotifier:
+    """#423's notifier plus the ONE public method this contract needs.
 
     The proposal (README, "the one exact patch") adds ONE public method:
 
         def send_text(self, *, delivery_key, milestone_key, outcome, text, why)
 
-    with the claim / transport-key / receipt body `observe` already uses. Here
-    that body is spelled out so the aggregator can be driven before its owner
-    lands it. It adds no table, no provider and no transport: the only private
-    names it wraps are `_send`, `_now` and `_prior_observation`, which is
-    exactly what the proposal makes public.
+    #423 @ d9b2948a does not have it, so the seam is BLOCKED on its owner and
+    this stub stands in — built from the PUBLIC surface only
+    (`ledger.claim/finish/get`, `transport_key_for`, `Observation`, `provider`,
+    `conversation_ref`, `clock`, `runtime/notifications.capability_of`).
+
+    It is sealed: non-underscore attributes are forwarded to the real notifier
+    (so `observe` is #423's own), and anything starting with `_` is refused.
+    That is what keeps this suite from becoming a second write path while the
+    owner works on the seam.
     """
 
+    def __init__(self, provider, ledger_path, *, conversation_ref,
+                 summarizer=None, clock=None):
+        self.__dict__["_target"] = m.MilestoneNotifier(
+            provider, ledger_path, conversation_ref=conversation_ref,
+            summarizer=summarizer, clock=clock)
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(
+                f"{name!r} is #423's private surface; the batch contract is "
+                f"BLOCKED on a public send_text and may not reach past it")
+        return getattr(self.__dict__["_target"], name)
+
     def send_text(self, *, delivery_key, milestone_key, outcome, text, why):
+        target = self.__dict__["_target"]
         transport = m.transport_key_for(delivery_key)
         intent = json.dumps({"text": text, "transport_key": transport},
                             ensure_ascii=False, sort_keys=True)
-        prior = self.ledger.claim(
+        now = _now_iso(target)
+        prior = target.ledger.claim(
             delivery_key=delivery_key, milestone_key=milestone_key,
-            outcome=outcome, attempted_at=self._now().isoformat(),
-            intent=intent, transport_key=transport)
+            outcome=outcome, attempted_at=now, intent=intent,
+            transport_key=transport)
         if prior is not None:
-            return m._prior_observation(prior, delivery_key)
+            return self._prior(prior, delivery_key)
+        state, remote_id, send_why = self._dispatch(target, text, transport)
+        target.ledger.finish(delivery_key=delivery_key, state=state,
+                             remote_id=remote_id, attempted_at=now,
+                             why=send_why, intent=intent)
+        row = target.ledger.get(delivery_key) or {"state": state,
+                                                  "remote_id": remote_id}
+        if row["state"] == m.DELIVERED and state != m.DELIVERED:
+            send_why = "another observation recorded the delivered receipt"
+        return m.Observation(
+            outcome, row["state"], delivery_key, row["remote_id"], text, None,
+            send_why if state != m.DELIVERED else (why or send_why),
+            row["state"] == m.DELIVERED, transport)
 
-        state, remote_id, send_why = self._send(text, transport)
-        self.ledger.finish(delivery_key=delivery_key, state=state,
-                           remote_id=remote_id,
-                           attempted_at=self._now().isoformat(),
-                           why=send_why, intent=intent)
-        row = self.ledger.get(delivery_key) or {"state": state,
-                                                "remote_id": remote_id}
-        return m.Observation(outcome, row["state"], delivery_key,
-                             row["remote_id"], text, None,
-                             send_why if state != m.DELIVERED else (why or send_why),
-                             row["state"] == m.DELIVERED, transport)
+    def _dispatch(self, target, text, transport):
+        state, reason = notifications.capability_of(target.provider)
+        if state != "SUPPORTED":
+            return (m.UNKNOWN_DELIVERY, None,
+                    f"{state}: {reason or 'transport is not SUPPORTED'}"[:240])
+        try:
+            answer = target.provider.notify(
+                conversation_ref=target.conversation_ref, text=text,
+                idempotency_key=transport)
+        except Exception as exc:
+            return m.UNKNOWN_DELIVERY, None, f"{type(exc).__name__}: {exc}"[:240]
+        remote = answer.get("remote_id") if isinstance(answer, dict) else None
+        if (isinstance(answer, dict) and answer.get("delivered") is True
+                and isinstance(remote, str) and remote.strip()):
+            return m.DELIVERED, remote.strip()[:256], "provider returned a message id"
+        why = ((answer.get("why") if isinstance(answer, dict) else None)
+               or "provider returned no message id")
+        return m.UNKNOWN_DELIVERY, None, str(why)[:240]
+
+    def _prior(self, prior, delivery_key):
+        """What a replay may say: re-expressed from the row, not borrowed."""
+        transport = prior.get("transport_key") or m.legacy_transport_key(
+            prior["delivery_key"])
+        if prior["state"] == m.DELIVERED:
+            return m.Observation(prior["outcome"], m.DUPLICATE, delivery_key,
+                                 prior["remote_id"], None, None,
+                                 "already delivered; a replay does not resend",
+                                 True, transport)
+        return m.Observation(prior["outcome"], m.UNKNOWN_REPLAY, delivery_key,
+                             None, None, None,
+                             "previous delivery is UNKNOWN; a replay does not "
+                             "resend", False, transport)
+
+
+def _now_iso(target) -> str:
+    value = target.clock()
+    if isinstance(value, bool):
+        raise AssertionError("a clock must not return a bool")
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+    return value.isoformat()
 
 
 class Base(unittest.TestCase):
@@ -382,7 +452,7 @@ class ADispatchOfNDispatchedRuns(Base):
 
         _, tick = self.tick(agg, instance, times=2)
 
-        self.assertEqual(tick.verdicts[RUN_A], "PENDING")
+        self.assertEqual(self.verdicts(tick)[RUN_A], "PENDING")
         self.assertFalse(tick.settled)
         self.assertEqual(self.summary_calls(declaration), [])
 
@@ -403,7 +473,7 @@ class APartialSuccess(Base):
         [first, second] = self.tick(agg, instance, times=2)
 
         self.assertTrue(first.settled)
-        self.assertEqual(first.verdicts[RUN_B], "FAILED")
+        self.assertEqual(self.verdicts(first)[RUN_B], "FAILED")
         self.assertEqual(first.counts["VERIFIED"], 2)
         self.assertEqual(first.counts["FAILED"], 1)
         self.assertEqual(len(self.summary_calls(declaration)), 1)
@@ -486,7 +556,7 @@ class AnUnknownMember(Base):
 
         [tick] = self.tick(agg, self.observer_for(declaration, source))
 
-        self.assertEqual(tick.verdicts[RUN_A], "UNKNOWN")
+        self.assertEqual(self.verdicts(tick)[RUN_A], "UNKNOWN")
         self.assertTrue(tick.settled)
         self.assertEqual(tick.counts["VERIFIED"], 2)
         # #423 already delivered the UNKNOWN as its own milestone message, so
@@ -512,7 +582,7 @@ class ARefusedRead(Base):
         instance = self.observer_for(declaration, source)
 
         first = agg.absorb(instance.run_once())
-        self.assertEqual(first.verdicts[RUN_A], "PENDING")
+        self.assertEqual(self.verdicts(first)[RUN_A], "PENDING")
         self.assertFalse(first.settled)
         self.assertEqual(self.summary_calls(declaration), [])
         self.assertEqual(first.alerts, ())
@@ -522,7 +592,7 @@ class ARefusedRead(Base):
         self.clock.advance(30.0)
         second = agg.absorb(instance.run_once())
         self.assertTrue(second.settled)
-        self.assertEqual(second.verdicts[RUN_A], "VERIFIED")
+        self.assertEqual(self.verdicts(second)[RUN_A], "VERIFIED")
         self.assertEqual(len(self.summary_calls(declaration)), 1)
 
     def test_a_backoff_row_establishes_nothing_and_alerts_nothing(self):
@@ -549,7 +619,7 @@ class ARefusedRead(Base):
 
         self.assertEqual(row["state"], observer.SKIPPED_BACKOFF)
         self.assertEqual(row["outcome"], m.UNKNOWN)  # the trap, pinned
-        self.assertEqual(tick.verdicts[RUN_A], "PENDING")
+        self.assertEqual(self.verdicts(tick)[RUN_A], "PENDING")
         self.assertFalse(tick.settled)
         self.assertEqual(tick.alerts, ())
         self.assertEqual(self.summary_calls(declaration), [])
@@ -641,7 +711,7 @@ class ACrossBootCollision(Base):
 
         [tick] = self.tick(agg, self.observer_for(declaration, source))
 
-        self.assertEqual(tick.verdicts[RUN_A], "UNKNOWN")
+        self.assertEqual(self.verdicts(tick)[RUN_A], "UNKNOWN")
         self.assertEqual(tick.counts["VERIFIED"], 2)
         self.assertEqual(len(self.alert_calls(declaration, f"cloudcli:{RUN_A}",
                                               "UNKNOWN")), 1)
@@ -746,9 +816,9 @@ class TheBoundsAreReal(Base):
         first, second = self.tick(agg, instance, times=2)
 
         self.assertTrue(first.settled)
-        self.assertEqual(first.verdicts[RUN_A], "VERIFIED")
+        self.assertEqual(self.verdicts(first)[RUN_A], "VERIFIED")
         self.assertTrue(second.settled)
-        self.assertEqual(second.verdicts[RUN_A], "VERIFIED")
+        self.assertEqual(self.verdicts(second)[RUN_A], "VERIFIED")
         self.assertEqual(second.state, "REPLAY")
         self.assertEqual(len(self.summary_calls(declaration)), 1)
 
@@ -790,13 +860,13 @@ class TheBoundsAreReal(Base):
 
         first = agg.absorb(instance.run_once())
         self.assertFalse(first.settled)
-        self.assertEqual(first.verdicts[RUN_A], "PENDING")
+        self.assertEqual(self.verdicts(first)[RUN_A], "PENDING")
 
         self.clock.advance(3601.0)
         second = agg.absorb(instance.run_once())
 
         self.assertTrue(second.settled)
-        self.assertEqual(second.verdicts[RUN_A], "OFFLINE")
+        self.assertEqual(self.verdicts(second)[RUN_A], "OFFLINE")
         self.assertEqual(len(self.alert_calls(declaration, f"cloudcli:{RUN_A}",
                                               "OFFLINE")), 1)
         self.assertEqual(len(self.summary_calls(declaration)), 1)
@@ -889,7 +959,7 @@ class ARealObserverReport(Base):
                                     "outcome", "delivery_key", "delivered",
                                     "code", "why", "message"})
         tick = self.aggregator(declaration).absorb(report)
-        self.assertEqual(tick.verdicts[RUN_A], "VERIFIED")
+        self.assertEqual(self.verdicts(tick)[RUN_A], "VERIFIED")
 
     def test_rows_for_refs_outside_the_batch_are_ignored(self):
         source = ScriptedSource({
@@ -907,7 +977,7 @@ class ARealObserverReport(Base):
 
         tick = self.aggregator(mine).absorb(report)
 
-        self.assertEqual(list(tick.verdicts), [RUN_A])
+        self.assertEqual(list(tick.verdicts), [f"cloudcli:{RUN_A}"])
         self.assertTrue(tick.settled)
 
 
