@@ -131,7 +131,19 @@ tests/test_fleet_next_agent_monitor_activation_runtime_tick.py ...   [100%]
 
 ## 7. QA PR 的 CI
 
-见本 PR checks；QA 套件所在 shard 单独报告。若 hosted CI 因组合后的 RC manifest（#500 ledger 仍按 80220a4 记录，而本分支加入 #503/#504）或既有 Lark 失败而红，本文件保留红色，不把 QA 的 43 pass 说成全仓通过。
+run `40746400630` / `40746400678`（head `3340a1e`）：
+
+| job | 结果 |
+|---|---|
+| Claude Code plugin matches its source | pass, 21s |
+| Suite shard 1/4 | **pass**, 1m37s — 15 baseline-listed failures, 3164 passed, 23 skipped（其他测试）, **0 xfailed**；含本 QA 文件 |
+| Suite shard 2/4 | **fail**, 2m55s — 12 failing, **2 new**：`tests/test_fleet_next_rc_wave16_ledger.py` 的 `test_every_recorded_file_holds_the_authors_blob` 与 `test_the_wave16_delta_is_exactly_the_recorded_files` |
+| Suite shard 3/4 | **pass**, 4m49s — #503 的 3 个 runtime-tick 测试在此执行并通过 |
+| Suite shard 4/4 | **pass**, 6m51s |
+| HOSTED_DAEMON complete daemon and native facts | pass, 53s |
+| native-contract | pass, 2m15s |
+
+**7/8 jobs pass；QA 套件所在 shard1 pass。** 唯一红的 shard2 是组合产物：#500 的 RC manifest 仍按 `80220a4` 记录 blob/增量，而本 QA 分支合法加入 #503/#504，故该 manifest 的两条检查报 new。Patch owner：**下一个 RC Owner** 更新 manifest；本 QA 不修改 #500 的测试或 ledger。本文件不把 shard1 的 43 pass 说成全仓通过。
 
 ## 8. 分层与边界
 
