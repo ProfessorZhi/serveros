@@ -379,7 +379,7 @@ V2 Draft that a V1 cut would have to justify on its own.
 | --- | --- |
 | CODE | composed tree `4e31e4a2` on `4847eb5a`; three stacks extracted into a throwaway worktree with the file sets above; every dependency in §5 named by a failing test, then re-run |
 | UNIT | gates 22 passed (13 + 9); batch/plugin family 110 passed / 3 failed; hub 19 passed with an empty symmetric difference against the clean RC; receipt 64 passed matching #468's own tree; node 12 passed (15 after the Windows-only test fixes) |
-| HOSTED_CI | this branch's run `40646194204` — §7: **4 → 2** baseline-external ids, zero regressions by bidirectional id diff, `+39` passed fully attributed. Run colour is `failure` because the two remaining ids are owned elsewhere. |
+| HOSTED_CI | this branch's runs `40646194204` (`eea1ee5`) and `40647887120` (`d037588`, prose only) — §7: **4 → 2** baseline-external ids, zero regressions by bidirectional id diff, `+39` passed fully attributed, and the same two ids in both runs. Run colour is `failure` because the two remaining ids are owned elsewhere. |
 | REAL_DEVICE | **not measured.** No device was contacted; the L2 artifacts were never installed on hardware. |
 | CLIENT_E2E | **not measured.** No browser, no plugin update, no IM delivery. |
 | PRODUCTION | **not measured, and out of scope for this lane.** |
@@ -438,8 +438,11 @@ trees: #469 **61** distinct, wave 7 **57**.
 * only on #469: 4 — the two repaired seam bridge tests, plus
   `test_codex_app_server_provider.py::test_a_dead_server_is_a_stopped_provider_and_not_a_closed_session`
   and `test_fleet_core_lite_transport.py::TheRealConnectorRefusesOnItsOwnTerms::test_a_badly_signed_request_does_not_reach_the_snapshot`,
-  the two shard-4 `FLAKY (passed on retry)` ids from #469's run. Both are green
-  outright here; wave 7's gate reports `0 flaky` in all four shards.
+  the two shard-4 `FLAKY (passed on retry)` ids from #469's run. They passed
+  outright in `40646194204` (`0 flaky` in all four shards) and failed once, then
+  passed on retry, in `40647887120` (`24 failing, 0 new, **2 flaky**`, shard 4).
+  Same ids as #469's flakes, on a tree that changes none of their files: they are
+  **flaky, not fixed**, and the gate classifies them as such in both runs.
 
 ### 7.3 Positive control: the new tests really ran
 
@@ -458,8 +461,29 @@ and the Δ decomposes exactly, each term measured rather than assumed:
 | `tests/test_fleet_v1_milestone_batch_e2e_integration.py` (#470, new file) | +26 | `pytest --collect-only` on both worktrees |
 | `tests/test_fleet_v1_rc_wave7_ledger.py` (this lane) | +9 | same |
 | the two repaired seam ids | +2 | id diff §7.2 |
-| #469's two flaky ids, now passing outright | +2 | gate line `0 flaky` |
+| #469's two flaky ids, passing outright in *this* run | +2 | gate line `0 flaky` |
 | **sum** | **+39** | matches the observed Δ |
+
+The last term is the reason the Δ is a positive control and not a regression
+signal: in run `40647887120` the same two ids failed once and passed on retry,
+so that run's Δ is `+37`. The **id** diff in §7.2, not the Δ, is what answers
+"did anything break" — the Δ only answers "did the new files run".
+
+### 7.4 The branch tip repeats the same two ids
+
+The run above is on `eea1ee5`, the lane's last content commit. Run
+`40647887120` is on the tip `d037588`, which adds only this section's prose:
+
+| shard | summary | gate |
+| --- | --- | --- |
+| 1/4 | 16 failed, 2974 passed, 3341 subtests | `16 failing, 1 new` — registration id |
+| 2/4 | 13 failed, 3408 passed, 2812 subtests | `11 failing, 1 new` — clean-package id |
+| 3/4 | 10 failed, 3338 passed, 2253 subtests | `10 failing, 0 new` |
+| 4/4 | 24 failed, 3012 passed, 1125 subtests | `24 failing, 0 new, 2 flaky` |
+
+Two runs, same tree modulo prose, **the same two ids**. That is the stability
+reading: the block is not noise, and neither run has a baseline-external id this
+lane introduced.
 
 The other three workflows did **not** run for this PR and are NOT_RUN, not green:
 `serveros-native-linux-contract`, `serveros-native-windows-contract` and
