@@ -133,6 +133,9 @@ The dry-run preflight against that ZIP and a synthetic previous record returned
 ## 7. Ownership / conflicts
 
 - New files only under `integrations/chatgpt-fleet-next/`,
+  `integrations/fleet-app-overlay/`, `docs/`, `tests/`. The 8 V1 Operator Skills
+  remain #410/#453-owned and were not edited; packing this playbook into the
+  existing V1 ChatGPT plugin is **BLOCKED_OWNER_HANDOFF**.
   `integrations/fleet-app-overlay/`, `docs/`, `tests/`.
 - No edits to `fleet_mcp/**`, `runtime/**`, `native/**`, #410/#453 existing
   files, #423 milestone-notify, or #437 device-ability-local.
