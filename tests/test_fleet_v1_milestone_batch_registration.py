@@ -469,25 +469,122 @@ class _Seam:
 # --------------------------------------------------------------------------- #
 CONTRACT_PATH = ROOT / "integrations" / "chatgpt-fleet-next" / "batch_contract.py"
 
+#: The only two states #456 accepts for a session it is about to dispatch into.
+IDLE = "MANAGED_IDLE"
+
+
+def live_sessions(*, state: str = IDLE) -> list:
+    """One session per task in `plan()`, carrying the identity #456 compares.
+
+    A plan that names a `session_ref` is a plan that intends to dispatch into
+    *that* session, so the snapshot has to answer with the same device, the
+    same runtime and the same project. This is a fixture, not a concession:
+    `batch_contract._check_task` refuses any of those three disagreeing, and
+    the refusals below prove it still does.
+    """
+    return [
+        {"session_ref": SESSION_A, "device_ref": DEV_A, "runtime": "claude",
+         "project_id": "serveros", "state": state},
+        {"session_ref": SESSION_B, "device_ref": DEV_B, "runtime": "codex",
+         "project_id": "serveros", "state": state},
+        {"session_ref": SESSION_C, "device_ref": DEV_C, "runtime": "claude",
+         "project_id": "serveros", "state": state},
+    ]
+
+
+def live_snapshot(*, sessions=None, grants=None, state: str = IDLE) -> dict:
+    """A live Fleet snapshot that is *about* this plan, not merely permissive.
+
+    Devices carry the roles and runtimes the tasks name, grants are declared
+    per device and runtime, and the session list is the one the plan points at.
+    The three maps are read by three different branches of #456's validator, so
+    all three are present rather than left to default to empty.
+    """
+    return {
+        "devices": {DEV_A: {"roles": ["dev"], "runtimes": ["claude"]},
+                    DEV_B: {"roles": ["dev"], "runtimes": ["codex"]},
+                    DEV_C: {"roles": ["dev"], "runtimes": ["claude"]}},
+        "create_allowed": {DEV_A: True, DEV_B: True, DEV_C: True},
+        "grants": (grants if grants is not None else
+                   {DEV_A: {"claude": ["send"]}, DEV_B: {"codex": ["send"]},
+                    DEV_C: {"claude": ["send"]}}),
+        "sessions": (live_sessions(state=state) if sessions is None
+                     else sessions),
+    }
+
+
+def plan_needing(grant: str) -> dict:
+    """The same plan, with every task requiring one grant it must be given."""
+    value = plan(tasks=3)
+    for row in value["tasks"]:
+        row["required_grant"] = grant
+    return value
+
 
 class TheLiveCommanderContractIsConsumedAsIs(Base):
     @unittest.skipUnless(CONTRACT_PATH.exists(),
                          "#456's batch_contract.py is not on this base; the "
-                         "stand-in above is the contract, and this test is "
+                         "stand-in above is the contract, and these tests are "
                          "NOT_RUN rather than claimed")
+    def live(self):
+        module = _load("serveros_chatgpt_batch_contract", CONTRACT_PATH)
+        self.assertTrue(hasattr(module, "validate_batch"))
+        return module
+
+    def assertRefused(self, *, snapshot, plan_value=None, code: str):
+        """#456's own refusal must reach the caller, and nothing may be filed."""
+        with self.assertRaises(registration.RegistrationRefused) as caught:
+            self.register(contract=self.live(), plan_value=plan_value or plan(),
+                          ack_rows=acks(), path=self.path(), snapshot=snapshot)
+        self.assertEqual(caught.exception.code, "COMMANDER_REFUSED")
+        self.assertIn(code, caught.exception.why)
+        self.assertFalse(self.path().exists(),
+                         "a plan the commander blocked must leave no file")
+        return caught.exception
+
     def test_a_plan_the_live_contract_accepts_becomes_a_registration(self):
-        live = _load("serveros_chatgpt_batch_contract", CONTRACT_PATH)
-        self.assertTrue(hasattr(live, "validate_batch"))
-        snapshot = {"devices": {DEV_A: {"roles": ["dev"], "runtimes": ["claude"]},
-                                DEV_B: {"roles": ["dev"], "runtimes": ["codex"]},
-                                DEV_C: {"roles": ["dev"], "runtimes": ["claude"]}},
-                    "create_allowed": {DEV_A: True, DEV_B: True, DEV_C: True},
-                    "sessions": []}
-        loaded, outcome = self.register(contract=live, plan_value=plan(tasks=3),
+        loaded, outcome = self.register(contract=self.live(),
+                                        plan_value=plan(tasks=3),
                                         ack_rows=acks(), path=self.path(),
-                                        snapshot=snapshot)
+                                        snapshot=live_snapshot())
         self.assertEqual(outcome, registration.REGISTERED)
         self.assertEqual(loaded.batch_id, BATCH_ID)
+
+    # -- the fail-closed half: the fixture above must not be why it passes --- #
+    def test_a_session_the_live_list_does_not_have_is_refused(self):
+        self.assertRefused(snapshot=live_snapshot(sessions=[]),
+                           code="SESSION_NOT_FOUND")
+
+    def test_a_session_on_another_project_is_refused(self):
+        rows = live_sessions()
+        rows[1]["project_id"] = "some-other-project"
+        self.assertRefused(snapshot=live_snapshot(sessions=rows),
+                           code="SESSION_PROJECT_MISMATCH")
+
+    def test_a_session_on_another_device_is_refused(self):
+        rows = live_sessions()
+        rows[2]["device_ref"] = DEV_A
+        self.assertRefused(snapshot=live_snapshot(sessions=rows),
+                           code="SESSION_PROJECT_MISMATCH")
+
+    def test_a_session_that_is_busy_is_refused(self):
+        rows = live_sessions()
+        rows[0]["state"] = "RUNNING"
+        self.assertRefused(snapshot=live_snapshot(sessions=rows),
+                           code="SESSION_BUSY")
+
+    def test_a_task_needing_a_grant_the_device_lacks_is_refused(self):
+        self.assertRefused(snapshot=live_snapshot(grants={}),
+                           plan_value=plan_needing("send"), code="GRANT_DENIED")
+
+    def test_the_registration_is_filed_only_after_the_live_verdict(self):
+        """The order, not just the outcome: a refused plan writes no file even
+        when every other input is the one that would have been accepted."""
+        path = self.path()
+        self.assertFalse(path.exists())
+        self.register(contract=self.live(), plan_value=plan(tasks=3),
+                      ack_rows=acks(), path=path, snapshot=live_snapshot())
+        self.assertTrue(path.exists())
 
 
 if __name__ == "__main__":
