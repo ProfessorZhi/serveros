@@ -47,7 +47,10 @@ removed the only thing that makes an atomic swap worth having.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import os
 import re
@@ -195,9 +198,10 @@ ARTIFACT_MANIFEST = "ARTIFACT.json"
 ARTIFACT_MANIFEST_SCHEMA = "serveros/artifact.v1"
 
 # Artifact kinds. A kind is a VERIFIER, and the verifier is the whole difference
-# between the two faces of this product: a node runtime is a daemon with a unit
-# and a CLI shim, a plugin is a payload a different Claude Code loads. They share
-# the lifecycle — candidate, verify, `revisions/<revision>`, `current`,
+# between the faces of this product: a node runtime is a daemon with a unit and a
+# CLI shim, a plugin is a payload a different Claude Code loads, and a native
+# runtime is a set of compiled binaries with no installed surface at all. They
+# share the lifecycle — candidate, verify, `revisions/<revision>`, `current`,
 # `previous`, receipt, rollback — and they differ in what "verified" means and in
 # whether there is anything outside the revision directory to install.
 #
@@ -205,7 +209,23 @@ ARTIFACT_MANIFEST_SCHEMA = "serveros/artifact.v1"
 # name rather than falling through to whichever branch happens to be last.
 NODE_RUNTIME = "node-runtime"
 PLUGIN = "plugin"
-ARTIFACT_KINDS = (NODE_RUNTIME, PLUGIN)
+#: The per-device C++ runtime (`serverosd/`), packaged by that directory's own
+#: `make dist` rather than by `build.py`. It is a
+#: separate kind rather than a face of `node-runtime` because the two have
+#: disjoint payloads: a node runtime is Python plus a unit plus a CLI shim, and
+#: this ships four ELF binaries and one package manifest. Releasing it as
+#: `node-runtime` would make the verifier demand `runtime/daemon.py` from a
+#: payload that has never contained one.
+NATIVE_RUNTIME = "native-runtime"
+ARTIFACT_KINDS = (NODE_RUNTIME, PLUGIN, NATIVE_RUNTIME)
+
+#: The native package's own manifest and its one actuator. Named here because
+#: the release path needs them as REQUIRED MEMBERS; the authority on what they
+#: contain is `serverosd/verify_native_runtime.py`, and the verifier below
+#: delegates to it rather than restating it.
+PACKAGE_MANIFEST = "PACKAGE.json"
+NATIVE_PACKAGE_SCHEMA = "serveros/native-runtime-package.v1"
+NATIVE_ACTUATOR = "bin/serveros-native-core"
 
 # What each kind requires of a revision, as data rather than as an if-chain, so
 # that `status` can answer "which of these is missing" for a kind it is only
@@ -225,6 +245,12 @@ REQUIRED_MEMBERS = {
                    "runtime/cli.py", f"runtime/{UNIT_NAME}",
                    "workengine/schema.sql"),
     PLUGIN: (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"),
+    # Two members, and both are load-bearing for the same reason: the manifest
+    # is what the verifier checks the payload AGAINST, and the actuator is the
+    # one binary that may ask the service manager for anything. A payload with
+    # the manifest and no actuator is a claim with nothing behind it; one with
+    # the actuator and no manifest is a binary nobody can identify.
+    NATIVE_RUNTIME: (PACKAGE_MANIFEST, NATIVE_ACTUATOR),
 }
 
 
@@ -625,6 +651,8 @@ def verify_revision(rev_dir: Path, state_dir: Path, *,
             return {"ok": False, "problems": problems, "tree_hash": None}
     if kind == PLUGIN:
         return verify_plugin(rev_dir)
+    if kind == NATIVE_RUNTIME:
+        return verify_native_runtime(rev_dir)
     return verify_node_runtime(rev_dir, state_dir)
 
 
@@ -740,6 +768,168 @@ def verify_plugin(rev_dir: Path) -> dict:
         actual = {str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*") if p.is_file()}
         for rel in sorted(actual - expected):
             problems.append(f"file present that the build did not produce: {rel}")
+
+    return {"ok": not problems, "problems": problems,
+            "tree_hash": fingerprint(rev_dir) if not problems else None}
+
+
+def _native_package_verifier():
+    """`serverosd/verify_native_runtime.py`, loaded from this checkout.
+
+    NOT a second copy of it. That module already refuses a digest mismatch, a
+    size mismatch, a member that is not 0755, a symlinked file or `bin/`, a
+    duplicate row, a path outside `bin/`, a second actuator, a promoted
+    actuator, a renamed member and a missing reserved path — checked by the
+    tests that ship with it. A release-time re-implementation would be a second
+    opinion free to disagree with the one the build ran, which is the failure
+    this repository keeps finding under other names.
+
+    Loaded by path rather than imported, because `serverosd/` is a build-side
+    directory and not a package on `sys.path`. `release.py` already depends on
+    this checkout for `runtime/paths.py`, so the dependency is the same shape as
+    the one that was already there.
+    """
+    path = Path(__file__).resolve().parents[1] / "serverosd" / "verify_native_runtime.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location(
+        "_serveros_native_package_verifier", path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    # Registered BEFORE it runs, and not decoratively. `module_from_spec` does
+    # not insert the module into `sys.modules`, and the verifier defines a
+    # `@dataclass` — which resolves its own module through `sys.modules` and
+    # raises `AttributeError: 'NoneType' object has no attribute '__dict__'`
+    # when the entry is absent. Caught by the first promote this path ran.
+    sys.modules[spec.name] = module
+    # Loading a source module writes a `.pyc` beside it unless told not to. That
+    # is a write outside the runtime root, performed by the release tool, and
+    # this file's own rule is that a native release touches nothing outside its
+    # revision directory. Benign individually; not something to leave true by
+    # accident.
+    previous = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous
+    return module
+
+
+def verify_native_runtime(rev_dir: Path) -> dict:
+    """Check a staged native runtime revision before anything points at it.
+
+    Two questions, and the first one is not asked here.
+
+    1. *Is every member the bytes the package says it is?* — answered by
+       `serverosd/verify_native_runtime.py`, which is the authority the build
+       already ran. This function does not restate a digest, a mode or a role.
+
+    2. *Is the revision the package and nothing else?* — asked here, from the
+       package's own member list, the same rule `verify_plugin` applies to a
+       plugin. A staging copy of a build directory carries `obj/` and `tests/`
+       if the operator pointed at the build root instead of the release payload;
+       that is a revision whose contents nobody declared, and the revision is
+       immutable once staged, so it is refused before rather than deleted after.
+
+    There is deliberately no third question. A native runtime has no unit, no
+    CLI shim and no state root: nothing outside the revision directory is
+    installed, so nothing outside it can be checked — and `cmd_promote` never
+    renders a unit or calls `daemon-reload` for this kind.
+
+    One asymmetry worth stating rather than discovering. `stage()` copies with
+    `copytree(..., symlinks=False)`, so a symlink in the ARTIFACT becomes a
+    regular file before this function ever runs. A `--dry-run` therefore refuses
+    a linked member that a real promote accepts — with the same bytes, because
+    the link was dereferenced. The promoted content is the same either way, but
+    the two invocations do not agree, and that is `stage()`'s behaviour for
+    every kind rather than something this clause introduces.
+    """
+    problems: list[str] = []
+
+    manifest_path = rev_dir / PACKAGE_MANIFEST
+    package = None
+    try:
+        # `encoding="utf-8"` explicitly, because the default is the locale's and
+        # a payload built on one host must read the same on another. `ValueError`
+        # rather than `json.JSONDecodeError`, because undecodable bytes raise
+        # `UnicodeDecodeError` — a `ValueError` that is NOT a `JSONDecodeError`,
+        # so the narrower except would let it escape as a traceback instead of a
+        # refusal. Both were reachable: a `PACKAGE.json` containing `[]` or a
+        # stray byte killed `promote` with a stack trace.
+        package = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        problems.append(f"{PACKAGE_MANIFEST} is not readable JSON: {exc}")
+    if package is not None and not isinstance(package, dict):
+        # Refused here rather than handed to the delegate: the delegate has its
+        # own "is an object" check, but this function reads `schema` before it
+        # gets there, and a verifier that crashes on a malformed input reports
+        # nothing about it.
+        problems.append(
+            f"{PACKAGE_MANIFEST} is a JSON {type(package).__name__}, not an object")
+        package = None
+
+    if package is not None:
+        declared_schema = package.get("schema")
+        if declared_schema != NATIVE_PACKAGE_SCHEMA:
+            problems.append(
+                f"{PACKAGE_MANIFEST} declares schema {declared_schema!r}, expected "
+                f"{NATIVE_PACKAGE_SCHEMA!r}; a differently-shaped package manifest "
+                f"would be read as if its fields meant the same thing"
+            )
+
+        verifier = _native_package_verifier()
+        if verifier is None:
+            # Not a skip. A release path that cannot run the package's verifier
+            # has no finding to report, and "no findings" is not a pass.
+            problems.append(
+                "serverosd/verify_native_runtime.py is missing from this checkout; "
+                "the package cannot be verified and an unverified package is not "
+                "a releasable one"
+            )
+        else:
+            # The package verifier prints one line per check because it is
+            # written to be read by a person at a terminal. The release path
+            # reports findings, not a transcript.
+            with contextlib.redirect_stdout(io.StringIO()):
+                report = verifier.verify(rev_dir, repo=None)
+            problems.extend(report.failures)
+
+        members = package.get("members")
+        if not isinstance(members, list):
+            problems.append(
+                f"{PACKAGE_MANIFEST} records no member list; files the package did "
+                f"not declare cannot be told apart from ones it did"
+            )
+        else:
+            # `ARTIFACT.json` is what told this path which verifier to run, and
+            # `RELEASE.json` is written by the promotion that follows; both are
+            # files this tool reads rather than files the package declared.
+            declared = {PACKAGE_MANIFEST, ARTIFACT_MANIFEST, TREE_MANIFEST}
+            for row in members:
+                if isinstance(row, dict) and isinstance(row.get("path"), str):
+                    declared.add(row["path"])
+            # Directories a declared path lives under are implied by it; any
+            # other entry present is not declared. A FILE-only sweep cannot see
+            # an empty directory, and `stage()` copies one — `copytree` keeps
+            # empty directories — straight into a revision that cannot be
+            # edited afterwards.
+            implied_dirs: set[str] = set()
+            for rel in declared:
+                parts = rel.split("/")[:-1]
+                for depth in range(1, len(parts) + 1):
+                    implied_dirs.add("/".join(parts[:depth]))
+            files: set[str] = set()
+            directories: set[str] = set()
+            for entry in rev_dir.rglob("*"):
+                relative = str(entry.relative_to(rev_dir))
+                (directories if entry.is_dir() else files).add(relative)
+            for rel in sorted(files - declared):
+                problems.append(f"file present that the package did not declare: {rel}")
+            for rel in sorted(directories - implied_dirs):
+                problems.append(
+                    f"directory present that the package did not declare: {rel}")
 
     return {"ok": not problems, "problems": problems,
             "tree_hash": fingerprint(rev_dir) if not problems else None}
@@ -1017,14 +1207,21 @@ def cmd_status(args) -> int:
     print(f"previous          {prev or '(none)'}")
     print(f"kind              {kind or '(unrecorded)'} ({basis})")
 
-    if kind == PLUGIN:
-        # The plugin face has nothing installed outside the revision directory:
-        # the installed Claude Code points at `current` through its own plugin
-        # registry, and that registry is not this tool's to write. So the
-        # question "do the entry points agree" has one entry point here, and the
-        # answer is whether `current` resolves at all.
-        print("unit installed    n/a (plugin face)")
-        print("cli shim          n/a (plugin face)")
+    if kind in (PLUGIN, NATIVE_RUNTIME):
+        # Neither of these faces installs anything outside the revision
+        # directory, and for the same reason: a plugin is loaded by a Claude
+        # Code from a registry that is not this tool's to write, and a native
+        # runtime is four binaries that this tool stages and points `current` at
+        # — it renders no unit, writes no shim and asks systemd for nothing. So
+        # the question "do the entry points agree" has one entry point here, and
+        # the answer is whether `current` resolves at all.
+        #
+        # Reporting DIVERGENT instead — which is what the node branch below
+        # would do, because there is no unit and no `bin/serverosd` to compare —
+        # would call a correct installation a fault.
+        face = "plugin" if kind == PLUGIN else "native runtime"
+        print(f"unit installed    n/a ({face} face)")
+        print(f"cli shim          n/a ({face} face)")
         ok = cur is not None and (root / "current").is_dir()
         print(f"agreement         {'AGREE' if ok else 'DIVERGENT'}")
         return 0 if ok else 1

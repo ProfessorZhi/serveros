@@ -32,6 +32,20 @@ from pathlib import Path
 
 PACKAGE_SCHEMA = "serveros/native-runtime-package.v1"
 PACKAGE_NAME = "serverosd"
+PACKAGE_MANIFEST = "PACKAGE.json"
+
+#: The artifact-level declaration, written beside `PACKAGE.json`.
+#:
+#: `scripts/release.py` chooses a verifier by KIND, and it reads the kind from
+#: this file. Without it a native payload would only be identifiable by the
+#: structural fallback — "which verifier's required members does this directory
+#: happen to satisfy" — and that fallback is documented as the path for
+#: revisions staged before kinds were recorded, not as the normal one. A build
+#: that cannot say what it produced is the thing that fallback exists to
+#: tolerate, not the thing to aim for.
+ARTIFACT_MANIFEST = "ARTIFACT.json"
+ARTIFACT_MANIFEST_SCHEMA = "serveros/artifact.v1"
+NATIVE_RUNTIME_KIND = "native-runtime"
 
 #: name -> (role, component, defining translation unit).
 #:
@@ -194,6 +208,24 @@ def build_manifest(out: Path, repo: Path, commit: str, dirty: str,
     }
 
 
+def artifact_declaration(package: dict) -> dict:
+    """The `ARTIFACT.json` that tells `release.py` which verifier to run.
+
+    One member list, the package's own plus the two files this writer emits —
+    the same convention `scripts/build.py` uses for the other kinds, where the
+    build records every file it produced including its own manifest.
+    """
+    return {
+        "schema": ARTIFACT_MANIFEST_SCHEMA,
+        "composition": "serverosd",
+        "name": package["name"],
+        "version": package["version"],
+        "kinds": [NATIVE_RUNTIME_KIND],
+        "members": sorted([f"bin/{name}" for name in MEMBERS]
+                          + [ARTIFACT_MANIFEST, PACKAGE_MANIFEST]),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", required=True, type=Path)
@@ -212,10 +244,17 @@ def main(argv: list[str] | None = None) -> int:
                               args.commit.strip(), args.dirty.strip(),
                               args.cxx.strip(), args.cxx_version.strip(),
                               args.cxxflags.strip())
-    destination = args.out.expanduser().resolve() / "PACKAGE.json"
+    out = args.out.expanduser().resolve()
+    destination = out / PACKAGE_MANIFEST
     destination.write_text(json.dumps(manifest, indent=2, sort_keys=True,
                                       ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"wrote {destination}")
+
+    declaration = out / ARTIFACT_MANIFEST
+    declaration.write_text(
+        json.dumps(artifact_declaration(manifest), indent=2, sort_keys=True,
+                   ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"wrote {declaration}")
     return 0
 
 
