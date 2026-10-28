@@ -37,6 +37,8 @@ import ssl
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from .disclosure import remote_summary
@@ -89,48 +91,126 @@ REMOTE_REFUSAL_CODES = {
 # and never relayed. The whitelist is closed: a key that is not named here does
 # not cross, and a value of the wrong type is withheld rather than coerced.
 REFUSAL_REASONS = frozenset({"never_issued", "expired"})
-_REFUSAL_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
-_REFUSAL_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-_REFUSAL_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
+# `\Z`, not `$`: `$` also matches immediately BEFORE a trailing newline, so a
+# value ending in "\n" would be accepted and a caller that printed the refusal
+# would get a second, attacker-chosen line. A machine field must occupy the
+# whole string or be withheld.
+_REFUSAL_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}\Z")
+_REFUSAL_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+_REFUSAL_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}\Z")
 _MAX_SUPPORTED = 64
 
 
-def refusal_projection(envelope: Any) -> dict[str, Any]:
-    """The machine half of a device refusal, strictly whitelisted.
+def _scalar(mapping: Any, key: str) -> str | int | float | bool | None:
+    """Read ONE scalar from a remote mapping. Never returns a container.
 
-    Returns only what a caller can branch on, and only when the value is in the
-    shape that field is defined to have. An unknown `reason` is reported as
-    `reason_known: false` rather than echoed — that says "there was a reason and
-    it is not one this surface can name", which is a fact, without relaying a
-    string the far end chose.
+    The return type is the rule, not a convention: a caller cannot slice,
+    interpolate or forward a value it never receives. A remote body, stack or
+    message therefore has no expression here that could carry it into an answer,
+    an exception, or a log line — there is simply no variable holding one.
     """
-    if not isinstance(envelope, dict):
-        return {}
-    out: dict[str, Any] = {}
-    code = envelope.get("code")
-    if isinstance(code, str) and _REFUSAL_CODE.match(code):
-        out["code"] = code
-    if isinstance(envelope.get("retryable"), bool):
-        out["retryable"] = envelope["retryable"]
-    raw = envelope.get("details")
-    if isinstance(raw, dict):
+    if not isinstance(mapping, Mapping):
+        return None
+    value = mapping.get(key)
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    return None
+
+
+def _scalar_list(mapping: Any, key: str, limit: int) -> tuple[str, ...]:
+    """Rebuild a list of validated tokens; the remote container is discarded.
+
+    Iterates rather than slices, and returns a NEW tuple, so the only thing that
+    survives is the validated elements. A list longer than `limit` is refused
+    whole rather than truncated: a truncated allowlist is a different answer.
+    """
+    if not isinstance(mapping, Mapping):
+        return ()
+    items = mapping.get(key)
+    if not isinstance(items, (list, tuple)):
+        return ()
+    out: list[str] = []
+    for item in items:
+        if len(out) >= limit:
+            return ()
+        if not isinstance(item, str) or not _REFUSAL_TOKEN.match(item):
+            return ()
+        out.append(item)
+    return tuple(out)
+
+
+@dataclass(frozen=True)
+class RefusalProjection:
+    """What a device refusal is allowed to contribute to an answer.
+
+    An immutable record of validated scalars. It is built from the envelope and
+    the envelope is then dropped; nothing downstream can reach the remote object
+    again through this value.
+    """
+
+    code: str | None = None
+    retryable: bool | None = None
+    reason: str | None = None
+    reason_present: bool = False
+    boot_id: str | None = None
+    supported: tuple[str, ...] = ()
+
+    def as_extra(self) -> dict[str, Any]:
+        """The refusal's `extra` mapping — whitelisted names only."""
+        out: dict[str, Any] = {}
+        if self.code is not None:
+            # `code` is this surface's own exception attribute; the device's word
+            # travels beside it so a translated refusal does not lose it.
+            out["device_code"] = self.code
+        if self.retryable is not None:
+            out["retryable"] = self.retryable
         details: dict[str, Any] = {}
-        if "reason" in raw:
-            reason = raw["reason"]
-            if isinstance(reason, str) and reason in REFUSAL_REASONS:
-                details["reason"] = reason
-            else:
-                details["reason_known"] = False
-        boot = raw.get("bootId")
-        if isinstance(boot, str) and _REFUSAL_IDENTIFIER.match(boot):
-            details["bootId"] = boot
-        supported = raw.get("supported")
-        if (isinstance(supported, list) and 0 < len(supported) <= _MAX_SUPPORTED
-                and all(isinstance(x, str) and _REFUSAL_TOKEN.match(x) for x in supported)):
-            details["supported"] = list(supported)
+        if self.reason is not None:
+            details["reason"] = self.reason
+        elif self.reason_present:
+            details["reason_known"] = False
+        if self.boot_id is not None:
+            details["bootId"] = self.boot_id
+        if self.supported:
+            details["supported"] = list(self.supported)
         if details:
             out["details"] = details
-    return out
+        return out
+
+    @property
+    def relayed(self) -> tuple[str, ...]:
+        return tuple(sorted(self.as_extra()))
+
+
+def refusal_projection(envelope: Any) -> RefusalProjection:
+    """The machine half of a device refusal, strictly whitelisted.
+
+    Every read goes through `_scalar`/`_scalar_list`, whose return types cannot
+    carry a remote container. Keys not named here — `message`, stack traces,
+    paths, tokens — are never read at all, so they cannot be relayed even by
+    accident. An unknown `reason` is reported as present-but-unknown rather than
+    echoed: that says "there was a reason and it is not one this surface can
+    name", without putting the far end's string into an answer.
+    """
+    if not isinstance(envelope, Mapping):
+        return RefusalProjection()
+    code = _scalar(envelope, "code")
+    retryable = _scalar(envelope, "retryable")
+    details = envelope.get("details")
+    reason_value = _scalar(details, "reason")
+    reason_present = isinstance(details, Mapping) and "reason" in details
+    reason = (reason_value if isinstance(reason_value, str)
+              and reason_value in REFUSAL_REASONS else None)
+    boot = _scalar(details, "bootId")
+    return RefusalProjection(
+        code=code if isinstance(code, str) and _REFUSAL_CODE.match(code) else None,
+        retryable=retryable if isinstance(retryable, bool) else None,
+        reason=reason,
+        reason_present=bool(reason_present and reason is None),
+        boot_id=(boot if isinstance(boot, str) and _REFUSAL_IDENTIFIER.match(boot)
+                 else None),
+        supported=_scalar_list(details, "supported", _MAX_SUPPORTED),
+    )
 
 
 class ProviderRefusal(Exception):
@@ -374,16 +454,13 @@ def structured(result: dict[str, Any], *, label: str = "the provider") -> dict[s
         # an operator tell "the device did not say" from "this surface dropped
         # it" without opening the device's journal.
         projection = refusal_projection(envelope)
-        # `refuse(code, detail, **extra)` already owns the name `code`; the
-        # device's own word travels as `device_code`, which also keeps it
-        # distinguishable when the two vocabularies do not translate.
-        extra = dict(projection)
-        device_code = extra.pop("code", None)
-        if device_code is not None:
-            extra["device_code"] = device_code
-        if projection:
+        # The projection is already the whitelist: `as_extra` can only produce
+        # the five names it validates, and `refuse`'s own `code` stays this
+        # surface's word (the device's travels as `device_code`).
+        extra = projection.as_extra()
+        if extra:
             detail = (f"{detail}; structured fields relayed: "
-                      f"{', '.join(sorted(projection))}")
+                      f"{', '.join(projection.relayed)}")
         # The device refusing is the device's behaviour. It is translated only
         # where the two vocabularies already agree exactly; otherwise it keeps
         # its own word inside `detail` and is reported as a bad request.
