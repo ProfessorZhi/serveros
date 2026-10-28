@@ -1,0 +1,15 @@
+{
+  "device_ref": "device:ci-ProfessorZhi-serveros",
+  "observed_at": "2026-10-27T10:10:00Z",
+  "source_trusted": true,
+  "milestone": true,
+  "gates_required": [],
+  "gates_passed": [],
+  "workflow_run": {
+    "id": "40486346485",
+    "name": "Tests",
+    "status": "completed",
+    "conclusion": "neutral",
+    "head_sha": "3e9428ab5f057b5ac6a1da1cebda7bf05c47901c"
+  }
+}
