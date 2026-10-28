@@ -1,6 +1,6 @@
 ---
 name: fleet-plugin-update
-description: Update the App-backed Fleet plugin without moving its identity — same plugin id, an advancing version, Skills continuity, a readback and a rollback target — while keeping App-owned avatar/display changes separate and UNVERIFIED.
+description: Use when updating the App-backed Fleet plugin, or when planning a same-identity version, readback and rollback without changing App-owned presentation.
 ---
 
 # An update is the same plugin; a rebrand is not

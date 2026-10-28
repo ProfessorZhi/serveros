@@ -11,8 +11,8 @@ What is real here:
 
 * `fleet_mcp.server.McpServer` — the same JSON-RPC dispatcher the HTTP and
   production stdio surfaces use;
-* `fleet_mcp.tools.SERVED_TOOLS` — all 34 tools, with their real schemas and
-  `readOnlyHint` annotations;
+* `fleet_mcp.tools.SERVED_TOOLS` — every tool this build serves (44 at
+  `fleet-mcp-7`), with their real schemas and `readOnlyHint` annotations;
 * `fleet_mcp.fleet.FleetService` — the same scope checks, policy gates,
   refusals and audit records.
 
@@ -25,7 +25,7 @@ What is fake, and says so:
 
 The principal is selected on the command line. The default, `read-only`, holds
 exactly `fleet:read`. That is the point of the fixture: a client can discover
-all 34 tools (discovery is not entitlement) and is then refused `SCOPE_DENIED`
+every served tool (discovery is not entitlement) and is then refused `SCOPE_DENIED`
 when it tries any write, before the fake provider is reached.
 
 Framing is one JSON-RPC message per line, the framing the MCP stdio transport
@@ -155,9 +155,9 @@ class FakeDeviceProvider:
         }
 
     def capability_snapshot(self) -> dict[str, Any]:
-        # The device declares exactly two of the 22 native verbs. A count of 22
-        # is not evidence that 22 answer; this snapshot says OBSERVED with an
-        # observed_count of two, and the other twenty are UNSUPPORTED_BY_DEVICE.
+        # The device declares exactly two native verbs. The mirror count is not
+        # evidence that every verb answers; this snapshot says OBSERVED with an
+        # observed_count of two, and the rest are UNSUPPORTED_BY_DEVICE.
         return cloudcli_native.capability_snapshot(
             device_ref=DEVICE,
             observed={

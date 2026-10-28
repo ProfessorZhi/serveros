@@ -130,7 +130,7 @@ class PackageLoadCarriesNoToolList(unittest.TestCase):
 
         The Skills do name tools -- that is what a Skill is for. What no file
         carries is a tool list: the wire shape of one is a declaration with an
-        `inputSchema`, and the enumeration of all 34 is what a load is not.
+        `inputSchema`, and enumerating every served tool is what a load is not.
         """
         served = set(fleet_tools.SERVED_BY_NAME)
         for structural in (".claude-plugin/plugin.json", ".mcp.json"):

@@ -1,0 +1,50 @@
+--- a/fleet_mcp/tools.py	2026-10-28 10:47:42.201580993 +0800
++++ b/fleet_mcp/tools.py	2026-10-28 10:51:55.824744500 +0800
+@@ -914,12 +914,13 @@
+ TOOLS_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
+ 
+ # The SERVED surface: the hand-written Fleet tools PLUS the inherited native
+-# set. `TOOLS` / `tool_names()` stay the hand-written nine, because that is what
++# set. `TOOLS` / `tool_names()` stay the hand-written authored set (11 at
++# `fleet-mcp-7`), because that is what
+ # `fleet/fleet-mcp-contract.yaml` enumerates and what the surface contract tests
+-# pin; enumerating 22 generated verbs in that contract is a contract-owned edit,
++# pin; enumerating 31 generated verbs in that contract is a contract-owned edit,
+ # not this module's. `call_tool` and the MCP server's `tools/list` read the
+-# MERGED set, so ONE MCP surface serves all 31 and a caller discovers the native
+-# verbs directly. Until the contract is extended, it declares the nine and this
++# MERGED set, so ONE MCP surface serves all 44 and a caller discovers the native
++# verbs directly. Until the contract is extended, it declares the authored set and this
+ # module declares the generated mirror — the known integration point, reported
+ # rather than hidden by quietly appending to `TOOLS`.
+ def _native_manifest(ctx: "ToolContext", args: dict[str, Any]) -> dict[str, Any]:
+@@ -936,9 +937,9 @@
+ 
+ NATIVE_MANIFEST_TOOL = Tool(
+     name="fleet_cloudcli_native_manifest",
+-    title="The inherited CloudCLI surface (22 verbs)",
++    title="The inherited CloudCLI surface",
+     description=(
+-        "The 22 CloudCLI-native verbs this surface mirrors as "
++        "The CloudCLI-native verbs this surface mirrors as "
+         "`fleet_cloudcli_<name>`, each with its governance class, the native "
+         "scope it needs, and the input schema recorded from CloudCLI. Read this "
+         "to discover the closed set; a name not in it is refused rather than "
+@@ -969,7 +970,7 @@
+     name="fleet_cloudcli_native_capability",
+     title="Live capability snapshot for one device",
+     description=(
+-        "Read what ONE device ACTUALLY exposes of the 22 inherited verbs: each "
++        "Read what ONE device ACTUALLY exposes of the inherited verbs: each "
+         "verb's live registration state (`USABLE` when the device explicitly "
+         "reports a bound handler; `DECLARED_NOT_IMPLEMENTED` when it explicitly "
+         "reports no handler; `HANDLER_BINDING_UNKNOWN` for older or untyped "
+@@ -978,7 +979,7 @@
+         "is not a verified workflow. Historical placeholder defaults are "
+         "provenance and do not establish current availability. "
+         "A device whose tool list cannot be read is reported `UNKNOWN` with a "
+-        "reason — a count of 22 is never evidence that 22 answer."
++        "reason — the mirror count is never evidence that every verb answers."
+     ),
+     input_schema={
+         "type": "object",

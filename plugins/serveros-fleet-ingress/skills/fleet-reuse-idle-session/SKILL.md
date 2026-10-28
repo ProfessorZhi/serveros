@@ -1,6 +1,6 @@
 ---
 name: fleet-reuse-idle-session
-description: Continue an existing idle Claude/Codex session instead of starting a new one, and send to it precisely. Use before any fleet_create_session call, and whenever the task is "carry on with" or "ask the agent on that machine".
+description: Use when continuing work in an existing idle Claude or Codex session, or when deciding whether to create one.
 ---
 
 # Reuse the session that is already there

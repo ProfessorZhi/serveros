@@ -1,6 +1,6 @@
 ---
 name: fleet-commander-orchestration
-description: Coordinate several independent tasks without becoming a polling loop — gather only the facts needed, build a dependency graph, dispatch complete long work in parallel or short work as a batch, and keep a slow node from blocking the rest.
+description: Use when coordinating several independent Fleet tasks that should run in parallel or as a batch, or when one slow device must not block the others.
 ---
 
 # The commander coordinates; it does not sit and wait
@@ -12,10 +12,10 @@ worker and leaves every other eligible task idle.
 
 Inside the owner-max managed profile, dispatch/create is routine and
 pre-authorized: do not stop to ask a human for each ordinary task. The profile
-is the owner's one-time configuration, not Linux root, not another OS account,
-and not a universal bypass. Ask only when the target is outside that profile, a
-required capability is absent, identity is ambiguous, or an irreversible action
-would exceed the grant.
+boundary — what it does and does not grant — is in
+`fleet-safety-boundaries`; ask a human only outside that profile, when a
+required capability is absent, identity is ambiguous, or an irreversible
+action would exceed the grant.
 
 This Skill is about the shape of the work, not about a new scheduler. There is
 no batch verb and no scheduler tool. The commander uses the existing Fleet
