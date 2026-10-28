@@ -148,8 +148,8 @@ def _git(repo: Path, *args: str) -> bytes:
 # stays the only `serverosctl` — so the loader closure does not require it;
 # `release.py`'s `REQUIRED_MEMBERS` is what makes a release carry it.
 CORE_MODULES = ("context", "space", "relations", "mcp", "runtime", "bin",
-                "abilities", "memory", "fleet", "intake", "documents",
-                "workengine", "fleet_mcp")
+                "abilities", "memory", "fleet", "fleet_hub", "intake",
+                "documents", "workengine", "fleet_mcp")
 
 
 def resolve_ability_rev(repo: Path, rev: str) -> str:
@@ -1281,10 +1281,58 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
     # ServerOS Core modules ship verbatim. Each declares its own path under
     # bundle.yaml, so adding a module is one bundle key plus one directory —
     # never a second vocabulary of module names hardcoded here.
-    if carries["modules"]:
+    #
+    # The two lists must agree in BOTH directions, and a disagreement is a
+    # refusal rather than a silent skip. The previous loop did
+    # `if not module_rel: continue`, so a directory that reached the
+    # composition through a bundle path but was absent from CORE_MODULES was
+    # never copied: the source checkout ran, the tests passed, and the installed
+    # node failed later with a FileNotFoundError. `fleet_hub` is that case
+    # arriving through a physical D2 move.
+    #
+    # A plugin-only composition (a root file with no module blocks, such as
+    # `plugin/profiles/testing.yaml`) is not a node artifact and is exempt:
+    # there is nothing to agree about. As soon as a composition declares ONE
+    # module path it is a node composition, and all of them must be declared.
+    module_blocks = {key: value for key, value in bundle.items()
+                     if isinstance(value, dict) and "path" in value}
+    contract = release_contract()
+    claims_node = contract.NODE_RUNTIME in kinds
+    node_roots = {rel.split("/", 1)[0]
+                  for rel in contract.REQUIRED_MEMBERS[contract.NODE_RUNTIME]}
+    # Every composition that carries module blocks is held to the full list,
+    # with ONE exception: a composition that does not declare `node-runtime`
+    # but carries a node-runtime required member (e.g. `runtime/`, `bin/`) is
+    # already refused by kind verification below. That refusal is the more
+    # fundamental one, and it is the shape #413's decoupling tests use. Any
+    # other module-bearing composition — including a `[plugin]` composition
+    # that carries only, say, `documents/` and `fleet/` — is a node artifact
+    # that forgot half its members, and is refused here.
+    already_kind_refused = (not claims_node) and bool(set(module_blocks) & node_roots)
+    if module_blocks and not already_kind_refused:
+        undeclared = [module for module in CORE_MODULES
+                      if not (bundle.get(module) or {}).get("path")]
+        if undeclared:
+            raise ValueError(
+                f"{bundle_path}: CORE_MODULES members {undeclared} have no "
+                f"`path` in the composition. The build would silently skip "
+                f"them; a composition that ships modules must declare all of "
+                f"them, or say `artifacts: [plugin]` and ship none.")
+    if module_blocks:
+        orphaned = sorted(set(module_blocks) - set(CORE_MODULES))
+        if orphaned:
+            raise ValueError(
+                f"{bundle_path}: {orphaned} declare a source path but are not in "
+                f"scripts/build.py#CORE_MODULES. The build would never copy them, "
+                f"so the artifact would miss code its own members load. Add the "
+                f"directory to CORE_MODULES and to plugin/bundle.yaml together — "
+                f"CORE_MODULES is a packaging list, not a layer claim.")
+    if carries["modules"] and module_blocks:
         for module in CORE_MODULES:
-            module_rel = bundle.get(module, {}).get("path")
+            module_rel = (bundle.get(module) or {}).get("path")
             if not module_rel:
+                # Reachable only for the `already_kind_refused` shape above;
+                # `verify_artifact_kinds` refuses that payload below.
                 continue
             if module_rel != module:
                 raise ValueError(f"{module}: bundle path must be {module!r}, got {module_rel!r}")
