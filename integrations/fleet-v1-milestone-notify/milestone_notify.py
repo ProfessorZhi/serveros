@@ -122,6 +122,16 @@ _PHASE_KINDS = frozenset({PHASE_ACCEPTED, PR_ACCEPTED, TASK_COMPLETED})
 MILESTONE_KINDS = frozenset({
     RUN_COMPLETED, CI_PASSED, PHASE_ACCEPTED, PR_ACCEPTED, TASK_COMPLETED,
 })
+
+#: Outcomes `send_text` may record, and the reason it is a closed set rather
+#: than free text: these two words are what a batch aggregator sends, and the
+#: seam's job is to make "a batch must not pretend to be a milestone" mechanical
+#: instead of a convention. The set is disjoint from :data:`MILESTONE_KINDS`, so
+#: no argument to the seam can produce a row a reader would take for a milestone.
+#: A milestone is chosen by the classifier from evidence — never by a caller.
+BATCH_SUMMARY = "BATCH_SUMMARY"
+BATCH_ALERT = "BATCH_ALERT"
+NON_MILESTONE_OUTCOMES = frozenset({BATCH_SUMMARY, BATCH_ALERT})
 _SOURCES = frozenset({"cloudcli", "github_actions", "phase"})
 
 _CLOUDCLI_ENVELOPE = frozenset({
@@ -1095,6 +1105,68 @@ class MilestoneNotifier:
 
     def observe_payload(self, source: str, payload: dict) -> Observation:
         return self.observe(normalize(source, payload))
+
+    def send_text(self, *, delivery_key: str, milestone_key: str,
+                  outcome: str, text: str, why: str) -> Observation:
+        """Send one caller-authored sentence under a caller-chosen identity.
+
+        This is `observe()`'s outbound half with the sentence supplied instead of
+        derived from a payload: the same claim, the same <=50-character transport
+        digest, the same UNKNOWN, the same receipt and the same reconcile. It
+        exists because a batch summary is a statement about *several* milestones,
+        so it cannot be expressed as one payload without inventing a `batch`
+        source and a batch kind, after which a reader could no longer tell a
+        milestone from a summary.
+
+        It deliberately accepts no provider, channel or credential: the provider
+        is the notifier's, injected once at construction. A seam that let a
+        caller pass one would be a second write path to the one outbound
+        provider, and two replicas could both send.
+
+        `outcome` must be one of :data:`NON_MILESTONE_OUTCOMES`. That is the
+        mechanical half of "a batch must not pretend to be a milestone": the
+        closed set and the closed `MILESTONE_KINDS` set are disjoint, so no
+        argument to this method can produce a row that reads as a milestone.
+        """
+        delivery_key = _text(delivery_key, "delivery_key", 512)
+        milestone_key = _text(milestone_key, "milestone_key", 512)
+        outcome = _text(outcome, "outcome", 32)
+        if outcome not in NON_MILESTONE_OUTCOMES:
+            raise MilestoneRefused(
+                f"outcome {outcome!r} is not a non-milestone outcome; this seam "
+                f"sends batch summaries and alerts, and a milestone is chosen by "
+                f"the classifier from evidence, not by a caller "
+                f"({sorted(NON_MILESTONE_OUTCOMES)})")
+        text = _text(text, "text", 2000)
+        why = _scrub(_text(why, "why", 240))
+
+        transport = transport_key_for(delivery_key)
+        intent = json.dumps({"text": text, "transport_key": transport},
+                            ensure_ascii=False, sort_keys=True)
+        prior = self.ledger.claim(
+            delivery_key=delivery_key, milestone_key=milestone_key,
+            outcome=outcome, attempted_at=self._now().isoformat(),
+            intent=intent, transport_key=transport)
+        if prior is not None:
+            return _prior_observation(prior, delivery_key)
+
+        try:
+            state, remote_id, sent_why = self._send(text, transport)
+        except Exception as exc:  # a claim must never be left IN_FLIGHT
+            state, remote_id = UNKNOWN_DELIVERY, None
+            sent_why = _scrub(f"{type(exc).__name__}: {exc}")[:240]
+
+        self.ledger.finish(delivery_key=delivery_key, state=state,
+                           remote_id=remote_id,
+                           attempted_at=self._now().isoformat(),
+                           why=sent_why, intent=intent)
+        row = self.ledger.get(delivery_key) or {"state": state,
+                                                "remote_id": remote_id}
+        if row["state"] == DELIVERED and state != DELIVERED:
+            sent_why = "another observation recorded the delivered receipt"
+        return Observation(outcome, row["state"], delivery_key, row["remote_id"],
+                           text, None, sent_why, row["state"] == DELIVERED,
+                           transport)
 
     def reconcile(self, delivery_key: str) -> Observation:
         """Re-ask the SAME call under the SAME transport key, inside the window.
