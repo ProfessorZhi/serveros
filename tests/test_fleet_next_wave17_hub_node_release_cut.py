@@ -7,8 +7,9 @@ run is a statement about the **release units**, never about a real co-install;
 that remains `NOT_RUN`.
 
 The RED side is the live tree: #502's 49/180 ownership map, one Hub -> Node
-import and ten Node -> Hub imports, and two artifacts that cannot boot without
-a checkout. The GREEN side is a throwaway `git archive` copy with the owner
+import and eleven Node -> Hub module targets (#502 counted ten because its
+resolver did not expand `from .. import cloudcli_native`; #431's AST does), and
+two artifacts that cannot boot without a checkout. The GREEN side is a throwaway `git archive` copy with the owner
 handoff applied — never the checkout itself.
 """
 from __future__ import annotations
@@ -43,6 +44,7 @@ handoff = _load("wave17_apply_handoff", CUT_DIR / "handoff" / "apply_handoff.py"
 
 BASELINE_NODE_FOREIGN = {
     "fleet_mcp",
+    "fleet_mcp.cloudcli_native",
     "fleet_mcp.config",
     "fleet_mcp.errors",
     "fleet_mcp.fleet",

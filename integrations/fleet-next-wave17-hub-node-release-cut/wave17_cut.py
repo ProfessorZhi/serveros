@@ -13,6 +13,11 @@ with exactly one Hub -> Node import (`fleet_mcp/owner_setup.py` ->
 `fleet_mcp.node.connector`) and ten Node -> Hub imports. "Release the Node on
 its own" was therefore the whole repository wearing a smaller name.
 
+This module counts **eleven** Node -> Hub module targets, not ten: #502's
+resolver did not expand `from .. import cloudcli_native`, while #431's AST does.
+The finding is unchanged and the extra target is real; the difference is
+reported rather than rounded to the earlier number.
+
 What this module does
 ---------------------
 It **measures** that shape against two different maps and refuses to confuse
@@ -237,51 +242,37 @@ def component_files(root: Path) -> dict[str, list[str]]:
     return found
 
 
-def owned_import_edges(root: Path, component: str) -> dict[str, list[str]]:
+def owned_import_edges(builder: Any, root: Path,
+                       component: str) -> dict[str, list[str]]:
     """Cross-component imports found in files this component owns.
 
-    This is #502's measurement, reproduced rather than trusted: every owned
-    Python file is parsed, relative imports are resolved, and the target's
-    owner is compared with the holder's. The result is `module -> holders`,
-    because "the Node imports config" is a sentence and `config <- connector.py`
-    is a fact somebody can check.
+    This is #502's measurement, reproduced rather than trusted. The import
+    resolution is #431's `_imports_of` — the same function its closure uses —
+    so the two lanes cannot disagree about what `from ..errors import X`
+    reaches. Its result also names imported symbols (`module.Name`); those do
+    not resolve to a file and are dropped, leaving the module a holder really
+    imports. The result is `module -> holders`, because "the Node imports
+    config" is a sentence and `config <- connector.py` is a fact somebody can
+    check.
     """
+    root = Path(root)
     files = component_files(root)[component]
     edges: dict[str, set[str]] = {}
     for rel in files:
         if not rel.endswith(".py"):
             continue
-        for name in _imports_of_bytes(root, rel):
+        data = (root / rel).read_bytes()
+        try:
+            names = builder._imports_of(data, rel)
+        except SyntaxError:
+            continue
+        for name in names:
+            if builder._resolve(name, root) is None:
+                continue
             owner = owner_of_module(name)
             if owner is not None and owner != component:
                 edges.setdefault(name, set()).add(rel)
     return {name: sorted(holders) for name, holders in sorted(edges.items())}
-
-
-def _imports_of_bytes(root: Path, rel: str) -> set[str]:
-    """AST imports of one file, resolved against its package.
-
-    #431's `_imports_of` is reused through a small adapter so the two lanes
-    cannot disagree about what `from ..errors import X` reaches.
-    """
-    import ast
-
-    data = (Path(root) / rel).read_bytes()
-    tree = ast.parse(data.decode("utf-8", "replace"), filename=rel)
-    package = rel.split("/")[:-1]
-    found: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            found.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                base = package[: len(package) - (node.level - 1)]
-                target = ".".join(base + ([node.module] if node.module else []))
-            else:
-                target = node.module or ""
-            if target:
-                found.add(target)
-    return found
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +330,8 @@ def partition(builder: Any, root: Path) -> Partition:
     )
 
 
-def effective_foreign(root: Path, component: str) -> dict[str, list[str]]:
+def effective_foreign(builder: Any, root: Path,
+                      component: str) -> dict[str, list[str]]:
     """Foreign imports after the Base decision.
 
     A Node import of a Base-admissible primitive is satisfied by the Base
@@ -347,7 +339,7 @@ def effective_foreign(root: Path, component: str) -> dict[str, list[str]]:
     difference between a declared shared layer and a Hub dependency wearing a
     new name.
     """
-    edges = owned_import_edges(root, component)
+    edges = owned_import_edges(builder, root, component)
     if component == "node":
         return {name: holders for name, holders in edges.items()
                 if name not in BASE_ADMISSIBLE}
@@ -882,9 +874,9 @@ def analyze(root: Path, version: str, *, workdir: Path | None = None,
     baseline = Path(baseline_root) if baseline_root else root
     builder = load_builder(root)
     files = component_files(root)
-    raw_foreign = {component: owned_import_edges(root, component)
+    raw_foreign = {component: owned_import_edges(builder, root, component)
                    for component in ("hub", "node")}
-    effective = {component: effective_foreign(root, component)
+    effective = {component: effective_foreign(builder, root, component)
                  for component in ("hub", "node")}
     part = partition(builder, root)
     plans = compose(builder, root, version) if part.base_exact else {}
@@ -895,7 +887,8 @@ def analyze(root: Path, version: str, *, workdir: Path | None = None,
             "ownership": {
                 "counts": {key: len(value)
                            for key, value in component_files(baseline).items()},
-                "foreign": {component: owned_import_edges(baseline, component)
+                "foreign": {component: owned_import_edges(builder, baseline,
+                                                          component)
                             for component in ("hub", "node")},
             },
             "partition": {

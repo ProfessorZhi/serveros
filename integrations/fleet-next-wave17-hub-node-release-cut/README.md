@@ -27,7 +27,7 @@ would make the answer yes. It does not modify `fleet_mcp/**`, `runtime/**`,
 | Hub files owned | 49 | 50 (`providers/build.py` added) |
 | Node files owned | 180 | 180 |
 | Hub -> Node imports | 1 (`owner_setup` -> `node.connector`) | **0** |
-| Node -> Hub imports | 10 | 9, all satisfiable by the pinned Base |
+| Node -> Hub imports | 11 | 10, all satisfiable by the pinned Base |
 | Base / Hub / Node closure | 30 / 3 / 0 | 19 / 13 / 2 |
 | Two-artifact Hub boot | fails (`ModuleNotFoundError`) | — |
 | Two-artifact Node boot | fails (`ModuleNotFoundError`) | — |

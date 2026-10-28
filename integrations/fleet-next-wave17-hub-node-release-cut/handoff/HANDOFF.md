@@ -13,7 +13,7 @@ exactly two places:
 | direction | edge | holder | what it costs |
 |---|---|---|---|
 | Hub -> Node | `fleet_mcp.node.connector` | `fleet_mcp/owner_setup.py:17` | a Hub-only payload cannot import its own owner-setup CLI |
-| Node -> Hub | 10 modules | `fleet_mcp/node/connector.py:89-106` + deferred sites | a Node-only payload cannot import at all |
+| Node -> Hub | 11 modules | `fleet_mcp/node/connector.py:89-106` + deferred sites | a Node-only payload cannot import at all |
 
 After CUT-A and CUT-B the Hub direction is **zero** and the Node direction is
 **nine modules, all of which are shared runtime primitives** that a third
@@ -44,8 +44,8 @@ replacement for #461: the owner should land #461's own rebased commit.
 Files: `fleet_mcp/fleet.py`, `fleet_mcp/owner_access.py`,
 `fleet_mcp/node/connector.py`.
 
-Effect measured: Node -> Hub imports drop from 10 to 9 (`fleet_mcp.fleet`
-leaves the closure).
+Effect measured: Node -> Hub imports drop from 11 to 10 (`fleet_mcp.fleet`
+leaves the closure; `cloudcli_native` stays, and is Base-eligible).
 
 ## CUT-B · this lane's request
 
@@ -122,7 +122,7 @@ Effect measured: `fleet_mcp.providers.fleet_node`, `fleet_mcp.registry` and
 * `git apply --check` is clean on `main` after the CUT-B commit.
 * `python -m pytest tests/test_fleet_l2_release_separation.py -q` stays green.
 * Hub -> Node imports: 0.
-* Node -> Hub imports: 9, each one in `BASE_ADMISSIBLE`.
+* Node -> Hub imports: 10, each one in `BASE_ADMISSIBLE`.
 * No second `DeviceRef`, `Device`, `DeviceRegistry` or `canonical_level` is
   introduced anywhere.
 

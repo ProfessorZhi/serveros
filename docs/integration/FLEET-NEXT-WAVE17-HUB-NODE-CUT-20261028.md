@@ -33,10 +33,10 @@ gateway/plugin/Creator update, no service or credential change.
 
 | # | Question | Verdict |
 |---|---|---|
-| 1 | Does #502 reproduce at `main@e69fc03`? | **VERIFIED**: Hub 49 / Node 180 / Sidecar 2 files; Hub→Node 1; Node→Hub 10 |
+| 1 | Does #502 reproduce at `main@e69fc03`? | **VERIFIED**: Hub 49 / Node 180 / Sidecar 2 files; Hub→Node 1; Node→Hub 11 (see §4) |
 | 2 | Can a strictly two-artifact Hub or Node boot alone today? | **NO**: both fail with `ModuleNotFoundError` |
 | 3 | Does the owner handoff make the Hub direction zero? | **VERIFIED in sandbox**: 0 Hub→Node imports |
-| 4 | Does it make the Node direction zero? | **VERIFIED in sandbox** after one declared shared Base: 9 → all Base-owned, 0 foreign |
+| 4 | Does it make the Node direction zero? | **VERIFIED in sandbox** after one declared shared Base: 10 → all Base-owned, 0 foreign |
 | 5 | Do the four units boot with no checkout and no neighbour? | **VERIFIED in sandbox**: Hub (Base + Authority), Node (Base) |
 | 6 | Are the SHA manifests reproducible? | **VERIFIED**: two compositions are byte-identical |
 | 7 | Does reverse-delete / Hub rollback move the Legacy fake? | **NO**: answers and deliveries unchanged |
@@ -86,11 +86,17 @@ Measured on the live worktree (`517ef91`, whose `fleet_mcp/**` is
 
 ```text
 Hub   49 files   Hub→Node 1 : fleet_mcp.node.connector <- fleet_mcp/owner_setup.py
-Node 180 files   Node→Hub 10: fleet_mcp, config, errors, fleet, identity,
-                             local_roots, node_protocol, owner_access,
-                             providers.cloudcli, runtime_identity
+Node 180 files   Node→Hub 11: fleet_mcp, cloudcli_native, config, errors,
+                             fleet, identity, local_roots, node_protocol,
+                             owner_access, providers.cloudcli,
+                             runtime_identity
 Sidecar 2 files
 ```
+
+The module-target count is 11, not #502's 10: #502's resolver did not expand
+`from .. import cloudcli_native`, while #431's AST (reused here) does. The
+finding is unchanged; the extra target is real and is reported rather than
+rounded down to the earlier number.
 
 Closure of the declared entrypoints (`fleet_mcp.server` +
 `fleet_mcp.owner_setup`; `fleet_mcp.node.connector`):
@@ -126,7 +132,7 @@ After both patches, on a `git archive` copy:
 
 ```text
 Hub   50 files (providers/build.py added)   Hub→Node 0
-Node 180 files                              Node→Hub 9 raw, all Base-admissible
+Node 180 files                              Node→Hub 10 raw, all Base-admissible
                                             effective foreign 0
 hub_closure 32   node_closure 21   shared 19   hub_own 13   node_own 2
 base_exact TRUE
@@ -225,7 +231,7 @@ lane may not write. The precise request is in
 | `fleet_mcp/fleet.py` | — | import `build_providers` from `.providers.build`, base names from `.providers.base` |
 | `fleet_mcp/fleet.py`, `owner_access.py`, `node/connector.py` | — | land #461's CUT-A (three helpers move to `owner_access`) |
 
-Acceptance: Hub→Node 0; Node→Hub 9, all in the pinned Base; existing
+Acceptance: Hub→Node 0; Node→Hub 10, all in the pinned Base; existing
 `tests/test_fleet_l2_release_separation.py` stays green; no second identity
 implementation.
 
