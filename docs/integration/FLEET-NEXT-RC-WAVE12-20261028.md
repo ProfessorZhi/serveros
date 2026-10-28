@@ -259,7 +259,21 @@ Wave 12  (40653792777) : 2746 + 3166 + 3482 + 3363 = 12757      Δ = +23
 
 Both runs report `0 flaky`, so the Δ has no flake term to explain away.
 
-### 7.3 Not run
+### 7.3 The tip run repeats it
+
+Run **`40657128273`** is on the tip `0eb77cb`, which adds only this section's
+prose: **5/5 jobs success**, gates `13/0`, `17/0`, `9/0`, and shard 4
+`19 failing, **0 new**, 1 flaky`.
+
+The one flaky is
+`tests/test_codex_app_server_provider.py::test_a_dead_server_is_a_stopped_provider_and_not_a_closed_session`
+— the same pre-existing flake the Wave 7 record names (§7.2 there), on a file
+this branch does not touch. The gate classifies it as flaky, not new; it is
+recorded here rather than quietly averaged away.
+
+Two runs, both `success`, both `0 new`.
+
+### 7.4 Not run
 
 The other three workflows are **NOT_RUN, not green**:
 `serveros-native-linux-contract`, `serveros-native-windows-contract` and
