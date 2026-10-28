@@ -372,9 +372,10 @@ The suite was mutation-checked: dropping the "not a fact" states, forcing
 `covered=False`, and removing the first-settlement freeze each turn exactly the
 tests written for them red, and nothing else.
 
-`tests/test_fleet_v1_milestone_batch_registration.py` — 24 tests + 1 skip,
-CODE + UNIT. The skip is the live `#456` contract (`#456` is not on this base;
-`skipUnless` on the real `batch_contract.py`).
+`tests/test_fleet_v1_milestone_batch_registration.py` — 24 tests + 7 skips,
+CODE + UNIT. The seven skips are the live `#456` contract family (`#456` is not
+on this base; `skipUnless` on the real `batch_contract.py`). On a base that
+carries `#456` all thirty-one run, and all thirty-one pass.
 
 | requirement | test |
 |---|---|
@@ -390,7 +391,46 @@ CODE + UNIT. The skip is the live `#456` contract (`#456` is not on this base;
 | plan and ACK must agree | `test_an_ack_that_names_another_session_is_not_this_task_s_ack`, `test_an_ack_without_a_delivery_id_is_incomplete`, `test_a_missing_ack_or_an_unknown_ack_is_refused` |
 | the file records which plan it came from | `test_the_registration_records_which_plan_it_validated` |
 | a filed batch says so; a hand-built one does not | `test_a_hand_built_batch_carries_no_origin_and_a_registered_one_does` |
-| the live `#456` contract | `test_a_plan_the_live_contract_accepts_becomes_a_registration` (skipped: `#456` is not on this base) |
+| the live `#456` contract accepts a plan whose sessions it can find | `test_a_plan_the_live_contract_accepts_becomes_a_registration` |
+| …and refuses the ones it cannot, in its own words | `test_a_session_the_live_list_does_not_have_is_refused`, `test_a_session_on_another_project_is_refused`, `test_a_session_on_another_device_is_refused`, `test_a_session_that_is_busy_is_refused`, `test_a_task_needing_a_grant_the_device_lacks_is_refused` |
+| …and nothing is filed before that verdict | `test_the_registration_is_filed_only_after_the_live_verdict` |
+
+### Why the snapshot names real sessions, and what would be cheating
+
+The first version of `test_a_plan_the_live_contract_accepts_becomes_a_registration`
+passed `"sessions": []`. On a base without `#456` that test skipped and nobody
+noticed; on `#469` (`14306f36`) it ran, and the live contract answered
+`SESSION_NOT_FOUND` — because a plan whose three tasks each name a `session_ref`
+is a plan that intends to dispatch *into* those sessions, and the snapshot it was
+handed said no such session existed. `from_commander` turned that into
+`COMMANDER_REFUSED`, and the registration was never filed. The hosted failure and
+this local RED are the same two lines.
+
+The fixture now describes the dispatch instead of empty maps:
+
+```python
+live_snapshot()   # devices with the roles/runtimes the tasks name,
+                  # create_allowed per device, grants per device/runtime,
+                  # and one MANAGED_IDLE session per task — same device,
+                  # same runtime, same project
+```
+
+Populating it is not a concession to the validator, and the six refusals are the
+proof. `#456`'s `validate_batch` is untouched; every code below is its own, and
+each test also asserts that no file was written:
+
+| what is wrong with the snapshot | `#456`'s answer |
+|---|---|
+| the session list is empty, as it was | `SESSION_NOT_FOUND` |
+| the session is on another project | `SESSION_PROJECT_MISMATCH` |
+| the session is on another device | `SESSION_PROJECT_MISMATCH` |
+| the session is `RUNNING` | `SESSION_BUSY` |
+| the device lacks a `required_grant` | `GRANT_DENIED` |
+
+A weakened `validate_batch` — one that returns `PASS` without looking — makes all
+five red immediately while the accept case stays green. That asymmetry is the
+point: the fixture may be built to fit the plan, the judgment may not be built to
+fit the fixture.
 
 `tests/test_fleet_v1_milestone_batch_integration.py` — 13 tests, CODE + UNIT.
 Composition: real `#428` observer, real `#423` ledger, scripted sources,
@@ -465,10 +505,12 @@ file is restored byte-identically — verified by sha256):
 | `dispatch` drops its own `UNBOUNDED_LIFECYCLE` guard | the guard test (#446 still refuses, so the layers are independent) |
 | `tick_from_file` caches instead of re-reading | `None != 'run_dell_1'` |
 
-Totals on this branch: `90 passed, 1 skipped, 15 subtests passed` across the
-four files, ~18 s, on Windows, targeted (never the full suite — the two
+Totals on this branch: `90 passed, 7 skipped, 15 subtests passed` across the
+four files, ~23 s, on Windows, targeted (never the full suite — the two
 pre-existing Windows baselines and the `#449` build failure are not this lane's
-and are not counted here).
+and are not counted here). The seven skips are the live `#456` family, which
+cannot run where `#456` is absent; on the `#469` tree the same four files report
+`97 passed, 0 skipped`, because there the seven run and pass.
 
 RED without #460: on `d72befe7` the same file reports `2 passed, 23 skipped`, and
 the two that run assert the refusal — `hasattr(MilestoneNotifier, "send_text")`
