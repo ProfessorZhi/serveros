@@ -43,7 +43,7 @@ PR#181 的 fixture 曾故意省掉 `device:personal-dell`。那是错的：把�
   对"某人的私人笔记本"不构成任何结论——这条推断必须不存在。
 - 策略里没出现的设备 = private 无授权（关闭方向）。
 
-**B. 判决是签名类型，不是布尔（`runtime/fleet_audience.py`，纯模块）**
+**B. 判决是签名类型，不是布尔（`runtime/fleet_hub/fleet_audience.py`，纯模块）**
 
 - `AudienceVerdict` 是 frozen dataclass，字段含**收件人**、**设备集合**（及
   `device_signature`）、`ok/denied`、`issuer`、**canonical card hash**，以及一个用
