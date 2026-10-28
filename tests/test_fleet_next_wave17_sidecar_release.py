@@ -89,6 +89,15 @@ def grant(action="revoke", *, device=DEVICE, grant_id="grant-1",
                    device_ref=device)
 
 
+def git(repo: Path, *args: str) -> str:
+    """Run git in `repo`, loudly. Used only to build fixtures for the reader."""
+    done = subprocess.run(["git", "-C", str(repo), *args],
+                          capture_output=True, text=True, check=False)
+    if done.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)} failed: {done.stderr.strip()}")
+    return done.stdout
+
+
 def tree_state(root: Path) -> dict[str, str]:
     """Every file under `root` with its digest — the "did anything move" probe."""
     found: dict[str, str] = {}
@@ -1251,6 +1260,71 @@ class TheRealSidecarIsBlockedNotSigned(SidecarTest):
         something = " ".join(verdict.reasons + verdict.required_changes).lower()
         self.assertIn("not verified", something)
         self.assertIn("not a real-device pass", something)
+
+
+class TheReceiptCheckLooksForAnArtifactNotAString(SidecarTest):
+    """`git grep <schema>` matches the module that *defines* the schema.
+
+    That is how this shipped: `upstream_verdict()` grep'd the commit for the
+    receipt schema string, so on any commit containing this module it found "a
+    receipt" — its own source code — and reported `receipt_found=True`. It
+    passed locally because the module was still untracked, and `git grep <rev>`
+    reads a **commit**, not a worktree. CI was right and the local run was
+    measuring nothing, which is the whole reason these tests build their own
+    repository: the answer must depend on the fixture, not on what happens to be
+    staged in this checkout.
+    """
+
+    SIDECAR = {
+        "fleet_mcp/deploy/next_tailscale_gate.py": b"# gate\n",
+        "fleet_mcp/deploy/next_tailscale_plan.example.json": b"{}\n",
+    }
+    FILES = tuple(SIDECAR)
+
+    def repo_with(self, extra: dict[str, bytes]) -> Path:
+        repo = self.tmp() / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q")
+        for rel, body in {**self.SIDECAR, **extra}.items():
+            path = repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(body)
+        git(repo, "add", "-A")
+        git(repo, "-c", "user.name=wave17",
+            "-c", "user.email=wave17@example.invalid",
+            "commit", "-q", "--no-gpg-sign", "-m", "fixture")
+        return repo
+
+    def test_a_file_that_mentions_the_schema_is_not_a_receipt(self):
+        """The defect, reproduced: a reader mentioning the schema is a mention."""
+        repo = self.repo_with({"integrations/reader.py":
+                               f'SCHEMA = "{m.RECEIPT_SCHEMA}"\n'.encode("utf-8")})
+        verdict = m.upstream_verdict(repo, "HEAD", self.FILES)
+        self.assertEqual(verdict.receipt_found, False, verdict.reasons)
+        self.assertEqual(verdict.code, m.BLOCKED_UPSTREAM)
+
+    def test_a_real_receipt_is_found_and_changes_the_answer(self):
+        """A gate that can only say one thing is not a gate."""
+        body = json.dumps({"schema": m.RECEIPT_SCHEMA, "version": "0.1.0"}).encode()
+        repo = self.repo_with({m.RECEIPT_NAME: body})
+        verdict = m.upstream_verdict(repo, "HEAD", self.FILES)
+        self.assertTrue(verdict.receipt_found, verdict.reasons)
+        self.assertEqual(verdict.code, m.BLOCKED_NOT_VERIFIED)
+        self.assertEqual(verdict.required_changes, ())
+
+    def test_a_file_named_like_a_receipt_but_empty_is_not_one(self):
+        repo = self.repo_with({m.RECEIPT_NAME: b'{"schema": "something/else.v1"}\n'})
+        verdict = m.upstream_verdict(repo, "HEAD", self.FILES)
+        self.assertFalse(verdict.receipt_found)
+        self.assertEqual(verdict.code, m.BLOCKED_UPSTREAM)
+        self.assertTrue(any("named like a receipt" in reason
+                            for reason in verdict.reasons), verdict.reasons)
+
+    def test_a_receipt_under_another_name_is_not_counted(self):
+        """Narrow on purpose: `revoke()` only ever reads `<root>/RECEIPT_NAME`."""
+        body = json.dumps({"schema": m.RECEIPT_SCHEMA}).encode()
+        repo = self.repo_with({"state/receipt-copy.json": body})
+        self.assertFalse(m.upstream_verdict(repo, "HEAD", self.FILES).receipt_found)
 
 
 class TheGuardPipelineIsResolvedAtCallTime(SidecarTest):
