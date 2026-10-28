@@ -211,12 +211,63 @@ controls.
 
 ## 7. Hosted CI
 
-Branch `integrate/fleet-v1-rc-wave12-20261028`. Four `Tests` shards; the reading
-that counts is `== baseline gate ==` per shard, and the comparison base is
-**#479's own runs** (`40646194204`, `40647887120`, `40649149374` — two NEW ids,
-both of which this composition is built to close), not `main`.
+Branch `integrate/fleet-v1-rc-wave12-20261028`, run **`40653792777`** (`Tests`,
+`pull_request`, head `d8dc1f9`). **Conclusion: `success`.**
 
-<!-- CI-READINGS -->
+| shard | job | pytest summary (main run) | `== baseline gate ==` |
+| --- | --- | --- | --- |
+| 1/4 | `122699859321` | 13 failed, **2746 passed**, 32 skipped, 3 xfailed, 660 subtests | `13 failing, **0 new**, 0 flaky` |
+| 2/4 | `122699859328` | 19 failed, **3166 passed**, 45 skipped, 4261 subtests | `17 failing, **0 new**, 0 flaky` |
+| 3/4 | `122699859265` | 9 failed, **3482 passed**, 5 skipped, 1 xfailed, 3637 subtests | `9 failing, **0 new**, 0 flaky` |
+| 4/4 | `122699859243` | 18 failed, **3363 passed**, 33 skipped, 989 subtests | `18 failing, **0 new**, 0 flaky` |
+
+Plus `Claude Code plugin matches its source` — `success`. **5/5 jobs green**, and
+the gate reading is the one that counts: **0 new, 0 flaky** in every shard. The
+57 remaining gate failures are baseline entries, present on `cd1485f` too.
+
+### 7.1 Against #479's own runs, the two ids are closed
+
+| | #479 tip (`40649149374`) | Wave 12 (`40653792777`) |
+| --- | --- | --- |
+| shard 1 | `16 failing, **1 new**` — the registration id | `13 failing, **0 new**` |
+| shard 2 | `11 failing, **1 new**` — the clean-package id | `17 failing, **0 new**` |
+| shard 3 | `10 failing, 0 new` | `9 failing, **0 new**` |
+| shard 4 | `22 failing, 0 new` | `18 failing, **0 new**` |
+| run colour | `failure` | **`success`** |
+
+Per-shard counts move because two test files change size and
+`scripts/hermetic_tests.py` reshuffles shards by file set; the **id** reading is
+what transfers, and it is empty.
+
+### 7.2 Positive control — the new tests actually ran
+
+Absence from `NEW FAILURES` is not evidence that a file executed, so the check is
+the four-shard passed total, and its decomposition:
+
+```
+#479 tip (40649149374) : 2974 + 3408 + 3338 + 3014 = 12734
+Wave 12  (40653792777) : 2746 + 3166 + 3482 + 3363 = 12757      Δ = +23
+```
+
+| term | count | how measured |
+| --- | --- | --- |
+| `tests/test_fleet_next_rc_wave12_ledger.py` (this lane, new) | +11 | `--collect-only` on both worktrees |
+| `tests/test_fleet_next_plugin_package.py` (#471's four new cases) | +4 | 22 → 26 collected |
+| `tests/test_fleet_v1_milestone_batch_registration.py` (#472's six new cases) | +6 | 25 → 31 collected |
+| the two ids this branch was built to close, now passing | +2 | §4 |
+| **sum** | **+23** | equals the observed Δ |
+
+Both runs report `0 flaky`, so the Δ has no flake term to explain away.
+
+### 7.3 Not run
+
+The other three workflows are **NOT_RUN, not green**:
+`serveros-native-linux-contract`, `serveros-native-windows-contract` and
+`fleet-next-isolated-contracts` are path-filtered on paths this PR's diff does not
+touch (it is diffed against `integrate/fleet-v1-rc-wave7-20261028`). #479's
+earlier branches trigger the Linux contract because they are diffed against
+`main`; that is a different question from "did this composition break it", and
+this lane does not inherit that green.
 
 ---
 
@@ -293,7 +344,7 @@ Read as gates:
 | --- | --- |
 | CODE | composed tree `f64d7af1`; 4 files, `+215/−18`, zero conflicts; blob-identical to #484's union while carrying the authors' commits as ancestry |
 | UNIT | 31 gate/ledger tests, 97 batch-family tests, 56 plugin-package tests, 2 red→green ids, 11 wave-12 ledger tests |
-| CI | §7 |
+| CI | run `40653792777`: **5/5 jobs success**, four shards `0 new / 0 flaky`, `+23` passed fully attributed (§7) |
 | REAL_DEVICE | **not measured.** No device contacted; no payload built onto hardware; the symlink case is NOT_RUN on Windows. |
 | PRODUCTION | **not measured.** NEXT stays shadow; nothing was started. |
 
