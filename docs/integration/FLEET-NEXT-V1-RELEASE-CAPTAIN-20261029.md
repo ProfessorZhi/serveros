@@ -139,7 +139,7 @@ Every named head was checked at
 | #506 | ✅ | ✅ | ✅ | ❌ (1 new) | ✅ | red |
 | #507 | ✅ | ✅ | ⏳ | ⏳ | ✅ | pending |
 | #508 | ✅ | ⏳ | ⏳ | ⏳ | ✅ | pending |
-| #510 (this PR) | ⏳ | ✅ | ✅ | ❌ (1 new) | ✅ | red |
+| #510 (this PR) | ✅ | ✅ | ✅ | ❌ (1 new) | ✅ | 4/5 red |
 
 The #500 failures are exactly the three `test_fleet_next_agent_monitor_activation_runtime_tick.py`
 cases that #503 exists to fix. The recurring "1 new" failure on #504 / #505 /
