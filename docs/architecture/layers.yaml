@@ -31,7 +31,8 @@ directories:
           state_root, protection, managed_mutation, serverosd.service 等）
       L0: 代理/工作控制的持久记录（agent_control_store, coordination, continuation*, dispatch_attempts,
           approval, owner_policy, agent_sessions）
-      L2: 枢纽装配（fleet_mcp_owner, fleet_core_bridge, fleet_monitor_*, fleet_recovery_events, fleet_audience）
+      L2: 枢纽装配（fleet_mcp_owner, fleet_core_bridge, fleet_monitor_*, fleet_recovery_events；
+          audience 规则已搬出本目录，见顶层 fleet_hub/）
       product: 卡片、日报、告警投递与工作台（cards*, card_*, daily_report, report_*, alert_*, notifications,
           direct_lark_notify, live_sender, workbench*, presentation, business_calendar）
   fleet:
@@ -46,6 +47,8 @@ directories:
       L2-hub: 东京中心 Fleet MCP（fleet.py, tools.py, http_transport.py, oauth.py, human_auth.py,
           cloudcli_native.py, providers/, deploy/）
       L2-node: 每台设备的 Node Connector（node/）
+  fleet_hub: L2      # 枢纽的规则，原在 runtime/fleet_hub/ 下，D2 stage 2 提升为顶层；今日只有 fleet_audience.py
+                     # （audience 判定与签名 verdict）。装配仍留在 runtime/ 与 fleet_mcp/：这里不是第二个 L0。
   mcp: L2            # 旧的每会话 MCP 适配器（node_mcp, agent_mcp, 各 provider），与 fleet_mcp 并存
   workengine: L0
   abilities: L3
