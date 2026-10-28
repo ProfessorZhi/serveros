@@ -70,6 +70,50 @@ Only `TERMINAL_VERIFIED` and `FAILED` are ever handed to the notifier
 (`contract.DISPATCHABLE`). A watch that is still `UNKNOWN` produces a
 de-bounced warning in the tick document and **nothing** outbound.
 
+## The exit code is part of the vocabulary
+
+A supervisor usually reads the number, not the document. So the number says the
+same three things the state word does, and no two different facts share one:
+
+| tick | exit | what it means |
+| --- | --- | --- |
+| `SETTLED` | 0 | every watch has a terminal verdict and every delivery has a receipt |
+| `TICKED` | 0 | every outstanding watch is **work in flight** (`ACCEPTED`/`QUEUED`/`STARTED`/`RUNNING`) and nothing abnormal was seen |
+| `UNCONFIRMED` | 4 | a hand-over has no receipt, the cursor is stale, **or** a watch has no verdict and no work in flight (`UNKNOWN`/`OFFLINE`/`STALE`/`DENIED`) |
+| `BLOCKED_INPUT` | 3 | there is no ledger, no authorized subject, or no run identity — nothing was sent |
+| `REFUSED` | 2 | this process may not write (a second writer) or the configuration is unusable |
+
+`LIVE_STATUSES` and the `UNOBSERVED` warning name the split: a run that is
+**running** is not a failure — it is reported as `TICKED`, never as `FAILED` —
+while "the monitor could not decide" is never handed over as `0`. #495's Wave 16
+§4.2 is the measurement of the old behaviour: an expired or unobservable watch
+reached the supervisor as `TICKED` exit 0, which is the number that means
+"nothing to do here".
+
+## A typed subject is a claim, not an authorization
+
+A CI watch may carry its own typed `device_ref` (#497). Both dimensions of the
+grant are checked, and both are checked **before anything is read**:
+
+1.  `sources.observe_ci` authorizes `project` and, when the watch declares a
+    device, that `device_ref` against `grant.devices`. An ungranted declared
+    device is `DENIED` / `BLOCKED_CI_SUBJECT` with **zero** provider calls, and
+    only an authorized device is carried into the observation's identity.
+2.  `notifier.delivery_subject` refuses to hand a declared CI subject over
+    unless that identity names **the same device**. `device:<anything>` being
+    well-typed is not evidence that anybody granted it — Wave 16 §4.1 measured a
+    granted project plus `device_ref: "device:victim"` producing a `DELIVERED`
+    message whose text and delivery key both named the victim.
+
+A CI watch that declares no device still uses the project container subject
+`device:ci:<project>`, which needs no device grant.
+
+A run watch that names only a `delivery_id` is deliverable when the far end
+answers with the run's own `runId` — that identity comes from the observation,
+never from the delivery id. When nothing names a run, the tick is
+`BLOCKED_RUN_IDENTITY` (exit 3, nothing sent): #423's envelope is not handed a
+`runId: null` that its ledger rejects *after* a claim has been written.
+
 ## Composition, not reimplementation
 
 *   **One notifier, injected.** `--notifier-entry module:callable` must resolve
@@ -115,6 +159,10 @@ de-bounced warning in the tick document and **nothing** outbound.
 python3 -m unittest discover -s tests -p 'test_fleet_next_agent_monitor_core.py' -v
 ```
 
-24 tests, every negative case in its own interpreter. RED on a pristine
-`origin/main` worktree (the package does not exist): 20 failures + 4 errors.
-GREEN here: 24 passed, exit 0.
+52 tests on this branch, every negative case in its own interpreter; 2 of them
+start a subprocess of #498's activation wrapper and skip here (that file is not
+on this branch) — they run for real in the composed tree (#497 + #498).
+
+RED on the `3db8ebf1` tree the tests were written against: 11 failures, exit 1
+(`notifier`/`sources`/`core` as they were, tests as they are now).
+GREEN here: 52 passed, 2 skipped, exit 0.
