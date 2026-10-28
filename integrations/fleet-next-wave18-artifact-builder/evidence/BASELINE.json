@@ -48,11 +48,11 @@
   ],
   "schema": "serveros/fleet-next-wave18-artifact-builder.v1",
   "source": {
-    "archive_sha256": "sha256:93f49754787e0fbf36dbc16f836b53001c345552a3881db71b9b4897438e489e",
+    "archive_sha256": "sha256:c0999b5d3678ccee6d328287608d50dc8e9b6ae077596ecbe4cb376b0974077e",
     "built_from": "git archive --format=tar <commit>",
-    "commit": "a50d2ec19e5e6e6f74fd9929f9155fd06e0f3f71",
+    "commit": "ff514f4bd447588e77274753c34f0a664258ca64",
     "live_tree_clean_at_build": true,
-    "tree": "3b98570899e68bdd7ea0a69f46b4de4041efd9b8",
+    "tree": "981d014c969374f1986be62e45e04b3a10c31d3e",
     "workdir_used_as_artifact": false
   },
   "state": "RED_BASELINE",

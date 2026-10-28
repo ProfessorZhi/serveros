@@ -153,11 +153,11 @@ require. A two-artifact build is refused before a tarball exists.
 
 | unit | files | sha256 (tarball) | tree sha256 |
 |---|---:|---|---|
-| `fleet-runtime-base` | 19 | `65bd3fa604aee64fc62bd87fbe0c37440b10c54689f1a3ef5c9b503615b82a69` | `bc8d32d0d32fd9e5609cb661e65f487d4450a5d7e7a80e74c4d0b44c6efd06f1` |
-| `fleet-authority` | 3 | `7b1d06f3df11ae0be61e23ca742b68315e825a9644eb2347b215d9d9b0792915` | `0e2b1ec0fd287424f56d75f1e9201b6bde82cc02d207e932b8254e8c7ac1f6c1` |
-| `fleet-hub` | 13 | `df491d74f696566188fe076cd99a8e91ccda7508849b8a0af6407f9bc76ed180` | `b9fc5a6f768e56175eea6498de261627230c6a94f7ff1bf92efeb6915874bde6` |
-| `fleet-node` | 2 | `0f5d1027e6895778d94cb2328700127a1ad0fa124a0c7bea740107937751a744` | `0871f4da77aef4303b1dfc35896c0ecd0fbc47cf481b58a10500360f2325a768` |
-| `fleet-next-composition` | 0 | `1abf972ea67aff30b7a945db55a9f4cc87762991a0198cbe5f2b6392b1f2da2e` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
+| `fleet-runtime-base` | 19 | `333caea13df2e17de068fb69ab6d47299eed938a8767607b7cfa2b6b601f7649` | `bc8d32d0d32fd9e5609cb661e65f487d4450a5d7e7a80e74c4d0b44c6efd06f1` |
+| `fleet-authority` | 3 | `ace00295ca00a84026a8ee70b6a2328c29738cdf93fa77c0fba91533d70103e9` | `0e2b1ec0fd287424f56d75f1e9201b6bde82cc02d207e932b8254e8c7ac1f6c1` |
+| `fleet-hub` | 13 | `4ca314f502a80d17c31bcccf8d460df6163afc6ec9083f1d0b8f9ed58ed86534` | `b9fc5a6f768e56175eea6498de261627230c6a94f7ff1bf92efeb6915874bde6` |
+| `fleet-node` | 2 | `381dbd8e1404082d4d9af4c952019e2a0e80a4b859ec639d052d4059a227251b` | `0871f4da77aef4303b1dfc35896c0ecd0fbc47cf481b58a10500360f2325a768` |
+| `fleet-next-composition` | 0 | `2a0933b9bde9855b3732d34410a0cddf6ab6feb41f2470d0e7ed19171418ddc8` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 
 The same values are in `evidence/ARTIFACTS.sha256` and
 `evidence/PROVENANCE.json`; the tarballs themselves are reproducible build

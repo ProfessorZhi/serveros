@@ -1,6 +1,6 @@
 # Wave 18 evidence
 
-Produced at code commit `a50d2ec19e5e6e6f74fd9929f9155fd06e0f3f71` from a
+Produced at code commit `ff514f4bd447588e77274753c34f0a664258ca64` from a
 `git archive` of that commit, with CUT-A/CUT-B applied to the isolated copy.
 
 | file | what it is |
@@ -15,7 +15,7 @@ them byte-for-byte with:
 
 ```bash
 python3 -I integrations/fleet-next-wave18-artifact-builder/wave18_builder.py \
-  --repo . --commit a50d2ec19e5e6e6f74fd9929f9155fd06e0f3f71 \
+  --repo . --commit ff514f4bd447588e77274753c34f0a664258ca64 \
   --version 1.0.0+wave18 --out /tmp/w18-evidence --json
 ```
 

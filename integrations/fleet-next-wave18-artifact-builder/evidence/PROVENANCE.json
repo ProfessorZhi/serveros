@@ -50,11 +50,11 @@
     ],
     "schema": "serveros/fleet-next-wave18-artifact-builder.v1",
     "source": {
-      "archive_sha256": "sha256:93f49754787e0fbf36dbc16f836b53001c345552a3881db71b9b4897438e489e",
+      "archive_sha256": "sha256:c0999b5d3678ccee6d328287608d50dc8e9b6ae077596ecbe4cb376b0974077e",
       "built_from": "git archive --format=tar <commit>",
-      "commit": "a50d2ec19e5e6e6f74fd9929f9155fd06e0f3f71",
+      "commit": "ff514f4bd447588e77274753c34f0a664258ca64",
       "live_tree_clean_at_build": true,
-      "tree": "3b98570899e68bdd7ea0a69f46b4de4041efd9b8",
+      "tree": "981d014c969374f1986be62e45e04b3a10c31d3e",
       "workdir_used_as_artifact": false
     },
     "state": "RED_BASELINE",
@@ -73,7 +73,7 @@
   },
   "builder": {
     "path": "integrations/fleet-next-wave18-artifact-builder/wave18_builder.py",
-    "sha256": "sha256:1fd2c34ebe3b07745574ccae7530cb5ca09f534fbe2db256647fe9f94b719356"
+    "sha256": "sha256:34cc5c50816c8e24f9fcda355f3376a0c82e82e31a2e2c4a7f1981033165d31f"
   },
   "decision": "BLOCKED_OWNER",
   "deterministic_rebuild": {
@@ -387,7 +387,7 @@
   "release_permitted": false,
   "release_plan": {
     "hub": {
-      "artifact_sha256": "sha256:df491d74f696566188fe076cd99a8e91ccda7508849b8a0af6407f9bc76ed180",
+      "artifact_sha256": "sha256:4ca314f502a80d17c31bcccf8d460df6163afc6ec9083f1d0b8f9ed58ed86534",
       "backend_id": "next-hub",
       "cred_state_root": "/var/lib/fleet-next/hub",
       "device_ref": "device:tokyo-shared-dev-01",
@@ -415,7 +415,7 @@
       "decision": "OK"
     },
     "node": {
-      "artifact_sha256": "sha256:0f5d1027e6895778d94cb2328700127a1ad0fa124a0c7bea740107937751a744",
+      "artifact_sha256": "sha256:381dbd8e1404082d4d9af4c952019e2a0e80a4b859ec639d052d4059a227251b",
       "backend_id": "next-node",
       "cred_state_root": "/var/lib/fleet-next/node",
       "device_ref": "device:tokyo-shared-dev-01",
@@ -514,11 +514,11 @@
   "schema": "serveros/fleet-next-wave18-provenance.v1",
   "source": {
     "archive_reproducible_across_three_builds": true,
-    "archive_sha256": "sha256:93f49754787e0fbf36dbc16f836b53001c345552a3881db71b9b4897438e489e",
+    "archive_sha256": "sha256:c0999b5d3678ccee6d328287608d50dc8e9b6ae077596ecbe4cb376b0974077e",
     "built_from": "git archive --format=tar <commit>",
-    "commit": "a50d2ec19e5e6e6f74fd9929f9155fd06e0f3f71",
+    "commit": "ff514f4bd447588e77274753c34f0a664258ca64",
     "live_tree_clean_at_build": true,
-    "tree": "3b98570899e68bdd7ea0a69f46b4de4041efd9b8",
+    "tree": "981d014c969374f1986be62e45e04b3a10c31d3e",
     "workdir_used_as_artifact": false
   },
   "source_state": "BLOCKED_OWNER",
@@ -538,6 +538,8 @@
         "sha256": "sha256:01a3c952416dc7a5cebcddabfae64c721aa68fe4fa630e57e0470a5d326ecdb5",
         "targets": [
           {
+            "input_blob_sha": "d2241c0c1801167d9062fd877c05de69e3d01b09",
+            "input_sha256": "a7ab64239e29b6bde1e0da391da4dc5face366e1cd580d7612fdafa741e67fba",
             "original_blob_sha": "d2241c0c1801167d9062fd877c05de69e3d01b09",
             "original_sha256": "a7ab64239e29b6bde1e0da391da4dc5face366e1cd580d7612fdafa741e67fba",
             "path": "fleet_mcp/fleet.py",
@@ -545,6 +547,8 @@
             "result_sha256": "641dddb3ce7f5abacd9da7fd8cc682cdc8d65ee0f8344a04119fff62450bcd14"
           },
           {
+            "input_blob_sha": "614c6e4cf59444d710d01798feff77ba5ef5795d",
+            "input_sha256": "4914b96a7eee71d13b40a5df64fa91cc154566c57b86c90975776ea3ee999107",
             "original_blob_sha": "614c6e4cf59444d710d01798feff77ba5ef5795d",
             "original_sha256": "4914b96a7eee71d13b40a5df64fa91cc154566c57b86c90975776ea3ee999107",
             "path": "fleet_mcp/node/connector.py",
@@ -552,6 +556,8 @@
             "result_sha256": "191b175400b3e10c4dc8d8e4b51eee2915b4e2c347932d8aeeba943ebb4e7242"
           },
           {
+            "input_blob_sha": "ef07b231a6ff147dbf7a1c51d71f5f9970a8413d",
+            "input_sha256": "de64d5e0d574b45cb727f37de41982a286645d1696938ec150d3d2df4c7555a3",
             "original_blob_sha": "ef07b231a6ff147dbf7a1c51d71f5f9970a8413d",
             "original_sha256": "de64d5e0d574b45cb727f37de41982a286645d1696938ec150d3d2df4c7555a3",
             "path": "fleet_mcp/owner_access.py",
@@ -572,6 +578,8 @@
         "sha256": "sha256:a7ee61def85526650e7ae641093ee7480f3d299055665a4b645507aa3d7a55b4",
         "targets": [
           {
+            "input_blob_sha": "4f6875396efc11bdd7ba621874f5f37a197090d6",
+            "input_sha256": "641dddb3ce7f5abacd9da7fd8cc682cdc8d65ee0f8344a04119fff62450bcd14",
             "original_blob_sha": "d2241c0c1801167d9062fd877c05de69e3d01b09",
             "original_sha256": "a7ab64239e29b6bde1e0da391da4dc5face366e1cd580d7612fdafa741e67fba",
             "path": "fleet_mcp/fleet.py",
@@ -579,6 +587,8 @@
             "result_sha256": "a1e9babf6c76479c150ffe87089370238363e8c1846b99b8399b8668bbab4837"
           },
           {
+            "input_blob_sha": "efc6cd7802a545583dba174229c86a79cdf95224",
+            "input_sha256": "b793d49e03ca1c97d7607a9c3dd657169dc2d72655acdca61161567f6e989bc4",
             "original_blob_sha": "efc6cd7802a545583dba174229c86a79cdf95224",
             "original_sha256": "b793d49e03ca1c97d7607a9c3dd657169dc2d72655acdca61161567f6e989bc4",
             "path": "fleet_mcp/owner_setup.py",
@@ -586,6 +596,8 @@
             "result_sha256": "7ba4905bfe5381271bc713588470a8f2e62e30b487153566557ad0fcbe7523ca"
           },
           {
+            "input_blob_sha": "8901ed43de797f6ea23283e36bac850093b445fa",
+            "input_sha256": "3669d3c1714eed509ccbc6effe0b7893055de8f7675b4556d4a5408e0004ba2a",
             "original_blob_sha": "8901ed43de797f6ea23283e36bac850093b445fa",
             "original_sha256": "3669d3c1714eed509ccbc6effe0b7893055de8f7675b4556d4a5408e0004ba2a",
             "path": "fleet_mcp/providers/__init__.py",
@@ -593,6 +605,8 @@
             "result_sha256": "a7e4801a43d1d341e650b006fe125041596cdacf5d10517eb065dbc939b9bbe3"
           },
           {
+            "input_blob_sha": null,
+            "input_sha256": null,
             "original_blob_sha": null,
             "original_sha256": null,
             "path": "fleet_mcp/providers/build.py",
@@ -609,7 +623,7 @@
       "entrypoints": [],
       "kind": "fleet-authority",
       "member_count": 3,
-      "tarball_sha256": "sha256:7b1d06f3df11ae0be61e23ca742b68315e825a9644eb2347b215d9d9b0792915",
+      "tarball_sha256": "sha256:ace00295ca00a84026a8ee70b6a2328c29738cdf93fa77c0fba91533d70103e9",
       "tree_sha256": "0e2b1ec0fd287424f56d75f1e9201b6bde82cc02d207e932b8254e8c7ac1f6c1",
       "version": "1.0.0+wave18"
     },
@@ -624,7 +638,7 @@
       ],
       "kind": "fleet-hub",
       "member_count": 13,
-      "tarball_sha256": "sha256:df491d74f696566188fe076cd99a8e91ccda7508849b8a0af6407f9bc76ed180",
+      "tarball_sha256": "sha256:4ca314f502a80d17c31bcccf8d460df6163afc6ec9083f1d0b8f9ed58ed86534",
       "tree_sha256": "b9fc5a6f768e56175eea6498de261627230c6a94f7ff1bf92efeb6915874bde6",
       "version": "1.0.0+wave18"
     },
@@ -633,7 +647,7 @@
       "entrypoints": [],
       "kind": "fleet-next-composition",
       "member_count": 0,
-      "tarball_sha256": "sha256:1abf972ea67aff30b7a945db55a9f4cc87762991a0198cbe5f2b6392b1f2da2e",
+      "tarball_sha256": "sha256:2a0933b9bde9855b3732d34410a0cddf6ab6feb41f2470d0e7ed19171418ddc8",
       "tree_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "version": "1.0.0+wave18"
     },
@@ -646,7 +660,7 @@
       ],
       "kind": "fleet-node",
       "member_count": 2,
-      "tarball_sha256": "sha256:0f5d1027e6895778d94cb2328700127a1ad0fa124a0c7bea740107937751a744",
+      "tarball_sha256": "sha256:381dbd8e1404082d4d9af4c952019e2a0e80a4b859ec639d052d4059a227251b",
       "tree_sha256": "0871f4da77aef4303b1dfc35896c0ecd0fbc47cf481b58a10500360f2325a768",
       "version": "1.0.0+wave18"
     },
@@ -655,7 +669,7 @@
       "entrypoints": [],
       "kind": "fleet-runtime-base",
       "member_count": 19,
-      "tarball_sha256": "sha256:65bd3fa604aee64fc62bd87fbe0c37440b10c54689f1a3ef5c9b503615b82a69",
+      "tarball_sha256": "sha256:333caea13df2e17de068fb69ab6d47299eed938a8767607b7cfa2b6b601f7649",
       "tree_sha256": "bc8d32d0d32fd9e5609cb661e65f487d4450a5d7e7a80e74c4d0b44c6efd06f1",
       "version": "1.0.0+wave18"
     }
