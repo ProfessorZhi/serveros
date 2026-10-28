@@ -1,0 +1,59 @@
+{
+  "schema": "serveros/fleet-next-v1-release-captain.v1",
+  "device_id": "device:tokyo-shared-dev-01",
+  "mode": "withdraw",
+  "installed_revision": "next-2026.10.29-canary.1",
+  "previous_revision": "UNKNOWN",
+  "steps": [
+    {
+      "id": "stop-next",
+      "kind": "next-only",
+      "idempotent": true,
+      "action": "systemctl --user stop",
+      "target": "serveros-fleet-next-mcp.service"
+    },
+    {
+      "id": "disable-next",
+      "kind": "next-only",
+      "idempotent": true,
+      "action": "systemctl --user disable",
+      "target": "serveros-fleet-next-mcp.service"
+    },
+    {
+      "id": "remove-next-unit",
+      "kind": "next-only",
+      "idempotent": true,
+      "action": "remove unit file",
+      "target": "serveros-fleet-next-mcp.service"
+    },
+    {
+      "id": "remove-next-state",
+      "kind": "next-only",
+      "idempotent": true,
+      "action": "remove Next state root",
+      "target": "/srv/fleet-next/state"
+    },
+    {
+      "id": "probe-next",
+      "kind": "next-only",
+      "idempotent": true,
+      "action": "confirm Next endpoint is not serving",
+      "target": "UNKNOWN"
+    },
+    {
+      "id": "probe-legacy",
+      "kind": "read-only-legacy",
+      "idempotent": true,
+      "action": "confirm Legacy still answers",
+      "target": "serveros-fleet-mcp.service"
+    },
+    {
+      "id": "preserve-evidence",
+      "kind": "evidence-write",
+      "idempotent": true,
+      "action": "write rollback receipt",
+      "target": "evidence"
+    }
+  ],
+  "note": "Shape example for the Tokyo canary (first Next install, so mode=withdraw). Regenerate per device and per revision; never hand-edit a plan into an execution."
+}

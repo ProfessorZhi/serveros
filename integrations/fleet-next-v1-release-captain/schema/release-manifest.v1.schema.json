@@ -1,0 +1,220 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "serveros/fleet-next-v1-release-captain.v1",
+  "title": "Fleet Next V1 release-captain manifest",
+  "description": "The facts a release is allowed to depend on. An absent field is UNKNOWN and blocks the target state; it is never read as a default.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "release_id", "authority", "legacy", "next", "source", "ci", "qa", "artifacts", "devices"],
+  "properties": {
+    "schema": {"const": "serveros/fleet-next-v1-release-captain.v1"},
+    "release_id": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string"},
+    "authority": {
+      "type": "object",
+      "required": ["scope", "requested"],
+      "properties": {
+        "owner_decision": {"type": "string"},
+        "campaign": {"type": "string"},
+        "scope": {"type": "array", "items": {"type": "string"}},
+        "requested": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "main_merge",
+              "legacy_takeover",
+              "legacy_plugin_url_replace",
+              "legacy_state_migration",
+              "production_auth_secret_oauth_provider_change",
+              "external_feishu_send",
+              "tailscale_mutation",
+              "irreversible_delete",
+              "paid_model_trial"
+            ]
+          },
+          "description": "Any entry here makes the whole release BLOCKED_OWNER."
+        },
+        "note": {"type": "string"}
+      }
+    },
+    "legacy": {
+      "type": "object",
+      "required": ["must_remain_available", "service_unit"],
+      "properties": {
+        "track": {"type": "string"},
+        "control_plane": {"type": "string"},
+        "version": {"type": "string"},
+        "must_remain_available": {"type": "boolean"},
+        "identity_observed": {"type": "boolean"},
+        "service_unit": {"type": "string"},
+        "plugin_id": {"type": "string"},
+        "backend_id": {"type": "string"},
+        "oauth_audience": {"type": "string"},
+        "ports": {"type": "array", "items": {"type": "integer"}},
+        "socket": {"type": "string"},
+        "state_root": {"type": "string"},
+        "lock_path": {"type": "string"},
+        "runtime_root": {"type": "string"},
+        "config_path": {"type": "string"},
+        "oauth_state_root": {"type": "string"},
+        "snapshot_pre": {"$ref": "#/definitions/snapshot"},
+        "snapshot_post": {"$ref": "#/definitions/snapshot"}
+      }
+    },
+    "next": {
+      "type": "object",
+      "required": ["service_unit"],
+      "properties": {
+        "service_unit": {"type": "string"},
+        "ports": {"type": "array", "items": {"type": "integer"}},
+        "socket": {"type": "string"},
+        "plugin_id": {"type": "string"},
+        "backend_id": {"type": "string"},
+        "oauth_audience": {"type": "string"},
+        "state_root": {"type": "string"},
+        "lock_path": {"type": "string"},
+        "runtime_root": {"type": "string"},
+        "config_path": {"type": "string"},
+        "oauth_state_root": {"type": "string"},
+        "public_mcp_url": {"type": "string"},
+        "installed_revision": {"type": "string"},
+        "previous_revision": {"type": "string"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["head_sha", "tree_sha", "components"],
+      "properties": {
+        "head_sha": {"type": "string"},
+        "tree_sha": {"type": "string"},
+        "components": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["sha"],
+            "properties": {
+              "pr": {"type": "integer"},
+              "role": {"type": "string"},
+              "sha": {"type": "string"},
+              "expected_sha": {"type": "string"},
+              "state": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "ci": {
+      "type": "object",
+      "required": ["head_sha", "run_id", "required_jobs", "jobs"],
+      "properties": {
+        "head_sha": {"type": "string"},
+        "run_id": {"type": ["integer", "string"]},
+        "required_jobs": {"type": "integer", "minimum": 1},
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": {"type": "string"},
+              "status": {"type": "string"},
+              "conclusion": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    },
+    "qa": {
+      "type": "object",
+      "required": ["head_sha", "verdict", "independent"],
+      "properties": {
+        "head_sha": {"type": "string"},
+        "verdict": {"type": "string"},
+        "independent": {"type": ["boolean", "null"]}
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "sha256", "provenance"],
+        "properties": {
+          "name": {"type": "string"},
+          "sha256": {"type": "string"},
+          "provenance": {
+            "type": "object",
+            "required": ["builder", "command", "generated_at", "source_tree"],
+            "properties": {
+              "builder": {"type": "string"},
+              "command": {"type": "string"},
+              "generated_at": {"type": "string"},
+              "source_tree": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "devices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["device_id", "order"],
+        "properties": {
+          "device_id": {"type": "string"},
+          "order": {"type": "integer", "minimum": 1},
+          "grant": {
+            "type": "object",
+            "properties": {
+              "present": {"type": ["boolean", "null"]},
+              "principal": {"type": ["string", "null"]},
+              "scope": {"type": "array", "items": {"type": "string"}},
+              "source": {"type": ["string", "null"]},
+              "approved_at": {"type": ["string", "null"]}
+            }
+          },
+          "reachability": {
+            "type": "object",
+            "properties": {
+              "reachable": {"type": ["boolean", "null"]},
+              "observed_at": {"type": ["string", "null"]},
+              "error": {"type": ["string", "null"]}
+            }
+          },
+          "resource": {
+            "type": "object",
+            "properties": {
+              "checked": {"type": "boolean"},
+              "conflict": {"type": ["boolean", "null"]},
+              "detail": {"type": ["string", "null"]}
+            }
+          },
+          "rollback": {
+            "type": "object",
+            "properties": {
+              "manifest": {"type": ["string", "null"]},
+              "verified": {"type": ["boolean", "null"]}
+            }
+          },
+          "canary": {"type": ["object", "null"]},
+          "accepted": {"type": ["boolean", "null"]},
+          "independent_acceptance": {"type": ["boolean", "null"]}
+        }
+      }
+    },
+    "owner_approval": {"type": ["object", "null"]},
+    "independent_acceptance": {"type": ["object", "null"]},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "definitions": {
+    "snapshot": {
+      "type": "object",
+      "required": ["service_unit", "version", "digest", "observed_at"],
+      "properties": {
+        "service_unit": {"type": "string"},
+        "version": {"type": "string"},
+        "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "observed_at": {"type": "string"}
+      }
+    }
+  }
+}

@@ -1,0 +1,200 @@
+{
+  "schema": "serveros/fleet-next-v1-release-captain.v1",
+  "release_id": "fleet-next-v1-2026-10-29",
+  "generated_at": "2026-10-29T02:45:00Z",
+  "authority": {
+    "owner_decision": "#478 (2026-10-28) \u2014 side-by-side only; Legacy keeps serving ChatGPT",
+    "campaign": "#425 / #434 / #409",
+    "scope": [
+      "draft-pr",
+      "offline-tests",
+      "side-by-side-canary-plan",
+      "next-only-rollback-dry-run"
+    ],
+    "requested": [],
+    "note": "Nothing in this manifest authorises a main merge, a Legacy replacement, a credential or OAuth change, a real Feishu send, a Tailscale change or a paid model trial. Those are BLOCKED_OWNER by construction, not by convention."
+  },
+  "legacy": {
+    "track": "legacy-fleet-0.1.0",
+    "control_plane": "chatgpt",
+    "version": "0.1.0",
+    "must_remain_available": true,
+    "identity_observed": false,
+    "service_unit": "serveros-fleet-mcp.service",
+    "plugin_id": "UNKNOWN",
+    "backend_id": "UNKNOWN",
+    "oauth_audience": "UNKNOWN",
+    "ports": [],
+    "socket": "UNKNOWN",
+    "state_root": "UNKNOWN",
+    "lock_path": "UNKNOWN",
+    "runtime_root": "UNKNOWN",
+    "config_path": "UNKNOWN",
+    "oauth_state_root": "UNKNOWN",
+    "snapshot_pre": null,
+    "snapshot_post": null
+  },
+  "next": {
+    "service_unit": "serveros-fleet-next-mcp.service",
+    "ports": [],
+    "socket": "UNKNOWN",
+    "plugin_id": "UNKNOWN",
+    "backend_id": "UNKNOWN",
+    "oauth_audience": "UNKNOWN",
+    "state_root": "UNKNOWN",
+    "lock_path": "UNKNOWN",
+    "runtime_root": "UNKNOWN",
+    "config_path": "UNKNOWN",
+    "oauth_state_root": "UNKNOWN",
+    "public_mcp_url": "UNKNOWN",
+    "installed_revision": "UNKNOWN",
+    "previous_revision": "UNKNOWN"
+  },
+  "source": {
+    "head_sha": "UNKNOWN",
+    "tree_sha": "UNKNOWN",
+    "components": [
+      {
+        "pr": 500,
+        "role": "wave16-rc-base",
+        "sha": "80220a4ad1b009946f11bda0ce96dd8ff8e05468",
+        "expected_sha": "80220a4ad1b009946f11bda0ce96dd8ff8e05468",
+        "state": "OPEN_DRAFT"
+      },
+      {
+        "pr": 503,
+        "role": "runtime-tick-abi",
+        "sha": "b7f1f6134a1e3dcee4b916068c693ff059c097bd",
+        "expected_sha": "b7f1f6134a1e3dcee4b916068c693ff059c097bd",
+        "state": "OPEN_DRAFT"
+      },
+      {
+        "pr": 504,
+        "role": "monitor-p0",
+        "sha": "6286bfbc885771a45415efcb33405bb21a841fde",
+        "expected_sha": "6286bfbc885771a45415efcb33405bb21a841fde",
+        "state": "OPEN_DRAFT"
+      },
+      {
+        "pr": 505,
+        "role": "hub-node-release-cut",
+        "sha": "3512c551574a94ad360f8bde6435bdf07c729167",
+        "expected_sha": "3512c551574a94ad360f8bde6435bdf07c729167",
+        "state": "OPEN_DRAFT"
+      },
+      {
+        "pr": 506,
+        "role": "sidecar-release",
+        "sha": "30d7c4d34ce7ebf76d751b8e306fa2c623c4cac7",
+        "expected_sha": "30d7c4d34ce7ebf76d751b8e306fa2c623c4cac7",
+        "state": "OPEN_DRAFT"
+      }
+    ]
+  },
+  "ci": {
+    "head_sha": "UNKNOWN",
+    "run_id": "UNKNOWN",
+    "required_jobs": 5,
+    "jobs": []
+  },
+  "qa": {
+    "head_sha": "UNKNOWN",
+    "verdict": "UNKNOWN",
+    "independent": null
+  },
+  "artifacts": [],
+  "devices": [
+    {
+      "device_id": "device:tokyo-shared-dev-01",
+      "order": 1,
+      "grant": {
+        "present": null,
+        "principal": null,
+        "scope": [],
+        "source": null,
+        "approved_at": null
+      },
+      "reachability": {
+        "reachable": null,
+        "observed_at": null,
+        "error": null
+      },
+      "resource": {
+        "checked": false,
+        "conflict": null,
+        "detail": "capacity and active-Run snapshot not collected for this release"
+      },
+      "rollback": {
+        "manifest": null,
+        "verified": null
+      },
+      "canary": null,
+      "accepted": null,
+      "independent_acceptance": null
+    },
+    {
+      "device_id": "device:llm-lab-dell",
+      "order": 2,
+      "grant": {
+        "present": null,
+        "principal": null,
+        "scope": [],
+        "source": null,
+        "approved_at": null
+      },
+      "reachability": {
+        "reachable": null,
+        "observed_at": null,
+        "error": null
+      },
+      "resource": {
+        "checked": false,
+        "conflict": null,
+        "detail": "Dell hosts other parallel Agents; headroom must be measured before any canary"
+      },
+      "rollback": {
+        "manifest": null,
+        "verified": null
+      },
+      "canary": null,
+      "accepted": null,
+      "independent_acceptance": null
+    },
+    {
+      "device_id": "device:work-fj",
+      "order": 3,
+      "grant": {
+        "present": null,
+        "principal": null,
+        "scope": [],
+        "source": null,
+        "approved_at": null
+      },
+      "reachability": {
+        "reachable": null,
+        "observed_at": null,
+        "error": null
+      },
+      "resource": {
+        "checked": false,
+        "conflict": null,
+        "detail": "FJ gateway was timing out at capture time; unreachable is BLOCKED_DEVICE, never assumed ready"
+      },
+      "rollback": {
+        "manifest": null,
+        "verified": null
+      },
+      "canary": null,
+      "accepted": null,
+      "independent_acceptance": null
+    }
+  ],
+  "owner_approval": null,
+  "notes": [
+    "The five component heads are the ones named in the 2026-10-29 release brief and re-read from GitHub at capture time.",
+    "No composed head_sha/tree_sha is recorded: Wave 18 (#507 @ 05da04f8c78f302b029c6304ed96f4e8ded5fc9b) is still in flight and no exact-head 5/5 green run exists.",
+    "Observed CI at capture: #500 shard 3 new-failure, #503 all four shards failing, #504 shard 4 one new failure, #505 shard 4 one new failure, #506 shard 4 one new failure. See evidence/CI-SNAPSHOT-2026-10-29.json.",
+    "No artifact has been built for this release, so no sha256 or provenance exists to pin.",
+    "No device has a local operator grant, a measured headroom reading, or a verified Next-only rollback."
+  ]
+}
