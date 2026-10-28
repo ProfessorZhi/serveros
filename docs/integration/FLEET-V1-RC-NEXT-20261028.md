@@ -92,7 +92,7 @@ b6169f19a5`。第一次合成用的是旧 SHA，已整棵重建（旧树 `a809cd
 |---|---|---|
 | **CODE** | 合成树 `5113cdc6` 本身；`scripts/build.py#verify_artifact_kinds` 与 `release.py#ARTIFACT_KINDS/REQUIRED_MEMBERS` 的真实行为；#423 的 `MilestoneNotifier` 公开面；#459 的调用点 | §3 + §6 |
 | **UNIT** | 下表的本机 pytest 读数（单核、单进程、`-p no:cacheprovider`） | §5 |
-| **HOSTED_CI** | 仅本 PR 的 check。**不当证据使用**：新增测试文件会重排分片（§5.3），且本仓 CI 的历史基线噪声远大于本轮改动面 | 不写进本文 |
+| **HOSTED_CI** | #449 自身的 run 与 RC-NEXT 的 run，只读 `== baseline gate ==` 之后的 **NEW FAILURES ID 集合**。**不用于判绿**（新增测试文件会重排分片，§5.3），只用于判**归属** | §5.4 |
 | **REAL_DEVICE** | **NOT_RUN**（未登录任何设备，未安装、未起服务） | — |
 | **CLIENT_E2E** | **NOT_RUN**（无 Claude Code / ChatGPT 客户端会话，无飞书投递） | — |
 | **PRODUCTION** | **NOT_RUN**（未触碰东京/戴尔任何运行中的服务、网关、隧道） | — |
@@ -151,6 +151,46 @@ tests/data/capture-cloudcli-1.41.0-v1-roundtrips-2026-10-27.json
 ⇒ 这是本机 `core.autocrlf=true` 把工作树写成 CRLF 造成的，**不是 #458 的缺陷**。
 该测试按设计在缺 capture 时 skip，在 capture 存在时才比对；在 LF 工作树上应为绿。
 
+### 5.4 同一分离在 HOSTED_CI 层的读数
+
+本机只跑得动入口/打包/Batch/Skill 这一小撮（§5.2 的 98 条红里 62 条 `test_runtime_truth`
+在 Windows 上连收集都过不去，§8）。所以「跨 PR 是否引入新失败」还得在 CI 层再判一次，
+判法相同：**只比 `== baseline gate ==` 之后的 NEW FAILURES 的测试 ID 集合**，不比计数
+——四片分片的成员随每棵树自己的文件集重排（记忆库 `serveros-ci-baseline-gate-and-sibling-token`），
+跨片比数字必然错。
+
+| 树 | NEW FAILURES | 覆盖文件数 |
+|---|---|---|
+| #449 自身 `4db2e711` | **183** | 7 |
+| RC-NEXT `5113cdc6` | **197** | 8 |
+
+```
+test_runtime_truth 62 · device_ability 49 · test_build 34 · runtime_truth_face 15
+build_decoupling 13 · plugin_composition 9 · fleet_owner_setup 1      = 183
+```
+
+集合差：**only-in-#449 = 0**，**only-in-RC-NEXT = 14**，逐条：
+
+| 条数 | 测试 | 判定 |
+|---|---|---|
+| 11 | `tests/test_build_fleet_hub_packaging.py`（#450 的新文件） | 同一个 §6.1 阻塞（Linux 上 build 真跑起来才撞，Windows 上先撞 §8 的路径拼写） |
+| 1 | `test_fleet_next_plugin_package::test_the_clean_package_is_not_caught_by_the_layout_rule` | 同族（打包布局规则） |
+| 1 | 我自己的 `test_fleet_v1_rc_next_packaging.py` | **故意的**，§6.1 的 gate 本体 |
+| 1 | `test_fleet_mcp_human_auth::PasswordConsentFlow::test_the_same_code_cannot_open_a_second_session` | **无法归属**：`git diff --stat 4db2e711 5113cdc6 -- fleet_mcp/` 为空，三个相关 blob 完全相同 ⇒ 只能是分片内顺序/并发敏感；记录，不追 |
+
+⇒ 跨 PR 引入的**真实**新失败仍是 **0**（11+1 是同一个既有阻塞在新文件里的复现，1 是我故意
+的红，1 无归属证据）。
+
+**两条必须一起读的更正**（对 `FLEET-V1-RC-20261028.md` §4 的记录）：
+
+1. **阻塞不是「一个 kind」而是两个**：`verify_artifact_kinds` 声明缺 `l2-node` 时先抛，
+   把 `l2-hub` 藏住了；两份声明补齐后才轮到 `l2-hub`。所以那处「改两行」其实是**三次**。
+2. **影响面不是「一个 §4 条目」**：CI 上 #449 **自身**就有 **183** 条 NEW FAILURES 分布在
+   **7** 个文件（上表）。这不是本轮加的，是既有基线之外的债；写「4 个文件」会低估它。
+
+**基线纪律**：`tests/hermetic-known-failures.txt` 本轮**一行未加**。上面 197 这个数字是
+**读出来的**，不是被登记进基线而去掉的；没有任何一条红是靠改基线变绿的。
+
 ## 6. 两处最小 merge gate（本车道新增，各一个文件）
 
 ### 6.1 `tests/test_fleet_v1_rc_next_packaging.py` — L3 builder / 打包声明
@@ -206,6 +246,37 @@ node/plugin 的 payload 不再装 `fleet_mcp/`（打包方）。gate 只要求**
 gate 变成 **failed（unexpected success）** —— 正是「seam 落地了，请删掉装饰器」的信号；
 正向控制同步红并点名多了 `send_text`。
 
+### 6.3 顺带核实的全仓规则（不是本轮 gate，但两个 gate 必须遵守）
+
+`tests/loader_graph.py#unguarded_registrants` 要求：往 `sys.modules` 写合成名时，**读与写
+必须同形** —— 接受 `if name in sys.modules: return sys.modules[name]`，或写在
+`if module is None:` 里；`sys.modules.get(name)` + 早返回**不算**（读与写之间仍可被顶替）。
+
+用仓库自己的扫描器对比两棵树（#449 基线 vs 合成树）：
+
+| 树 | 未守卫站点 |
+|---|---|
+| #449 `4db2e711` | **39** |
+| RC-NEXT `5113cdc6` | **45** |
+
+净 **+6**。我的两个 gate 一开始就是 `get` 形，**已被我改成同形**（扫描器里 `mine: []`）。
+另外两组看着「新增」其实是**同一个站点行号漂移**，按文本 diff 会误报成 8 个：
+`scripts/release.py` 的 `_native_package_verifier`（1257 → 1336，上方新增 79 行）、
+`tests/test_release_l2_layers.py` 的 `_load`（40 → 41）。
+
+真正新增的 6 个，按文件归属（该文件由谁引入）：
+
+| 站点 | 引入者 |
+|---|---|
+| `integrations/fleet-v1-milestone-batch/batch.py:207` in `_observer` | #459 |
+| `tests/test_build_fleet_hub_packaging.py:66` in `_load` | #450 |
+| `tests/test_fleet_chatgpt_batch_commander.py:22` | #456 |
+| `tests/test_fleet_chatgpt_commander_package.py:29`、`:38` | #456 |
+| `tests/test_fleet_chatgpt_plugin_update_contract.py:21` | #456 |
+
+这一条**不会让 CI 变红** —— `test_loader_identity` 本身在基线文件里（listed）。所以它只是
+质量信号，已记下，不在本轮替原作者改。
+
 ## 7. BLOCKED / DEPENDENCY（不做空等）
 
 | # | 项 | 状态 | 谁欠 |
@@ -238,3 +309,6 @@ B1 与 B2 **都不是「再等一等」**：两个 gate 都已经在树上，条
 未合 main；未改 #449 的分支；未改任何原作者的生产源码（含 `plugin/bundle.yaml`、
 `scripts/build.py`、`milestone_notify.py`、`batch.py`）；未扩 fake known-failure 基线；
 未装任何东西、未起停服务、未碰密钥/OAuth/飞书；未清理任何人的 worktree；未强推。
+
+分支上的两个 commit 都是**追加**（`6c91073` 两处 gate → `b174fd1` 只改我自己的
+`_load` 形状，§6.3）；没有 force-push，没有 rebase 别人已发布的分支。
