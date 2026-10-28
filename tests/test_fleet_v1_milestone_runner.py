@@ -216,6 +216,14 @@ class OneActiveAndSharedLedger(Base):
         self.assertEqual(len(calls), 1, "the refused runner never called its factory")
         first.stop()
 
+    def test_stop_before_run_spends_no_tick(self):
+        instance = self.make(self.config(
+            sequence=[{"payload": "completed"}], max_ticks=1))
+        instance.request_stop()
+        result = instance.run()
+        self.assertEqual(result["state"], runner.STOPPED)
+        self.assertEqual(self.lines(), [], "a pre-run stop must not observe")
+
     def test_two_runners_with_distinct_locks_share_one_ledger(self):
         first = self.make(self.config(
             sequence=[{"payload": "completed"}], max_ticks=1))

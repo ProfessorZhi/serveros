@@ -102,7 +102,7 @@ runner 不重新分类里程碑，也不把异常升级成成功：
 python3 -m unittest -v tests.test_fleet_v1_milestone_runner
 ```
 
-14 个 offline tests，其中 **3 个独立 subprocess**：
+15 个 offline tests，其中 **3 个独立 subprocess**：
 
 1. `running → completed`：GPT 已结束的假源状态变更；runner tick 触发一次重大
    成功；重启同 ledger 不重发。

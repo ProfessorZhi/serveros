@@ -409,6 +409,7 @@ class MilestoneRunner:
         self._lock = lock_factory(config.lock_path)
         self._stop = threading.Event()
         self._started = False
+        self._running = False
         self._closed = False
         self._deadline: float | None = None
         self.provider = None
@@ -496,8 +497,12 @@ class MilestoneRunner:
         self._stop.set()
 
     def stop(self) -> None:
+        """Request a stop. If no run is active, release the lock now; a live
+        run releases it in its own ``finally`` so a provider call is not cut off
+        mid-tick by a second thread."""
         self.request_stop()
-        self._release()
+        if not self._running:
+            self._release()
 
     def _release(self) -> None:
         if self._closed:
@@ -540,10 +545,23 @@ class MilestoneRunner:
                 "counts": report.get("counts", {}), "rows": rows}
 
     def run(self) -> dict:
+        if self._closed:
+            raise RunnerStartRefused(
+                "RUNNER_STOPPED", "this runner was already stopped")
+        if self._running:
+            raise RunnerStartRefused("ALREADY_RUNNING", "this runner is already running")
         if not self._started:
             self.start()
+        self._running = True
         self._deadline = (self._monotonic() + self.config.max_runtime_seconds
                           if self.config.max_runtime_seconds is not None else None)
+        if self._stop.is_set():
+            # A stop requested before the loop must not spend one tick.
+            self._running = False
+            self._release()
+            return {"schema": SCHEMA, "state": STOPPED,
+                    "service_state": SERVICE_STATE, "ticks": self.tick_count,
+                    "last": self.last, "error": self.error}
         state = BOUNDED_STOP
         try:
             for report in self.observer.run_periodic(
@@ -566,6 +584,7 @@ class MilestoneRunner:
             self.error = f"{type(exc).__name__}: {exc}"
             self.ticks.append({"state": "RUNNER_ERROR", "why": self.error[:240]})
         finally:
+            self._running = False
             self._release()
         return {"schema": SCHEMA, "state": state, "service_state": SERVICE_STATE,
                 "ticks": self.tick_count, "last": self.last, "error": self.error}
