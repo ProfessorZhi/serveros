@@ -262,6 +262,18 @@ technical_state GREEN_SANDBOX · decision BLOCKED_OWNER · device NOT_RUN
 Hosted CI is the PR's own run at the same head; this document does not claim a
 hosted result before it exists.
 
+### 7.1 Commits and change surface
+
+| commit | what |
+|---|---|
+| `8770161` | adapter, tests, handoff patches, this report |
+| `f3aa45a` | `evidence/wave17-evidence.json`, produced at `8770161` |
+
+`git diff --stat 517ef91..8770161` — 8 files, +2365 lines, no deletion outside
+the new paths. Changed-tree listing digest (SHA256 of `git ls-tree -r` over the
+three owned paths at `8770161`):
+`sha256:a504be7cb19f6f1aff9c5dce0f4c65666a951c7c0be958cc8e6e9d9f6132e44d`.
+
 ## 8. Non-goals honoured
 
 * No `main` merge, no real install, no Legacy gateway/plugin/Creator update.
