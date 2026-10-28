@@ -258,9 +258,11 @@ withdrawing a guard lets the code write.
 * **#502** (release-unit measurement) — the sidecar's `revocable` cell no longer
   has to read `no receipt exists`; there is now a writer whose output the revoker
   verifies, in-process and across processes.
-* **#478** (refusal-surface parity) — 24 codes are #506's verbatim; the 14 new
-  ones are listed in the module README with the condition that produces each, and
-  the four backstops are named in §5 rather than left to look measured.
+* **#478** (Legacy dual-track / Agent Monitor acceptance) — the install →
+  upgrade → revoke cycle leaves the Legacy `get_session` / `get_run` /
+  deliveries observation byte-identical, and the drift detector is shown to
+  notice a real change, which is the dual-track evidence this round can offer
+  offline. It is a fake, so it is not a Legacy acceptance pass.
 * **#425** (device acceptance) — this is the work that must be run **on a
   device** to move `REAL_DEVICE_NOT_RUN`: a real root under an allowed prefix, a
   real boot id, a real backend id, a real grant, and a revoke afterwards. Until
