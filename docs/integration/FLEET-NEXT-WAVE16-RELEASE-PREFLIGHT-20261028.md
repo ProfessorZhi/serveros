@@ -159,7 +159,9 @@ manager session; out of scope and explicitly forbidden this round).
 
 Ref `e69fc0337ae5d33000478e3d5162077f525bc8cc`. Manifests are git **blob
 SHAs**, so they are identical on any checkout of the commit (a worktree hash
-would move with `core.autocrlf`).
+would move with `core.autocrlf`). The same three manifests also come out
+identical at this branch's head (`925c9339`), which is the statement that this
+PR leaves the release units where it found them.
 
 ```bash
 python integrations/fleet-next-wave16-release-preflight/wave16_preflight.py --resolve
