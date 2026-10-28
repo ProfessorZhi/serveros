@@ -603,16 +603,71 @@ class SchemaDriftSince2469ec5Test(unittest.TestCase):
         self.assertFalse(report["ok"])
         self.assertIn("depends_on names", " ".join(report["problems"]))
 
-    def test_the_measured_standalone_answer_wins_over_the_old_arithmetic(self):
-        """`runtime_standalone` answers "can it RUN"; the old field cannot."""
+    def test_the_measured_answer_can_only_narrow_the_verdict(self):
+        """`runtime_standalone: false` alongside `standalone: true` is a refusal.
+
+        The two fields answer different questions — "does the entry import" and
+        "does the payload run" — and a payload that runs imports. A manifest that
+        says otherwise is contradictory, and this verifier cannot authenticate
+        `ARTIFACT.json` (`member_sha256` excludes it), so a contradiction is
+        refused rather than settled in favour of the field that says yes.
+        """
         def measured(manifest, art):
             manifest["l2"]["standalone"] = True
             manifest["l2"]["runtime_standalone"] = False
         art = make_l2(self.base, "l2-node", mutate=measured)
         report = release.verify_l2_layer(art, kind="l2-node")
-        self.assertTrue(report["ok"], report["problems"])
+        self.assertFalse(report["ok"], "a self-contradicting manifest verified")
+        self.assertIn("contradicts itself", " ".join(report["problems"]))
+        self.assertFalse(report["installable"])
+
+    def test_the_dangerous_direction_is_refused(self):
+        """`standalone: false` + `runtime_standalone: true` must NOT be promoted.
+
+        Believing the more permissive field here is how a contradictory manifest
+        reaches `current`: `installable` would be true, the gate would pass, and
+        the receipt would record a payload as installable on the strength of an
+        unhashed boolean.
+        """
+        def optimistic(manifest, art):
+            manifest["l2"]["standalone"] = False
+            manifest["l2"]["external_in_repo"] = ["fleet"]
+            manifest["l2"]["runtime_standalone"] = True
+        art = make_l2(self.base, "l2-node", mutate=optimistic)
+        report = release.verify_l2_layer(art, kind="l2-node")
         self.assertFalse(report["installable"],
-                         "the manifest said it cannot run and the verifier said it can")
+                         "the verifier believed runtime_standalone over two "
+                         "contradicting fields")
+        self.assertFalse(report["ok"])
+
+    def test_a_non_boolean_measurement_is_refused(self):
+        def stringy(manifest, art):
+            manifest["l2"]["runtime_standalone"] = "yes"
+        art = make_l2(self.base, "l2-node", mutate=stringy)
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertFalse(report["ok"])
+        self.assertIn("not a boolean", " ".join(report["problems"]))
+
+    def test_declared_dependencies_mean_not_independently_installable(self):
+        def depends(manifest, art):
+            manifest["l2"]["depends_on"] = ["fleet_mcp"]
+        art = make_l2(self.base, "l2-node", mutate=depends)
+        report = release.verify_l2_layer(art, kind="l2-node")
+        self.assertTrue(report["ok"], report["problems"])
+        self.assertFalse(report["installable"])
+        self.assertIn("depends_on", " ".join(report["standalone_reasons"]))
+
+    def test_a_windows_drive_relative_member_name_is_refused(self):
+        for name in ("C:/windows.py", "C:windows.py"):
+            with self.subTest(name=name):
+                art = make_l2(self.base, "l2-hub")
+                manifest = json.loads((art / release.ARTIFACT_MANIFEST).read_text())
+                manifest["members"] = manifest["members"] + [name]
+                manifest["member_sha256"][name] = "0" * 64
+                (art / release.ARTIFACT_MANIFEST).write_text(json.dumps(manifest))
+                report = release.verify_l2_layer(art, kind="l2-hub")
+                self.assertFalse(report["ok"], f"{name} was accepted")
+                self.assertIn("Windows absolute", " ".join(report["problems"]))
 
     def test_an_old_manifest_without_the_measured_field_still_works(self):
         art = make_l2(self.base, "l2-node")

@@ -60,7 +60,7 @@ import shutil
 import subprocess
 from fnmatch import fnmatchcase
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 # The placeholders the units are written with. They are inert to systemd on
 # purpose: systemd expands `%` and `$`, so a `$NAME` left unrendered would
@@ -1021,7 +1021,8 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
         problems.append(f"name is {manifest.get('name')!r}, expected {L2_NAMES[kind]!r}")
     version = str(manifest.get("version", ""))
     if not L2_VERSION_RE.match(version):
-        problems.append(f"version {version!r} is not <major>.<minor>.<patch>[+<cachebuster>]")
+        problems.append(f"version {version!r} is not "
+                        f"<major>.<minor>.<patch>[-<prerelease>][+<cachebuster>]")
 
     # --- the member list, against the bytes ---------------------------------
     #
@@ -1073,6 +1074,15 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
             problems.append(f"member name {name!r} is not in canonical form; a path "
                             f"with a second spelling, a backslash or a control "
                             f"character names one file two ways")
+            continue
+        # A Windows absolute or drive-relative name is not a member either. On
+        # Windows `rev_dir / "C:/x.py"` is `C:\\x.py` — outside the payload —
+        # and `rev_dir / "C:x"` is drive-relative. Both are refused as names
+        # rather than resolved to find out where they point.
+        windows = PureWindowsPath(name)
+        if windows.is_absolute() or windows.drive:
+            problems.append(f"member name {name!r} is a Windows absolute or "
+                            f"drive-relative path, not a member of this payload")
             continue
         if name.endswith((".pyc", ".pyo")):
             problems.append(f"{name} is bytecode; a payload carries sources")
@@ -1214,16 +1224,37 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
     # verification — and would put the release path at odds with the build's own
     # verifier, which believes it. The two are separate fields because they are
     # separate facts.
-    # #431 @ 7dbac2b3 measures this instead of recomputing it: `runtime_standalone`
-    # is the answer to "can it RUN", which includes the modules its first fleet
-    # call imports, and `standalone` alone cannot see a payload that imports and
-    # then dies on that call. Prefer the measured field; fall back to the old
-    # arithmetic only for manifests written before it existed.
+    # Two fields, and the gate takes the CONJUNCTION. `standalone` answers "does
+    # the entry module import"; `runtime_standalone` (added in #431 @ 7dbac2b3)
+    # answers "does the payload run", including the modules its first fleet call
+    # imports. The second is the stronger statement, so it can only ever NARROW
+    # this verdict, never widen it.
+    #
+    # That direction is the whole correctness argument. Believing the more
+    # permissive field — `runtime_standalone: true` beside `standalone: false` or
+    # a non-empty `external_in_repo` — would promote a manifest that contradicts
+    # itself, and `ARTIFACT.json` is the one file this verifier cannot
+    # authenticate: `member_sha256` excludes it by construction. A contradictory
+    # manifest is refused, not adjudicated in favour of the field that says yes.
+    declared = l2.get("standalone")
     measured = l2.get("runtime_standalone")
-    if isinstance(measured, bool):
-        standalone = measured
-    else:
-        standalone = l2.get("standalone") is True and not external
+    depends = list(l2.get("depends_on") or [])
+
+    if measured is not None and not isinstance(measured, bool):
+        problems.append(f"l2.runtime_standalone is {type(measured).__name__}, not a "
+                        f"boolean; a measurement that is not a boolean is not one")
+        measured = None
+    if isinstance(measured, bool) and isinstance(declared, bool) and measured != declared:
+        problems.append(f"the manifest contradicts itself: standalone is {declared} and "
+                        f"runtime_standalone is {measured}. One says the entry imports, "
+                        f"the other says the payload runs; a payload that runs imports")
+
+    standalone = (
+        declared is True
+        and not external
+        and not depends
+        and (measured is not False)
+    )
     standalone_reasons: list[str] = []
     if not standalone:
         missing_packages = sorted(external)
@@ -1231,10 +1262,20 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
             standalone_reasons.append(
                 f"the payload imports in-repo package(s) {missing_packages} that it "
                 f"does not carry; it cannot run without this checkout")
-        else:
+        if depends:
+            standalone_reasons.append(
+                f"the manifest declares depends_on {depends}; a payload with declared "
+                f"dependencies is not independently installable")
+        if isinstance(measured, bool) and measured is False:
+            standalone_reasons.append(
+                "the manifest's own runtime_standalone says the payload cannot run")
+        if declared is not True and not (isinstance(measured, bool) and measured is False):
             standalone_reasons.append(
                 "the manifest does not claim standalone, so nothing here says the "
                 "payload can run on its own")
+        if not standalone_reasons:
+            standalone_reasons.append(
+                "the manifest contradicts itself about whether this payload can run")
 
     return {"ok": not problems, "problems": problems,
             "tree_hash": fingerprint(rev_dir) if not problems else None,
