@@ -147,7 +147,9 @@ before they can be measured against #487.
   secret, paid model, GPU, real Feishu/IM or real device operation.
 - Creator, real device, real send/stop, live service and real plugin install:
   **NOT_RUN**. Old Fleet remains untouched.
-- Hosted CI: pending at draft creation; the #487 ledger is expected to stay red
-  until an owner resolves the README digest. Not claimed green.
+- Hosted CI run `40657297465` at `701d7dc`: shards 1/4–3/4 pass; shard 4/4
+  is red on the exact #487 ledger subtest above (the one new-vs-main id) plus
+  pre-existing host-bound tests. The Wave 13 QA suite passes. Not claimed
+  green until an owner resolves the README digest.
 
 Cross: #425 #478 #434 #487 #477 #481 #480 #473 #474.
