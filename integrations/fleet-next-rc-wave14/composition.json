@@ -1,0 +1,313 @@
+{
+  "schema": "serveros/fleet-next-rc-wave14-composition.v1",
+  "date": "2026-10-28",
+  "base": {
+    "pr": "#492",
+    "commit": "a00fabc87fff65aeb50a851536b3314be8399090",
+    "tree": "d84aef2566572353001ec50a60d33ac95c656281",
+    "hosted_ci": {
+      "run": "40662311688",
+      "jobs": "5/5",
+      "scope": "Wave 13 RC exact head"
+    }
+  },
+  "composed_source": {
+    "commit": "7ff573db7300867fd37b673a59b0101e7f87dab6",
+    "tree": "4f28f4ef78e47790f874fe046a457c2d3defc7d0",
+    "commit_subject": "merge #483: Legacy resource isolation (#478)"
+  },
+  "notifier": {
+    "pr": "#423",
+    "head": "d9b2948a62609e16007f2fe0ae288f9652d64cd1",
+    "path": "integrations/fleet-v1-milestone-notify/milestone_notify.py",
+    "relation": "already an ancestor of the base; carried unchanged, not re-imported",
+    "copy_count": 1,
+    "binding": "module:callable, injected by --notifier-entry; the monitor owns no default ledger",
+    "blob": "7df27cb36b169134ff279e43c0b9c329cf919fef"
+  },
+  "authors": [
+    {
+      "pr": "#493",
+      "commit": "4f5320de7e187daadd79adc92e7487facd7b1820",
+      "tree": "59e0987cb2fbbdf07485a5ce381d77ec78a0c171",
+      "merge_base": "e69fc0337ae5d33000478e3d5162077f525bc8cc",
+      "merge": "b23cda6bbecff7ecbb0636beb56b491de3061cd3",
+      "subject": "feat(monitor): the Fleet Next Agent Monitor body, with no word for \"done\"",
+      "stats": {
+        "files": 11,
+        "insertions": 2577,
+        "deletions": 0
+      },
+      "commits": [
+        {
+          "commit": "4f5320de7e187daadd79adc92e7487facd7b1820",
+          "tree": "59e0987cb2fbbdf07485a5ce381d77ec78a0c171",
+          "subject": "feat(monitor): the Fleet Next Agent Monitor body, with no word for \"done\""
+        }
+      ],
+      "files": [
+        {
+          "path": "integrations/fleet-next-agent-monitor/README.md",
+          "sha256": "025964c9ae53ede6107ac84b007d8d55db006e452641e685f873d8c924270f6f"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/__init__.py",
+          "sha256": "f035b59f9ac09d8def115a838a5fcfc791a5d9ad16776a5b690036b8160c6f41"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/__main__.py",
+          "sha256": "b85072c21093e927e96c73b8478dfcf074efa1b530af5fcfabe2299da2a49f98"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/contract.py",
+          "sha256": "adb92fd7d62ab8c36c59f742e17e7c9c93be9fbd97f009d36e7a2b5d803cedbe"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/core.py",
+          "sha256": "04c3f79873c4c4f990b314676ad7c6998fa8e04ef0291f2236ffca8c311234e6"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/notifier.py",
+          "sha256": "7c3d08c0c20d446a2493957c6d7a0214a7629ccf9b61783e0b2688cfa6f78e52"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/offline.py",
+          "sha256": "cdd1e2293db32d6d04a5053d46afe891f69558dbdd2c1392800ffdae440d95a6"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/runtime.py",
+          "sha256": "fa69d8749d0bab0cd92efb72c7b4fabd05b9e8fa37ab4ab40622b27395426731"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/sources.py",
+          "sha256": "59a570e14502251c39cd16a8d8a900f57197f283df17e02582cc9e023c600154"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/state.py",
+          "sha256": "acae281411102404eb2dd8949929f9b3ff91db32810abd032648e391e1c196c4"
+        },
+        {
+          "path": "tests/test_fleet_next_agent_monitor_core.py",
+          "sha256": "c5d09931bbcbe3665198572563cb90e585cf3c95c36247f7b96c960d94a5ca83"
+        }
+      ]
+    },
+    {
+      "pr": "#488",
+      "commit": "009662f36a2a5f8e11c51ae517834379a91a7770",
+      "tree": "82b4bc37d7a03c191d95ecd09b390bf6fd6b95a2",
+      "merge_base": "9b7710a26180e1e6d00ce597827d447d0d2348b7",
+      "merge": "efde75022a308680b3920277401517cd312e3c4b",
+      "subject": "docs(next-monitor): the upstream entry landed; record the adapter and its floor",
+      "stats": {
+        "files": 6,
+        "insertions": 1504,
+        "deletions": 0
+      },
+      "commits": [
+        {
+          "commit": "009662f36a2a5f8e11c51ae517834379a91a7770",
+          "tree": "82b4bc37d7a03c191d95ecd09b390bf6fd6b95a2",
+          "subject": "docs(next-monitor): the upstream entry landed; record the adapter and its floor"
+        },
+        {
+          "commit": "4ddbcdc0cdd71ef9109f47c496da7d126b5be01c",
+          "tree": "79b307241ea7a77b5d39476319aa2676b19d5756",
+          "subject": "feat(next-monitor): wire the activation wrapper to #481's Batch CLI, without flattening its answer"
+        }
+      ],
+      "files": [
+        {
+          "path": "docs/integration/FLEET-NEXT-AGENT-MONITOR-ACTIVATION.md",
+          "sha256": "1e1d9636e02810ef85834553e1f7f6131c25900b3cd7f221c46ba07805fb04c3"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor-activation/activation.py",
+          "sha256": "5fb860b08f99c60471da9cca2ead378d14904b83658fe636a50ca998e7f8d35f"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor-activation/batch_adapter.py",
+          "sha256": "2e145e53499c798621eca44e1d018e5416fa09a26eb2f086fbb30e5a9c3c0638"
+        },
+        {
+          "path": "integrations/fleet-next-agent-monitor-activation/serveros-next-agent-monitor.service.template",
+          "sha256": "000022c5b7c667662911955ff9e9c12c5f8355535507e35deb0f80697765d732"
+        },
+        {
+          "path": "tests/test_fleet_next_agent_monitor_activation.py",
+          "sha256": "8cfd10bed8c510d434f4dac7b63d6e50d199a850c2b428d41483f4e272da3abd"
+        },
+        {
+          "path": "tests/test_fleet_next_agent_monitor_activation_batch.py",
+          "sha256": "fc7a7534d7594d725a524e5c3d99b587d97b0f634847bb1f0cae18047b20ea19"
+        }
+      ]
+    },
+    {
+      "pr": "#490",
+      "commit": "06a8be67422f1320e7bdfee38410f8b24d27b501",
+      "tree": "c9f24821f811b395fd58c647e7a4686d4368bf51",
+      "merge_base": "e69fc0337ae5d33000478e3d5162077f525bc8cc",
+      "merge": "a5e55b93a97e17e97853e2be2c3715526f9ed226",
+      "subject": "feat(monitor): read-only Legacy source adapter for the Fleet Next Agent Monitor",
+      "stats": {
+        "files": 8,
+        "insertions": 1766,
+        "deletions": 0
+      },
+      "commits": [
+        {
+          "commit": "06a8be67422f1320e7bdfee38410f8b24d27b501",
+          "tree": "c9f24821f811b395fd58c647e7a4686d4368bf51",
+          "subject": "feat(monitor): read-only Legacy source adapter for the Fleet Next Agent Monitor"
+        }
+      ],
+      "files": [
+        {
+          "path": "docs/integration/FLEET-NEXT-SOURCE-ADAPTER.md",
+          "sha256": "384daa2ae0db59981dbf61148846b62bc34d28f8fc521f95fc32f1857a5b9cfa"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/README.md",
+          "sha256": "5f5992af35638a3c819ef599cb263c8942e633ada3abea7bc884e40670470772"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/__init__.py",
+          "sha256": "567347d0d7ddd54b009a839cffeddfa21d73e9269c781696690174dfc85fee3a"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/adapter.py",
+          "sha256": "ffdcb547b6972f5a81cd19ad72f81e9d6a564b10777425d0a3495fac65723626"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/cli.py",
+          "sha256": "e02f470bbf7563ff2ab5b53cf6eed239ae6b1d2021ed75d76c7b74e1da338f52"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/contract.py",
+          "sha256": "a9a6e9b08a01d4f523393022adb89e375f2702a249e31237e44dbed4b34d61bb"
+        },
+        {
+          "path": "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/serializer.py",
+          "sha256": "d22cbf358a2c31b1f51e3f59feda1577021bbae8a4af023ce3f88b7e8407b364"
+        },
+        {
+          "path": "tests/test_fleet_next_monitor_source_adapter.py",
+          "sha256": "50bd5e198c53e9f9fae61e95209917c39d9669edccfdbcb6b2719577b48e8f1c"
+        }
+      ]
+    },
+    {
+      "pr": "#483",
+      "commit": "644ee4a8e35b770426841929d5989bcfad128bef",
+      "tree": "565ea5d11d95af86e533431149e04269def50c6f",
+      "merge_base": "e69fc0337ae5d33000478e3d5162077f525bc8cc",
+      "merge": "7ff573db7300867fd37b673a59b0101e7f87dab6",
+      "subject": "feat(#478): GREEN \u2014 placement guard, per-track rollback, shadow refusal, survival harness",
+      "stats": {
+        "files": 4,
+        "insertions": 1932,
+        "deletions": 0
+      },
+      "commits": [
+        {
+          "commit": "644ee4a8e35b770426841929d5989bcfad128bef",
+          "tree": "565ea5d11d95af86e533431149e04269def50c6f",
+          "subject": "feat(#478): GREEN \u2014 placement guard, per-track rollback, shadow refusal, survival harness"
+        },
+        {
+          "commit": "8ac7e056192f64417b3031d5af5968a83c31e89d",
+          "tree": "2565b7ede378eb94515685e91415d152ed6cd832",
+          "subject": "test(#478): RED \u2014 Next-beside-Legacy placement, shadow and survival contract"
+        }
+      ],
+      "files": [
+        {
+          "path": "docs/integration/FLEET-NEXT-LEGACY-SAFETY.md",
+          "sha256": "00fc79c8d82cbf13d2f1577400866de465c48b70bc76c3362baf42991efd5f95"
+        },
+        {
+          "path": "integrations/fleet-next-legacy-safety/README.md",
+          "sha256": "1413f838ed9ddf2413743cc5aed5e6ecc249e2f9010acacec318fecc766ba605"
+        },
+        {
+          "path": "integrations/fleet-next-legacy-safety/legacy_safety.py",
+          "sha256": "0bc760debed9c63ee8dbb6dac11fe7b740919339f7a12b0fc84b8b8037f066ab"
+        },
+        {
+          "path": "tests/test_fleet_next_legacy_survival.py",
+          "sha256": "cb5feba97b9dc547d72cfa074a3598dd4150f02ca13628815f7001798d2d4424"
+        }
+      ]
+    }
+  ],
+  "legacy": {
+    "prefixes": [
+      "fleet_mcp/",
+      "runtime/",
+      "services/",
+      "plugin/",
+      "deploy/",
+      "serverosd/",
+      "bin/"
+    ],
+    "paths_in_delta": [],
+    "fleet_mcp_tree_base": "fcc3a9f59f5f50d675fa1da9d92df752ce2e3ef9",
+    "fleet_mcp_tree_head": "fcc3a9f59f5f50d675fa1da9d92df752ce2e3ef9",
+    "fleet_mcp_tree_unchanged": true
+  },
+  "preserved": {
+    "tests/test_fleet_next_rc_wave13_ledger.py": {
+      "blob": "6d1be1e88698a1ee64930e80a7af2793b55ec6da",
+      "unchanged_from": "a00fabc87fff65aeb50a851536b3314be8399090"
+    },
+    "tests/test_fleet_next_rc_wave12_ledger.py": {
+      "blob": "1265351b07280ae2243f7f1897e58b6b22cdbab4",
+      "unchanged_from": "a00fabc87fff65aeb50a851536b3314be8399090"
+    }
+  },
+  "offline": {
+    "importable": true,
+    "network_imports": [],
+    "evidence": "isolated subprocess (python3 -I) imports the four packages with socket disabled; OFFLINE_IMPORT_OK"
+  },
+  "gates": {
+    "local": {
+      "four_new_suites": "179 passed, 29 subtests passed",
+      "wave13_wave12_ledgers": "21 passed, 41 subtests passed",
+      "wave13_targeted": "238 passed, 114 subtests passed",
+      "wave14_ledger": "25 passed, 75 subtests passed"
+    },
+    "hosted": {
+      "jobs": 5,
+      "status": "recorded in the draft PR description for the exact final HEAD",
+      "baseline": "tests/hermetic-known-failures.txt (56 entries); a 5/5 gate is not zero baseline failures"
+    }
+  },
+  "not_merged": [
+    {
+      "pr": "#473",
+      "reason": "direct merge carries a 95-file Legacy-root tree; needs owner rebase"
+    },
+    {
+      "pr": "#474",
+      "reason": "same V2 root as #473"
+    },
+    {
+      "pr": "#407",
+      "reason": "85-file V2 Draft; not a dependency of this composition"
+    }
+  ],
+  "not_run": [
+    "real install",
+    "release",
+    "main merge",
+    "service start",
+    "Legacy plugin Creator",
+    "OAuth/credential",
+    "Feishu/IM send",
+    "paid model",
+    "GPU"
+  ],
+  "blocked_owner": []
+}
