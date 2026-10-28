@@ -90,6 +90,38 @@ class ServiceSpec:
     maintenance_marker: Path | None = None
 
 
+def _check_owner_map_bounds(units: Iterable[str]) -> None:
+    """The two bounds BOTH READERS enforce, applied to the thing that writes.
+
+    `OwnerMap.load` (this file) and `load_owner_map` (the C++ Core,
+    `native/node-core/supervisor/src/facts.cpp`) already refuse a map with more
+    than `MAX_SERVICES` entries or a unit id longer than `MAX_FACT_TEXT`. The
+    writer enforced neither, so it could emit a document its own reader would
+    refuse — a map that exists and means nothing, discovered at the reader rather
+    than at the write.
+
+    Refused as `DOCUMENT_INVALID` rather than `OWNER_UNKNOWN`: the vocabulary is
+    fine, the shape is not.
+    """
+    count = 0
+    for unit in units:
+        if not unit:
+            raise FactsRefused(DOCUMENT_INVALID, "a unit with no name cannot own anything")
+        if len(unit.encode("utf-8")) > MAX_FACT_TEXT:
+            raise FactsRefused(
+                DOCUMENT_INVALID,
+                f"unit id {unit!r} exceeds its {MAX_FACT_TEXT}-byte bound; both readers "
+                f"refuse this document, so writing it would produce a map nobody reads",
+            )
+        count += 1
+    if count > MAX_SERVICES:
+        raise FactsRefused(
+            DOCUMENT_INVALID,
+            f"the owner map names more than {MAX_SERVICES} units; both readers refuse "
+            f"this document, so writing it would produce a map nobody reads",
+        )
+
+
 def build_owner_map(services: Iterable[ServiceSpec]) -> dict[str, str]:
     owners: dict[str, str] = {}
     for spec in services:
@@ -108,6 +140,7 @@ def build_owner_map(services: Iterable[ServiceSpec]) -> dict[str, str]:
                 f"{spec.owner!r}; one owner, or no recovery",
             )
         owners[spec.unit] = spec.owner
+    _check_owner_map_bounds(owners)
     return owners
 
 
@@ -830,6 +863,9 @@ class OwnerMap:
         for unit, owner in self._owners.items():
             if owner not in OWNERS:
                 raise FactsRefused(OWNER_UNKNOWN, f"unit {unit!r} has unknown owner {owner!r}")
+        # `OwnerMap({...})` is a public constructor, so a caller can build a map
+        # that never went through `build_owner_map`. Both paths check.
+        _check_owner_map_bounds(self._owners)
         document = {"schema": OWNER_MAP_SCHEMA, "units": dict(sorted(self._owners.items()))}
         _publish_document(Path(path), document)
 

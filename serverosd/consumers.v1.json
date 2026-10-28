@@ -107,11 +107,11 @@
   "single_writer": {
     "mechanism": "flock(LOCK_EX|LOCK_NB) on one file per host scope; the kernel releases it when the holder exits",
     "python_default_lease": "$XDG_RUNTIME_DIR/serveros/native-core.lease",
-    "native_default_lease": null,
-    "shared_by_declaration": false,
-    "why_not": "Both programs flock a path, but only the Python daemon defaults that path. The native Core takes whatever --lease names and checks nothing about it, so 'they contend on one file' is true only when the operator passed the daemon's default explicitly. runtime/daemon.py:963 asserts the stronger claim ('contend on one file by construction'); that sentence is false of the C++ binary as it stands.",
-    "next_pr": "Give --lease the canonical default, or make the acting path refuse a lease path that is not the one the shared declaration names.",
-    "rename_owner": "docs/architecture/layers.yaml (owned by PR #414)"
+    "native_default_lease": "$XDG_RUNTIME_DIR/serveros/native-core.lease",
+    "shared_by_declaration": true,
+    "next_pr": "Nothing pending from this lane. If #407 ever changes its default, this matrix and the C++ derivation move in the same PR; tests/test_native_lease_default.py compares the two sources.",
+    "rename_owner": "docs/architecture/layers.yaml (owned by PR #414)",
+    "closed": "Closed 2026-10-28 without editing runtime/daemon.py. When --lease is absent the C++ Core derives $XDG_RUNTIME_DIR/serveros/native-core.lease — the same path the daemon derives from XDG_RUNTIME_DIR. It is NOT byte-identical in the branch where the daemon falls back to its state root because XDG_RUNTIME_DIR is unset: there this Core has no equivalent root and REFUSES instead of inventing one, which preserves the invariant rather than the string. It also refuses when $XDG_RUNTIME_DIR/serveros does not exist: the Core never creates it (the daemon does, for its status socket), so a fresh runtime directory is a loud refusal rather than a pass in which every unit is skipped for NO_LEASE. #407 has no change to make."
   },
   "rename_complete_when": [
     "There is one binary named serverosd that performs bounded recovery, and no second program does — today bin/serverosd is Python and bin/serveros-native-core is C++, and both act.",

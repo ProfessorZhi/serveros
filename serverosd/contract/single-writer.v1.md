@@ -81,7 +81,7 @@ right).
 **That is the whole mechanism.** It serialises two programs *only if they open the
 same path*. Nothing in either program checks that they do.
 
-## 4. The gap this document exists to record
+## 4. The gap this document recorded, and how it closed
 
 `runtime/daemon.py` says, in its own words:
 
@@ -89,33 +89,39 @@ same path*. Nothing in either program checks that they do.
 > Core started with the default `--lease` and this daemon contend on one file
 > **by construction**.
 
-The first half is true. The second is **false of the C++ binary**:
+When this document was written, the second half was **false of the C++ binary**:
+`--lease FILE` was required, had no default, and was assigned only from `argv`.
+The two programs shared a pen only when an operator passed the daemon's path by
+hand, and nothing checked that they did.
 
-- Python: `resolved_lease = base / "native-core.lease"` where `base` is
-  `$XDG_RUNTIME_DIR/serveros`, falling back to the state root. It has a default.
-- C++: `--lease FILE` is **required** with `--serve --enable-actions`
-  (`gate.have_lease = !lease_path.empty()`) and has **no default**. The only
-  assignment to it is from `argv`.
+**Closed 2026-10-28, without editing `runtime/daemon.py`.** The C++ Core now
+derives the same path when `--lease` is absent:
 
-So the two programs contend on one file when — and only when — the operator
-passed the daemon's default path to the Core explicitly. The sentence in the
-daemon is a claim about a construction the other program does not implement.
+- `$XDG_RUNTIME_DIR/serveros/native-core.lease` — the path the daemon derives
+  from `XDG_RUNTIME_DIR`. **Not byte-identical in one branch**: when
+  `XDG_RUNTIME_DIR` is unset the daemon falls back to its state root, and this
+  Core has no equivalent root, so it refuses rather than invent one. The
+  invariant survives; the string does not, and saying "byte for byte" without
+  that qualifier would be a claim the code does not keep;
+- **and it refuses to default at all** when `XDG_RUNTIME_DIR` is unset or not
+  absolute. A default invented from nothing is a lease at a path no other program
+  knows, which is precisely the split-lock the lease exists to prevent;
+- **and it refuses when `$XDG_RUNTIME_DIR/serveros` does not exist.** The Core
+  never creates that directory — `WriterLease` opens relative to an existing
+  parent, while the Python daemon's `SafeLease` does create it for its status
+  socket. Left to fail inside the action gate, a fresh runtime directory produced
+  "every unit skipped for NO_LEASE" and a one-shot that still **exited 0**;
+  indistinguishable from success at a terminal. It is refused up front now, with
+  both remedies named.
 
-This is recorded rather than fixed here because the fix is a change of authority,
-not of plumbing:
+An explicit `--lease` still wins. The daemon's sentence is now true as written, so
+**#407 has nothing to change** — the handoff on that PR can be closed as "the C++
+half was enough".
 
-- **Either** give `--lease` the same default and say plainly that the path is a
-  convention both programs implement; **or** make the acting path refuse a lease
-  path that is not the one a shared declaration names, so an operator who gets it
-  wrong is refused instead of silently racing.
-
-Both are behaviour changes to a safety-critical flag, and the second needs a
-declaration document that both programs read — which the Python side would have
-to adopt. That is the next PR (§8).
-
-**What this round does add**: the capability document (below) makes each
-program's *claims* a value a reader can compare, so a second writer is detectable
-without trusting either program's prose.
+`tests/test_native_lease_default.py` holds the two sources together: it compares
+the paths they name, and drives the binary to prove it (refusal without an
+`XDG_RUNTIME_DIR`; the lease landing at the canonical path with one; an explicit
+`--lease` leaving the canonical path free).
 
 ## 5. Provenance: `serveros/native-core-capability.v1`
 
