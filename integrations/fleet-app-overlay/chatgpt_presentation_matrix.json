@@ -1,0 +1,61 @@
+{
+  "schema": "serveros/chatgpt-plugin-presentation-matrix.v1",
+  "retrieved_at": "2026-10-28",
+  "sources": {
+    "submission": "https://developers.openai.com/plugins/deploy/submission",
+    "enterprise": "https://learn.chatgpt.com/docs/enterprise/plugin-management",
+    "plugin_creator_issue": "https://github.com/openai/codex/issues/49957"
+  },
+  "cases": [
+    {
+      "case": "portable_plugin_manifest_assets",
+      "product": "ChatGPT portable plugin",
+      "identity": "exact plugin_id from the current release",
+      "display_name": "manifest metadata",
+      "avatar": "manifest asset paths",
+      "status": "SUPPORTED_BY_PUBLIC_DOC",
+      "verified": false,
+      "evidence": "The submission page says metadata/assets/skills changes use a new ZIP; it does not prove rendering."
+    },
+    {
+      "case": "app_backed_skills_only",
+      "product": "App-backed plugin",
+      "identity": "plugin_id and release_id from Creator; app ID is distinct",
+      "display_name": "App/Creator-owned",
+      "avatar": "App/Creator-owned",
+      "status": "UNKNOWN",
+      "verified": false,
+      "evidence": "The enterprise page does not define App-backed display/name/avatar updates."
+    },
+    {
+      "case": "app_backed_avatar_via_zip",
+      "product": "App-backed plugin",
+      "identity": "exact plugin_id from Creator",
+      "display_name": "may be frozen by the App",
+      "avatar": "may be frozen by the App",
+      "status": "BLOCKED",
+      "verified": false,
+      "evidence": "No public source proves a Skills-only ZIP changes an App-backed avatar/display; a test plugin is required."
+    },
+    {
+      "case": "app_id_used_as_plugin_id",
+      "product": "App-backed plugin",
+      "identity": "app ID is not the backend plugin ID",
+      "display_name": "not applicable",
+      "avatar": "not applicable",
+      "status": "BLOCKED",
+      "verified": false,
+      "evidence": "The enterprise page says use the app ID for app linking; a plugin URL such as plugin_asdk_app_example represents app asdk_app_example. It does not license inferring the backend plugin ID from the app ID."
+    },
+    {
+      "case": "claude_code_plugin_marketplace",
+      "product": "Claude Code plugin",
+      "identity": "its own marketplace/plugin identity",
+      "display_name": "Claude Code manifest",
+      "avatar": "Claude Code manifest",
+      "status": "NOT_APPLICABLE",
+      "verified": false,
+      "evidence": "Not a ChatGPT Plugin Creator update path; do not conflate the two."
+    }
+  ]
+}
