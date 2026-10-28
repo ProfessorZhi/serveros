@@ -9,7 +9,8 @@
 > - 三台设备的拓扑与 V1 运行边界：[FLEET-V1-TOPOLOGY-OPERATIONS.md](FLEET-V1-TOPOLOGY-OPERATIONS.md)；
 > - V2 组织形态的完整提案：[FLEET-V2-AUTONOMOUS-ORGANIZATION.md](FLEET-V2-AUTONOMOUS-ORGANIZATION.md)；
 > - 身份、Session 与委派：[AGENT-IDENTITY-SESSION-DELEGATION.md](AGENT-IDENTITY-SESSION-DELEGATION.md)。
-> - V1 还差什么、怎么分工：[fleet-v1-gap-and-work-packages.md](../plans/fleet-v1-gap-and-work-packages.md)。
+> - V1 还差什么、怎么分工：[fleet-v1-gap-and-work-packages.md](../plans/fleet-v1-gap-and-work-packages.md)；
+> - 里程碑播报的语义、字段与降级：[FLEET-V1-MILESTONE-DELIVERY.md](FLEET-V1-MILESTONE-DELIVERY.md)（本文 §5.3 的投递细节以那份合同为准，本文只定义它在 V1 里的位置）。
 >
 > 本文与它们冲突时，以本文记录的 owner 决定为准，并应回头修正那篇文档。
 
@@ -304,6 +305,8 @@ owner（舵手）
 | V1-e | owner 方向记录与抢占（§5.5） | 新指令发出后，冲突的在途 Run 在 1 分钟内停止并有 `preempted` 事件 |
 | V1-f | serverosd 收敛为 C++（FOUR-LAYERS §6.1）与设备侧插件拆分构建 | 一个 unit 一个恢复者；设备侧 Skill 改动不重建节点运行时 |
 | V2 | §7 | §7.3 的度量持续下降 |
+
+**里程碑播报的范围（owner 2026-10-27 决定）：** V1-b 的投递只覆盖**窄的异步里程碑播报**——重要成功里程碑发一次、需要 owner 动作的红立即发且保持开启、普通变化与黄只进卡片、`UNKNOWN` 永不当绿。它不包含总管唤醒（V1-d）、抢占（V1-e）、飞书入站决策或凭据分发；这些仍是 V2。判定、字段、去重与降级见 [FLEET-V1-MILESTONE-DELIVERY.md](FLEET-V1-MILESTONE-DELIVERY.md)——该合同目前是 `SPEC_PROPOSED`，实现只在 Draft #423 / #426 / #428 上（`CODE` + 单元测试，未合并、未部署）；真实真源注入、常驻调度与飞书 E2E 均未验收。
 
 ## 9. 已定与待定
 
