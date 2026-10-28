@@ -54,7 +54,7 @@ monitor = _load("serveros_fleet_monitor_card", _HERE / "fleet_monitor_card.py")
 # and `fleet_monitor_plan` load it by — so a verdict issued here is the very same
 # type the sender checks, and not a second copy that would silently not match.
 fleet_audience = _load("serveros_fleet_audience",
-                       _HERE / "fleet_hub" / "fleet_audience.py")
+                       _HERE.parent / "fleet_hub" / "fleet_audience.py")
 
 #: The schema of the DEVICE ENTRY this module assembles — the shape
 #: `monitor.monitor_model` consumes. It is deliberately NOT
@@ -605,7 +605,7 @@ def expected_devices():
     return [dict(entry) for entry in EXPECTED_DEVICES]
 
 
-# The rule itself and the SIGNED VERDICT live in `runtime/fleet_hub/fleet_audience.py` — a
+# The rule itself and the SIGNED VERDICT live in `fleet_hub/fleet_audience.py` — a
 # pure module this file and the planner both load under one name. What stays HERE
 # is the policy: which device a recipient may be shown, evaluated over the
 # inventory. What lives there is the verdict: the typed, signed answer a send is
