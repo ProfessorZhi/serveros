@@ -16,11 +16,13 @@ ROOT = Path(__file__).resolve().parent.parent
 HERE = ROOT / "integrations" / "fleet-next-dualrail-composition-qa"
 sys.path.insert(0, str(HERE))
 
-spec = importlib.util.spec_from_file_location(
-    "dualrail_qa", HERE / "dualrail_qa.py")
-qa = importlib.util.module_from_spec(spec)
-sys.modules["dualrail_qa"] = qa
-spec.loader.exec_module(qa)
+qa = sys.modules.get("dualrail_qa")
+if qa is None:
+    spec = importlib.util.spec_from_file_location(
+        "dualrail_qa", HERE / "dualrail_qa.py")
+    qa = importlib.util.module_from_spec(spec)
+    sys.modules["dualrail_qa"] = qa
+    spec.loader.exec_module(qa)
 
 LEGACY_SKILLS = frozenset(qa.LEGACY_SKILLS)
 NEXT_SKILLS = frozenset(qa.NEXT_SKILLS)

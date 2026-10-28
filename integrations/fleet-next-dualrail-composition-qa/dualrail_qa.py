@@ -11,16 +11,19 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import sys
 from typing import Any
 
 ROOT = __import__("pathlib").Path(__file__).resolve().parents[2]
 
 
 def _load(name: str, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    __import__("sys").modules[name] = module
-    spec.loader.exec_module(module)
+    module = sys.modules.get(name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
     return module
 
 
