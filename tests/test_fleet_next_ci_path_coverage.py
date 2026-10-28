@@ -285,6 +285,17 @@ class TheRunCannotBeGreenWithoutCollecting(unittest.TestCase):
                       "the offline job does not assert a collected-test floor; "
                       "`discover` prints `Ran 0 tests ... OK` for a missing file")
 
+    def test_naming_a_family_did_not_drop_the_older_files(self):
+        """The families are an addition; the files they do not match stay."""
+        steps = job_steps(self.document, "offline-unit-contracts")
+        for older in ("tests/test_fleet_runtime_create_policy.py",
+                      "tests/test_fleet_create_session_runtime.py"):
+            self.assertIn(
+                older, steps,
+                f"{older} was gated by this workflow before the path families "
+                "were named and matches none of them; dropping it turns a "
+                "widening into a silent narrowing")
+
     def test_the_composition_job_pins_an_exact_commit(self):
         job = self.document["jobs"]["composition-runtime-tick"]
         sha = str(job.get("env", {}).get("COMPOSITION_SHA", ""))

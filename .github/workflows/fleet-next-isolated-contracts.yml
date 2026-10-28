@@ -193,6 +193,12 @@ jobs:
           # whether a later `paths:` edit still covers what this workflow owns.
           gate_file tests/test_fleet_next_ci_path_coverage.py 10
 
+          # These two sat in this workflow before the families were named and
+          # do not match `test_fleet_next_*`; they are listed so that naming a
+          # family is an addition, never a quiet removal.
+          gate_file tests/test_fleet_runtime_create_policy.py 1
+          gate_file tests/test_fleet_create_session_runtime.py 1
+
           # Every other Fleet Next contract in the tree, discovered rather than
           # listed: a new Wave adds its test file and is collected here without
           # editing this workflow, which is the point of the path families.

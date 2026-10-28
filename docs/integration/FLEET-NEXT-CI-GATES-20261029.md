@@ -89,6 +89,12 @@ tree**, so a new Wave's test file is collected without editing the workflow.
 author commits that live on other branches and are gated by the RC's own ledger
 run, not by a single-ref checkout.
 
+The two files that predate the families and match none of them —
+`tests/test_fleet_runtime_create_policy.py` and
+`tests/test_fleet_create_session_runtime.py` — are gated explicitly, and the
+coverage test refuses an edit that drops them. Naming a family is an addition,
+never a silent narrowing.
+
 Every checkout asks for the exact head
 (`${{ github.event.pull_request.head.sha || github.sha }}`), because the default
 `pull_request` checkout is the merge commit — a green on the merge commit is not
@@ -128,7 +134,7 @@ Each row is a real run on a throwaway copy; the file was restored afterwards.
 | negative | the #503-alone shape: the regression in a tree **without** #493 | `Ran 3 tests`, `OK (skipped=3)` → the job's checker prints `FAIL_SKIPPED_COMPOSITION` and exits **1** |
 | negative | gate a file that is not in the tree | `FAIL_NO_FILE`, `failures=1`, exit **1** |
 | positive | collection count on the pinned regression | `collected=3 expected=3`, exit **0**, all three ids listed |
-| positive | the gate function on the coverage check | `exit=0 collected=17 floor=10` |
+| positive | the gate function on the coverage check | `exit=0 collected=18 floor=10` |
 
 ## 6. Lark: #415's fix is in the #500 tree, not in `main`
 
