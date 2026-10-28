@@ -16,9 +16,26 @@ supervisor would actually receive:
   answers `BLOCKED_INPUT` exit 3 — the wrapper must forward that word and that
   code, in every process, and must not claim `health.stale: false` for a fact
   nothing measured;
-* configured against offline facts, the monitor's own vitals (`backlog`,
-  `cursor_age`, `last_tick`, `stale`) must arrive in `health` — verbatim under
-  `health.reported`, and never replaced by the wrapper's defaults.
+* configured against offline facts, the monitor's own vitals must arrive in
+  `health` — never replaced by the wrapper's defaults.
+
+Two ABI facts that the first version of this file got wrong, and that the
+composition caught (Wave 16, shard 3, three tests):
+
+1. **The monitor's counts are top-level; its `health` block is not.** #493/#497
+   answer with `backlog` / `unknown_receipts` / `unsettled` beside `state`, and
+   `health` carries exactly `last_tick`, `last_ok`, `cursor_age`,
+   `consecutive_failures`, `stale`. Asking `health.reported` for `backlog` is
+   reading a field the producer never put there — the wrapper reads the count
+   from where it is, and so must the test.
+2. **Two processes do not agree on an instant, they agree on everything else.**
+   `health.last_tick` (a real clock), `health.cursor_age` and the producer's
+   timestamps differ *because the clocks ran*. Comparing whole documents byte for
+   byte made those three tests fail on perfectly correct behaviour — which is
+   itself the proof that the clock is live, so they now compare a projection
+   with the time-bearing fields removed and check those fields against their own
+   properties (a real epoch, a non-negative age, an ISO instant, and two
+   readings that are not the same constant).
 
 The `#493` package is a sibling PR, so this file *skips* — with the reason
 printed — when it is not composed into the tree, and it skips when the host
@@ -29,8 +46,8 @@ shapes are pinned as literals in
 `test_fleet_next_agent_monitor_activation_truth.py` instead, where they run on
 every host.
 
-To run it for real, compose #493 next to this branch (the RC #494 and the QA
-#495 compositions already do) on a POSIX host, or point
+To run it for real, compose #493 next to this branch (the RC #500, and the QA
+#495/#501 compositions) on a POSIX host, or point
 `SERVEROS_FLEET_NEXT_MONITOR_ROOT` at a checkout of
 `integrations/fleet-next-agent-monitor`.
 
@@ -71,6 +88,36 @@ def core_root() -> Path:
     if override:
         return Path(override)
     return CORE_DIR
+
+
+#: The readings that are an *instant*: two processes run the same monitor at
+#: different moments, so these differ by design. Everything else must not.
+TIME_BEARING = frozenset({"last_tick", "last_ok", "cursor_age"})
+
+#: #497's `health` block, key for key. The counts (`backlog`,
+#: `unknown_receipts`, `unsettled`) are *beside* it, at the tick's top level.
+PRODUCER_HEALTH_KEYS = frozenset({"last_tick", "last_ok", "cursor_age",
+                                  "consecutive_failures", "stale"})
+
+ISO_INSTANT = r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$"
+
+
+def stable(value):
+    """The document with every wall-clock reading removed, and nothing else.
+
+    Removing them does not weaken the check below: each is then asserted on its
+    own against a property a default cannot satisfy — a real epoch (`> 1e9`), a
+    non-negative age, an ISO instant from the producer, and two processes whose
+    timestamps are not the same constant. A wrapper that returned `0.0` or `None`
+    still fails; it fails on the field instead of on a byte comparison with a
+    sibling process's clock.
+    """
+    if isinstance(value, dict):
+        return {key: stable(item) for key, item in value.items()
+                if key not in TIME_BEARING}
+    if isinstance(value, list):
+        return [stable(item) for item in value]
+    return value
 
 
 class Base(unittest.TestCase):
@@ -165,10 +212,23 @@ class TheRealRefusalReachesTheSupervisor(Base):
             self.assertIn("BLOCKED_RUNTIME_ENTRY", document["why"])
             self.assertIs(document["health"]["stale"], None,
                           "nothing measured staleness, so nothing may say it is fine")
-            self.assertGreater(document["health"]["last_tick"], 1e9)
+            self.assertGreater(document["health"]["last_tick"], 1e9,
+                               "the wrapper passed no clock, so `last_tick` was `0.0`")
 
-        self.assertEqual(results[0], results[1], "two processes disagreed")
-        self.assertEqual(results[1], results[2], "two processes disagreed")
+        # Three processes run at three instants, so their `last_tick` values are
+        # *supposed* to differ: compare everything that is not a clock.
+        self.assertEqual(stable(results[0]), stable(results[1]),
+                         "two processes disagreed about something other than the clock")
+        self.assertEqual(stable(results[1]), stable(results[2]),
+                         "two processes disagreed about something other than the clock")
+
+        # ... and the clock is shown to be live, so the comparison above is not
+        # passing merely because every process wrote the same placeholder.
+        stamps = [document["health"]["last_tick"] for document in results]
+        self.assertEqual(stamps, sorted(stamps), f"a wall clock went backwards: {stamps}")
+        self.assertGreaterEqual(len(set(stamps)), 2,
+                                "three processes reported one instant; that is a "
+                                f"constant, not a clock: {stamps}")
 
 
 class TheRealVitalsSurviveTheWrapper(Base):
@@ -206,6 +266,7 @@ class TheRealVitalsSurviveTheWrapper(Base):
 
         self.assertEqual(document["ticks"], 2)
         self.assertEqual(len(document["ticks_report"]), 2)
+        self.assertEqual([record["index"] for record in document["ticks_report"]], [0, 1])
 
         # The monitor observed one run that is still RUNNING: progress, not
         # completion. #493 says TICKED (exit 0); the wrapper must not translate
@@ -214,22 +275,78 @@ class TheRealVitalsSurviveTheWrapper(Base):
         self.assertIs(document["completed"], False)
         self.assertEqual(code, 0, "TICKED is #493's exit 0, carried unchanged")
 
-        self.assertEqual(document["health"]["reported"]["backlog"], 1)
-        self.assertEqual(document["health"]["backlog"], 1)
-        self.assertIsNotNone(document["health"]["reported"]["last_tick"])
-        self.assertIsNotNone(document["health"]["reported"]["last_ok"])
-        self.assertIsInstance(document["health"]["reported"]["cursor_age"], (int, float))
-        self.assertGreater(document["health"]["last_tick"], 1e9)
+        health = document["health"]
+        reported = health["reported"]
+
+        # The producer's health block, key for key — these five and no others.
+        # #497 states its counts *beside* `state`, at the tick's top level, so
+        # asking `reported` for `backlog` reads a field the monitor never wrote.
+        # That is the Wave 16 mistake this pins.
+        self.assertEqual(set(reported), set(PRODUCER_HEALTH_KEYS),
+                         "the wrapper rewrote the monitor's health block")
+        self.assertNotIn("backlog", reported,
+                         "#497 keeps `backlog` at the tick's top level, not in `health`")
+
+        # ... and the counts really are carried, from where they live.
+        self.assertEqual(health["backlog"], 1)
+        self.assertEqual(health["unknown_receipts"], 0)
+        self.assertEqual(document["ticks_report"][-1]["backlog"], 1,
+                         "the per-tick record lost the count the tick reported")
+
+        # A reading, not a default: the monitor timed its own cursor on this
+        # tick, and one that could not would have written `null`.
+        self.assertRegex(reported["last_tick"], ISO_INSTANT,
+                         "the producer's own `last_tick` is not a UTC instant")
+        self.assertRegex(reported["last_ok"], ISO_INSTANT,
+                         "a successful tick records when it was last ok")
+        self.assertIsInstance(reported["cursor_age"], (int, float))
+        self.assertGreaterEqual(reported["cursor_age"], 0.0)
+        self.assertEqual(reported["consecutive_failures"], 0)
+        self.assertIs(reported["stale"], False,
+                      "the producer measured this tick, so `False` is a reading")
+
+        # The wrapper carried the producer's staleness and age instead of
+        # deriving its own: #497 knows its configured bound, this wrapper does not.
+        self.assertIs(health["stale"], False, "the producer's own staleness must win")
+        self.assertEqual(health["cursor_age"], float(reported["cursor_age"]),
+                         "the wrapper replaced the age it was given")
+        self.assertGreater(health["last_tick"], 1e9,
+                           "the wrapper passed no clock, so `last_tick` was `0.0`")
+
+        # The monitor's warnings arrive as given, not summarised away.
+        codes = [warning["code"] for warning in document["warnings"]]
+        self.assertIn("BACKLOG", codes, "the monitor's own warning was dropped")
+        for record in document["ticks_report"]:
+            for warning in record["warnings"]:
+                self.assertIn(warning, document["warnings"],
+                              f"tick {record['index']}'s warning did not reach the "
+                              "aggregate")
 
     def test_a_second_process_does_not_inherit_the_first_ones_verdict(self):
         first_code, first, err = self.run_wrapper(env=self.configured_env())
         self.assertEqual(err.strip(), "", err)
         second_code, second, err = self.run_wrapper(env=self.configured_env())
         self.assertEqual(err.strip(), "", err)
+
         self.assertEqual(first_code, second_code)
         self.assertEqual(first["state"], second["state"])
-        self.assertEqual(first["ticks_report"], second["ticks_report"],
+        self.assertEqual(len(first["ticks_report"]), len(second["ticks_report"]))
+
+        # Neither process inherits the other's verdict, and neither disagrees
+        # with the monitor it ran — about anything except *when* it ran.
+        self.assertEqual(stable(first), stable(second),
                          "two interpreters disagreed about the same monitor")
+
+        # The clocks are shown to be real, so the projection above is not
+        # vacuous: each process measured its own age and stamped its own
+        # instant, and the two instants are not the same constant.
+        for document in (first, second):
+            self.assertIsInstance(document["health"]["cursor_age"], (int, float))
+            self.assertGreaterEqual(document["health"]["cursor_age"], 0.0)
+            self.assertGreater(document["health"]["last_tick"], 1e9)
+        self.assertNotEqual(first["health"]["last_tick"], second["health"]["last_tick"],
+                            "both processes stamped one instant: a constant was read "
+                            "instead of a clock")
 
 
 if __name__ == "__main__":
