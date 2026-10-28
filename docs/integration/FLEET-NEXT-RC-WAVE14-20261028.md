@@ -113,11 +113,33 @@ missing import.
 
 ### BLOCKED_OWNER
 
-**None raised by this composition.** No path under `fleet_mcp/**` needed to
-change, and no author file needed an edit. Both conditions that would have
-required an owner handoff were asserted absent instead of worked around. If a
-later gate forces either, the exact owner handoff must name the file, the
-author commit and the failing assertion before the file is touched.
+**One block, owned by #490.** The composed tree reaches 4/5 hosted jobs; the
+failing shard's baseline gate names exactly two new failures, both in
+`tests/test_declared_implementations.py::DeclaredFieldsHaveReaders`:
+
+* `test_a_field_that_gained_a_reader_must_lose_its_exemption`
+* `test_the_reader_detector_does_not_count_a_writer`
+
+Root cause: the read-only source adapter names its protocol envelope field
+`request` at `cli.py:60`, `serializer.py:29` and `serializer.py:115`. The
+governance detector counts those string constants as readers of the
+*abilities* record field `request` declared in `abilities/target-contract.yaml`.
+It is a name collision, not a read of that record. The same two tests are new
+on #490's own hosted run `40657020823` (20 failing, 2 new, 0 flaky), so this
+composition inherits them; it does not add a third.
+
+Owner handoff — none of these files was edited by this RC:
+
+| | |
+| --- | --- |
+| owner | #490 author, head `06a8be67422f1320e7bdfee38410f8b24d27b501` |
+| files / lines | `integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/cli.py:60`, `serializer.py:29`, `serializer.py:115` |
+| failing gate | `tests/test_declared_implementations.py::DeclaredFieldsHaveReaders` (both tests above) |
+| required decision (owner's) | rename the adapter's envelope key in contract/serializer/CLI/tests/fixtures, or teach the detector an explicit module boundary; the second edits a baseline governance test and is that file owner's decision, not an integration edit |
+| exit condition | both tests green on the composed head; no `hermetic-known-failures.txt` entry added for them |
+
+No path under `fleet_mcp/**` needed to change. That condition was asserted
+absent, not worked around.
 
 ---
 
@@ -174,16 +196,40 @@ final HEAD** are recorded in the Draft PR description; the tree does not
 duplicate that reading, because a doc commit recording a run would move the
 head the run measured.
 
+The composed source `7ff573d` (ledger head `d52129f`) was measured by run
+`40668013480`:
+
+```text
+plugin                  pass
+suite shard 1/4         pass
+suite shard 2/4         pass
+suite shard 3/4         pass
+suite shard 4/4         fail
+=> 4/5 jobs
+
+shard 4 baseline gate: 25 failing, 2 new, 1 flaky, 0 listed-but-passing
+NEW FAILURES: the two DeclaredFieldsHaveReaders tests in §3
+FLAKY: tests/test_codex_app_server_provider.py::
+       test_a_dead_server_is_a_stopped_provider_and_not_a_closed_session
+```
+
 A 5/5 gate is **not zero baseline failures**. `tests/hermetic_tests.py` reads
 `tests/hermetic-known-failures.txt`, which lists 56 tests that already fail on
 `main` or cannot pass off a node. A green run means "no failure outside the
 baseline", not "every test in the repository passed". This record keeps that
 distinction instead of flattening it.
 
+The two new failures are the *same two* that are new on #490's own run; the
+composition introduced no additional new failure. It is still not a 5/5 gate,
+and the block is §3's, not a baseline entry.
+
 ### 5.4 Failure attribution and unfinished gates
 
 * No failure was observed in the four new suites, the two earlier ledgers or
   the Wave 13 targeted gate on the composed tree.
+* Hosted shard 4 has two new failures **outside** those suites; both are
+  `DeclaredFieldsHaveReaders` and both are inherited from #490's own run
+  (§3). They are attributed, not folded into the baseline.
 * The full four-shard hosted suite was **not** run locally; the targeted run
   above is a reading over the touched families, not the whole repository.
   Hosted CI is the authority for the full shard reading at the final head.

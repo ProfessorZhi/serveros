@@ -280,7 +280,17 @@
     },
     "hosted": {
       "jobs": 5,
-      "status": "recorded in the draft PR description for the exact final HEAD",
+      "run": "40668013480",
+      "head": "d52129f02b4523baf6c5b879f681dafc771f81ab",
+      "jobs_passed": "4/5",
+      "failed_job": "Suite (shard 4/4)",
+      "baseline_gate": "25 failing, 2 new, 1 flaky, 0 listed-but-passing",
+      "new_failures": [
+        "tests/test_declared_implementations.py::DeclaredFieldsHaveReaders::test_a_field_that_gained_a_reader_must_lose_its_exemption",
+        "tests/test_declared_implementations.py::DeclaredFieldsHaveReaders::test_the_reader_detector_does_not_count_a_writer"
+      ],
+      "flaky": "tests/test_codex_app_server_provider.py::test_a_dead_server_is_a_stopped_provider_and_not_a_closed_session",
+      "status": "4/5 at d52129f; the exact final head reading is in the draft PR description",
       "baseline": "tests/hermetic-known-failures.txt (56 entries); a 5/5 gate is not zero baseline failures"
     }
   },
@@ -309,5 +319,25 @@
     "paid model",
     "GPU"
   ],
-  "blocked_owner": []
+  "blocked_owner": [
+    {
+      "owner_pr": "#490",
+      "owner_head": "06a8be67422f1320e7bdfee38410f8b24d27b501",
+      "files": [
+        "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/cli.py:60",
+        "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/serializer.py:29",
+        "integrations/fleet-next-monitor-source-adapter/fleet_next_monitor_source_adapter/serializer.py:115"
+      ],
+      "tests": [
+        "tests/test_declared_implementations.py::DeclaredFieldsHaveReaders::test_a_field_that_gained_a_reader_must_lose_its_exemption",
+        "tests/test_declared_implementations.py::DeclaredFieldsHaveReaders::test_the_reader_detector_does_not_count_a_writer"
+      ],
+      "root_cause": "the adapter's protocol envelope field is named `request`, colliding with the abilities record field declared in abilities/target-contract.yaml; the detector counts the literals as readers",
+      "inherited_from": {
+        "run": "40657020823",
+        "new_failures": 2
+      },
+      "exit_condition": "both tests green on the composed head; no hermetic-known-failures entry added for them"
+    }
+  ]
 }
