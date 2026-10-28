@@ -51,6 +51,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import re
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -63,6 +64,21 @@ PLUGIN_PACKAGE_TEST = REPO / "tests" / "test_fleet_next_plugin_package.py"
 BATCH_README = REPO / "integrations" / "fleet-v1-milestone-batch" / "README.md"
 REGISTRATION_TEST = REPO / "tests" / "test_fleet_v1_milestone_batch_registration.py"
 REGISTRATION = REPO / "integrations" / "fleet-v1-milestone-batch" / "registration.py"
+
+#: The tree these digests were measured on. TREE-SCOPED on purpose: the values
+#: below are the authors' bytes *on `f64d7af1`*, and that is the only tree they
+#: claim. A later composition may legitimately carry a newer author blob for a
+#: file — #481 `9b7710a` edits the Batch README — and rewriting this table to
+#: the new number would erase the Wave 12 fact instead of recording a second
+#: one. The claimed tree is read back by object id below, so the historical
+#: claim stays checkable even after the working tree has moved on.
+WAVE12_TREE = "f64d7af1"
+
+#: The one composed file a later author owns in a later composition. Its Wave
+#: 12 digest is still asserted against `WAVE12_TREE`; the current working
+#: tree's copy is asserted by `test_fleet_next_rc_wave13_ledger.py`, which
+#: compares it to #481's own blob. Neither scope is left unguarded.
+README = "integrations/fleet-v1-milestone-batch/README.md"
 
 #: LF-normalised sha256 of every file the Wave 12 composition touches, plus the
 #: one product file it must not, recorded from the composed tree `f64d7af1`.
@@ -125,6 +141,16 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
+def _tree_digest(relative: str) -> str:
+    """The digest of `relative` inside `WAVE12_TREE`, read from the object
+    database. This is the historical claim; it does not look at the working
+    tree, so a later author's edit cannot make it silently disappear."""
+    blob = subprocess.run(
+        ("git", "cat-file", "-p", f"{WAVE12_TREE}:{relative}"),
+        cwd=REPO, check=True, capture_output=True).stdout
+    return hashlib.sha256(blob.replace(b"\r\n", b"\n")).hexdigest()
+
+
 class TheCompositionIsTheAuthorsBytes(unittest.TestCase):
     """Four files from two commits, plus one file nobody touched."""
 
@@ -134,13 +160,44 @@ class TheCompositionIsTheAuthorsBytes(unittest.TestCase):
         That is the point: the RC's claim is "exactly these two deltas", and a
         local tweak to any of them makes the claim false while leaving the suite
         green.
+
+        The README is the one entry a *later* author legitimately changed, so
+        its working-tree copy is not asserted here: this class checks the Wave
+        12 bytes against the Wave 12 tree object, and
+        `test_fleet_next_rc_wave13_ledger.py` checks the current copy against
+        #481's blob. Both scopes have an exact claim; neither is relaxed to a
+        "different from" or a "starts with".
         """
         for relative in list(DIGESTS)[:4]:
+            if relative == README:
+                continue
             with self.subTest(file=relative):
                 self.assertEqual(
                     _digest(REPO / relative), DIGESTS[relative],
                     f"{relative} no longer matches the composed tree f64d7af1 — "
                     "re-derive the composition instead of editing the file")
+
+    def test_the_wave12_tree_object_still_holds_every_recorded_digest(self):
+        """The Wave 12 claim, checked on the tree it was measured on.
+
+        **Turns red when** the recorded digests stop describing `f64d7af1` —
+        including the README, which the working tree has since moved past.
+        This is the assertion that makes the tree scope a fact rather than a
+        comment: if someone re-points `DIGESTS` at a newer tree, the object
+        read disagrees.
+        """
+        self.assertEqual(
+            subprocess.run(
+                ("git", "cat-file", "-t", WAVE12_TREE),
+                cwd=REPO, check=True, capture_output=True).stdout.strip(),
+            b"tree")
+        for relative, expected in DIGESTS.items():
+            with self.subTest(file=relative):
+                self.assertEqual(
+                    _tree_digest(relative), expected,
+                    f"{WAVE12_TREE} no longer holds the recorded bytes for "
+                    f"{relative} — the Wave 12 claim was rewritten, not "
+                    "re-scoped")
 
     def test_the_product_file_the_red_test_blamed_is_untouched(self):
         """`registration.py:498` raised `COMMANDER_REFUSED: SESSION_NOT_FOUND`.

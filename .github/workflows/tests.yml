@@ -62,6 +62,12 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           path: serveros
+          # The composition ledgers read real history: each author head must be
+          # an ancestor of this tree, and each composed file is compared to the
+          # author's own blob (`git cat-file -p <author>:<path>`). A shallow
+          # checkout would pass locally and fail here, so the suite checks out
+          # the history it asserts on.
+          fetch-depth: 0
           persist-credentials: false
       - name: Check out ability-management next to it
         if: env.SIBLING_TOKEN != ''
