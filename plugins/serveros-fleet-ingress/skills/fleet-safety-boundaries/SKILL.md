@@ -1,6 +1,6 @@
 ---
 name: fleet-safety-boundaries
-description: What the Fleet tool list does and does not authorize, which runtime profiles may be mixed, and where the assistant's work ends and the coding agent's begins. Use before any Fleet write, and when deciding which runtime a task belongs on.
+description: Use when deciding which runtime, account, grant or permission mode a task may use, or before any Fleet write.
 ---
 
 # A tool list is not a permission
@@ -35,8 +35,7 @@ the list as permission to call it, and never describe a discovery result as
 The first Fleet tool call opens the server's authorization page in the
 browser. The person signs in there with the account name, the password and the
 current six-digit one-time code from their authenticator app, then ticks the
-scopes this client should hold. A signed-in browser session lasts a few hours,
-so a second consent in that window does not ask for the password again.
+scopes this client should hold.
 
 - **Never ask for the password or the one-time code in chat**, and never put
   them in a message, file or session. They are typed into the server's own page
@@ -78,7 +77,6 @@ Two runtimes on one device are **not** interchangeable, even when both answer:
 |---|---|---|
 | Claude | a Claude runtime with the owner-chosen model and native permission mode | that its model or mode applies to another runtime, account or project |
 | Codex | a different agent family with its own native model and provider | that a Codex runtime works because Claude does, or that a Claude model id is valid for it |
-| dedicated accounts | separate subscriptions or accounts | that they inherit another account's model or default |
 
 If the owner configures a high native permission mode for one runtime, read it
 back and report it with that runtime, account and project. It is never "the
@@ -114,12 +112,9 @@ agent on the device **writes and runs the code and the tests**, because it can
 see the checkout, the toolchain and the services. Delegating the second to a
 description of it is how a change ships unverified.
 
-Fleet V1 is the release that makes that loop work on a real machine. The
-**OpenAgents layering, role-Tag hierarchical teams, autonomous model scheduling
-and long-horizon autonomous-agent governance are V2** and are not part of this
-release: do not require them, plan around them, or describe them as available. A
-**Role** in that sense is a V2 organising concept — it is not a scope, not a
-project permission and not a grant, so never let the word stand in for one.
+OpenAgents layering, role-Tag teams, autonomous scheduling and long-horizon
+governance are V2; do not require them or describe them as available. A
+**Role** is a V2 organising concept, not a scope, project permission or grant.
 
 ## Bounded self-healing is V1, and "bounded" is the whole word
 
@@ -152,49 +147,10 @@ where the closed loop is exercised offline — that is allowed and expected. It 
 a separate thing from production recovery, which stays behind the owner's
 approval and the allowlist above.
 
-## Recovery that is not bounded self-healing
+## Do not restart what you are not recovering
 
-Three things look like recovery and are on no allowlist:
-
-- **Do not resume, restart or "unstick" an agent that is working on a task.** A
-  session that looks idle may be between turns of a long run; one that looks
-  stuck may be mid-commit. Resuming it does not recover the work — it duplicates
-  it, and the second writer is the one that damages the checkout. Report the
-  stuck session; do not act on it.
-- **Never restart the channel you are reaching the device through.** The
-  ingress, the tunnel or the node service carrying your own connection is not a
-  resource to cycle: restarting it removes your route, and if it does not come
-  back it removes everyone else's too. An unhealthy channel is a finding to
-  report, never a repair to attempt from inside it.
-- **Do not spend a recovery budget you did not create.** What a node has already
-  restarted in this window is a *reading*. Acting on it is a separate,
-  owner-gated decision, and a spent budget means "nobody may restart this now",
-  not "find another way to restart it".
-
-## The Skills route; they do not keep a second registry
-
-These Skills decide **where** work belongs and **how to tell it happened**. They
-call the ingress; the ingress reaches the device; the agent on that device
-consumes the shared `ability-management` authority through its
-**installed / ready / granted projection**. The projection is per device; it is
-not a second ability registry, and it does not replace the shared catalogue.
-
-So do not re-implement a device's abilities here, do not keep a parallel list of
-its responsibilities, and do not treat this plugin as a second authority over
-what a device can do. A capability exists because the shared authority declares
-it and that device's projection says it is installed and ready for the relevant
-grant — never because a name in these Skills sounds like it.
-
-## What this release is not
-
-**Asking for something new does not enable it.** A request does not switch on
-OpenAgents layering, long-horizon autonomous-agent governance, or any other V2
-capability, and no wording in a task turns a V1 surface into one. A task that
-genuinely needs those is a task to defer and say so, not one to plan around or
-to describe as already available.
-
-The line between the two is not "automation" against "no automation". V2 is where
-**broader** autonomy lives — OpenAgents layering, long-horizon governance, an
-agent choosing its own goals. The bounded, allowlisted, budgeted recovery of
-approved services described above is **V1**, and reading this section as "no
-self-healing until V2" is the misreading it exists to prevent.
+Do not resume, restart or "unstick" an agent that is working on a task: a
+session between turns can look idle, and a second writer damages the checkout.
+Report the stuck session instead. Never restart the ingress, tunnel or node
+service carrying your own connection; an unhealthy channel is a finding to
+report, never a repair attempted from inside it.

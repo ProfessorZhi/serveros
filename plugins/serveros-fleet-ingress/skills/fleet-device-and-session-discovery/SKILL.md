@@ -1,6 +1,6 @@
 ---
 name: fleet-device-and-session-discovery
-description: Find out which ServerOS device, Linux account, credential profile and runtime actually exist before naming one. Use at the start of any Fleet task, and whenever a device name, session id or "my laptop" appears in a request.
+description: Use when a Fleet task starts, or when a device, session, runtime or credential profile must be resolved before naming it.
 ---
 
 # Discover the device and the runtime before you name one
@@ -74,9 +74,10 @@ runtime because they share a device reference, and the same session id can
 exist under both. Before you send anything, be able to say which
 **device × OS user × credential instance × runtime × project** you are
 addressing — that is what the session reference encodes, and a reference that
-only names the device is not enough. A Codex alias runtime is its own address;
-do not infer it from the base runtime or from the agent family, and do not
-assume a provider family has a runtime binding just because another family does.
+only names the device is not enough. Claude and Codex are different runtimes,
+and a Codex alias runtime is its own address; do not infer it from the base
+runtime or from the agent family, and do not assume a provider family has a
+runtime binding just because another family does.
 
 If the answer you need is not in the facts you have, say so. Do not infer a
 device, a user or a session from a friendly name, a screenshot or a previous
