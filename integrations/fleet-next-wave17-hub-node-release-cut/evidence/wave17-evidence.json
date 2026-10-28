@@ -92,7 +92,7 @@
     }
   },
   "baseline": {
-    "head": "877016138205b821d072dcbc30a8228d46d7b366",
+    "head": "26b96fc536de72807a0b8297664b6d2518702a9f",
     "ownership": {
       "counts": {
         "hub": 49,
@@ -107,6 +107,9 @@
         },
         "node": {
           "fleet_mcp": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.cloudcli_native": [
             "fleet_mcp/node/connector.py"
           ],
           "fleet_mcp.config": [
@@ -201,6 +204,9 @@
       "hub": {},
       "node": {
         "fleet_mcp": [
+          "fleet_mcp/node/connector.py"
+        ],
+        "fleet_mcp.cloudcli_native": [
           "fleet_mcp/node/connector.py"
         ],
         "fleet_mcp.config": [
@@ -299,7 +305,7 @@
   "technical_state": "GREEN_SANDBOX",
   "tree": {
     "kind": "sandbox",
-    "measured_head": "51c38aa88de0e95d84a9050f30edbc645e994661",
-    "source_head": "877016138205b821d072dcbc30a8228d46d7b366"
+    "measured_head": "40951b7d240695b9651f31c5181af2b089751a1a",
+    "source_head": "26b96fc536de72807a0b8297664b6d2518702a9f"
   }
 }
