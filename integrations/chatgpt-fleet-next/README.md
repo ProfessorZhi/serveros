@@ -5,8 +5,9 @@
 ## First two thin Skills
 - `skills/fleet-agent-collaboration/SKILL.md`: collaborate with authorized Fleet Sessions, native Parent Agent, review and accept outcomes. Covers 9 currently visible V1 tools; detects rather than presumes newer MCP tools.
 - `skills/fleet-ability-routing/SKILL.md`: locate current Ability/operation/Provider on the target machine; ask the local Agent for environment-specific HOW. Does not copy the native Skill manuals or produce OS shell commands.
+- `skills/fleet-batch-commander/SKILL.md`: turn one complex goal into independently acceptable Fleet tasks; read live device role/ability/model/grant/Session state, persist a Batch ID, dispatch idempotently, return at ACK, and leave completion to observer/readback.
 
-Future packaging may add `fleet-multiagent-review`, `fleet-permissions` and `fleet-troubleshooting`; add them only after their workflows have real providers and acceptance tests.
+Future packaging may add `fleet-permissions` and `fleet-troubleshooting`; add them only after their workflows have real providers and acceptance tests. `fleet-multiagent-review` is present as an uninstalled design candidate.
 
 ## Source ownership
 - Canonical reusable Skills, 21 semantic responsibilities and Ability revisions: `ProfessorZhi/ability-management`.
