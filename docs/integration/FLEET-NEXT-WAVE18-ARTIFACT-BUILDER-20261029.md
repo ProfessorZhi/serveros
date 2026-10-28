@@ -269,13 +269,13 @@ python3 -I integrations/fleet-next-wave18-artifact-builder/wave18_builder.py \
 
 | commit | what |
 |---|---|
-| `a50d2ec` | builder, tests, this report |
-| `19bcf95` | evidence pack, checksums table |
+| `ff514f4` | builder, tests, this report; per-patch input provenance |
+| `9ee3878` | evidence pack at `ff514f4`, checksums table |
 
-`git diff --stat 3512c55..19bcf95` — 9 files, +3090 lines, no deletion outside
+`git diff --stat 3512c55..9ee3878` — 9 files, +3153 lines, no deletion outside
 the new paths. Changed-tree listing digest (SHA256 of `git ls-tree -r` over the
-three owned paths at `19bcf95`):
-`sha256:dca95a1740372e1103c73510fc92a041f72072243b36efa81d6cac8aef263298`.
+three owned paths at `9ee3878`):
+`sha256:c4c5023434d7d173dc7e1eb0c9fd4b0b4e9a58360298256d592bb9109be573c2`.
 
 ## 11. Non-goals honoured
 
