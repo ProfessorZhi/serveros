@@ -12,10 +12,18 @@ day it was written and diverge the first time a device was renamed, at which
 point `fleet_list_devices` and `device.list` would give different answers about
 the same fleet and neither would look broken.
 
-So the dependency is explicit and failure is loud: no `fleet/` on the path, no
-Fleet surface. `fleet` ships inside the node-runtime artifact
-(`plugin/bundle.yaml`: `fleet: path: fleet`), so this is satisfied by both the
-source tree and an installed node.
+So the dependency is explicit and failure is loud: no identity authority, no
+Fleet surface. The dependency is now named through
+`fleet_mcp/identity_adapter_port.py`, which declares a versioned ABI
+(`serveros.fleet.transport/v1`), verifies the seven symbols it needs, and can
+load the authority from a **verified payload** directory instead of a checkout.
+That is what lets a Hub be deployed without `fleet/` beside it — and it is still
+one authority: the payload carries the canonical module, not a copy of its
+semantics.
+
+`fleet` ships inside the node-runtime artifact (`plugin/bundle.yaml`:
+`fleet: path: fleet`), so the source tree and an installed node both satisfy the
+default resolution order. A Hub with neither a payload nor the package refuses.
 """
 from __future__ import annotations
 
@@ -23,29 +31,31 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from . import identity_adapter_port as _identity_port
 from .errors import BAD_REQUEST, INTERNAL, UNKNOWN_DEVICE, refuse
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-try:  # the canonical identity layer, or nothing
-    from fleet.transport import (  # type: ignore
-        Availability,
-        CapabilityAvailability,
-        Device,
-        DeviceRef,
-        DeviceRegistry,
-        UnknownDevice,
-        canonical_level,
-    )
-except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+try:  # the canonical identity layer (or a verified payload carrying it), or nothing
+    _authority = _identity_port.load_authority()
+    Availability = _authority.module.Availability
+    CapabilityAvailability = _authority.module.CapabilityAvailability
+    Device = _authority.module.Device
+    DeviceRef = _authority.module.DeviceRef
+    DeviceRegistry = _authority.module.DeviceRegistry
+    UnknownDevice = _authority.module.UnknownDevice
+    canonical_level = _authority.module.canonical_level
+except _identity_port.AuthorityUnavailable as exc:
     raise refuse(
         INTERNAL,
-        f"the ServerOS fleet identity layer could not be imported from "
-        f"{_REPO_ROOT / 'fleet'} ({type(exc).__name__}: {exc}). This surface "
-        f"does not carry a second copy of device identity; without the "
-        f"canonical one it has no fleet to report.",
+        f"the ServerOS fleet identity layer could not be loaded through "
+        f"{_identity_port.AUTHORITY_ABI} ({exc}). This surface does not carry a "
+        f"second copy of device identity; without the canonical one it has no "
+        f"fleet to report. Supply a verified payload through "
+        f"{_identity_port.AUTHORITY_PAYLOAD_ENV} or install the declared "
+        f"dependency.",
     ) from None
 
 

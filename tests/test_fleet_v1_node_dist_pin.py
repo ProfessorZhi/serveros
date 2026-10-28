@@ -175,7 +175,11 @@ class TheHubIsStillBlocked(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("fleet", message,
                       "the hub must refuse for the reason it actually has")
-        self.assertIn("fleet_mcp.registry", message)
+        # Assert the holder the source actually has, not a name remembered from
+        # an older revision: the identity seam moved to
+        # `fleet_mcp.identity_adapter_port` (#466) and a literal here would fail
+        # for the right reason in the wrong place.
+        self.assertIn(m.EXTERNAL_EDGES["fleet"]["holder"], message)
 
 
 class TheInstalledPayloadRuns(unittest.TestCase):

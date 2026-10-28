@@ -75,7 +75,7 @@ pin entry the closure no longer reaches is also a build failure, so the list
 cannot rot into a claim nobody checks. See HANDOFF-407.md for the exact edges.
 
 The dependency on the repository is pinned the same way and with the same
-discipline: `EXTERNAL_EDGES` records **one** holder (`fleet_mcp.registry`), **one**
+discipline: `EXTERNAL_EDGES` records **one** holder (`fleet_mcp.identity_adapter_port`), **one**
 module (`fleet.transport`) and **exactly seven** names, because "the node needs
 `fleet`" is a sentence that stays true forever and distinguishes nothing. Cutting
 edge A in HANDOFF-407 deletes that edge outright; while it exists, this module
@@ -251,10 +251,16 @@ SCHEMA_TOOL_HINT = "run_get"
 #:
 #: The dictionary is keyed by the external package and is *complete*: a package
 #: reached but not listed here is new coupling and is refused, not inherited.
+#: The holder is part of the pin, not a detail of it. The identity authority's
+#: import moved from `fleet_mcp.registry` to `fleet_mcp.identity_adapter_port`
+#: when the Hub gained a versioned seam (#466); the edge is the same edge, but a
+#: pin that keeps naming the old holder refuses a Hub whose dependency is in fact
+#: narrower and better described. Widen this only by naming the module that
+#: actually holds the import, and say why in the same change.
 EXTERNAL_EDGES = {
     "fleet": {
         "module": "fleet.transport",
-        "holder": "fleet_mcp.registry",
+        "holder": "fleet_mcp.identity_adapter_port",
         "symbols": ("Availability", "CapabilityAvailability", "Device", "DeviceRef",
                     "DeviceRegistry", "UnknownDevice", "canonical_level"),
     },
@@ -567,7 +573,17 @@ def manifest_for(kind: str, version: str, *, root: Path,
                 "independently_installable": installable,
                 "requires_repository": {package: list(names)
                                         for package, names in sorted(holders.items())},
-                "blocked_by": blockers,
+                # A second, DIFFERENT route to a deployable Hub. `installable`
+                # above answers "does this payload carry everything it imports";
+                # this answers "may it be deployed when a verified companion
+                # artifact supplies the dependency". They are separate fields on
+                # purpose: folding the second into the first would let a Hub with
+                # a missing authority read as standalone, which is the exact
+                # claim `identity_adapter_port` refuses to make.
+                "authority": (authority_declaration() if kind == L2_HUB else None),
+                "installable_with": ([AUTHORITY_KIND] if kind == L2_HUB else []),
+                "blocked_by": blockers + (["fleet-authority sidecar not supplied"]
+                                          if kind == L2_HUB else []),
             },
             "shared_surface": (list(NODE_SHARED_SURFACE) if kind == L2_NODE else []),
             "provides": dict(PROVIDES[kind]),
@@ -1601,6 +1617,318 @@ def rollback_target(previous: Path, *, kind: str) -> Artifact:
     artifact = read_artifact(previous)
     verify(artifact, expect_kind=kind)
     return artifact
+
+
+# --------------------------------------------------------------------------- #
+# The L0 authority sidecar
+#
+# WHY A SECOND ARTIFACT AND NOT A WIDER HUB
+# -----------------------------------------
+# The Hub's only remaining repository dependency is the identity authority
+# (`fleet_mcp/registry.py` -> `fleet.transport`). Three answers are refused:
+# vendor it (a second `DeviceRef`, which agrees on the day it is written and
+# diverges at the first rename), fall back to local data (a fleet that exists
+# only inside the Hub), and quietly treat the Hub as standalone (the claim the
+# Hub's own port exists to prevent).
+#
+# What is shipped instead is the dependency as its OWN versioned artifact: the
+# canonical module bytes, a manifest that names the ABI and digests every file,
+# and a Hub that declares it needs exactly that. The authority stays single —
+# this is the same `fleet/transport.py`, distributed, not re-implemented — and
+# the Hub's `standalone` stays false, because a Hub alone still cannot import.
+# --------------------------------------------------------------------------- #
+
+#: The sidecar's own kind. Deliberately NOT added to `L2_KINDS`: the release
+#: tool registers kinds one at a time (#433 owns that list), and an unregistered
+#: kind must not be buildable through a parser that would then hand it to a
+#: verifier that has never heard of it.
+AUTHORITY_KIND = "fleet-authority"
+AUTHORITY_ABI = "serveros.fleet.transport/v1"
+AUTHORITY_MODULE = "fleet.transport"
+AUTHORITY_SOURCE = "fleet/transport.py"
+#: The module's OWN contract: `transport.py` reads it at module level
+#: (`CAPABILITY_LEVELS = tuple(transport_contract()["capability_levels"]["order"])`
+#: and two neighbours), so a payload carrying only the .py imports a module that
+#: raises FileNotFoundError. It is vocabulary — capability levels, aliases,
+#: availability values — and names no device, which is why it may travel with
+#: the code while `registry.yaml` may not.
+AUTHORITY_CONTRACT = "fleet/transport-contract.yaml"
+#: The closed file set. Anything else in the payload is refused, not ignored.
+AUTHORITY_FILES = (AUTHORITY_SOURCE, AUTHORITY_CONTRACT)
+AUTHORITY_MANIFEST_NAME = "fleet-authority.json"
+#: Authored data, never bundled: a registry is a statement about a fleet, and a
+#: payload that shipped one would be inventing devices.
+AUTHORITY_DATA_NOT_BUNDLED = ("fleet/registry.yaml",)
+AUTHORITY_MAX_SOURCE_BYTES = 512 * 1024
+AUTHORITY_SECRET_HINTS = ("credential", "token", "secret", "password", "private_key")
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _authority_file(root: Path, rel: str) -> bytes:
+    path = root / rel
+    if not path.is_file():
+        raise Refused(f"the identity authority file {rel} is absent from {root}")
+    if path.is_symlink():
+        raise Refused(f"{rel} is a symlink; the authority is a file, not a pointer")
+    data = path.read_bytes()
+    if len(data) > AUTHORITY_MAX_SOURCE_BYTES:
+        raise Refused(f"{rel} is {len(data)} bytes, beyond the "
+                      f"{AUTHORITY_MAX_SOURCE_BYTES}-byte bound this sidecar accepts")
+    return data
+
+
+def authority_declaration(expected_payload_sha256: str | None = None) -> dict:
+    """What the Hub publishes about the dependency it cannot carry itself.
+
+    `expected_payload_sha256` is optional on purpose. Left empty the Hub states
+    the ABI it speaks and accepts whatever verified sidecar arrives; set, the
+    Hub pins one payload and a mismatch is refused. `hub_install_plan` reports
+    which of the two it was, so "pinned" is never inferred.
+    """
+    return {
+        "abi": AUTHORITY_ABI,
+        "module": AUTHORITY_MODULE,
+        "provided_by": AUTHORITY_KIND,
+        "required": True,
+        "expected_payload_sha256": expected_payload_sha256,
+        # The Hub still may not call itself standalone: the sidecar is a second
+        # install, and a deployment that forgets it fails at import.
+        "hub_standalone_with_satisfied": False,
+        "data_not_bundled": list(AUTHORITY_DATA_NOT_BUNDLED),
+    }
+
+
+def authority_members(root: Path) -> dict[str, bytes]:
+    """The sidecar's bytes: the canonical module and a manifest that digests it."""
+    payload = {rel: _authority_file(root, rel) for rel in AUTHORITY_FILES}
+    source = payload[AUTHORITY_SOURCE]
+    manifest = {
+        "schema": "serveros/fleet-authority.v1",
+        "abi": AUTHORITY_ABI,
+        "module": AUTHORITY_MODULE,
+        # The closed declaration `identity_adapter_port.verify_payload` reads:
+        # every .py/.yaml in the payload must appear here, and the authority
+        # module is mandatory.
+        "files": {rel: _sha256_bytes(data) for rel, data in payload.items()},
+        "data_not_bundled": list(AUTHORITY_DATA_NOT_BUNDLED),
+        "single_authority": True,
+    }
+    payload[AUTHORITY_MANIFEST_NAME] = json.dumps(
+        manifest, indent=2, sort_keys=True, ensure_ascii=False).encode("utf-8") + b"\n"
+    return payload
+
+
+def verify_authority_members(members: dict[str, bytes]) -> dict:
+    """Refuse a sidecar payload that is not exactly what it declares.
+
+    The checks are closed in the same sense the Hub's port is closed: a file the
+    manifest does not name is refused, not ignored, because it would sit on
+    `sys.path` as if it were part of the authority.
+    """
+    for name in members:
+        if name.startswith("/") or ".." in Path(name).parts:
+            raise Refused(f"sidecar member {name!r} escapes the payload")
+        if any(hint in name.lower() for hint in AUTHORITY_SECRET_HINTS):
+            raise Refused(f"sidecar member {name!r} looks like credential material; "
+                          f"an authority payload carries code and a declaration only")
+        if name.endswith(FORBIDDEN_SUFFIXES):
+            raise Refused(f"sidecar member {name!r} is bytecode")
+    if AUTHORITY_MANIFEST_NAME not in members:
+        raise Refused(f"sidecar has no {AUTHORITY_MANIFEST_NAME}; an undeclared "
+                      f"payload is refused rather than imported")
+    try:
+        declared = json.loads(members[AUTHORITY_MANIFEST_NAME].decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise Refused(f"sidecar manifest is not readable JSON ({type(exc).__name__})") from None
+    if declared.get("abi") != AUTHORITY_ABI:
+        raise Refused(f"sidecar declares ABI {declared.get('abi')!r}; the contract is "
+                      f"{AUTHORITY_ABI!r}")
+    if declared.get("module") != AUTHORITY_MODULE:
+        raise Refused(f"sidecar declares module {declared.get('module')!r}; the contract "
+                      f"is {AUTHORITY_MODULE!r}")
+    files = declared.get("files")
+    if not isinstance(files, dict) or AUTHORITY_SOURCE not in files:
+        raise Refused(f"sidecar manifest must declare {AUTHORITY_SOURCE!r} in `files`")
+    missing_decl = [rel for rel in AUTHORITY_FILES if rel not in files]
+    if missing_decl:
+        raise Refused(f"sidecar manifest does not declare {missing_decl}; the authority "
+                      f"is {AUTHORITY_SOURCE} plus its own contract")
+    unexpected = sorted(n for n in members
+                        if n != AUTHORITY_MANIFEST_NAME and n not in AUTHORITY_FILES)
+    if unexpected:
+        raise Refused(f"sidecar carries members outside the closed authority set: "
+                      f"{unexpected}; the payload is two named files, not a directory")
+    undeclared = sorted(n for n in members
+                        if n != AUTHORITY_MANIFEST_NAME
+                        and (n.endswith((".py", ".yaml", ".yml")))
+                        and n not in files)
+    if undeclared:
+        raise Refused(f"sidecar carries files its manifest does not declare: {undeclared}")
+    for name, digest in files.items():
+        if name not in members:
+            raise Refused(f"sidecar declares {name!r}, which is absent")
+        actual = _sha256_bytes(members[name])
+        if not isinstance(digest, str) or actual != digest.lower():
+            raise Refused(f"sidecar digest does not match {name}: declared {digest!r}, "
+                          f"measured {actual!r}. An unverified payload is refused.")
+    for forbidden in AUTHORITY_DATA_NOT_BUNDLED:
+        if forbidden in members:
+            raise Refused(f"sidecar carries {forbidden!r}; authored fleet data is the "
+                          f"operator's to supply, not this payload's to invent")
+    return declared
+
+
+def authority_manifest_for(version: str, *, root: Path,
+                           platforms: tuple[str, ...] = ("linux", "windows")
+                           ) -> tuple[dict, dict[str, bytes]]:
+    """Compose the sidecar's description and bytes."""
+    if not VERSION_RE.match(version):
+        raise Refused(f"version {version!r} is not <major>.<minor>.<patch>[+<cachebuster>]")
+    members = authority_members(root)
+    declared = verify_authority_members(members)
+    entries = [{"path": name, "sha256": _sha256_bytes(data)}
+               for name, data in sorted(members.items())]
+    manifest = {
+        "schema": ARTIFACT_MANIFEST_SCHEMA,
+        "kinds": [AUTHORITY_KIND],
+        "composition": COMPOSITION,
+        "name": "fleet-l2-authority",
+        "version": version,
+        "platforms": sorted(platforms),
+        "members": [e["path"] for e in entries],
+        "member_sha256": {e["path"]: e["sha256"] for e in entries},
+        "source": {"module": AUTHORITY_MODULE, "module_count": len(members),
+                   "tree_sha256": _tree_digest(entries)},
+        "authority": {
+            "abi": AUTHORITY_ABI,
+            "module": AUTHORITY_MODULE,
+            # The Hub compares these two against its own declaration; a sidecar
+            # for a different ABI is a dependency it cannot satisfy.
+            "payload_sha256": declared["files"][AUTHORITY_SOURCE],
+            "single_authority": True,
+            "data_not_bundled": list(AUTHORITY_DATA_NOT_BUNDLED),
+        },
+    }
+    return manifest, members
+
+
+def verify_authority_artifact(path: Path, *, version: str | None = None) -> Artifact:
+    """Read a sidecar back and verify it, including the payload contract."""
+    artifact = read_artifact(path)
+    kinds = artifact.manifest.get("kinds") or []
+    if kinds != [AUTHORITY_KIND]:
+        raise Refused(f"{path} is {kinds}, not a [{AUTHORITY_KIND!r}] artifact")
+    if version is not None and artifact.version != version:
+        raise Refused(f"{path} is version {artifact.version!r}, expected {version!r}")
+    declared = verify_authority_members(artifact.members)
+    block = artifact.manifest.get("authority") or {}
+    if block.get("abi") != AUTHORITY_ABI or block.get("module") != AUTHORITY_MODULE:
+        raise Refused(f"{path} does not declare the {AUTHORITY_ABI} contract")
+    if block.get("payload_sha256") != declared["files"][AUTHORITY_SOURCE]:
+        raise Refused(f"{path} disagrees with its own payload digest")
+    return artifact
+
+
+def authority_rollback_target(previous: Path, *, version: str | None = None) -> Artifact:
+    """The sidecar a rollback would activate — verified before it is named."""
+    return verify_authority_artifact(previous, version=version)
+
+
+def authority_imports_without_checkout(artifact: Artifact) -> bool:
+    """Extract the payload into an empty tree and import it there.
+
+    The claim "installable" is only worth the measurement behind it: the payload
+    is unpacked somewhere with no repository, put alone on `sys.path`, and the
+    seven symbols must actually resolve.
+    """
+    with tempfile.TemporaryDirectory(prefix="l2-authority-import-") as tmp:
+        tree = Path(tmp) / "payload"
+        tree.mkdir()
+        for name, data in artifact.members.items():
+            target = tree / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        script = (
+            "import json,sys\n"
+            f"sys.path.insert(0, {str(tree)!r})\n"
+            "import fleet.transport as t\n"
+            "need = ['Availability','CapabilityAvailability','Device','DeviceRef',\n"
+            "        'DeviceRegistry','UnknownDevice','canonical_level']\n"
+            "missing = [n for n in need if not hasattr(t, n)]\n"
+            "print(json.dumps({'missing': missing, 'file': getattr(t,'__file__','')}))\n"
+        )
+        done = subprocess.run([sys.executable, "-I", "-c", script],
+                              capture_output=True, text=True, timeout=120,
+                              env={"PATH": "/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"})
+        if done.returncode != 0:
+            raise Refused(f"the authority payload does not import in an empty tree: "
+                          f"{done.stderr.strip()[-400:]}")
+        answer = json.loads(done.stdout.strip().splitlines()[-1])
+        if answer["missing"]:
+            raise Refused(f"the payload imports but is not the authority it claims: "
+                          f"missing {answer['missing']}")
+        if str(tree) not in answer["file"]:
+            raise Refused("the imported authority did not come from the payload")
+    return True
+
+
+def hub_install_plan(hub: Path, authority: Path | None) -> dict:
+    """May this Hub be deployed? Only when the companion authority verifies too.
+
+    Returns a record rather than raising, because "not installable" is an answer
+    a release reader needs, not an exception to swallow. Both artifacts are
+    verified; either failing leaves the plan un-installable with the reason.
+    """
+    blockers: list[str] = []
+    verified_hub = None
+    try:
+        verified_hub = read_artifact(hub)
+        verify(verified_hub, expect_kind=L2_HUB)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a blocker
+        blockers.append(f"hub: {type(exc).__name__}: {exc}")
+    verified_authority = None
+    if authority is None:
+        blockers.append(f"no {AUTHORITY_KIND} sidecar supplied; the Hub's "
+                        f"{AUTHORITY_ABI} dependency is unmet")
+    else:
+        try:
+            verified_authority = verify_authority_artifact(authority)
+            authority_imports_without_checkout(verified_authority)
+        except Exception as exc:  # noqa: BLE001
+            verified_authority = None
+            blockers.append(f"authority: {type(exc).__name__}: {exc}")
+    if verified_hub is not None:
+        declared = ((verified_hub.manifest.get("l2") or {}).get("install") or {}).get("authority")
+        if not isinstance(declared, dict) or declared.get("abi") != AUTHORITY_ABI:
+            blockers.append("hub does not declare the authority dependency")
+        elif verified_authority is not None:
+            provided = (verified_authority.manifest.get("authority") or {})
+            if provided.get("abi") != declared.get("abi"):
+                blockers.append("hub and sidecar name different ABIs")
+            pinned = declared.get("expected_payload_sha256")
+            if pinned is not None and provided.get("payload_sha256") != pinned:
+                blockers.append("the hub pins an authority payload this sidecar is not")
+    installable = not blockers and verified_hub is not None and verified_authority is not None
+    return {
+        "installable": installable,
+        "hub_alone_standalone": False if verified_hub is None else
+                                bool(((verified_hub.manifest.get("l2") or {})
+                                      .get("standalone"))),
+        "with": [AUTHORITY_KIND] if installable else [],
+        "blocked_by": blockers,
+        "hub_digest": None if verified_hub is None else verified_hub.digest,
+        "authority_digest": None if verified_authority is None else verified_authority.digest,
+        "authority_abi": AUTHORITY_ABI,
+        # Pinned means the Hub named the payload digest it will accept. Unpinned
+        # means it accepts any verified sidecar speaking the same ABI; the plan
+        # says which, rather than implying one.
+        "authority_pinned": bool(
+            ((verified_hub.manifest.get("l2") or {}).get("install") or {})
+            .get("authority", {}).get("expected_payload_sha256")) if verified_hub else False,
+    }
 
 
 # --------------------------------------------------------------------------- #
