@@ -674,6 +674,40 @@ NODE_EXCLUSIVE = frozenset({
     "fleet_mcp.providers.cloudcli", "fleet_mcp.version",
 })
 
+#: Modules under ``fleet_mcp/`` that **neither** artifact's closure reaches, as
+#: measured on this tree. A snapshot, and deliberately not an endorsement: most
+#: of these are hub-side or legacy files that simply stopped being imported, and
+#: two of the entries are the ones an owner runtime outside ``fleet_mcp/**``
+#: imports. The tuple exists so that a module leaving both artifacts has to be a
+#: decision someone wrote down rather than a file that quietly fell out, and so
+#: that a branch adding such a module fails here by name.
+ORPHANS_UNDECIDED = (
+    "fleet_mcp.deploy", "fleet_mcp.deploy.binding_migration",
+    "fleet_mcp.deploy.dell_fjd_cutover", "fleet_mcp.deploy.install",
+    "fleet_mcp.deploy.next_dual_stack_preflight",
+    "fleet_mcp.deploy.next_install", "fleet_mcp.deploy.next_tailscale_gate",
+    "fleet_mcp.deploy.release_plan", "fleet_mcp.health_admission",
+    "fleet_mcp.http_transport", "fleet_mcp.human_auth", "fleet_mcp.oauth",
+    "fleet_mcp.owner_setup", "fleet_mcp.release_evidence", "fleet_mcp.runtime",
+)
+
+
+def orphaned_modules(root: Path) -> tuple[str, ...]:
+    """``fleet_mcp`` modules reachable from neither entrypoint, sorted.
+
+    Both artifacts are import closures, so a module nobody imports is in
+    neither payload. That is fine when it is a decision and invisible when it is
+    not: this returns the set so a test can hold it still.
+    """
+    reached = set()
+    for kind in (L2_NODE, L2_HUB):
+        reached |= set(closure(ENTRY[kind], root).modules)
+    on_disk = set()
+    for path in sorted((Path(root) / "fleet_mcp").rglob("*.py")):
+        dotted = path.relative_to(Path(root)).as_posix()[:-3].replace("/", ".")
+        on_disk.add(dotted[: -len(".__init__")] if dotted.endswith(".__init__") else dotted)
+    return tuple(sorted(on_disk - reached))
+
 
 def _matches(path: str, pattern: str) -> bool:
     if pattern.startswith("*") and "/" not in pattern:
