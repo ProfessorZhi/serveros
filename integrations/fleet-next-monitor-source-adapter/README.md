@@ -82,8 +82,8 @@ PYTHONPATH=integrations/fleet-next-monitor-source-adapter \
 
 ```json
 {
-  "request": {"view": "run", "device_ref": "device:x",
-              "session_ref": "device:x|claude|s", "run_id": "r1"},
+  "read_request": {"view": "run", "device_ref": "device:x",
+                   "session_ref": "device:x|claude|s", "run_id": "r1"},
   "grant":   {"principal": "monitor", "devices": ["device:x"],
               "projects": [], "sessions": ["device:x|claude|s"], "views": ["run"]},
   "fixture": {"run": {"instanceId": "instance-a", "status": "completed"}},
@@ -91,12 +91,41 @@ PYTHONPATH=integrations/fleet-next-monitor-source-adapter \
 }
 ```
 
+The request block is `read_request` (v2). A document written to v1, which
+spelled the block `request`, still parses through `serializer.RETIRED_REQUEST_KEY`;
+a document carrying both spellings is refused rather than guessed. The rename is
+not cosmetic: `request` is also the name of a record field declared in
+`abilities/target-contract.yaml`, and the repository's name-based reader gate
+counted this package's envelope key as a reader of that field. The retired
+spelling now lives in exactly one constant, and
+`test_no_module_reads_the_unrelated_record_field_name` keeps it out of every
+read position.
+
 Exit codes: `0` observation produced · `2` refused (bad input / denied / import
 shape) · `3` blocked upstream (input unreadable).
 
 The input never names a Python module. The only dynamic construction is the
 fixture client built from the JSON itself; a real deployment injects a real
 read-only client programmatically (see the handoff doc).
+
+## As a monitor source (`compat.py`)
+
+#493's monitor samples a source through `sources.observe_watch`, which calls
+`observe_run(..., expected_boot_id=, expected_source_sha=)` and reads a mapping.
+This adapter now declares and honours both keywords, so it is directly callable
+from there — and `compat.CompatMonitorSource` is the versioned view
+(`serveros/fleet-next-monitor-source-adapter.compat.v2`) for the two things a
+view can say and the native contract deliberately cannot:
+
+| #493 reads | native adapter | `CompatMonitorSource` |
+| --- | --- | --- |
+| a denied watch | raises `SourceRefused` before any read | `DENIED` / `NOT_GRANTED`, zero reads |
+| a wrong-commit CI answer | `UNKNOWN` / `IDENTITY_MISMATCH` | `UNKNOWN` / `SHA_MISMATCH` |
+| a run naming no identifier | `UNKNOWN` / `NO_IDENTIFIER` | `UNKNOWN` / `BAD_PAYLOAD` |
+
+Translation renames a fact; it never moves a status. `expected_boot_id` and
+`expected_source_sha` are passed through and compared — a watch that names
+another boot gets `BOOT_MISMATCH`, never a verified run.
 
 ## What this is not
 
@@ -112,7 +141,11 @@ read-only client programmatically (see the handoff doc).
 
 * RED on the base commit: package absent → `ModuleNotFoundError`, collection
   error.
-* GREEN: `35 passed, 11 subtests passed` (`tests/test_fleet_next_monitor_source_adapter.py`).
+* GREEN: `80 passed, 21 subtests passed` (`tests/test_fleet_next_monitor_source_adapter.py`)
+  — #490's original 35, plus 45 in six classes covering the `read_request`
+  rename, the `observe_watch` keyword seam, the native-activity vocabulary, the
+  CI vocabulary, `CompatMonitorSource`, and the composed seam's fail-closed
+  cases.
 * CLI smoke: a synthetic completed-without-transcript fixture prints
   `"status": "UNKNOWN", "reason": "NO_NATIVE_ACTIVITY"` and exits 0.
 
