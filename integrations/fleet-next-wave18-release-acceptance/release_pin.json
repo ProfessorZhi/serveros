@@ -1,0 +1,258 @@
+{
+  "schema": "serveros/fleet-next-release-pin.v1",
+  "wave": "wave18",
+  "created": "2026-10-29",
+  "base": {
+    "commit": "e69fc0337ae5d33000478e3d5162077f525bc8cc",
+    "branch": "main"
+  },
+  "units": [
+    {
+      "id": "rc-wave16",
+      "pr": 500,
+      "commit": "80220a4ad1b009946f11bda0ce96dd8ff8e05468",
+      "title": "the Wave 16 RC composition and its ledger",
+      "paths": [
+        "docs/integration/FLEET-NEXT-RC-WAVE16-20261028.md",
+        "integrations/fleet-next-rc-wave16/README.md",
+        "integrations/fleet-next-rc-wave16/composition.json",
+        "tests/test_fleet_next_rc_wave14_ledger.py",
+        "tests/test_fleet_next_rc_wave16_ledger.py"
+      ],
+      "unit_tests": [
+        "tests/test_fleet_next_rc_wave16_ledger.py"
+      ],
+      "platforms": ["linux", "win32"],
+      "measured": {
+        "platform": "win32",
+        "passed": 24,
+        "note": "plus 80 subtests; the composition file is the RC's own arithmetic"
+      }
+    },
+    {
+      "id": "runtime-abi",
+      "pr": 503,
+      "commit": "b7f1f6134a1e3dcee4b916068c693ff059c097bd",
+      "title": "measure the tick's clock — the composition's three failures were the test's ABI",
+      "paths": [
+        "tests/test_fleet_next_agent_monitor_activation_runtime_tick.py"
+      ],
+      "unit_tests": [
+        "tests/test_fleet_next_agent_monitor_activation_runtime_tick.py"
+      ],
+      "platforms": ["linux"],
+      "measured": {
+        "platform": "win32",
+        "passed": 0,
+        "skipped": 3,
+        "note": "the whole file skips on win32 (fcntl), so a win32 pass would be a pass over nothing"
+      }
+    },
+    {
+      "id": "monitor-p0",
+      "pr": 504,
+      "commit": "6286bfbc885771a45415efcb33405bb21a841fde",
+      "title": "a typed subject is not an authorization, and blind is not zero",
+      "paths": [
+        "integrations/fleet-next-agent-monitor/README.md",
+        "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/contract.py",
+        "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/core.py",
+        "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/notifier.py",
+        "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/sources.py",
+        "tests/test_fleet_next_agent_monitor_core.py"
+      ],
+      "unit_tests": [
+        "tests/test_fleet_next_agent_monitor_core.py"
+      ],
+      "platforms": ["linux"],
+      "measured": {
+        "platform": "linux",
+        "passed": null,
+        "note": "state.py imports fcntl, so on win32 the module cannot be imported at all; the unit is declared linux-only and no pass count is claimed here — the UNIT layer measures it"
+      }
+    },
+    {
+      "id": "hub-node-cut",
+      "pr": 505,
+      "commit": "3512c551574a94ad360f8bde6435bdf07c729167",
+      "title": "attribute Wave 17 CI shard 4 to a pre-existing date-window test",
+      "paths": [
+        "docs/integration/FLEET-NEXT-WAVE17-HUB-NODE-CUT-20261028.md",
+        "integrations/fleet-next-wave17-hub-node-release-cut/README.md",
+        "integrations/fleet-next-wave17-hub-node-release-cut/wave17_cut.py",
+        "tests/test_fleet_next_wave17_hub_node_release_cut.py"
+      ],
+      "unit_tests": [
+        "tests/test_fleet_next_wave17_hub_node_release_cut.py"
+      ],
+      "platforms": ["linux", "win32"],
+      "measured": {
+        "platform": "win32",
+        "passed": 13,
+        "note": "the two handoff patches and the evidence JSON are carried but not packaged: the cut is applied in an isolated copy, not installed"
+      }
+    },
+    {
+      "id": "sidecar-revoke",
+      "pr": 506,
+      "commit": "30d7c4d34ce7ebf76d751b8e306fa2c623c4cac7",
+      "title": "consult sys.modules before taking a synthetic name",
+      "paths": [
+        "docs/integration/FLEET-NEXT-WAVE17-SIDECAR-REVOKE-20261028.md",
+        "integrations/fleet-next-wave17-sidecar-release/README.md",
+        "integrations/fleet-next-wave17-sidecar-release/probe_guards.py",
+        "integrations/fleet-next-wave17-sidecar-release/sidecar_release.py",
+        "tests/test_fleet_next_wave17_sidecar_release.py"
+      ],
+      "unit_tests": [
+        "tests/test_fleet_next_wave17_sidecar_release.py"
+      ],
+      "platforms": ["linux", "win32"],
+      "measured": {
+        "platform": "win32",
+        "passed": 101,
+        "skipped": 1,
+        "note": "plus 17 subtests; this is the engine the drill runs, and its own guard tests do not cover a write that fails mid-install"
+      }
+    },
+    {
+      "id": "release-preflight",
+      "pr": 502,
+      "commit": "8e6be6b1177405c58ebf980dc68c0f0475b76e89",
+      "title": "note the component manifests are unchanged at branch head",
+      "paths": [
+        "docs/integration/FLEET-NEXT-WAVE16-RELEASE-PREFLIGHT-20261028.md",
+        "integrations/fleet-next-wave16-release-preflight/README.md",
+        "integrations/fleet-next-wave16-release-preflight/wave16_preflight.py",
+        "tests/test_fleet_next_wave16_release_preflight.py"
+      ],
+      "unit_tests": [
+        "tests/test_fleet_next_wave16_release_preflight.py"
+      ],
+      "platforms": ["linux", "win32"],
+      "measured": {
+        "platform": "win32",
+        "passed": 60,
+        "note": "the resource matrix refuses relative paths, so the drill injects footprints under /opt rather than the real install tree"
+      }
+    }
+  ],
+  "release_package": {
+    "name": "fleet-next-sidecar",
+    "version": "1.0.0+wave18",
+    "revoke_entrypoint": "sidecar/sidecar_release.py",
+    "files": [
+      {
+        "path": "sidecar/sidecar_release.py",
+        "from": "integrations/fleet-next-wave17-sidecar-release/sidecar_release.py",
+        "source": "sidecar-revoke"
+      },
+      {
+        "path": "sidecar/probe_guards.py",
+        "from": "integrations/fleet-next-wave17-sidecar-release/probe_guards.py",
+        "source": "sidecar-revoke"
+      },
+      {
+        "path": "sidecar/README.md",
+        "from": "integrations/fleet-next-wave17-sidecar-release/README.md",
+        "source": "sidecar-revoke"
+      },
+      {
+        "path": "monitor/contract.py",
+        "from": "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/contract.py",
+        "source": "monitor-p0"
+      },
+      {
+        "path": "deploy/wave16_preflight.py",
+        "from": "integrations/fleet-next-wave16-release-preflight/wave16_preflight.py",
+        "source": "release-preflight"
+      },
+      {
+        "path": "deploy/wave17_cut.py",
+        "from": "integrations/fleet-next-wave17-hub-node-release-cut/wave17_cut.py",
+        "source": "hub-node-cut"
+      },
+      {
+        "path": "rc/composition.json",
+        "from": "integrations/fleet-next-rc-wave16/composition.json",
+        "source": "rc-wave16"
+      },
+      {
+        "path": "rc/README.md",
+        "from": "integrations/fleet-next-rc-wave16/README.md",
+        "source": "rc-wave16"
+      }
+    ]
+  },
+  "drill": {
+    "engine_unit": "sidecar-revoke",
+    "engine_path": "integrations/fleet-next-wave17-sidecar-release/sidecar_release.py",
+    "preflight_unit": "release-preflight",
+    "preflight_path": "integrations/fleet-next-wave16-release-preflight/wave16_preflight.py",
+    "processes": 6,
+    "isolation": "one tempfile world per run, one clone per unit, no service, no port, no system manager"
+  },
+  "legacy": {
+    "fleet_instance_id": "fleet-legacy-01",
+    "route_id": "route-legacy-01",
+    "boot_id": "boot-legacy-0.1.0",
+    "port": 8100,
+    "backend_url": "http://127.0.0.1:8100/mcp",
+    "oauth_audience": "https://legacy.invalid/mcp",
+    "clock": "2026-10-29T00:00:00Z",
+    "track": "legacy-0.1.0",
+    "device_ref": "device:legacy",
+    "contract": ["get_session", "get_run", "send"]
+  },
+  "device": {
+    "device_ref": "device:wave18-hermetic",
+    "boot_id": "boot-wave18-drill"
+  },
+  "artifact": {
+    "published": false,
+    "expected_names": [],
+    "expected_sha256": {},
+    "search_paths": [],
+    "evidence": {
+      "path": "integrations/fleet-next-wave18-artifact-builder/evidence/ARTIFACTS.sha256",
+      "provenance_path": "integrations/fleet-next-wave18-artifact-builder/evidence/PROVENANCE.json",
+      "builder_pr": 509,
+      "builder_commit": "3520d0c886a3abe0ba712eeb855ca2bcdd65579d",
+      "builder_path": "integrations/fleet-next-wave18-artifact-builder/wave18_builder.py",
+      "builder_sha256": "34cc5c50816c8e24f9fcda355f3376a0c82e82e31a2e2c4a7f1981033165d31f",
+      "source_commit": "ff514f4bd447588e77274753c34f0a664258ca64",
+      "source_tree": "981d014c969374f1986be62e45e04b3a10c31d3e",
+      "claimed_sha256": {
+        "fleet-authority-1.0.0+wave18.tar.gz": "ace00295ca00a84026a8ee70b6a2328c29738cdf93fa77c0fba91533d70103e9",
+        "fleet-hub-1.0.0+wave18.tar.gz": "4ca314f502a80d17c31bcccf8d460df6163afc6ec9083f1d0b8f9ed58ed86534",
+        "fleet-next-composition-1.0.0+wave18.tar.gz": "2a0933b9bde9855b3732d34410a0cddf6ab6feb41f2470d0e7ed19171418ddc8",
+        "fleet-node-1.0.0+wave18.tar.gz": "381dbd8e1404082d4d9af4c952019e2a0e80a4b859ec639d052d4059a227251b",
+        "fleet-runtime-base-1.0.0+wave18.tar.gz": "333caea13df2e17de068fb69ab6d47299eed938a8767607b7cfa2b6b601f7649"
+      },
+      "claimed_decision": "BLOCKED_OWNER",
+      "claimed_release_permitted": false,
+      "claimed_real_device": "NOT_RUN",
+      "claimed_technical_state": "GREEN_ARTIFACTS",
+      "claimed_source_state": "BLOCKED_OWNER",
+      "baseline_decision": "BLOCKED_CROSS_COMPONENT",
+      "claimed_member_counts": {
+        "fleet-authority": 3,
+        "fleet-hub": 13,
+        "fleet-next-composition": 0,
+        "fleet-node": 2,
+        "fleet-runtime-base": 19
+      },
+      "notes": [
+        "the checksums and the decision fields above are transcribed from #509's own evidence/ARTIFACTS.sha256 and evidence/PROVENANCE.json; they are a claim, not a measurement",
+        "#509 itself records decision=BLOCKED_OWNER and release_permitted=false: its own producer says this is not a release",
+        "the two-artifact boot failed in both directions (baseline_decision=BLOCKED_CROSS_COMPONENT), so no subset of these tarballs boots alone",
+        "fleet-next-composition carries zero members and the empty-tree digest; it is a name, not bytes"
+      ]
+    },
+    "rebuild": {
+      "source_commit": "ff514f4bd447588e77274753c34f0a664258ca64",
+      "builder_commit": "3520d0c886a3abe0ba712eeb855ca2bcdd65579d",
+      "builder_path": "integrations/fleet-next-wave18-artifact-builder/wave18_builder.py"
+    }
+  }
+}
