@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -39,8 +40,17 @@ MODULE_NAME = "serveros_next_agent_monitor_activation"
 TEMPLATE = (REPO / "integrations" / "fleet-next-agent-monitor-activation"
             / "serveros-next-agent-monitor.service.template")
 
-LEGACY_ROOT = "/srv/legacy-fleet"
-NEXT_ROOT = "/srv/fleet-next"
+#: The wrapper's own rule is "every path is absolute", so the fixture paths have
+#: to be absolute *on the host running the test*. A POSIX literal is not
+#: absolute on win32, where the same file then failed for the wrong reason
+#: (`MISCONFIGURED`) and hid whatever it was meant to check.
+if os.name == "nt":
+    _FIXTURE = Path(tempfile.gettempdir()).resolve() / "serveros-next-monitor-fixture"
+    LEGACY_ROOT = str(_FIXTURE / "legacy-fleet")
+    NEXT_ROOT = str(_FIXTURE / "fleet-next")
+else:
+    LEGACY_ROOT = "/srv/legacy-fleet"
+    NEXT_ROOT = "/srv/fleet-next"
 LEGACY_PORT = 3231
 NEXT_PORT = 3241
 
@@ -93,7 +103,7 @@ class UpstreamEntryIsMissingSoWeFailClosed(Base):
 
         def monitor():
             calls.append(1)
-            return {"row": "ok"}
+            return {"state": "SETTLED"}
 
         result = self.m.run_bounded(
             self.activation(ticks=3), monitor_entry=monitor,
@@ -264,7 +274,7 @@ class TheProcessEntryReportsItsOwnVerdict(Base):
         import types
         calls = []
         module = types.ModuleType(MODULE_NAME + "_probes")
-        module.tick = lambda: calls.append(1) or {"backlog": 0}
+        module.tick = lambda: calls.append(1) or {"state": "SETTLED", "backlog": 0}
         module.probe_true = lambda: True
         module.probe_false = lambda: False
         sys.modules[module.__name__] = module

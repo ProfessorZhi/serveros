@@ -203,32 +203,60 @@ class GreenIsATerminalBatchWithAConfirmedSummary(Base):
 
 
 class TheWrapperKeepsTheTwoWordsApart(Base):
-    def test_a_tick_through_the_wrapper_stays_bounded_stop(self):
-        """The wrapper's verdict is BOUNDED_STOP; the row carries the batch's."""
-        stub = self.tmp / "ok_cli.py"
+    """`BOUNDED_STOP` is the process finishing; the batch word is the batch.
+
+    #495 measured what happens when these are merged: a `TICKED` or
+    `BLOCKED_INPUT` run reached a supervisor as `BOUNDED_STOP` / exit 0, so the
+    wrapper's own stop was read as the batch's completion. So the wrapper now
+    reports the batch's word, and `BOUNDED_STOP` is reserved for a **green** row —
+    which is the only case in which the two words genuinely agree.
+    """
+
+    def _activation(self, ticks=1):
+        return activation.Activation(
+            legacy_root=str(self.tmp / "legacy"), next_root=str(self.tmp / "next"),
+            state=str(self.tmp / "next" / "state"),
+            lock=str(self.tmp / "next" / "monitor.lock"), port=3241,
+            legacy_port=3231, service_name="serveros-next-agent-monitor",
+            legacy_service_name="serveros-fleet-node-connector",
+            plugin_id="serveros-fleet-next-ingress",
+            legacy_plugin_id="serveros-fleet-ingress", ticks=ticks)
+
+    def _through_the_wrapper(self, document, exit_code=0):
+        stub = self.tmp / "cli_under_test.py"
         stub.write_text(
             "def _run(argv):\n"
-            "    return 0, {'state': 'TICKED', 'batch_id': 'b-1',"
-            " 'summary': None}\n",
-            encoding="utf-8")
+            f"    return {exit_code}, {document!r}\n", encoding="utf-8")
         config = self.config(cli_path=str(stub))
-        entry = lambda: a.tick(config)  # noqa: E731 - a monitor entry is a callable
-
-        result = activation.run_bounded(
-            activation.Activation(
-                legacy_root="/srv/legacy-fleet", next_root=str(self.tmp / "next"),
-                state=str(self.tmp / "next" / "state"),
-                lock=str(self.tmp / "next" / "monitor.lock"), port=3241,
-                legacy_port=3231, service_name="serveros-next-agent-monitor",
-                legacy_service_name="serveros-fleet-node-connector",
-                plugin_id="serveros-fleet-next-ingress",
-                legacy_plugin_id="serveros-fleet-ingress", ticks=1),
-            monitor_entry=entry, legacy_read=lambda: True,
+        return activation.run_bounded(
+            self._activation(),
+            monitor_entry=lambda: a.tick(config), legacy_read=lambda: True,
             next_write=lambda: False, clock=lambda: 0.0)
 
+    def test_a_ticked_batch_is_reported_as_ticked_not_as_a_bounded_stop(self):
+        result = self._through_the_wrapper(
+            {"state": "TICKED", "batch_id": "b-1", "summary": None})
+        self.assertEqual(result["state"], "TICKED")
+        self.assertIs(result["completed"], False)
+        self.assertNotEqual(result["state"], activation.BOUNDED_STOP,
+                            "a batch still in flight finished the process, not "
+                            "the batch")
+
+    def test_a_blocked_batch_reaches_the_supervisor_with_its_own_exit(self):
+        result = self._through_the_wrapper(
+            {"state": "BLOCKED_INPUT", "summary": None}, exit_code=3)
+        self.assertEqual(result["state"], "BLOCKED_INPUT")
+        self.assertEqual(result["exit"], 3)
+        self.assertIs(result["completed"], False)
+
+    def test_a_settled_and_delivered_batch_is_the_only_bounded_stop(self):
+        result = self._through_the_wrapper(
+            {"state": "SETTLED", "batch_id": "b-2",
+             "summary": {"state": "DELIVERED"}})
         self.assertEqual(result["state"], activation.BOUNDED_STOP)
-        self.assertNotEqual(result["state"], "TICKED",
-                            "the wrapper must not adopt the batch's word as its own")
+        self.assertIs(result["completed"], True)
+        self.assertEqual(result["ticks_report"][0]["state"], "SETTLED",
+                         "the batch's own word is still carried underneath")
 
     def test_a_blocked_cli_still_lets_the_wrapper_report_its_own_health(self):
         stub = self.tmp / "blocked_cli.py"
