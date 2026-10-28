@@ -60,7 +60,7 @@ import shutil
 import subprocess
 from fnmatch import fnmatchcase
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 # The placeholders the units are written with. They are inert to systemd on
 # purpose: systemd expands `%` and `$`, so a `$NAME` left unrendered would
@@ -319,7 +319,10 @@ L2_HUB_DENIED_PATTERNS = ("*.local.yaml", "*.local.yml", "bindings/*", "*.servic
 #: credential.
 L2_HUB_SECRET_PATTERNS = ("*credential*", "*token*")
 
-L2_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$")
+#: A release candidate is a version. #431 widened this after 2469ec5 and a
+#: verifier still using the old pattern refuses `1.4.0-rc.1` as malformed.
+L2_VERSION_RE = re.compile(
+    r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.\-]*)?(?:\+[A-Za-z0-9][A-Za-z0-9.\-]*)?$")
 #: A payload that forwards the CloudCLI tool schema asks the running CLI; one that
 #: carries a copy keeps answering after the CLI moves.
 L2_SCHEMA_MARKER = "inputSchema"
@@ -842,7 +845,7 @@ def verify_plugin(rev_dir: Path) -> dict:
                         "in this payload cannot be distinguished from declared ones")
     else:
         expected = set(recorded) | {TREE_MANIFEST}
-        actual = {str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*") if p.is_file()}
+        actual = {_relative_posix(p, rev_dir) for p in rev_dir.rglob("*") if p.is_file()}
         for rel in sorted(actual - expected):
             problems.append(f"file present that the build did not produce: {rel}")
 
@@ -869,6 +872,26 @@ def _l2_matches(path: str, pattern: str) -> bool:
 def _l2_tree_digest(entries) -> str:
     stream = "".join(f"{entry['sha256']}  {entry['path']}\n" for entry in entries)
     return hashlib.sha256(stream.encode("utf-8")).hexdigest()
+
+
+def _relative_posix(entry, root) -> str:
+    """A payload-relative path, always with `/` separators.
+
+    `str(Path.relative_to(root))` uses the OS separator, and member paths in an
+    artifact are POSIX — that is what an archive stores and what #431 writes. On
+    Windows the two never meet: every comparison against a declared member would
+    be against `fleet_mcp\\node\\connector.py` while the manifest says
+    `fleet_mcp/node/connector.py`, so a correct payload was reported as thirty
+    members missing and thirty undeclared. `as_posix()` is the only form that is
+    the same on both platforms.
+
+    THIS NORMALISES A PATH WE DERIVED, NEVER ONE WE WERE GIVEN. A member name
+    from the manifest is validated as written: `..\\x` is refused, not rewritten
+    into something that looks legal, and a backslash in a member name is a
+    refusal rather than a separator to convert. Sanitising an untrusted path into
+    a canonical one is how a traversal check becomes a traversal.
+    """
+    return entry.relative_to(root).as_posix()
 
 
 def _l2_layer_problems(kind: str, names) -> list[str]:
@@ -998,7 +1021,8 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
         problems.append(f"name is {manifest.get('name')!r}, expected {L2_NAMES[kind]!r}")
     version = str(manifest.get("version", ""))
     if not L2_VERSION_RE.match(version):
-        problems.append(f"version {version!r} is not <major>.<minor>.<patch>[+<cachebuster>]")
+        problems.append(f"version {version!r} is not "
+                        f"<major>.<minor>.<patch>[-<prerelease>][+<cachebuster>]")
 
     # --- the member list, against the bytes ---------------------------------
     #
@@ -1051,6 +1075,15 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
                             f"with a second spelling, a backslash or a control "
                             f"character names one file two ways")
             continue
+        # A Windows absolute or drive-relative name is not a member either. On
+        # Windows `rev_dir / "C:/x.py"` is `C:\\x.py` — outside the payload —
+        # and `rev_dir / "C:x"` is drive-relative. Both are refused as names
+        # rather than resolved to find out where they point.
+        windows = PureWindowsPath(name)
+        if windows.is_absolute() or windows.drive:
+            problems.append(f"member name {name!r} is a Windows absolute or "
+                            f"drive-relative path, not a member of this payload")
+            continue
         if name.endswith((".pyc", ".pyo")):
             problems.append(f"{name} is bytecode; a payload carries sources")
             continue
@@ -1060,12 +1093,12 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
     # "carry" a required member that lives outside the artifact entirely — and
     # the digest would match, because the bytes are the bytes. The native
     # verifier refuses a linked member for the same reason.
-    linked = sorted(str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*")
+    linked = sorted(_relative_posix(p, rev_dir) for p in rev_dir.rglob("*")
                     if p.is_symlink())
     for name in linked:
         problems.append(f"{name} is a symlink; a member must be a file in the payload")
 
-    on_disk = {str(p.relative_to(rev_dir)) for p in rev_dir.rglob("*") if p.is_file()}
+    on_disk = {_relative_posix(p, rev_dir) for p in rev_dir.rglob("*") if p.is_file()}
     on_disk.discard(ARTIFACT_MANIFEST)
     # `RELEASE.json` is written by the promotion that follows, never by the build,
     # so it is the one file legitimately present that the manifest cannot list.
@@ -1166,9 +1199,15 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
                         f"carry those modules; it would raise at import")
 
     for dependency in l2.get("depends_on") or []:
-        wanted = f"{str(dependency).replace('.', '/')}.py"
-        if wanted not in files:
-            problems.append(f"depends_on names {dependency!r}, which the payload does not carry")
+        # A dependency may be a MODULE (`fleet_mcp.registry` -> .py) or a PACKAGE
+        # (`fleet_mcp` -> __init__.py). #431 widened this after 2469ec5; a
+        # verifier that only looked for `.py` refused a package the payload does
+        # carry, which is the worst kind of false negative — it blocks a correct
+        # artifact while claiming a missing file.
+        wanted = str(dependency).replace(".", "/")
+        if f"{wanted}.py" in files or f"{wanted}/__init__.py" in files:
+            continue
+        problems.append(f"depends_on names {dependency!r}, which the payload does not carry")
 
     platforms = list(l2.get("platforms") or [])
     unsupported = sorted(set(platforms) - set(L2_PLATFORMS[kind]))
@@ -1185,7 +1224,37 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
     # verification — and would put the release path at odds with the build's own
     # verifier, which believes it. The two are separate fields because they are
     # separate facts.
-    standalone = l2.get("standalone") is True and not external
+    # Two fields, and the gate takes the CONJUNCTION. `standalone` answers "does
+    # the entry module import"; `runtime_standalone` (added in #431 @ 7dbac2b3)
+    # answers "does the payload run", including the modules its first fleet call
+    # imports. The second is the stronger statement, so it can only ever NARROW
+    # this verdict, never widen it.
+    #
+    # That direction is the whole correctness argument. Believing the more
+    # permissive field — `runtime_standalone: true` beside `standalone: false` or
+    # a non-empty `external_in_repo` — would promote a manifest that contradicts
+    # itself, and `ARTIFACT.json` is the one file this verifier cannot
+    # authenticate: `member_sha256` excludes it by construction. A contradictory
+    # manifest is refused, not adjudicated in favour of the field that says yes.
+    declared = l2.get("standalone")
+    measured = l2.get("runtime_standalone")
+    depends = list(l2.get("depends_on") or [])
+
+    if measured is not None and not isinstance(measured, bool):
+        problems.append(f"l2.runtime_standalone is {type(measured).__name__}, not a "
+                        f"boolean; a measurement that is not a boolean is not one")
+        measured = None
+    if isinstance(measured, bool) and isinstance(declared, bool) and measured != declared:
+        problems.append(f"the manifest contradicts itself: standalone is {declared} and "
+                        f"runtime_standalone is {measured}. One says the entry imports, "
+                        f"the other says the payload runs; a payload that runs imports")
+
+    standalone = (
+        declared is True
+        and not external
+        and not depends
+        and (measured is not False)
+    )
     standalone_reasons: list[str] = []
     if not standalone:
         missing_packages = sorted(external)
@@ -1193,10 +1262,20 @@ def verify_l2_layer(rev_dir: Path, *, kind: str) -> dict:
             standalone_reasons.append(
                 f"the payload imports in-repo package(s) {missing_packages} that it "
                 f"does not carry; it cannot run without this checkout")
-        else:
+        if depends:
+            standalone_reasons.append(
+                f"the manifest declares depends_on {depends}; a payload with declared "
+                f"dependencies is not independently installable")
+        if isinstance(measured, bool) and measured is False:
+            standalone_reasons.append(
+                "the manifest's own runtime_standalone says the payload cannot run")
+        if declared is not True and not (isinstance(measured, bool) and measured is False):
             standalone_reasons.append(
                 "the manifest does not claim standalone, so nothing here says the "
                 "payload can run on its own")
+        if not standalone_reasons:
+            standalone_reasons.append(
+                "the manifest contradicts itself about whether this payload can run")
 
     return {"ok": not problems, "problems": problems,
             "tree_hash": fingerprint(rev_dir) if not problems else None,
@@ -1375,7 +1454,7 @@ def verify_native_runtime(rev_dir: Path) -> dict:
             files: set[str] = set()
             directories: set[str] = set()
             for entry in rev_dir.rglob("*"):
-                relative = str(entry.relative_to(rev_dir))
+                relative = _relative_posix(entry, rev_dir)
                 (directories if entry.is_dir() else files).add(relative)
             for rel in sorted(files - declared):
                 problems.append(f"file present that the package did not declare: {rel}")
