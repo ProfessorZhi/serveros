@@ -25,6 +25,26 @@ able to say so instead of pretending. An unresolvable entry is
     `tick_once`/`tick_from_file` and no `main`; #446's `runner.py` is the only
     real bounded CLI in this area; the Fleet Next one-shot CLI has no published
     SHA. See docs/integration/FLEET-NEXT-AGENT-MONITOR-ACTIVATION.md.
+
+WHAT A STOP MAY SAY ABOUT THE BATCH
+-----------------------------------
+`BOUNDED_STOP` is the wrapper finishing, and #495 measured the wrapper saying it
+for a monitor that had just refused: the tick's `state`, `exit`, `why` and
+`health` were dropped, so `BLOCKED_INPUT` (exit 3) and `UNCONFIRMED` (exit 4)
+arrived at a supervisor as exit 0. That is the one thing this wrapper may not do
+— report its own stop where the batch's verdict belongs. So:
+
+* a tick's control word is carried through; `BOUNDED_STOP` is emitted **only**
+  for a green tick, and is the only word that comes with `completed: true`;
+* a row that names no readable state is `UNRECOGNISED`, never "probably fine";
+* staleness that nothing measured is `null`, never `false`;
+* a stale cursor outranks any success word, from either side of the seam: a
+  monitor whose cursor is past its bound has no knowledge of the batch, so the
+  run is `UNCONFIRMED` (exit 4) even when every tick said `TICKED` or `SETTLED`.
+
+The result is a closed schema: `RESULT_KEYS`, `TICK_RECORD_KEYS` and `HEALTH_KEYS`
+are checked by `_close`, so a field added in a hurry fails here rather than in a
+supervisor that silently stopped reading it.
 """
 from __future__ import annotations
 
@@ -32,7 +52,8 @@ import argparse
 import importlib
 import json
 import sys
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -41,6 +62,8 @@ SCHEMA = "serveros/fleet-next-agent-monitor-activation.v1"
 EXIT_OK = 0
 EXIT_REFUSED = 2
 EXIT_BLOCKED_UPSTREAM = 3
+EXIT_UNCONFIRMED = 4
+EXIT_UNRECOGNISED = 5
 
 BOUNDED_STOP = "BOUNDED_STOP"
 TICK_FAILED = "TICK_FAILED"
@@ -48,6 +71,46 @@ LEGACY_UNREADABLE = "LEGACY_UNREADABLE"
 NEXT_NOT_READ_ONLY = "NEXT_NOT_READ_ONLY"
 MISCONFIGURED = "MISCONFIGURED"
 BLOCKED_UPSTREAM_ENTRY = "BLOCKED_UPSTREAM_ENTRY"
+UNRECOGNISED = "UNRECOGNISED"
+
+#: The words a monitor tick may answer with. #493's core and #481's Batch CLI
+#: publish the same five; anything else is not a status, so it is `UNRECOGNISED`.
+TICK_STATES = frozenset({"SETTLED", "TICKED", "UNCONFIRMED", "BLOCKED_INPUT",
+                         "REFUSED", UNRECOGNISED})
+#: The wrapper's own words: its preflight refusals and its one word for a run in
+#: which every tick was green.
+ACTIVATION_STATES = frozenset({MISCONFIGURED, BLOCKED_UPSTREAM_ENTRY,
+                               LEGACY_UNREADABLE, NEXT_NOT_READ_ONLY,
+                               TICK_FAILED, BOUNDED_STOP})
+RESULT_STATES = ACTIVATION_STATES | TICK_STATES
+
+#: How bad a tick's word is, for picking one word out of several ticks. Only the
+#: tick states are ranked: a preflight word cannot co-occur with a tick.
+SEVERITY = {"SETTLED": 0, "TICKED": 1, "UNCONFIRMED": 2, "REFUSED": 3,
+            UNRECOGNISED: 4, "BLOCKED_INPUT": 5}
+
+#: The number a supervisor reads when it does not read `state`. Only a bounded
+#: stop may be 0. `TICKED` keeps #493's 0 because the monitor itself says
+#: `EXIT_SETTLED` for it: the state word, not this number, is what says "still in
+#: flight", and inventing a different code for it would put a second vocabulary
+#: in the wrapper's mouth.
+EXIT_FOR_STATE = {
+    BOUNDED_STOP: EXIT_OK, "SETTLED": EXIT_OK, "TICKED": EXIT_OK,
+    "REFUSED": EXIT_REFUSED, MISCONFIGURED: EXIT_REFUSED,
+    LEGACY_UNREADABLE: EXIT_REFUSED, NEXT_NOT_READ_ONLY: EXIT_REFUSED,
+    TICK_FAILED: EXIT_REFUSED,
+    "BLOCKED_INPUT": EXIT_BLOCKED_UPSTREAM,
+    BLOCKED_UPSTREAM_ENTRY: EXIT_BLOCKED_UPSTREAM,
+    "UNCONFIRMED": EXIT_UNCONFIRMED,
+    UNRECOGNISED: EXIT_UNRECOGNISED,
+}
+
+RESULT_KEYS = frozenset({"schema", "state", "exit", "ticks", "completed", "why",
+                         "health", "warnings", "ticks_report"})
+TICK_RECORD_KEYS = frozenset({"index", "state", "exit", "why", "backlog",
+                              "unknown_receipts", "completed", "health", "warnings"})
+HEALTH_KEYS = frozenset({"last_tick", "cursor_age", "stale", "backlog",
+                         "unknown_receipts", "reported"})
 
 #: Upper bound on one activation. A unit that wants to run longer re-executes;
 #: it does not ask this process to loop.
@@ -180,24 +243,181 @@ def _probe(probe: Callable[[], Any], *, what: str) -> bool:
         return False
 
 
-def _result(state: str, *, exit_code: int, ticks: int, why: str,
+def _close(document: dict, keys: frozenset[str], what: str) -> dict:
+    """A closed schema is only closed if something refuses the extra key."""
+    if set(document) != set(keys):
+        raise RuntimeError(
+            f"{what} is not the closed schema: extra {sorted(set(document) - keys)}, "
+            f"missing {sorted(keys - set(document))}")
+    return document
+
+
+def _count(value: Any) -> int | None:
+    """An integer count, or None. `True` is not a count and neither is a string."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _result(state: str, *, exit_code: int, ticks: int, why: str, completed: bool = False,
             health: Mapping[str, Any] | None = None,
-            warnings: list[dict] | None = None) -> dict:
-    return {"schema": SCHEMA, "state": state, "exit": exit_code, "ticks": ticks,
-            "why": why, "health": dict(health or {}),
-            "warnings": list(warnings or [])}
+            warnings: list[dict] | None = None,
+            ticks_report: list[dict] | None = None) -> dict:
+    """One activation's answer. `health` is None when nothing was measured.
+
+    `{}` used to stand for both "no problems found" and "nothing looked at"; the
+    two are not the same answer, and a supervisor cannot tell them apart.
+    """
+    if state not in RESULT_STATES:
+        raise RuntimeError(f"{state!r} is not a state this wrapper may report")
+    return _close({
+        "schema": SCHEMA, "state": state, "exit": exit_code, "ticks": ticks,
+        "completed": bool(completed), "why": why,
+        "health": dict(health) if health is not None else None,
+        "warnings": list(warnings or []),
+        "ticks_report": list(ticks_report or []),
+    }, RESULT_KEYS, "the activation result")
+
+
+def _record(index: int, row: Any) -> dict:
+    """One tick's answer, closed, with the monitor's words left where they were.
+
+    Nothing here improves on the tick: a state that is not in the vocabulary is
+    `UNRECOGNISED` with the word it actually said, and the tick's own health is
+    copied rather than recomputed.
+    """
+    if not isinstance(row, Mapping):
+        return _close({
+            "index": index, "state": UNRECOGNISED, "exit": None, "completed": False,
+            "why": f"the monitor returned {type(row).__name__}, not a mapping",
+            "backlog": None, "unknown_receipts": None, "health": None,
+            "warnings": []}, TICK_RECORD_KEYS, "a tick record")
+
+    raw_state = row.get("state")
+    # `isinstance` first: a list or dict is unhashable, and a producer bug must
+    # not be able to take the supervisor's process down with it.
+    accepted = isinstance(raw_state, str) and raw_state in TICK_STATES
+    state = raw_state if accepted else UNRECOGNISED
+    why = row.get("why")
+    why = why if isinstance(why, str) else ""
+    if not accepted:
+        note = ("the monitor's row names no state; a row without a verdict cannot "
+                "be read as a finished one" if raw_state is None else
+                f"the monitor reported {raw_state!r}, which is not a state this "
+                "wrapper can read")
+        why = f"{why}; {note}" if why else note
+
+    health = row.get("health")
+    warnings = row.get("warnings")
+    # `green` is #481's explicit floor. Absent it the tick's own `SETTLED` is the
+    # claim; `green: false` overrules it, so a settled batch whose summary never
+    # reached the provider cannot be a completion here either.
+    green = row.get("green")
+    return _close({
+        "index": index,
+        "state": state,
+        "exit": _count(row.get("exit")),
+        "completed": bool(state == "SETTLED" and green is not False),
+        "why": why,
+        "backlog": _count(row.get("backlog")),
+        "unknown_receipts": _count(row.get("unknown_receipts")),
+        "health": dict(health) if isinstance(health, Mapping) else None,
+        "warnings": ([dict(w) for w in warnings]
+                     if isinstance(warnings, list)
+                     and all(isinstance(w, Mapping) for w in warnings) else []),
+    }, TICK_RECORD_KEYS, "a tick record")
+
+
+def _effective_state(record: Mapping[str, Any]) -> str:
+    """The word to rank a tick by — the producer's, unless it contradicts itself."""
+    if record["state"] == "SETTLED" and not record["completed"]:
+        return "UNCONFIRMED"
+    return record["state"]
+
+
+def _last_count(records: list[dict], key: str) -> int | None:
+    for record in reversed(records):
+        if record[key] is not None:
+            return record[key]
+    return None
+
+
+def _health(records: list[dict], clock: Callable[[], float],
+            cursor_age_seconds: float | None) -> dict:
+    """The five things a stalled monitor hides, plus the monitor's own health.
+
+    `stale` is the producer's own boolean when it states one — #493 computes it
+    from its configured bound, which this wrapper does not know. When the
+    producer is silent the wrapper derives it, and when nothing measured the age
+    it is None: unknown, because "not stale" is a claim nobody made.
+    """
+    reported = None
+    for record in reversed(records):
+        if isinstance(record["health"], Mapping):
+            reported = record["health"]
+            break
+
+    age: float | None = None
+    if cursor_age_seconds is not None:
+        age = float(cursor_age_seconds)
+    elif reported is not None:
+        reported_age = reported.get("cursor_age")
+        if isinstance(reported_age, (int, float)) and not isinstance(reported_age, bool):
+            age = float(reported_age)
+
+    producer_stale = reported.get("stale") if reported is not None else None
+    if isinstance(producer_stale, bool):
+        stale: bool | None = producer_stale
+    elif age is not None:
+        stale = age > STALE_AFTER_SECONDS
+    else:
+        stale = None
+
+    return _close({
+        "last_tick": float(clock()),
+        "cursor_age": age,
+        "stale": stale,
+        "backlog": _last_count(records, "backlog"),
+        "unknown_receipts": _last_count(records, "unknown_receipts"),
+        "reported": dict(reported) if reported is not None else None,
+    }, HEALTH_KEYS, "health")
+
+
+def _warnings(records: list[dict], health: Mapping[str, Any]) -> list[dict]:
+    """The monitor's warnings as given, then only the ones it did not raise."""
+    warnings = [dict(w) for record in records for w in record["warnings"]]
+    codes = {w.get("code") for w in warnings}
+    if health["stale"] is True and "STALE_MONITOR" not in codes:
+        age = health["cursor_age"]
+        warnings.append({
+            "code": "STALE_MONITOR",
+            "why": (f"the cursor is {int(age)}s old, over the "
+                    f"{STALE_AFTER_SECONDS}s bound" if age is not None else
+                    "the monitor reports a stale cursor, without an age")})
+    if health["unknown_receipts"] and "UNKNOWN_RECEIPTS" not in codes:
+        warnings.append({"code": "UNKNOWN_RECEIPTS",
+                         "why": f"{health['unknown_receipts']} delivery receipts are UNKNOWN"})
+    if health["backlog"] and "BACKLOG" not in codes:
+        warnings.append({"code": "BACKLOG",
+                         "why": f"{health['backlog']} observations are waiting"})
+    return warnings
 
 
 def run_bounded(activation: Activation, *, monitor_entry: Any,
                 legacy_read: Callable[[], Any],
                 next_write: Callable[[], Any],
                 clock: Callable[[], float] | None = None,
-                cursor_age_seconds: float = 0.0) -> dict:
-    """Preflight, then a bounded number of ticks, then stop.
+                cursor_age_seconds: float | None = None) -> dict:
+    """Preflight, then a bounded number of ticks, then the monitor's own verdict.
 
     Order is the contract: configuration, then the entry, then what may be read,
     then what may not be written. A wrapper that ticked before any of those would
     be monitoring something it had no right to look at.
+
+    After the ticks the answer is the **monitor's**, not the wrapper's: the worst
+    tick's state is reported as this result's state, and `BOUNDED_STOP` is
+    reserved for a run in which every tick was green. `ticks` counts the attempts
+    made; `ticks_report` has one record per answer actually received.
     """
     problems = problems_with_activation(activation)
     if problems:
@@ -220,43 +440,51 @@ def run_bounded(activation: Activation, *, monitor_entry: Any,
                        why="the Next track would be reachable for writes; the shadow "
                            "is read-only, so activation refuses")
 
-    clock = clock or (lambda: 0.0)
-    backlog = 0
-    unknown_receipts = 0
-    done = 0
-    why = "bounded activation finished"
-    for _ in range(activation.ticks):
+    clock = clock or time.time
+    records: list[dict] = []
+    attempts = 0
+    for index in range(activation.ticks):
+        attempts = index + 1
         try:
             row = tick()
         except Exception as exc:  # noqa: BLE001 - one failed tick is a fact
-            return _result(TICK_FAILED, exit_code=EXIT_REFUSED, ticks=done + 1,
-                           why=f"{type(exc).__name__}: {exc}"[:240])
-        done += 1
-        if isinstance(row, Mapping):
-            backlog = int(row.get("backlog", backlog) or 0)
-            unknown_receipts = int(row.get("unknown_receipts", unknown_receipts) or 0)
+            health = _health(records, clock, cursor_age_seconds)
+            return _result(TICK_FAILED, exit_code=EXIT_REFUSED, ticks=attempts,
+                           why=f"{type(exc).__name__}: {exc}"[:240],
+                           health=health, warnings=_warnings(records, health),
+                           ticks_report=records)
+        records.append(_record(index, row))
 
-    health = {
-        "last_tick": float(clock()),
-        "cursor_age": float(cursor_age_seconds),
-        "backlog": backlog,
-        "unknown_receipts": unknown_receipts,
-        "stale": float(cursor_age_seconds) > STALE_AFTER_SECONDS,
-    }
-    warnings: list[dict] = []
-    if health["stale"]:
-        warnings.append({"code": "STALE_MONITOR",
-                         "why": f"the cursor is {int(cursor_age_seconds)}s old, over "
-                                f"the {STALE_AFTER_SECONDS}s bound"})
-    if unknown_receipts:
-        warnings.append({"code": "UNKNOWN_RECEIPTS",
-                         "why": f"{unknown_receipts} delivery receipts are UNKNOWN"})
-    if backlog:
-        warnings.append({"code": "BACKLOG",
-                         "why": f"{backlog} observations are waiting"})
+    health = _health(records, clock, cursor_age_seconds)
+    warnings = _warnings(records, health)
 
-    return _result(BOUNDED_STOP, exit_code=EXIT_OK, ticks=done, why=why,
-                   health=health, warnings=warnings)
+    def _deciding() -> dict:
+        return max(records, key=lambda r: (SEVERITY[_effective_state(r)], r["index"]))
+
+    completed = bool(records) and all(record["completed"] for record in records)
+    if completed:
+        state = BOUNDED_STOP
+        why = "bounded activation finished"
+    else:
+        deciding = _deciding()
+        state = _effective_state(deciding)
+        why = deciding["why"] or f"{state} at tick {deciding['index'] + 1}"
+
+    if health["stale"] is True and EXIT_FOR_STATE[state] == EXIT_OK:
+        # A measured stale cursor outranks any success word. The batch may well be
+        # running, but a monitor this stale has no knowledge of it — so the run is
+        # *unconfirmed*: not a stop, not a completion, and not a success, whichever
+        # side of the seam measured the age. Only a success would hide this, so
+        # only a success is overridden; a refusal keeps its own reason and word.
+        age = health["cursor_age"]
+        what = (f"the cursor is {int(age)}s old, past the bound"
+                if age is not None else "the monitor reports a stale cursor")
+        why = f"{what}; {state} was not a verdict on the batch"
+        state, completed = "UNCONFIRMED", False
+
+    return _result(state, exit_code=EXIT_FOR_STATE[state], ticks=attempts or len(records),
+                   completed=completed, why=why, health=health, warnings=warnings,
+                   ticks_report=records)
 
 
 def probe_true() -> bool:
@@ -292,6 +520,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--next-write", required=True,
                         help="module:callable returning True when the Next shadow "
                              "would be reachable for writes (must be False)")
+    parser.add_argument("--cursor-age-seconds", type=float, default=None,
+                        help="How old the monitor's cursor is, when the operator "
+                             "measures it. Without it the age is taken from the "
+                             "tick's own health; with neither, staleness is reported "
+                             "as unknown rather than as false.")
     args = parser.parse_args(argv)
 
     activation = Activation(
@@ -309,7 +542,11 @@ def main(argv: list[str] | None = None) -> int:
 
     result = run_bounded(activation, monitor_entry=args.monitor_entry,
                          legacy_read=probe(args.legacy_read),
-                         next_write=probe(args.next_write))
+                         next_write=probe(args.next_write),
+                         # The wall clock, so `last_tick` is when this ran rather
+                         # than the 0.0 a defaulted clock used to write.
+                         clock=time.time,
+                         cursor_age_seconds=args.cursor_age_seconds)
     json.dump(result, sys.stdout, ensure_ascii=False, sort_keys=True)
     sys.stdout.write("\n")
     return int(result["exit"])
