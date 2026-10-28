@@ -87,7 +87,7 @@ public evidence retrieved on 2026-10-28:
 - `integrations/fleet-app-overlay/chatgpt_presentation_matrix.json` — support
   matrix for portable, App-backed, app-ID-as-plugin-ID and Claude Code cases.
   App-backed avatar/display rows are `UNKNOWN`/`BLOCKED`, never `SUPPORTED`.
-- `tests/test_fleet_chatgpt_plugin_update_contract.py` — 14 tests / 8 subtests
+- `tests/test_fleet_chatgpt_plugin_update_contract.py` — 15 tests / 8 subtests
   covering the positive path and wrong plugin ID, app ID, stale release, tar.gz,
   version decrease, omitted member, tiny icon, App-backed presentation and the
   matrix honesty rules.
@@ -111,13 +111,42 @@ The dry-run preflight against that ZIP and a synthetic previous record returned
 ## 5. Verification
 
 - `tests/test_fleet_chatgpt_batch_commander.py`: 21 passed, 24 subtests.
-- `tests/test_fleet_chatgpt_plugin_update_contract.py`: 14 passed, 8 subtests.
-- Combined targeted union with L4/operator/overlay gate: 212 passed, 210
+- `tests/test_fleet_chatgpt_plugin_update_contract.py`: 15 passed, 8 subtests.
+- Combined targeted union with L4/operator/overlay gate: 219 passed, 210
   subtests.
 - `build_zip.py --check`: stable (7 files).
 - Preflight dry-run: PASS (synthetic identity).
 - Resource caps: 2 GiB / 300 s / `taskset -c 0` / artifact TMPDIR /
   `PYTHONDONTWRITEBYTECODE=1`.
+
+## 6. Single 9-Skill archive chain
+
+The canonical first-install tree is #410/#453-owned and was not edited.
+`integrations/fleet-v1-first-install/assemble_commander_batch_source.py`
+assembles a variant source by copying the canonical 8 Operator Skills and adding
+the #456 `fleet-batch-commander` Skill, then bumps only the manifest version and
+records every Skill's origin and SHA-256. The archive is written by the existing
+`build_first_install.py`; there is no second publisher.
+
+Artifact build (source-level, operator-supplied 2026-10-22 endpoint receipt):
+
+- archive: `serveros-fleet-ingress-v1.0.3.zip`
+- archive sha256: `7320129eb33d57d9e988331e46c470738fc847efcc28a063f70a69bf171e12db`
+- content sha256: `6e8c6e984d3c6414d72de47c423a162a5c1775a3c98bbd84c0f4c869b8b6e93b`
+- 15 members: manifest, generated `mcp.json`, README, PRIVACY, 2 assets, 9 Skills
+- all 8 canonical Skills byte-identical; batch Skill byte-identical to #456
+- name `serveros-fleet-ingress`, displayName `ServerOS Fleet`, same MCP URL and
+  OAuth/DCR shape; no credential-shaped member
+- built twice with identical archive/content hashes
+
+A dry-run preflight against a **synthetic** previous record
+(`plugin_asdk_app_DRYRUN`, `PluginRelease_DRYRUN_102`, 1.0.2 → 1.0.3) returned
+PASS with both icons `OK` and `creator_called=false`, `uploaded=false`.
+The real backend `plugin_id` / `expected_release_id` were not read; the actual
+Creator update is NOT_RUN.
+
+The canonical V1 tree's own merge of the 9th Skill remains an owner handoff to
+#410/#453; this branch proves the source/archive chain and the dry-run contract.
 
 ## 6. NOT_RUN / unverified
 
