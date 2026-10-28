@@ -1,23 +1,47 @@
 # Fleet Next Agent Monitor — activation contract
 
-> **Status: `BLOCKED_UPSTREAM_ENTRY`.** The wrapper, its isolation checks, its
-> self-health and its unit template are written and tested offline. What does not
-> exist is the thing the template would run. Nothing here is installed, enabled,
-> started, or sent.
+> **Status: upstream entry found, wired, and still `NOT_RUN` on a device.**
+> #481 (`9b7710a2`) published the real bounded Batch CLI, so the wrapper is no
+> longer blocked on an absent entry — it has an adapter to it (this branch).
+> Nothing is installed, enabled, started or sent: the unit remains a template.
 >
-> Layers: `CODE` ✅ · `UNIT` ✅ 26 tests · `HOSTED_CI` see the PR ·
-> `ACTIVATED_TIMER` **NOT_RUN** · `DEVICE` **NOT_RUN** · `REAL_IM` **NOT_RUN**.
+> Layers: `CODE` ✅ · `UNIT` ✅ 49 activation tests (+24 of #481's, +10 layers) ·
+> `HOSTED_CI` see the PR · `ACTIVATED_TIMER` **NOT_RUN** · `DEVICE` **NOT_RUN** ·
+> `REAL_IM` **NOT_RUN**.
 
 Tracking: #478 (owner decision, dual-track) · #424 · #417 (monitor) · #434 · #425.
 
 ---
 
-## 1. Why this is blocked, with the evidence
+## 1. The upstream entry, and how it was wired
 
 #478 asks for a bounded one-shot process the owner can put behind a systemd
 **user** unit, so the monitor keeps watching after the ChatGPT turn is gone.
 
-A unit needs something to run. Measured, not assumed:
+When this record was first written, a unit had nothing to run. Measured:
+
+| Candidate | Then |
+|---|---|
+| `#446` `runner.py` | **has `main()`** — the convention this wrapper copies |
+| `#470 @ 56fcb927` `dispatch.py` | **no entry** — `tick_once`/`tick_from_file`, no `__main__` |
+| Fleet Next one-shot CLI | **no published SHA** |
+
+That is why the first version reported `BLOCKED_UPSTREAM_ENTRY`. **#481
+(`9b7710a2`) then published `integrations/fleet-v1-milestone-batch/cli.py`**, so
+there is now a real entry — but it is not the shape this wrapper takes, and the
+adapter exists for that reason:
+
+| #481's CLI | This wrapper's monitor entry |
+|---|---|
+| needs argv (`--registration`, `--ledger`, `--state`, factories) | a zero-argument callable |
+| `main(argv)` returns only an `int` | needs a mapping |
+| `_run(argv)` returns `(exit_code, document)` | the only shape carrying the answer |
+
+`batch_adapter.py` builds that argv from operator configuration and carries the
+document through. `BOUNDED_UPSTREAM_ENTRY` remains the answer whenever the CLI is
+missing or has no `_run`.
+
+### The entry rules, unchanged
 
 | Candidate | State |
 |---|---|
@@ -105,6 +129,30 @@ source contains no `subprocess`, `os.system`, `os.kill` or `systemctl `, so
 
 That is #478's rule made structural: the monitor may tell you it is stuck; it may
 not restart anything, least of all the Legacy track.
+
+## 4b. The adapter's own floor
+
+| Rule | Why |
+|---|---|
+| argv comes from `BatchCliConfig` only | #481 refuses to import anything named by the registration; an adapter that re-read it from the Batch JSON would reopen the hole from the other side |
+| exactly one dynamic import — the operator's `cli_path` | no path from Batch JSON to a Python import |
+| factory specs are handed over as strings | `#446`'s `load_factory` is the authority, not this module |
+| one provider, one ledger | `_run` builds them; the adapter only reads its document |
+| CLI states pass through unchanged | `SETTLED`/`UNCONFIRMED`/`BLOCKED_INPUT`/`TICKED`/`REFUSED`, never merged |
+| none of them is `BOUNDED_STOP` | "the process finished" is not "the batch settled" — asserted |
+| green = `SETTLED` **and** `DELIVERED`/`DUPLICATE` | `TICKED` is progress, `BLOCKED_INPUT` reached no run, `UNCONFIRMED` delivered nothing |
+| unknown state → `UNRECOGNISED`, not green | an unknown word is not a status |
+
+Verified on the real CLI, not a stub: #481's `registration` helper files an
+ACK-only dispatch with a **future** deadline, and the real `cli.py` runs through
+the adapter in two separate interpreters — `BLOCKED_INPUT`, exit 3, not green,
+provider journal empty.
+
+> A near-miss worth keeping: the first version of that test used #481's harness
+> `DEADLINE`, which is `2026-10-27T11:00Z` — already past. A passed deadline
+> legitimately settles a batch, so the run returned `SETTLED` and looked like a
+> defect in #481. It was my fixture. The test now uses a future deadline and says
+> why, because the next person will reach for the same constant.
 
 ## 5. What is deliberately NOT done
 
