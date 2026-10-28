@@ -123,9 +123,17 @@ class StagingRun(unittest.TestCase):
         self.assertEqual(caught.exception.status, builder.SOURCE_REFUSED)
         self.assertIn("already exists", caught.exception.detail)
 
-    #: The name the fixture's plugin manifest produces, so the test can write a
-    #: file at the exact path the run would have used.
-    MANIFEST_NAME = "serveros-fleet-ingress-v1.0.1" + "-STAGING-MANIFEST.json"
+    def manifest_name(self) -> str:
+        """The name this run would write, derived rather than typed.
+
+        It was pinned to `v1.0.1`, so a package version bump silently moved the
+        path the run uses and this test stopped testing anything: the planted
+        file no longer sat where the run looked. Deriving it from the same
+        manifest the run reads keeps the test pointed at the real path through
+        every release.
+        """
+        manifest = builder.load_manifest(self.f.source)
+        return f"serveros-fleet-ingress-v{manifest['version']}" + staging.MANIFEST_SUFFIX
 
     def test_a_preexisting_manifest_is_never_overwritten(self) -> None:
         """An incomplete prior run is still evidence, and the manifest is the half
@@ -137,7 +145,7 @@ class StagingRun(unittest.TestCase):
         """
         original = b'{"schema": "a previous run", "keep": "these bytes"}\n'
         self.f.out.mkdir(parents=True, exist_ok=True)
-        target = self.f.out / self.MANIFEST_NAME
+        target = self.f.out / self.manifest_name()
         target.write_bytes(original)
 
         with self.assertRaises(builder.Refused) as caught:
