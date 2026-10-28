@@ -237,14 +237,58 @@ This PR adds two files and edits none, which `git status --porcelain` confirms:
 ?? tests/test_fleet_next_wave16_release_preflight.py
 ```
 
-### CI — **NOT_RUN at authoring; read the PR run**
+### CI — **read, and failure. Not mine, and not green either**
 
-* `tests.yml` has no path filter, so it will produce a run on this PR.
-* `fleet-next-isolated-contracts.yml` **will not run**: its `paths:` list does
-  not include this directory or this test file. That workflow being absent is
-  `NOT_RUN`, **not** green. If the reviewer wants the isolated-contract job to
-  cover this file, the workflow's path list has to be extended — which is
-  outside this PR's exclusive scope and is left as a handoff item.
+Run `40696373281` on PR #502 (`Tests`, 4 shards, 3m23s, conclusion `failure`).
+
+| shard | summary |
+|---|---|
+| 1/4 | `8 failing, 0 new, 0 flaky, 0 listed-but-passing` |
+| 2/4 | `19 failing, 0 new, 0 flaky, 0 listed-but-passing` |
+| 3/4 | `18 failing, 0 new, 0 flaky, 0 listed-but-passing` |
+| 4/4 | `13 failing, **1 new**, 0 flaky, 0 listed-but-passing` |
+
+Where this PR's own tests ran: `scripts/hermetic_tests.py shard_files("4/4")`
+holds `tests/test_fleet_next_wave16_release_preflight.py` (that shard is 82
+files). **No failure ID in any of the four shards names the file.** A file that
+failed to import or collect would surface as a failure naming it, so its 60
+tests are in the run and are not among the 58 failures.
+
+The two `tests/test_verification_tool.py::TheStaticGraphIsALowerBound` failures
+visible in shard 1 are `0 new` because they are enumerated in
+`tests/hermetic-known-failures.txt:69-70` — baseline-known, and their blob is
+`30b5ed9d` on both sides. They are not caused by this PR.
+
+The single new failure:
+
+```
+tests/test_direct_lark_notify.py::CardCreateThenPatchTest::test_create_returns_an_id_and_patch_names_it
+```
+
+Attribution, by blob rather than by argument:
+
+```
+tests/test_direct_lark_notify.py   base=16d49e38  head=16d49e38  SAME
+runtime/live_sender.py             base=1eb4718b  head=1eb4718b  SAME
+tests/test_verification_tool.py    base=30b5ed9d  head=30b5ed9d  SAME
+```
+
+This PR is `A` (added) × 4 and modifies nothing. The failure is the known
+shard-composition isolation defect: adding one test file reshuffles shard
+membership, and in the new shard 4 neighbourhood `test_direct_lark_notify`'s
+monkeypatch seam stops taking effect (its second half, `sender.update(...)`,
+returns `FAILED`). #475 and #483 hit the same single failure with the same count
+on the same base; this is the third instance of that pattern, not a third bug.
+
+So: **hosted CI is red, and the red is pre-existing.** It is recorded as
+`failure`, not reframed as a pass, and it is *not* fixed here — the fix belongs
+to the owner of that test's isolation, and editing `tests/hermetic-known-failures.txt`
+to silence it would be exactly the wrong repair.
+
+`fleet-next-isolated-contracts.yml` produced **no run at all**: its `paths:`
+list does not include this directory or this test file. That is `NOT_RUN`, not
+green. Making it cover this file is a one-line workflow change and is outside
+this PR's exclusive scope — handoff item below.
 
 ### Device — **NOT_RUN**
 
