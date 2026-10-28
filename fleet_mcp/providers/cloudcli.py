@@ -39,6 +39,80 @@ from .base import DeviceProvider, ProviderHealth, SessionSummary, classify
 # translation layer here would silently drop the states it did not know.
 _SESSION_STATES = ("running", "idle", "resident")
 
+#: The native identities a reply may carry, kept apart from one another.
+#:
+#: `deliveryId` names the REQUEST, `runId` names the work it produced,
+#: `queuedMessageUuid` names a message still waiting, `blockedBy` names another
+#: run this one waits behind, and `idKind` says which of the first two the device
+#: answered by. Collapsing them — or turning any of them into `accepted: true` —
+#: is how "the device took the message" comes to read as "the task ran".
+RECEIPT_NATIVE_FIELDS = (
+    "deliveryId", "runId", "queued", "queuedMessageUuid", "blockedBy",
+    "idKind", "bootId",
+)
+
+#: The two identifier namespaces `run_get` accepts, and the argument each is sent
+#: as. A caller names the kind; this layer never infers it from the string, and
+#: never substitutes one for the other.
+ID_KINDS = {"run": "runId", "delivery": "deliveryId"}
+
+_COMPLETED_STATES = ("completed", "settled")
+_FAILED_STATES = ("failed", "failure", "error")
+
+
+def native_receipt(payload: Any) -> dict[str, Any]:
+    """The native identities in `payload`, verbatim, and nothing else.
+
+    Deliberately absent: any `accepted` key. The provider never synthesized one,
+    and a receipt that carried one would make a local word look like a device
+    acknowledgement.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    return {name: payload[name] for name in RECEIPT_NATIVE_FIELDS if name in payload}
+
+
+def receipt_truth(payload: Any) -> dict[str, Any]:
+    """What the device's reply actually establishes, without upgrading it.
+
+    The ladder is ordered so that the strongest negative wins:
+
+      FAILED     an explicit failure flag/state;
+      UNKNOWN    a refusal with no execution, or a `completed` that carries no
+                 readable native activity — #394's shape, where a run reports
+                 completion seconds after the send with an empty transcript.
+                 "No evidence of execution" is never reported as DONE;
+      REJECTED   the device said it did not accept;
+      QUEUED     a queue reference exists (the work has not started);
+      STARTED    a `runId` exists (the run was admitted; still not finished);
+      ACCEPTED_NO_RUN  only a `sessionId` (a create with no first message);
+      UNKNOWN    anything else — including `RUN_NOT_FOUND`, which says the id is
+                 not readable here and not that the work finished.
+    """
+    if not isinstance(payload, dict):
+        return {"acceptance": "UNKNOWN", "native": {}}
+    native = native_receipt(payload)
+    status = str(payload.get("status") or "").lower()
+    if payload.get("failed") is True or status in _FAILED_STATES:
+        acceptance = "FAILED"
+    elif payload.get("code") == "RUN_NOT_FOUND":
+        acceptance = "UNKNOWN"
+    elif (status in _COMPLETED_STATES
+          and "lastAssistantMessage" in payload
+          and payload.get("lastAssistantMessage") in (None, "")):
+        acceptance = "UNKNOWN"
+    elif payload.get("accepted") is False:
+        acceptance = "REJECTED"
+    elif payload.get("queued") is True or payload.get("queuedMessageUuid"):
+        acceptance = "QUEUED"
+    elif payload.get("runId"):
+        acceptance = "STARTED"
+    elif payload.get("sessionId"):
+        acceptance = "ACCEPTED_NO_RUN"
+    else:
+        acceptance = "UNKNOWN"
+    return {"acceptance": acceptance, "native": native}
+
 
 def _translate(exc: ProviderRefusal, *, session: SessionKey | None = None) -> FleetRefusal:
     """Map a provider failure onto this surface's closed error set.
@@ -397,7 +471,11 @@ class CloudCliProvider(DeviceProvider):
         payload = self._call("session_send", {"session": key.native_session_id, "message": message}, session=key)
         if not payload:
             raise refuse(SESSION_NOT_FOUND, f"{key.ref} is not known on {key.device_ref}")
-        return payload
+        # Additive: the native identities stay exactly where the device put them,
+        # and `receipt` states what they establish. No `accepted` key is added —
+        # the surface above may still synthesize one (out of this file's scope),
+        # but this layer will not make a device acknowledgement out of nothing.
+        return {**payload, "receipt": receipt_truth(payload)}
 
     def interrupt(self, key: SessionKey) -> dict[str, Any]:
         """Call CloudCLI's `session_interrupt` with its one argument.
@@ -422,17 +500,66 @@ class CloudCliProvider(DeviceProvider):
         return self._call("session_interrupt", {"session": key.native_session_id}, session=key)
 
     def get_run(
-        self, key: SessionKey, run_id: str, *, wait: bool = False, wait_seconds: float = 0.0
+        self, key: SessionKey, run_id: str, *, wait: bool = False,
+        wait_seconds: float = 0.0, id_kind: str = "run",
     ) -> dict[str, Any]:
-        arguments: dict[str, Any] = {
-            "runId": run_id,
-            "session": key.native_session_id,
-        }
-        if wait and wait_seconds:
-            arguments["waitSeconds"] = float(wait_seconds)
-        payload = self._call("run_get", arguments, session=key)
+        """Read one run by a NAMED identifier namespace.
+
+        `run_id` is the value; `id_kind` says which namespace it belongs to. The
+        device accepts `runId` or `deliveryId` and answers an `idKind` naming the
+        one it used. Neither this method nor the caller may infer the kind from
+        the string: a run id and a delivery id are different identifiers, and
+        silently trying one as the other would make "this id is unknown" and
+        "this id names a different thing" the same answer.
+
+        A reply whose `idKind` contradicts the requested kind, or names a kind
+        this surface cannot place, is refused rather than returned. That is the
+        whole point of the field: the device tells us which namespace it answered
+        in, and a caller that ignores it would read the wrong object.
+        """
+        if id_kind not in ID_KINDS:
+            raise refuse(
+                BAD_REQUEST,
+                f"`id_kind` must be one of {sorted(ID_KINDS)}; {id_kind!r} is "
+                f"refused rather than guessed, because a run id and a delivery "
+                f"id are different identifiers.",
+            )
+        field = ID_KINDS[id_kind]
+        if id_kind == "delivery":
+            arguments: dict[str, Any] = {"deliveryId": run_id,
+                                         "session": key.native_session_id}
+            if wait and wait_seconds:
+                arguments["waitSeconds"] = float(wait_seconds)
+            problems = cloudcli_native.validate_arguments(
+                arguments, cloudcli_native.input_schema("run_get"))
+            if problems:
+                raise refuse(BAD_REQUEST, "; ".join(problems))
+            payload = cloudcli_native.validate_delivery(
+                self._delivery_call(arguments), key, run_id,
+                family=self.binding.family)
+        else:
+            arguments = {"runId": run_id, "session": key.native_session_id}
+            if wait and wait_seconds:
+                arguments["waitSeconds"] = float(wait_seconds)
+            payload = self._call("run_get", arguments, session=key)
         if not payload:
-            raise refuse(RUN_NOT_FOUND, f"run {run_id!r} is not known for {key.ref}")
+            raise refuse(RUN_NOT_FOUND, f"{field} {run_id!r} is not known for {key.ref}")
+        answered = payload.get("idKind")
+        if answered is not None:
+            if answered not in ID_KINDS:
+                raise refuse(
+                    BAD_SESSION_REF,
+                    f"the device answered an identifier kind this surface cannot "
+                    f"place ({answered!r}); refusing rather than assuming which "
+                    f"object it named.",
+                )
+            if answered != id_kind:
+                raise refuse(
+                    BAD_SESSION_REF,
+                    f"the call asked by {field} and the device answered by "
+                    f"{ID_KINDS[answered]} — two different identifiers, and "
+                    f"neither is a substitute for the other.",
+                )
         return payload
 
     def _delivery_call(self, arguments: dict[str, Any]) -> dict[str, Any]:

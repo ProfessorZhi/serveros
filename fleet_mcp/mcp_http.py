@@ -31,6 +31,7 @@ What it is careful about
 from __future__ import annotations
 
 import json
+import re
 import socket
 import ssl
 import time
@@ -71,6 +72,65 @@ REMOTE_REFUSAL_CODES = {
     "RUN_NOT_FOUND": RUN_NOT_FOUND,
     "SESSION_BUSY": SESSION_BUSY,
 }
+
+# The only machine fields of a device refusal that cross this surface.
+#
+# `code` alone was enough to name WHAT failed, and not enough to decide what a
+# caller may do next. A `RUN_NOT_FOUND` whose `retryable` was dropped is a
+# refusal a caller cannot distinguish from a transient one, and the field exists
+# precisely to stop a blind retry. `details.reason` separates a delivery that was
+# never issued from one that expired; `details.bootId` says which device boot the
+# answer belongs to; `details.supported` carries the set a refusal refused
+# against (a permission-mode set, never a model list).
+#
+# Everything else in the envelope is remote text: `message`, stack traces, paths,
+# and — in the case this surface exists to prevent — a gateway quoting back the
+# credential it was configured with. Those are measured by `disclosure.remote_summary`
+# and never relayed. The whitelist is closed: a key that is not named here does
+# not cross, and a value of the wrong type is withheld rather than coerced.
+REFUSAL_REASONS = frozenset({"never_issued", "expired"})
+_REFUSAL_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+_REFUSAL_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_REFUSAL_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
+_MAX_SUPPORTED = 64
+
+
+def refusal_projection(envelope: Any) -> dict[str, Any]:
+    """The machine half of a device refusal, strictly whitelisted.
+
+    Returns only what a caller can branch on, and only when the value is in the
+    shape that field is defined to have. An unknown `reason` is reported as
+    `reason_known: false` rather than echoed — that says "there was a reason and
+    it is not one this surface can name", which is a fact, without relaying a
+    string the far end chose.
+    """
+    if not isinstance(envelope, dict):
+        return {}
+    out: dict[str, Any] = {}
+    code = envelope.get("code")
+    if isinstance(code, str) and _REFUSAL_CODE.match(code):
+        out["code"] = code
+    if isinstance(envelope.get("retryable"), bool):
+        out["retryable"] = envelope["retryable"]
+    raw = envelope.get("details")
+    if isinstance(raw, dict):
+        details: dict[str, Any] = {}
+        if "reason" in raw:
+            reason = raw["reason"]
+            if isinstance(reason, str) and reason in REFUSAL_REASONS:
+                details["reason"] = reason
+            else:
+                details["reason_known"] = False
+        boot = raw.get("bootId")
+        if isinstance(boot, str) and _REFUSAL_IDENTIFIER.match(boot):
+            details["bootId"] = boot
+        supported = raw.get("supported")
+        if (isinstance(supported, list) and 0 < len(supported) <= _MAX_SUPPORTED
+                and all(isinstance(x, str) and _REFUSAL_TOKEN.match(x) for x in supported)):
+            details["supported"] = list(supported)
+        if details:
+            out["details"] = details
+    return out
 
 
 class ProviderRefusal(Exception):
@@ -309,13 +369,28 @@ def structured(result: dict[str, Any], *, label: str = "the provider") -> dict[s
             error_code=code,
             refused=True,
         )
+        # The machine half travels beside the description, never inside it.
+        # Naming which fields were relayed (and nothing about their values) lets
+        # an operator tell "the device did not say" from "this surface dropped
+        # it" without opening the device's journal.
+        projection = refusal_projection(envelope)
+        # `refuse(code, detail, **extra)` already owns the name `code`; the
+        # device's own word travels as `device_code`, which also keeps it
+        # distinguishable when the two vocabularies do not translate.
+        extra = dict(projection)
+        device_code = extra.pop("code", None)
+        if device_code is not None:
+            extra["device_code"] = device_code
+        if projection:
+            detail = (f"{detail}; structured fields relayed: "
+                      f"{', '.join(sorted(projection))}")
         # The device refusing is the device's behaviour. It is translated only
         # where the two vocabularies already agree exactly; otherwise it keeps
         # its own word inside `detail` and is reported as a bad request.
         translated = REMOTE_REFUSAL_CODES.get(code) if isinstance(code, str) else None
         if translated:
-            raise refuse(translated, detail)
-        raise refuse(BAD_REQUEST, detail)
+            raise refuse(translated, detail, **extra)
+        raise refuse(BAD_REQUEST, detail, **extra)
     if isinstance(result, dict) and "structuredContent" in result:
         value = result["structuredContent"]
         if isinstance(value, dict):

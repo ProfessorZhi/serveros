@@ -2,10 +2,14 @@
 
 What is inherited
 -----------------
-CloudCLI 1.39 exposes exactly 22 MCP tools on its gateway. Fleet inherits ALL of
-them, each as `fleet_cloudcli_<native_name>`, so a caller discovers one typed
+CloudCLI's gateway exposes a declared set of MCP tools, and Fleet inherits ALL
+of them, each as `fleet_cloudcli_<native_name>`, so a caller discovers one typed
 tool per native verb instead of the seven hand-written ones this surface used to
-carry. The set is recorded here, once, and everything else reads it.
+carry. The set is recorded here, once, and everything else reads it. The COUNT is
+`NATIVE_TOOL_COUNT` rather than a number written into prose: it has changed
+across CloudCLI releases (1.39 and 1.41 do not declare the same set), and a
+sentence that repeats a stale figure is how this file came to say 22 while the
+mirror carried 31.
 
 Why a closed set, and not a proxy
 ---------------------------------
@@ -14,8 +18,8 @@ Why a closed set, and not a proxy
 make the Fleet surface a transparent proxy to a device — the caller would be
 choosing the operation, and there would be nothing left in the call to govern."
 This module keeps that refusal and answers it. The mirror is not a passthrough;
-it is a DECLARED set of 22 entries, each carrying its own native scope, its own
-Fleet scope, and its own governance class. A tool name nobody recorded is not
+it is a DECLARED set (`NATIVE_TOOL_COUNT` entries), each carrying its own native
+scope, its own Fleet scope, and its own governance class. A tool name nobody recorded is not
 forwarded — it is refused, because a name that arrived from the wire is not a
 capability this build decided to offer.
 
@@ -56,6 +60,7 @@ it.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -693,7 +698,7 @@ def native_schema(tool_entry: dict) -> dict | None:
     """One live tool entry's own `inputSchema`, or `None`.
 
     Read from the DEVICE's `tools/list`, which is the version-reviewed
-    authority. This module does NOT restate 22 schemas: a restated schema drifts
+    authority. This module does NOT restate those schemas: a restated schema drifts
     the first time CloudCLI changes a parameter, and the drift is silent. A tool
     with no `inputSchema` (a placeholder registration — the write tools register
     `{}` until their deps are wired) returns `None`, which means "no parameters
@@ -1021,6 +1026,34 @@ def validate_arguments(arguments, schema) -> list[str]:
         for name in sorted(set(arguments) - declared):
             problems.append(f"unknown parameter {name!r}")
     return problems
+
+
+#: Refusal codes whose `details.supported` is a set of PERMISSION MODES.
+#: Deliberately a closed set: an allowlist of what may be named is not a live
+#: enumeration of what exists, and the only native "enumeration" this surface has
+#: ever observed is this one. Presenting a mode set as a model list would be this
+#: surface inventing a capability, which is exactly the class of claim the L2
+#: matrix refuses to make.
+MODE_SET_REFUSALS = frozenset({"UNSUPPORTED_PERMISSION_MODE", "UNSUPPORTED_PERMISSION_MODES"})
+_MODE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
+_MAX_MODES = 64
+
+
+def interpret_supported(*, code: object, details: object) -> dict[str, Any]:
+    """Name `details.supported` for what it is, or refuse to name it at all.
+
+    Only a permission-mode refusal carries a mode set. Any other code — including
+    one that mentions models — returns `{}`: a model allowlist is a policy
+    ceiling, not a list of models that exist, and turning it into one would be a
+    claim no captured roundtrip supports.
+    """
+    if code not in MODE_SET_REFUSALS or not isinstance(details, dict):
+        return {}
+    supported = details.get("supported")
+    if (not isinstance(supported, list) or not supported or len(supported) > _MAX_MODES
+            or not all(isinstance(x, str) and _MODE_NAME.match(x) for x in supported)):
+        return {}
+    return {"permission_modes": list(supported)}
 
 
 def validate_delivery(payload, key, delivery_id, *, family=None):
