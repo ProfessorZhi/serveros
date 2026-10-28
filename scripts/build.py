@@ -935,12 +935,19 @@ def verify_artifact_kinds(kinds: list[str], members: list[str],
     required = {kind: tuple(rels)
                 for kind, rels in contract.REQUIRED_MEMBERS.items()}
 
+    faces = build_face_kinds()
     unknown = [kind for kind in kinds if kind not in vocabulary]
     if unknown:
         raise ValueError(
             f"{bundle_path}: {unknown} is not a kind the release path implements "
             f"({list(vocabulary)}); an artifact released as it would have no "
             f"verifier")
+    not_built = [kind for kind in kinds if kind not in faces]
+    if not_built:
+        raise ValueError(
+            f"{bundle_path}: {not_built} is not a kind this build produces "
+            f"({list(faces)}); its verifier belongs to the tool that assembles "
+            f"that payload")
     for kind in kinds:
         missing = [rel for rel in required[kind] if rel not in present]
         if missing:
@@ -948,16 +955,23 @@ def verify_artifact_kinds(kinds: list[str], members: list[str],
                 f"{bundle_path}: declares `{kind}` but the payload does not "
                 f"carry {missing}; the declaration is a claim the bytes do not "
                 f"keep")
-    for kind in vocabulary:
+    # Only the two BUILD faces are mutually exclusive payload shapes. The other
+    # release kinds are identities of payloads assembled elsewhere: their
+    # required members are files inside `fleet_mcp/`/`fleet_hub/`, which the
+    # legacy combined node artifact ships as a Core module. Their presence does
+    # not make this payload an `l2-node` or an `l2-hub` — the release path's
+    # standalone verifier decides that — and declaring them here is already
+    # refused above.
+    for kind in faces:
         if kind in kinds:
             continue
         leaked = [rel for rel in required[kind] if rel in present]
         if leaked:
             raise ValueError(
                 f"{bundle_path}: does not declare `{kind}` yet the payload "
-                f"carries {leaked}; the two faces are one payload again, and a "
-                f"reader would have to guess which one it is from the artifact's "
-                f"name")
+                f"carries {leaked}; the two build faces are one payload again, "
+                f"and a reader would have to guess which one it is from the "
+                f"artifact's name")
     return {kind: sorted(set(required[kind]) & present) for kind in kinds}
 
 
@@ -995,8 +1009,62 @@ def face_carries(face: str | None) -> dict[str, bool]:
         return {"skills": False, "modules": True, "plugin_manifests": False,
                 "mcp_manifests": True, "marketplace": False, "recommended": False}
     raise ValueError(
-        f"{face!r} is not a kind the release path implements "
-        f"({list(contract.ARTIFACT_KINDS)})")
+        f"{face!r} is not a kind this build produces ({list(build_face_kinds())}); "
+        f"the release path also implements {list(contract.ARTIFACT_KINDS)}, but "
+        "those payloads are assembled by their own owners")
+
+
+def build_face_kinds() -> tuple[str, ...]:
+    """The kinds THIS build produces, read from the release path's own names.
+
+    `release.py` implements five verifiers: the Python node runtime, the plugin
+    payload, the C++ native package, and the two L2 halves. Only the first two
+    are produced by `build.py`; the native package is built by `serverosd`'s
+    `make dist`, and `l2-node`/`l2-hub` are assembled by the L2 release tool
+    (#431). Naming them here is not a second vocabulary — the strings come from
+    `release_contract()` — it is the statement of which subset this builder is
+    the authority for.
+    """
+    contract = release_contract()
+    return (contract.NODE_RUNTIME, contract.PLUGIN)
+
+
+def _relative_name(value, field: str) -> str:
+    """One relative path component, on both POSIX and Windows.
+
+    A composition's Skill name is used as a directory under the artifact. A name
+    containing a slash, a backslash, `..`, a drive letter or a leading dot would let a
+    composition write outside `skills/` (or, on Windows, change the component it
+    names). The build refuses it by name rather than normalising it.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string")
+    text = value.strip()
+    if (text in (".", "..") or "/" in text or "\\" in text
+            or text.startswith(".") or (len(text) >= 2 and text[1] == ":")):
+        raise ValueError(f"{field} must be one relative path component, got {value!r}")
+    return text
+
+
+def _member_path(rel: Path, field: str) -> str:
+    """An artifact member as a POSIX path that cannot escape the artifact.
+
+    Windows and POSIX disagree about separators and absolute forms; an artifact's
+    member list must mean the same thing on both. A `..` component, an absolute
+    path or a drive letter is refused rather than written into the manifest.
+    """
+    text = rel.as_posix()
+    first = text.split("/", 1)[0]
+    # A backslash is a legal POSIX filename character, and `as_posix()` keeps
+    # it; on Windows extraction it is a separator. `a\..\b` would traverse
+    # there while `rel.parts` sees one component here, so both separators are
+    # checked.
+    parts = text.replace("\\", "/").split("/")
+    if (rel.is_absolute() or text.startswith("/") or "\\" in text
+            or ".." in parts or "" in parts
+            or (len(first) == 2 and first[1] == ":")):
+        raise ValueError(f"{field} escapes the artifact: {text!r}")
+    return text
 
 
 def source_identity(repo: Path, ability_repo: Path, ability_rev: str) -> dict:
@@ -1149,6 +1217,19 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
          marketplace_path: Path, face: str | None = None):
     bundle = load_composition(bundle_path)
     declared = declared_artifact_kinds(bundle, bundle_path)
+    # `build.py` produces two of the release path's kinds; the rest are
+    # assembled by their own owners (native package by serverosd, L2 halves by
+    # the L2 release tool). A composition that declares one of those here would
+    # ask this builder to claim an identity it cannot produce — and a combined
+    # payload merely CONTAINING `fleet_mcp/**` is not a standalone L2 artifact.
+    faces = build_face_kinds()
+    unsupported = [kind for kind in declared if kind not in faces]
+    if unsupported:
+        raise ValueError(
+            f"{bundle_path}: {unsupported} is a release kind this build cannot "
+            f"produce; build.py builds {list(faces)}. `l2-node`/`l2-hub` are "
+            "assembled and verified by their own release path, and a combined "
+            "payload that contains their source files is not standalone.")
     if face is None:
         # The combined artifact: the composition's declaration, verbatim, and
         # its own cache identity. This is the build every existing composition
@@ -1184,7 +1265,7 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
     skills: list[str] = []
     if carries["skills"]:
         for entry in bundle["skills"]:
-            name = entry["name"]
+            name = _relative_name(entry["name"], f"{bundle_path} skill name")
             source = entry["source"]
             skills.append(name)
             if source == "local":
@@ -1253,8 +1334,8 @@ def plan(bundle_path: Path, ability_repo: Path, ability_rev: str, output: Path,
     # remembering it exists. The member list is the fixed point of that choice:
     # it names the manifest itself, because a list of what was written that
     # omitted one of the things written would be a false statement.
-    members = sorted({str(rel) for _c, rel, _e in files}
-                     | {str(rel) for rel in manifests}
+    members = sorted({_member_path(rel, "artifact member") for _c, rel, _e in files}
+                     | {_member_path(rel, "manifest path") for rel in manifests}
                      | {"README.md", ARTIFACT_MANIFEST_NAME})
     # Before the manifest is written, and therefore before any artifact can
     # carry a claim: every declared kind must be backed by the members above,
@@ -1428,7 +1509,7 @@ def main() -> int:
     # named face is built as its own artifact, under its own cache identity, so
     # the device Abilities and the daemon can be versioned, released and rolled
     # back apart. The face must be one the composition already declares.
-    ap.add_argument("--face", choices=list(release_contract().ARTIFACT_KINDS),
+    ap.add_argument("--face", choices=list(build_face_kinds()),
                     default=None,
                     help="build ONE face of a composition that declares it, as a "
                          "separate artifact with its own cache identity "
