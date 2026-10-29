@@ -56,6 +56,7 @@ FORBIDDEN = (
 )
 
 PINNED_PRS = {
+    520: LAND_HEAD,
     507: RC_TREE,
     508: "fb8c435637e486fc0ecf78a2ea83b9b323c936bb",
     517: QA_HEAD,
@@ -108,6 +109,32 @@ def _has_commit(sha: str) -> bool:
         cwd=REPO, capture_output=True).returncode == 0
 
 
+def _ensure_main_history() -> None:
+    """A depth-1 PR checkout has the merge tree, not main's parents.
+
+    Deepen the main ref first; the landed merge, its old-main parent and its
+    landing head are then readable. A missing commit is a named failure, never
+    a skip.
+    """
+    if all(_has_commit(sha) for sha in (MAIN_BEFORE, MAIN_AFTER, LAND_HEAD)):
+        return
+    done = subprocess.run(
+        ("git", "fetch", "--no-tags", "--deepen=100", "origin", "main"),
+        cwd=REPO, capture_output=True, text=True, timeout=300)
+    if done.returncode != 0:
+        raise AssertionError(
+            f"cannot deepen main history: {done.stderr.strip()[-300:]}")
+    for sha in (MAIN_BEFORE, MAIN_AFTER, LAND_HEAD):
+        if not _has_commit(sha):
+            done = subprocess.run(
+                ("git", "fetch", "--no-tags", "origin", sha),
+                cwd=REPO, capture_output=True, text=True, timeout=300)
+            if done.returncode != 0 or not _has_commit(sha):
+                raise AssertionError(
+                    f"main history lacks {sha} after deepen; "
+                    f"{done.stderr.strip()[-300:]}")
+
+
 def _ensure_pins() -> None:
     for pr, sha in PINNED_PRS.items():
         if _has_commit(sha):
@@ -126,6 +153,7 @@ def _ensure_pins() -> None:
 
 
 def setUpModule() -> None:  # noqa: N802 - unittest protocol
+    _ensure_main_history()
     _ensure_pins()
 
 
