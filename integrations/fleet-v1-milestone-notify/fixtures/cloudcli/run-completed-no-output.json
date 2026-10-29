@@ -1,0 +1,32 @@
+{
+  "device_ref": "device:tokyo-shared-dev-01",
+  "session_ref": "session:codex:094e49af-7547-409a-b32b-c945203d9d14",
+  "observed_at": "2026-10-27T08:20:30Z",
+  "bound_boot_id": "a6d0f308-81df-4edb-8811-66400b51870e",
+  "source_trusted": true,
+  "milestone": true,
+  "gates_required": ["native-output", "boot-identity"],
+  "gates_passed": ["native-output", "boot-identity"],
+  "summary": "The gateway says completed, but the device also says there is no readable assistant message.",
+  "refs": ["pr:415"],
+  "run": {
+    "idKind": "run",
+    "runId": "6d0aaa3b-7cfa-4dea-bf12-09746727a212",
+    "deliveryId": null,
+    "sessionId": "094e49af-7547-409a-b32b-c945203d9d14",
+    "source": "mcp",
+    "status": "completed",
+    "phase": null,
+    "toolName": null,
+    "activityNote": "This session has no activity record.",
+    "startedAt": {"relative": "just now", "iso": "2026-10-27T08:20:15.738Z"},
+    "completedAt": {"relative": "just now", "iso": "2026-10-27T08:20:26.174Z"},
+    "elapsedMs": 10506,
+    "bootId": "a6d0f308-81df-4edb-8811-66400b51870e",
+    "outcome": "settled",
+    "reason": null,
+    "lastAssistantMessage": null,
+    "note": "This run has ended, but the session has no readable assistant message.",
+    "explanation": null
+  }
+}
