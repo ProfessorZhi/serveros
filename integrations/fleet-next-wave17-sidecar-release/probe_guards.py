@@ -81,6 +81,54 @@ HELPERS = {
 
 PIPELINES = ("REVOKE_GUARDS", "RESTORE_GUARDS")
 
+#: Wave 19 added a third verb and a transaction to survive, and its tests live in
+#: their own file. A mutation of the repair's guards run against the Wave-17 suite
+#: would report "nothing depends on this" for the honest reason that nothing there
+#: writes a journal — a measurement of the wrong suite. So the case list is split
+#: by suite, and each run must be silent on its own set.
+TRANSACTION_GUARD_BODIES = (
+    "_guard_transaction",
+    "_guard_obstacles",
+    "_guard_journal_present",
+    "_guard_journal_readable",
+    "_guard_journal_identity",
+    "_guard_journal_writer",
+    "_guard_journal_evidence",
+    "_guard_journal_state",
+)
+
+#: The same shape as `HELPERS`, for the machinery that only the transaction has.
+#: Each replacement removes one *reason to refuse*, which is what a guard is.
+TRANSACTION_HELPERS = {
+    "_write_obstacles": lambda root, rels: None,      # every target is writable
+    "_verify_staged": lambda root, new: None,         # trust the staged copies
+    "_forward_problem": lambda root, new: None,       # finishing always possible
+    "_undo_problem": lambda root, journal: None,      # undoing always possible
+    "_evidence_is_base": lambda root, journal, name: True,   # never "destroyed"
+    "_lock_is_ours": lambda lock: True,               # any lock is this module's
+    "_root_is_ours": lambda ctx: True,                # any root is this module's
+    "_pid_alive": lambda pid: False,                  # every writer is a corpse
+    "_lock_writer_is_alive": lambda body: True,       # every writer is alive
+    "_process_start": lambda pid: None,               # a pid is an identity
+    "_write_temps": lambda root: [],                  # temps are never collected
+    "_compensate": lambda root, journal: (),          # the undo always succeeded
+    "_take_lock": lambda *args, **kwargs: None,       # a write claims nothing
+}
+
+#: Only the repair pipeline. `_guard_transaction` and `_guard_obstacles` are the
+#: two Wave-19 members of revoke/restore, and their removal *is* measured — by
+#: the release run above, whose drift test names them. Removing the rest from
+#: this file's view would be measuring #506's revoke against a suite that does
+#: not exercise it, and reporting zero for the wrong reason.
+TRANSACTION_PIPELINES = ("RECOVER_GUARDS",)
+
+#: `--set` name → (guard bodies, helpers, pipelines).
+CASE_SETS = {
+    "release": (GUARD_BODIES, HELPERS, PIPELINES),
+    "transaction": (TRANSACTION_GUARD_BODIES, TRANSACTION_HELPERS,
+                    TRANSACTION_PIPELINES),
+}
+
 
 def load_module(tests: Path):
     """Load the test module, consulting the cache before taking its name.
@@ -113,6 +161,11 @@ def failing_ids(tests) -> tuple[int, list[str]]:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--tests", default=str(DEFAULT_TESTS))
+    parser.add_argument("--set", dest="case_set", default="release",
+                        choices=sorted(CASE_SETS),
+                        help="which case list to run (default: release, the "
+                             "Wave-17 suite; transaction needs --tests pointing at "
+                             "the Wave-19 file)")
     parser.add_argument("--quiet", action="store_true",
                         help="only print the summary and any failure to flip")
     args = parser.parse_args(argv)
@@ -121,6 +174,7 @@ def main(argv=None) -> int:
     if not tests.is_file():
         print(f"test file not found: {tests}", file=sys.stderr)
         return 2
+    guard_bodies, helpers, pipelines = CASE_SETS[args.case_set]
 
     # A disabled guard can let the code write. Keep that inside this directory.
     os.chdir(tempfile.mkdtemp(prefix="wave17-guard-probe-"))
@@ -151,19 +205,19 @@ def main(argv=None) -> int:
         if not flipped:
             weak.append(f"{axis}:{label}")
 
-    for name in GUARD_BODIES:
+    for name in guard_bodies:
         original = getattr(target, name)
         mutate("body", name,
                lambda n=name: setattr(target, n, verdict),
                lambda n=name, o=original: setattr(target, n, o))
 
-    for name, replacement in HELPERS.items():
+    for name, replacement in helpers.items():
         original = getattr(target, name)
         mutate("helper", name,
                lambda n=name, r=replacement: setattr(target, n, r),
                lambda n=name, o=original: setattr(target, n, o))
 
-    for pipeline in PIPELINES:
+    for pipeline in pipelines:
         declared = getattr(target, pipeline)
         for guard in declared:
             mutate("removal", f"{pipeline}:{guard}",

@@ -47,6 +47,11 @@ if m is None:
 
 up = m._upstream()
 
+#: The Wave-19 driver: one sidecar operation per process, with a real kill point.
+#: Used here only to leave a genuine interrupted transaction for the interop
+#: cases — an in-process exception would run the engine's own compensation.
+CHILD = Path(__file__).resolve().parent / "wave19_child.py"
+
 V1 = "1.0.0+test"
 V2 = "2.0.0+test"
 V3 = "3.0.0+test"
@@ -1603,6 +1608,81 @@ class IndependentProcesses(Base):
 # --------------------------------------------------------------------------- #
 # the Legacy control path is not touched
 # --------------------------------------------------------------------------- #
+class SidecarTransactionInterop(Base):
+    """Two repairs of one root, and why only one of them may run.
+
+    Wave 19 gave #506 a write-ahead journal, so `sidecar_release.recover()` is
+    now the only verb allowed to look at an interrupted write. This installer has
+    a repair of its own — it puts bytes back from `.sidecar-backup/<version>/`
+    and rebuilds the marker — and running it while a journal is on disk means two
+    modules rewriting the same files from two different ideas of what the
+    transaction was. The installer therefore refuses and names the engine's verb.
+
+    The interrupted transaction here is real: a separate interpreter is killed at
+    a counted rename, so what the installer meets is the state a machine leaves.
+    """
+
+    def sidecar_spec(self, descriptor, blobs) -> Path:
+        body = {"engine": str(up.__file__), "root": str(self.root),
+                "name": descriptor.name, "version": descriptor.version,
+                "commit": descriptor.commit, "entrypoint": descriptor.entrypoint,
+                "files": [list(pair) for pair in descriptor.files],
+                "sources": {rel: data.hex() for rel, data in blobs.items()},
+                "device_ref": DEVICE, "boot_id": BOOT,
+                "lock_token": "wave18-interop"}
+        path = self.tmp / f"spec-{descriptor.version.replace('+', '_')}.json"
+        path.write_text(json.dumps(body), encoding="utf-8")
+        return path
+
+    def crash_a_sidecar_upgrade(self) -> None:
+        spec1 = self.sidecar_spec(self.fx.descriptor1, self.fx.blobs1)
+        seeded = subprocess.run(
+            [sys.executable, "-I", str(CHILD), "install", "--spec", str(spec1)],
+            capture_output=True, text=True, check=False, timeout=180)
+        self.assertEqual(seeded.returncode, 0, seeded.stdout + seeded.stderr)
+
+        spec2 = self.sidecar_spec(self.fx.descriptor2, self.fx.blobs2)
+        killed = subprocess.run(
+            [sys.executable, "-I", str(CHILD), "upgrade", "--spec", str(spec2),
+             "--die-at", "2"],
+            capture_output=True, text=True, check=False, timeout=180)
+        self.assertEqual(killed.returncode, 86, killed.stdout + killed.stderr)
+        self.assertTrue((self.root / up.JOURNAL_NAME).is_file(),
+                        "the crash was supposed to leave a journal")
+        self.assertTrue((self.root / up.LOCK_NAME).is_file())
+
+    def test_a_pending_sidecar_journal_is_refused_and_named(self) -> None:
+        self.crash_a_sidecar_upgrade()
+        before = tree_digest(self.root)
+        outcome = m.recover(self.root)
+        self.assertRefused(outcome, m.BLOCKED_TXN_PENDING)
+        self.assertIn(up.JOURNAL_NAME, " ".join(outcome.reasons))
+        self.assertEqual(tree_digest(self.root), before,
+                         "the refusal changed the root it declined to repair")
+
+    def test_the_same_word_comes_from_both_modules(self) -> None:
+        """An operator reading the two refusal codes sees one situation."""
+        self.assertEqual(m.BLOCKED_TXN_PENDING, "BLOCKED_TXN_PENDING")
+        self.assertEqual(getattr(up, "BLOCKED_TXN_PENDING", "BLOCKED_TXN_PENDING"),
+                         m.BLOCKED_TXN_PENDING)
+
+    def test_the_engine_repair_unblocks_the_installer(self) -> None:
+        self.crash_a_sidecar_upgrade()
+        engine = up.recover(self.root,
+                            grant=up.Grant(grant_id="grant-recover-1",
+                                           operator=OPERATOR, action="recover",
+                                           device_ref=DEVICE),
+                            device_ref=DEVICE, boot_id=BOOT)
+        self.assertEqual(up.OK, engine.decision, engine.reasons)
+        self.assertFalse((self.root / up.JOURNAL_NAME).exists())
+
+        after = m.recover(self.root)
+        self.assertEqual(m.OK, after.decision, after.reasons)
+        self.assertEqual(m.NOTHING_TO_RECOVER, after.code, after.reasons)
+        for rel, data in self.fx.blobs2.items():
+            self.assertEqual(data, bytes_of(self.root, rel), rel)
+
+
 class LegacyUntouched(Base):
     class Gateway:
         deliveries = ("delivery-1",)

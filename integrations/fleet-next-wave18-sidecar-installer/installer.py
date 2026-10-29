@@ -171,6 +171,11 @@ BLOCKED_ABORTED = "BLOCKED_ABORTED"
 BLOCKED_BACKEND_MISSING = "BLOCKED_BACKEND_MISSING"
 BLOCKED_BACKEND_MISMATCH = "BLOCKED_BACKEND_MISMATCH"
 
+#: Spelled the same in both modules on purpose: an operator who sees this word
+#: from either one is being told the same thing — a `sidecar_release` write to
+#: this root began and did not finish, and its own `recover()` is the verb.
+BLOCKED_TXN_PENDING = "BLOCKED_TXN_PENDING"
+
 #: `git` verbs this module may run, and it may only run these.
 READ_ONLY_GIT = frozenset({"rev-parse", "cat-file"})
 
@@ -1478,6 +1483,38 @@ def _readd_backend(root: Path, mod: Any, *, backend: str, operator: str) -> None
 # --------------------------------------------------------------------------- #
 # recovery: what to do about a run that died
 # --------------------------------------------------------------------------- #
+def _pending_sidecar_transaction(root: Path, mod: Any) -> str | None:
+    """Whether #506's own repair owns this root right now, and why.
+
+    Wave 19 gave `sidecar_release` a write-ahead journal, and from then on the
+    engine's `recover()` is the only verb allowed to read it. This module's repair
+    is a *different* repair: it puts bytes back from `.sidecar-backup/<version>/`
+    and rewrites the marker. Two repairs of one transaction is exactly the
+    ambiguity both modules exist to refuse — the second one would be working from
+    a receipt the first one is in the middle of replacing.
+
+    The names are read with `getattr`: a #506 revision without a journal has
+    nothing to defer to, and this installer must still work against it. Requiring
+    them through `REQUIRED_UPSTREAM_NAMES` would turn "older sidecar" into
+    `BLOCKED_INTERFACE`, which is a different and worse answer.
+    """
+    journal_name = getattr(mod, "JOURNAL_NAME", "")
+    staging_name = getattr(mod, "STAGING_DIR", "")
+    if journal_name:
+        journal = root / journal_name
+        if journal.exists() or _is_link(journal):
+            return (f"{journal_name} is present: a sidecar_release write to this root "
+                    f"began and did not finish, and sidecar_release.recover() is the "
+                    f"only verb allowed to read its journal")
+    if staging_name:
+        staging = root / staging_name
+        if staging.exists() or _is_link(staging):
+            return (f"{staging_name} is present: a sidecar_release write was staging "
+                    f"here, and sidecar_release.recover() is what finishes or discards "
+                    f"it")
+    return None
+
+
 def recover(root: Path | str, *, upstream: Any | None = None) -> RecoveryOutcome:
     """Clear what a crashed run left, where the bytes say unambiguously what it was.
 
@@ -1506,6 +1543,15 @@ def recover(root: Path | str, *, upstream: Any | None = None) -> RecoveryOutcome
     removed: list[str] = []
     restored: list[str] = []
     reasons: list[str] = []
+
+    pending = _pending_sidecar_transaction(root_path, mod)
+    if pending is not None:
+        # First, and before *anything* is removed: the sibling lock below is this
+        # module's, but the root belongs to the engine's journal until that
+        # journal is finished or discarded, and this repair must not start
+        # rewriting files underneath it.
+        return RecoveryOutcome(BLOCKED, BLOCKED_TXN_PENDING, (pending,),
+                               root=str(root_path))
 
     lock = lock_path_for(root_path)
     if lock.exists() or _is_link(lock):

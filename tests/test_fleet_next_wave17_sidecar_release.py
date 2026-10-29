@@ -965,6 +965,11 @@ class RestoreRefusesWhatRevokeRefuses(SidecarTest):
         `_guard_previous_match`, is asserted to be there instead. Everything
         else must appear in both, in the same order, so a guard added to one
         cannot be silently missing from the other.
+
+        `_guard_obstacles` (Wave 19) is restore-only for the same reason it is
+        not in the revoke list: only a verb that writes has obstacles to find,
+        and it asks about the *previous* release's paths — the files this restore
+        is about to write. A revoke writes nothing, so it has nothing to ask.
         """
         revoke_names = list(m.REVOKE_GUARDS)
         restore_names = list(m.RESTORE_GUARDS)
@@ -974,7 +979,8 @@ class RestoreRefusesWhatRevokeRefuses(SidecarTest):
         self.assertEqual([name for name in restore_names if name in shared], shared)
         extra = set(restore_names) - set(shared)
         self.assertEqual(extra, {"_guard_install_root_match",
-                                 "_guard_previous_match", "_guard_backup"})
+                                 "_guard_previous_match", "_guard_backup",
+                                 "_guard_obstacles"})
 
 
 # --------------------------------------------------------------------------- #
