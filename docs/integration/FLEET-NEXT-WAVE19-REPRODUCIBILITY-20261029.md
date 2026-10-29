@@ -141,6 +141,21 @@ the builder rather than trusting this note.
 | `release_permitted` | **false** — #431/#505 stack remains blocked; a real install/co-install is outside this lane |
 | `real_device` | `NOT_RUN` |
 
+### 6.1 Hosted CI at `bcf4b10` (code + test head)
+
+| job | result |
+|---|---|
+| `Claude Code plugin matches its source` | pass |
+| `Suite (shard 1/4)`, `(2/4)`, `(3/4)` | pass |
+| `Suite (shard 4/4)` | 13 baseline-listed failures plus the pre-existing `test_direct_lark_notify` date-window test |
+
+The 20-test Wave 18/19 builder file ran in shard 2 and is **not** in the failure
+list. Shard 4's only new failure is the same Lark test seen on #505/#509: it
+patches a card dated `2026-10-13` against a 14-day window and fails identically
+at base `517ef91`. It was not edited and no baseline exemption was added.
+A later doc-only commit may carry a newer head; `bcf4b10` is the tested code
+commit.
+
 ## 7. Evidence
 
 `integrations/fleet-next-wave18-artifact-builder/evidence-w19/`:
@@ -162,6 +177,7 @@ superseded for digests.
 |---|---|
 | `d0d12bb` | hermetic Git transform, CRLF refusal, non-installable composition, RED/GREEN/QA tests |
 | `3928c3c` | W19 evidence, environment matrix, this report, supersession note |
+| `bcf4b10` | shallow-clone-safe RED and QA tests; hosted CI tested this code head |
 
 `git diff --stat 3520d0c..3928c3c` — 10 files, +1483/−10, no change to
 `fleet_mcp/**`, `fleet/**`, `runtime/**` or `scripts/`. Changed-tree listing
