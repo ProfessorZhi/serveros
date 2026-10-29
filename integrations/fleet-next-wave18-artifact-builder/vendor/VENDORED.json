@@ -1,0 +1,13 @@
+{
+  "not_owned_and_not_modified": "#431 authored this file; this lane only stores and pins it.",
+  "path": "integrations/fleet-next-wave18-artifact-builder/vendor/l2_release.py",
+  "schema": "serveros/fleet-next-w19e-vendored-dependency.v1",
+  "sha256": "7f87a59611b00585f2e7eba3799c7d4bd0c256abec775b96e7ed8d6f0a5ba01d",
+  "source": {
+    "commit": "517ef915074e3b14537b746a07b4dcee63eccfb6",
+    "owner": "#431",
+    "path": "integrations/fleet-v1-l2-release/l2_release.py"
+  },
+  "unmodified": true,
+  "why": "main@44f039d does not contain #431. The W18/W17 builders reuse the D7 closure/archive/reader by SHA pin; vendoring the single file byte-for-byte keeps that fact and avoids re-implementing it. No #431 test or other source is carried."
+}

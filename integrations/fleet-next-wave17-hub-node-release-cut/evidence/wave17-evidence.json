@@ -1,0 +1,311 @@
+{
+  "artifacts": {
+    "fleet-authority": {
+      "depends_on": [],
+      "installable_with": [],
+      "kind": "fleet-authority",
+      "member_count": 3,
+      "members": [
+        "fleet-authority.json",
+        "fleet/transport-contract.yaml",
+        "fleet/transport.py"
+      ],
+      "name": "fleet-authority",
+      "tree_sha256": "c1fa433fecbaaa47fe0f9e146952e57653d5db53211619a6843911d3c4943625",
+      "version": "1.0.0+wave17"
+    },
+    "fleet-hub": {
+      "depends_on": [
+        "fleet-runtime-base"
+      ],
+      "installable_with": [
+        "fleet-runtime-base",
+        "fleet-authority"
+      ],
+      "kind": "fleet-hub",
+      "member_count": 13,
+      "members": [
+        "fleet_mcp/audit.py",
+        "fleet_mcp/core_lite_readback.py",
+        "fleet_mcp/core_lite_source.py",
+        "fleet_mcp/dispatch.py",
+        "fleet_mcp/fleet.py",
+        "fleet_mcp/owner_setup.py",
+        "fleet_mcp/privacy.py",
+        "fleet_mcp/providers/build.py",
+        "fleet_mcp/providers/fleet_node.py",
+        "fleet_mcp/registry.py",
+        "fleet_mcp/server.py",
+        "fleet_mcp/session_detail.py",
+        "fleet_mcp/tools.py"
+      ],
+      "name": "fleet-hub",
+      "tree_sha256": "b9fc5a6f768e56175eea6498de261627230c6a94f7ff1bf92efeb6915874bde6",
+      "version": "1.0.0+wave17"
+    },
+    "fleet-node": {
+      "depends_on": [
+        "fleet-runtime-base"
+      ],
+      "installable_with": [
+        "fleet-runtime-base"
+      ],
+      "kind": "fleet-node",
+      "member_count": 2,
+      "members": [
+        "fleet_mcp/node/__init__.py",
+        "fleet_mcp/node/connector.py"
+      ],
+      "name": "fleet-node",
+      "tree_sha256": "0871f4da77aef4303b1dfc35896c0ecd0fbc47cf481b58a10500360f2325a768",
+      "version": "1.0.0+wave17"
+    },
+    "fleet-runtime-base": {
+      "depends_on": [],
+      "installable_with": [],
+      "kind": "fleet-runtime-base",
+      "member_count": 19,
+      "members": [
+        "fleet_mcp/__init__.py",
+        "fleet_mcp/cloudcli_native.py",
+        "fleet_mcp/config.py",
+        "fleet_mcp/disclosure.py",
+        "fleet_mcp/discovery.py",
+        "fleet_mcp/errors.py",
+        "fleet_mcp/feishu_sso.py",
+        "fleet_mcp/identity.py",
+        "fleet_mcp/local_roots.py",
+        "fleet_mcp/mcp_http.py",
+        "fleet_mcp/node_protocol.py",
+        "fleet_mcp/owner_access.py",
+        "fleet_mcp/providers/__init__.py",
+        "fleet_mcp/providers/base.py",
+        "fleet_mcp/providers/cloudcli.py",
+        "fleet_mcp/runtime_create_policy.py",
+        "fleet_mcp/runtime_identity.py",
+        "fleet_mcp/scopes.py",
+        "fleet_mcp/version.py"
+      ],
+      "name": "fleet-runtime-base",
+      "tree_sha256": "bc8d32d0d32fd9e5609cb661e65f487d4450a5d7e7a80e74c4d0b44c6efd06f1",
+      "version": "1.0.0+wave17"
+    }
+  },
+  "baseline": {
+    "head": "26b96fc536de72807a0b8297664b6d2518702a9f",
+    "ownership": {
+      "counts": {
+        "hub": 49,
+        "node": 180,
+        "sidecar": 2
+      },
+      "foreign": {
+        "hub": {
+          "fleet_mcp.node.connector": [
+            "fleet_mcp/owner_setup.py"
+          ]
+        },
+        "node": {
+          "fleet_mcp": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.cloudcli_native": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.config": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.errors": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.fleet": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.identity": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.local_roots": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.node_protocol": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.owner_access": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.providers.cloudcli": [
+            "fleet_mcp/node/connector.py"
+          ],
+          "fleet_mcp.runtime_identity": [
+            "fleet_mcp/node/connector.py"
+          ]
+        }
+      }
+    },
+    "partition": {
+      "base_exact": false,
+      "hub_closure": 33,
+      "hub_own": 3,
+      "node_closure": 30,
+      "node_own": 0,
+      "shared": 30
+    }
+  },
+  "builder": {
+    "path": "integrations/fleet-v1-l2-release/l2_release.py",
+    "reused": true,
+    "sha256": "sha256:7f87a59611b00585f2e7eba3799c7d4bd0c256abec775b96e7ed8d6f0a5ba01d"
+  },
+  "cuts_visible_in_tree": true,
+  "decision": "BLOCKED_OWNER",
+  "device_co_install": "NOT_RUN",
+  "effective_foreign": {
+    "hub": {},
+    "node": {}
+  },
+  "isolation": {
+    "three_unit": {
+      "hub": {
+        "authority_symbols": true,
+        "booted": true,
+        "component": "hub",
+        "dispatch_refused": true,
+        "imported": "fleet_mcp.server",
+        "node_loader": "NODE_CONFIG_LOADER_UNAVAILABLE",
+        "tools": 44
+      },
+      "node": {
+        "booted": true,
+        "component": "node",
+        "device_ref": "device:wave17-hermetic",
+        "imported": "fleet_mcp.node.connector"
+      }
+    },
+    "two_artifact_only": {
+      "hub": {
+        "error": "ModuleNotFoundError",
+        "files": 31,
+        "imported": false
+      },
+      "node": {
+        "error": "ModuleNotFoundError",
+        "files": 2,
+        "imported": false
+      }
+    }
+  },
+  "ownership": {
+    "counts": {
+      "hub": 50,
+      "node": 180,
+      "sidecar": 2
+    },
+    "foreign": {
+      "hub": {},
+      "node": {
+        "fleet_mcp": [
+          "fleet_mcp/node/connector.py"
+        ],
+        "fleet_mcp.cloudcli_native": [
+          "fleet_mcp/node/connector.py"
+        ],
+        "fleet_mcp.config": [
+          "fleet_mcp/node/connector.py"
+        ],
+        "fleet_mcp.errors": [
+          "fleet_mcp/node/connector.py"
+        ],
+        "fleet_mcp.identity": [
+          "fleet_mcp/node/connector.py"
+        ],
+        "fleet_mcp.local_roots": [
+          "fleet_mcp/node/connector.py"
+        ],
+        "fleet_mcp.node_protocol": [
+          "fleet_mcp/node/connector.py"
+        ],
+        "fleet_mcp.owner_access": [
+          "fleet_mcp/node/connector.py"
+        ],
+        "fleet_mcp.providers.cloudcli": [
+          "fleet_mcp/node/connector.py"
+        ],
+        "fleet_mcp.runtime_identity": [
+          "fleet_mcp/node/connector.py"
+        ]
+      }
+    },
+    "independent": {
+      "hub": true,
+      "node": false
+    }
+  },
+  "partition": {
+    "base": [
+      "fleet_mcp",
+      "fleet_mcp.cloudcli_native",
+      "fleet_mcp.config",
+      "fleet_mcp.disclosure",
+      "fleet_mcp.discovery",
+      "fleet_mcp.errors",
+      "fleet_mcp.feishu_sso",
+      "fleet_mcp.identity",
+      "fleet_mcp.local_roots",
+      "fleet_mcp.mcp_http",
+      "fleet_mcp.node_protocol",
+      "fleet_mcp.owner_access",
+      "fleet_mcp.providers",
+      "fleet_mcp.providers.base",
+      "fleet_mcp.providers.cloudcli",
+      "fleet_mcp.runtime_create_policy",
+      "fleet_mcp.runtime_identity",
+      "fleet_mcp.scopes",
+      "fleet_mcp.version"
+    ],
+    "base_exact": true,
+    "base_inadmissible": [],
+    "base_unreached": [],
+    "hub_closure": 32,
+    "hub_own": 13,
+    "node_closure": 21,
+    "node_own": 2,
+    "shared": 19
+  },
+  "reasons": [
+    "the ownership map and the release map agree in this tree (technical_state GREEN_SANDBOX); the verdict stays BLOCKED_OWNER because the cuts in handoff/ are not landed by the fleet_mcp owner and a real co-install needs separate permission"
+  ],
+  "release_permitted": false,
+  "rollback": {
+    "code": "OK",
+    "decision": "OK",
+    "deliveries": [],
+    "legacy_unchanged": true,
+    "note": "the rollback target differs from the current unit only in its manifest; no code delta is claimed",
+    "steps": [
+      [
+        "reverse-delete-node",
+        "OK",
+        {
+          "remaining_node_files": 0
+        }
+      ],
+      [
+        "rollback-hub",
+        "OK",
+        {
+          "current_tree": "b9fc5a6f768e56175eea6498de261627230c6a94f7ff1bf92efeb6915874bde6",
+          "current_version": "1.0.0+wave17",
+          "previous_tree": "b9fc5a6f768e56175eea6498de261627230c6a94f7ff1bf92efeb6915874bde6",
+          "previous_version": "0.9.0+wave17prev"
+        }
+      ]
+    ]
+  },
+  "schema": "serveros/fleet-next-wave17-hub-node-cut.v1",
+  "technical_state": "GREEN_SANDBOX",
+  "tree": {
+    "kind": "sandbox",
+    "measured_head": "40951b7d240695b9651f31c5181af2b089751a1a",
+    "source_head": "26b96fc536de72807a0b8297664b6d2518702a9f"
+  }
+}
