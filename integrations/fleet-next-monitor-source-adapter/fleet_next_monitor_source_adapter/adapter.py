@@ -15,10 +15,14 @@ unbounded number of provider reads.
 What "terminal" means
 ---------------------
 A native `completed` is not success. It becomes `TERMINAL_VERIFIED` only when
-the same answer carries either a non-empty transcript or a verified native
-artifact bound to the expected `sourceSHA`. Otherwise it stays `UNKNOWN` with
-`NO_NATIVE_ACTIVITY`. `RUN_NOT_FOUND`, an offline route and a boot mismatch are
-never `DONE` — the status vocabulary has no such word.
+the same answer carries native output in the Agent Monitor's own vocabulary: a
+non-empty `lastAssistantMessage.content`, or a verified artifact bound to the
+expected `sourceSHA`. A `transcript` / `messages` list is *normalised* into that
+message by `evidence.normalise_run_fact` — it is not accepted as a second,
+looser form, and a transcript that cannot be shown to be this run's own
+assistant turn yields nothing (PR #508 measured the divergence). Otherwise the
+run stays `UNKNOWN` with `NO_NATIVE_ACTIVITY`. `RUN_NOT_FOUND`, an offline route
+and a boot mismatch are never `DONE` — the status vocabulary has no such word.
 """
 from __future__ import annotations
 
@@ -58,6 +62,11 @@ from .contract import (
     Identity,
     Observation,
     SourceRefused,
+)
+from .evidence import (
+    adopt_native_run_id,
+    native_evidence,
+    normalise_run_fact,
 )
 
 #: The client must expose these three names and nothing is assumed about the
@@ -391,12 +400,22 @@ class LegacyReadOnlySourceAdapter:
             # native identifiers are deliberately NOT forwarded: this is exactly
             # the cross-instance case, and copying them would be the leak.
             return self._unknown(VIEW_RUN, identity, mismatch, None)
+        # From here on the fact is the monitor's fact: closed vocabulary, and a
+        # carrier already folded into `lastAssistantMessage`. The identity
+        # check above runs on the raw answer so a snake-case spelling is still
+        # fenced; nothing below reads a key the monitor would refuse.
+        fact = normalise_run_fact(payload)
+        # A `deliveryId`-only watch has no run id of its own; the answer saying
+        # which run this delivery is, is adoption, not invention (#493
+        # `sources._classify_run`). Done after the mismatch check, so an answer
+        # that disagreed has already been refused.
+        identity = adopt_native_run_id(identity, fact)
         native = self._native_fields(payload)
         status = str(payload.get("status") or "").lower()
         if payload.get("failed") is True or status in {"failed", "failure", "error"}:
             return self._observation(VIEW_RUN, identity, STATUS_FAILED, native=native)
         if status in {"completed", "settled"}:
-            if self._has_native_evidence(payload, identity):
+            if self._has_native_evidence(fact, identity):
                 return self._terminal(VIEW_RUN, identity, native=native)
             return self._unknown(VIEW_RUN, identity, REASON_NO_NATIVE_ACTIVITY, None,
                                  native=native)
@@ -411,54 +430,29 @@ class LegacyReadOnlySourceAdapter:
         return self._unknown(VIEW_RUN, identity, REASON_UNKNOWN_STATUS, None,
                              native=native)
 
-    @staticmethod
-    def _bound_artifact(artifact: Any, identity: Identity) -> bool:
-        """A verified artifact that belongs to the commit this read expects."""
-        if not isinstance(artifact, Mapping) or artifact.get("verified") is not True:
-            return False
-        artifact_sha = _first(artifact, "sourceSHA", "source_sha", "sha")
-        if identity.source_sha is not None:
-            return artifact_sha == identity.source_sha
-        return True
-
     @classmethod
-    def _has_native_evidence(cls, payload: Mapping[str, Any],
+    def _has_native_evidence(cls, fact: Mapping[str, Any],
                              identity: Identity) -> bool:
         """A completed run is verified only by something it produced.
 
-        Three admissible forms, all from the answer itself and all native
-        activity rather than a claim about it: a non-empty transcript, a
-        non-empty last assistant message (#493 reads the CloudCLI answer this
-        way, and it is the same fact), or an artifact the answer marks verified
-        *and* binds to the expected `sourceSHA`. An artifact naming no source, or
-        a different one, cannot verify this run.
+        `fact` is a **normalised** fact (`evidence.normalise_run_fact`): the
+        monitor's closed vocabulary, with a `transcript` / `messages` carrier
+        already folded into `lastAssistantMessage`. The predicate is #493's
+        `_has_native_activity`, branch for branch — a non-empty assistant
+        message, or an artifact the answer marks verified *and* binds to the
+        expected commit. A device note saying it had no readable message vetoes
+        both message forms before anything else is read.
 
-        A device note saying it had no readable message VETOES the message forms:
-        a device that tells us there was nothing is not evidence of output, and
-        its own words outrank a field that may have been filled by a wrapper.
+        The single-spelling aliases this adapter used to accept
+        (`verifiedArtifact`, `verified_artifact`, `verified_native_artifact`)
+        are gone: they are not in the monitor's vocabulary, so accepting them
+        would be a second standard of evidence on one path and three on the
+        other. An answer that only has them is `UNKNOWN`, which is the
+        fail-closed direction. Likewise an artifact with no expected sha to be
+        bound to is not evidence — the previous version returned True for it
+        (#508 D2).
         """
-        note = payload.get("note")
-        if isinstance(note, str) and "no readable assistant message" in note.lower():
-            return False
-        transcript = _first(payload, "transcript", "messages")
-        if isinstance(transcript, (list, tuple)) and len(transcript) > 0:
-            return True
-        if isinstance(transcript, str) and transcript.strip():
-            return True
-        message = _first(payload, "lastAssistantMessage", "last_assistant_message")
-        if isinstance(message, Mapping):
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                return True
-        for name in ("verifiedArtifact", "verified_artifact", "verified_native_artifact"):
-            if cls._bound_artifact(payload.get(name), identity):
-                return True
-        artifacts = payload.get("artifacts")
-        if isinstance(artifacts, (list, tuple)):
-            for artifact in artifacts:
-                if cls._bound_artifact(artifact, identity):
-                    return True
-        return False
+        return native_evidence(fact, identity.source_sha)
 
     # -- constructors -------------------------------------------------------
 

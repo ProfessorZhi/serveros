@@ -49,9 +49,12 @@ FAILED · STALE · UNKNOWN · OFFLINE · DENIED
 
 There is no `DONE`.
 
-* native `completed` **without** a non-empty transcript and **without** a
-  verified artifact bound to the expected `sourceSHA` → `UNKNOWN` /
-  `NO_NATIVE_ACTIVITY`;
+* native `completed` **without** a non-empty `lastAssistantMessage.content` and
+  **without** a verified artifact bound to the expected `sourceSHA` → `UNKNOWN` /
+  `NO_NATIVE_ACTIVITY`. A `transcript` / `messages` list is folded into that
+  message only when its last assistant turn has text and names no other run
+  (`evidence.normalise_run_fact`) — a bare string, a prompt, an empty turn or
+  another run's turn yields nothing;
 * `RUN_NOT_FOUND` → `UNKNOWN` (its native `reason` and `retryable` are carried);
 * route offline → `OFFLINE`, never `FAILED`;
 * boot mismatch → `UNKNOWN` / `BOOT_MISMATCH`;
@@ -141,11 +144,11 @@ another boot gets `BOOT_MISMATCH`, never a verified run.
 
 * RED on the base commit: package absent → `ModuleNotFoundError`, collection
   error.
-* GREEN: `80 passed, 21 subtests passed` (`tests/test_fleet_next_monitor_source_adapter.py`)
+* GREEN: `97 passed, 48 subtests passed` (`tests/test_fleet_next_monitor_source_adapter.py`)
   — #490's original 35, plus 45 in six classes covering the `read_request`
   rename, the `observe_watch` keyword seam, the native-activity vocabulary, the
   CI vocabulary, `CompatMonitorSource`, and the composed seam's fail-closed
-  cases.
+  cases, plus 17 for the shared evidence protocol (#508 P1 / W19).
 * CLI smoke: a synthetic completed-without-transcript fixture prints
   `"status": "UNKNOWN", "reason": "NO_NATIVE_ACTIVITY"` and exits 0.
 

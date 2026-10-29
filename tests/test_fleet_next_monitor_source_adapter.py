@@ -162,7 +162,7 @@ class NoWritePathExistsTest(unittest.TestCase):
 class IdentityIsNeverFoldedTest(unittest.TestCase):
     def test_two_instances_with_one_run_id_do_not_cross(self):
         same_run_from_b = a_run(instanceId=INSTANCE_B, status="completed",
-                                transcript=["hello"])
+                                lastAssistantMessage={"content": "hello"})
         a = RecordingClient(run=same_run_from_b, instance=INSTANCE_A)
         b = RecordingClient(run=same_run_from_b, instance=INSTANCE_B)
         observed_a = adapter(a).observe_run(device_ref=DEVICE, session_ref=SESSION,
@@ -214,17 +214,22 @@ class CompletionNeedsNativeEvidenceTest(unittest.TestCase):
         self.assertEqual(observation.status, STATUS_UNKNOWN)
         self.assertEqual(observation.reason, "NO_NATIVE_ACTIVITY")
 
-    def test_completed_with_a_transcript_is_terminal_verified(self):
+    def test_completed_with_an_assistant_turn_is_terminal_verified(self):
+        """A carrier is normalised into the monitor's message, not accepted as
+        a second, looser form of evidence (the #508 P1)."""
         observation = adapter(RecordingClient(run=a_run(
-            status="completed", transcript=[{"role": "assistant"}]))).observe_run(
+            status="completed",
+            transcript=[{"role": "user", "content": "go"},
+                        {"role": "assistant", "content": "native output"}],
+        ))).observe_run(
             device_ref=DEVICE, session_ref=SESSION, run_id=RUN_ID)
         self.assertEqual(observation.status, STATUS_TERMINAL_VERIFIED)
 
     def test_a_verified_artifact_must_be_bound_to_the_expected_source_sha(self):
         unbound = a_run(status="completed",
-                        verifiedArtifact={"verified": True, "sourceSHA": OTHER_SHA})
+                        artifacts=[{"verified": True, "sourceSHA": OTHER_SHA}])
         bound = a_run(status="completed",
-                      verifiedArtifact={"verified": True, "sourceSHA": SHA})
+                      artifacts=[{"verified": True, "sourceSHA": SHA}])
         self.assertEqual(
             adapter(RecordingClient(run=unbound)).observe_run(
                 device_ref=DEVICE, session_ref=SESSION, run_id=RUN_ID,
@@ -656,9 +661,9 @@ class TheMonitorCanUseTheAdapterTest(unittest.TestCase):
 
     def test_an_explicit_source_sha_binds_the_artifact(self):
         bound = a_run(status="completed",
-                      verifiedArtifact={"verified": True, "sourceSHA": SHA})
+                      artifacts=[{"verified": True, "sourceSHA": SHA}])
         other = a_run(status="completed",
-                      verifiedArtifact={"verified": True, "sourceSHA": OTHER_SHA})
+                      artifacts=[{"verified": True, "sourceSHA": OTHER_SHA}])
         self.assertEqual(
             monitor_observe_run(adapter(RecordingClient(run=bound)),
                                 monitor_run_watch())["status"],
@@ -747,11 +752,234 @@ class NativeActivityVocabularyTest(unittest.TestCase):
                 expected_source_sha=SHA).status,
             STATUS_UNKNOWN)
 
-    def test_a_transcript_still_verifies(self):
+    def test_a_transcript_of_bare_strings_is_not_native_activity(self):
+        """#508 P1, in one line: this exact payload used to be
+        `TERMINAL_VERIFIED` here and `REMOTE_ValueError` / `UNKNOWN` on the
+        monitor's own path, because a non-empty list was read as "output".
+        A string names no role, so it cannot be shown to be assistant text."""
+        for carrier in (["x"], "x", [{"role": "assistant"}]):
+            with self.subTest(carrier=carrier):
+                observation = adapter(RecordingClient(run=a_run(
+                    status="completed", transcript=carrier))).observe_run(
+                    device_ref=DEVICE, session_ref=SESSION, run_id=RUN_ID)
+                self.assertEqual(
+                    (observation.status, observation.reason),
+                    (STATUS_UNKNOWN, "NO_NATIVE_ACTIVITY"))
+
+
+def _evidence():
+    """The shared evidence module, imported where it is used.
+
+    Imported inside the test rather than at module scope so that the RED run on
+    the unfixed tree still collects this file: there the module does not exist,
+    and only the tests that name it fail instead of the whole file erroring.
+    """
+    from fleet_next_monitor_source_adapter import evidence
+    return evidence
+
+
+class TheEvidenceIsTheMonitorsEvidenceTest(unittest.TestCase):
+    """One standard of evidence on both paths (#508 P1, #515).
+
+    The monitor reads a run fact through a *closed* vocabulary and credits
+    native output from exactly two places. This adapter must answer the same
+    yes/no as the monitor for the same facts, and must never turn a carrier it
+    can only partly understand into a verified run.
+    """
+
+    def normalised(self, payload) -> dict:
+        return _evidence().normalise_run_fact(payload)
+
+    def run_status(self, payload, **call) -> tuple[str, str | None]:
+        call.setdefault("device_ref", DEVICE)
+        call.setdefault("session_ref", SESSION)
+        call.setdefault("run_id", RUN_ID)
+        observation = adapter(RecordingClient(run=payload)).observe_run(**call)
+        return observation.status, observation.reason
+
+    def test_the_evidence_seam_is_importable_from_the_package(self):
+        """So the monitor's own reader can adopt it with a one-line import
+        instead of owning a second implementation."""
+        import fleet_next_monitor_source_adapter as package
+        evidence = _evidence()
+        self.assertIs(package.normalise_run_fact, evidence.normalise_run_fact)
+        self.assertIs(package.native_evidence, evidence.native_evidence)
+        self.assertEqual(package.MONITOR_RUN_KEYS, evidence.MONITOR_RUN_KEYS)
+
+    def test_the_monitors_vocabulary_is_pinned(self):
+        """Copied from `offline.py:27` at #493's head `6286bfbc`. If the
+        monitor's closed set moves, this is where the divergence shows up."""
+        self.assertEqual(
+            _evidence().MONITOR_RUN_KEYS,
+            frozenset({"instanceId", "deviceRef", "sessionRef", "sessionId",
+                       "runId", "deliveryId", "bootId", "status",
+                       "lastAssistantMessage", "artifacts", "note"}))
+
+    def test_every_normalised_fact_is_one_the_monitor_would_accept(self):
+        """No key outside the closed set survives — a key the monitor refuses
+        is exactly the `REMOTE_ValueError` half of the divergence."""
+        evidence = _evidence()
+        payloads = [a_run(),
+                    a_run(transcript=["x"]),
+                    a_run(messages=[{"role": "assistant", "content": "hi"}]),
+                    a_run(secret=SECRET, token=SECRET, stack=SECRET),
+                    cloudcli_run(transcript=["junk"]),
+                    cloudcli_run(lastAssistantMessage={"content": "ok",
+                                                       "token": SECRET})]
+        for payload in payloads:
+            with self.subTest(payload=sorted(payload)):
+                fact = evidence.normalise_run_fact(payload)
+                self.assertLessEqual(set(fact), evidence.MONITOR_RUN_KEYS)
+                self.assertNotIn("transcript", fact)
+                self.assertNotIn("messages", fact)
+                self.assertNotIn(SECRET, json.dumps(fact, default=str))
+
+    def test_the_normaliser_emits_the_runs_last_assistant_turn(self):
+        fact = self.normalised(a_run(status="completed", transcript=[
+            {"role": "assistant", "content": "first"},
+            {"role": "user", "content": "again"},
+            {"role": "assistant", "content": "second"},
+        ]))
+        self.assertEqual(fact["lastAssistantMessage"], {"content": "second"})
+
+    def test_a_prompt_is_not_output(self):
+        for carrier in ([{"role": "user", "content": "do it"}],
+                        [{"role": "system", "content": "do it"}],
+                        [{"role": "tool", "content": "do it"}]):
+            with self.subTest(carrier=carrier):
+                self.assertEqual(
+                    self.run_status(a_run(status="completed", transcript=carrier)),
+                    (STATUS_UNKNOWN, "NO_NATIVE_ACTIVITY"))
+
+    def test_an_assistant_turn_without_text_is_not_output(self):
+        for content in ("", "   ", None):
+            with self.subTest(content=content):
+                turn = {"role": "assistant"}
+                if content is not None:
+                    turn["content"] = content
+                self.assertEqual(
+                    self.run_status(a_run(status="completed", transcript=[turn])),
+                    (STATUS_UNKNOWN, "NO_NATIVE_ACTIVITY"))
+
+    def test_another_runs_turn_is_not_this_runs_output(self):
+        """The turn names an identity that contradicts the fact: it is not this
+        run's output however plausible its text is, and the run does not fall
+        back to an earlier turn either."""
+        for forged in ({"runId": "run-other"}, {"sessionRef": "sess-other"},
+                       {"deviceRef": "device:other"}, {"bootId": "boot-2"},
+                       {"instanceId": INSTANCE_B}):
+            with self.subTest(forged=sorted(forged)):
+                turn = {"role": "assistant", "content": "stolen"}
+                turn.update(forged)
+                payload = a_run(status="completed", transcript=[
+                    {"role": "assistant", "content": "mine"}, turn])
+                self.assertEqual(
+                    self.run_status(payload), (STATUS_UNKNOWN, "NO_NATIVE_ACTIVITY"))
+
+    def test_a_turn_that_agrees_with_the_fact_is_own_output(self):
+        turn = {"role": "assistant", "content": "mine",
+                "runId": RUN_ID, "sessionRef": SESSION, "instanceId": INSTANCE_A}
+        self.assertEqual(
+            self.run_status(a_run(status="completed", transcript=[turn]))[0],
+            STATUS_TERMINAL_VERIFIED)
+
+    def test_a_declared_assistant_message_keeps_its_text_and_nothing_else(self):
+        """The monitor reads `.content`; everything else in the object is remote
+        content nobody reads, so it is not forwarded."""
+        message = {"content": "ok", "role": "assistant", "token": SECRET}
+        fact = self.normalised(a_run(status="completed",
+                                     lastAssistantMessage=message,
+                                     transcript=["junk"]))
+        self.assertEqual(fact["lastAssistantMessage"], {"content": "ok"})
+        self.assertEqual(
+            self.run_status(a_run(status="completed",
+                                  lastAssistantMessage=message,
+                                  transcript=["junk"]))[0],
+            STATUS_TERMINAL_VERIFIED)
+
+    def test_an_empty_declared_message_is_not_upgraded_by_a_carrier(self):
+        """The monitor reads `lastAssistantMessage` first. An answer that calls
+        its own message blank is not rescued by a carrier it also shipped."""
+        payload = a_run(status="completed", lastAssistantMessage={"content": ""},
+                        transcript=[{"role": "assistant", "content": "maybe"}])
+        self.assertEqual(self.normalised(payload)["lastAssistantMessage"],
+                         {"content": ""})
+        self.assertEqual(self.run_status(payload),
+                         (STATUS_UNKNOWN, "NO_NATIVE_ACTIVITY"))
+
+    def test_the_note_veto_outranks_a_normalised_turn(self):
+        payload = a_run(status="completed",
+                        note="no readable assistant message was produced",
+                        transcript=[{"role": "assistant", "content": "maybe"}])
+        self.assertEqual(self.run_status(payload),
+                         (STATUS_UNKNOWN, "NO_NATIVE_ACTIVITY"))
+
+    def test_an_unbound_verified_artifact_is_not_evidence(self):
+        """#508 D2: the previous version returned True whenever the caller
+        named no sha, so a verified artifact naming no commit verified the run.
+        The monitor requires the commit; so does this adapter."""
+        for artifact in ({"verified": True},
+                         {"verified": True, "sha": ""},
+                         {"verified": True, "sha": "   "},
+                         {"verified": True, "sha": SHA}):
+            with self.subTest(artifact=artifact):
+                self.assertEqual(
+                    self.run_status(a_run(status="completed", artifacts=[artifact])),
+                    (STATUS_UNKNOWN, "NO_NATIVE_ACTIVITY"))
+        self.assertEqual(
+            self.run_status(a_run(status="completed",
+                                  artifacts=[{"verified": True, "sha": SHA}]),
+                            expected_source_sha=SHA)[0],
+            STATUS_TERMINAL_VERIFIED)
+
+    def test_the_singular_artifact_alias_is_not_the_monitors_vocabulary(self):
+        """`verifiedArtifact` was this adapter's own spelling. The monitor has
+        `artifacts[]`, so the singular is not evidence — accepting it would be a
+        second standard of evidence on one path only."""
+        for name in ("verifiedArtifact", "verified_artifact",
+                     "verified_native_artifact"):
+            with self.subTest(name=name):
+                payload = a_run(status="completed",
+                                **{name: {"verified": True, "sourceSHA": SHA}})
+                self.assertEqual(
+                    self.run_status(payload, expected_source_sha=SHA),
+                    (STATUS_UNKNOWN, "NO_NATIVE_ACTIVITY"))
+
+    def test_a_delivery_only_watch_adopts_the_native_run_id(self):
+        """#493's rule: the answer saying which run this delivery is, is
+        adoption, not invention."""
+        observation = adapter(RecordingClient(run=cloudcli_run())).observe_run(
+            device_ref=DEVICE, session_ref=SESSION, delivery_id=DELIVERY_ID)
+        self.assertEqual(observation.status, STATUS_TERMINAL_VERIFIED)
+        self.assertEqual(observation.identity.run_id, RUN_ID)
+        self.assertEqual(observation.identity.delivery_id, DELIVERY_ID)
+
+    def test_a_delivery_only_watch_invents_no_run_id(self):
+        payload = cloudcli_run()
+        payload.pop("runId")
+        observation = adapter(RecordingClient(run=payload)).observe_run(
+            device_ref=DEVICE, session_ref=SESSION, delivery_id=DELIVERY_ID)
+        self.assertIsNone(observation.identity.run_id)
+        self.assertIsNone(observation.native.get("runId"))
+
+    def test_adoption_is_refused_when_the_answer_names_another_instance(self):
+        observation = adapter(RecordingClient(
+            run=cloudcli_run(instanceId=INSTANCE_B))).observe_run(
+            device_ref=DEVICE, session_ref=SESSION, delivery_id=DELIVERY_ID)
+        self.assertEqual((observation.status, observation.reason),
+                         (STATUS_UNKNOWN, "INSTANCE_MISMATCH"))
+        self.assertIsNone(observation.identity.run_id)
+
+    def test_the_carrier_is_never_forwarded_as_native(self):
         observation = adapter(RecordingClient(run=a_run(
-            status="completed", transcript=["x"]))).observe_run(
+            status="completed", token=SECRET,
+            transcript=[{"role": "assistant", "content": SECRET}]))).observe_run(
             device_ref=DEVICE, session_ref=SESSION, run_id=RUN_ID)
         self.assertEqual(observation.status, STATUS_TERMINAL_VERIFIED)
+        self.assertNotIn("transcript", observation.native)
+        self.assertNotIn("messages", observation.native)
+        rendered = json.dumps(observation.as_dict(), default=str)
+        self.assertNotIn(SECRET, rendered)
 
 
 class TheCiVocabularyIsSharedTest(unittest.TestCase):
