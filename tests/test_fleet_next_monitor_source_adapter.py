@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Mapping
@@ -30,6 +34,7 @@ from fleet_next_monitor_source_adapter import adapter as adapter_mod  # noqa: E4
 from fleet_next_monitor_source_adapter import cli as cli_mod          # noqa: E402
 from fleet_next_monitor_source_adapter import serializer as ser       # noqa: E402
 from fleet_next_monitor_source_adapter.contract import (              # noqa: E402
+    STATUS_DENIED,
     STATUS_FAILED,
     STATUS_OFFLINE,
     STATUS_QUEUED,
@@ -1213,6 +1218,384 @@ class TheComposedSeamFailsClosedTest(unittest.TestCase):
             cli_mod.run_text(json.dumps(document))
         self.assertEqual(caught.exception.code, "UNKNOWN_FIELD")
         self.assertNotIn(SECRET, str(caught.exception))
+
+
+# ---------------------------------------------------------------------------
+# W19E — one legacy answer, two real processes, one journal
+# ---------------------------------------------------------------------------
+#
+# #508's QA measured the divergence by reading one interpreter's objects. This
+# measures it the way it would show up in production: `python -m
+# fleet_next_agent_monitor` is a real process with #493's own offline client,
+# core and #423's real notifier; the compat path is a second real process with
+# #499's adapter and `CompatMonitorSource`, then the *same* core, the *same*
+# state file and the *same* sqlite ledger. Neither process can see the other's
+# objects, so "sent exactly once" and "sent nothing" are facts about the
+# journal file instead of facts about a shared interpreter.
+#
+# The claim under test is that one standard of evidence means the two paths
+# cannot disagree about one fact. Where the monitor as it ships still cannot
+# read a `transcript` / `messages` carrier, the difference is *pinned in the
+# fail-closed direction* — the monitor never verifies what it could not read,
+# and never sends — and the strict assertion is gated on the core actually
+# folding the carrier. `W19_REQUIRE_NATIVE_PARITY=1` forces the strict
+# assertion, which is how the RED half of this test was measured against the
+# unfixed core.
+
+MONITOR_ROOT = REPO / "integrations" / "fleet-next-agent-monitor"
+PARITY_PROBE = PACKAGE_ROOT / "qa" / "parity_probe.py"
+
+PARITY_DEVICE = "device:parity-1"
+PARITY_VICTIM = "device:parity-victim"
+PARITY_SESSION = "device:parity-1|claude|sess-parity"
+PARITY_RUN = "run-parity-1"
+PARITY_DELIVERY = "delivery-parity-1"
+PARITY_BOOT = "boot-parity-1"
+PARITY_INSTANCE = "inst-parity"
+PARITY_ROUTE = "route-parity"
+PARITY_SHA = "a" * 40
+PARITY_OTHER_SHA = "f" * 40
+PARITY_VERIFIED = (STATUS_TERMINAL_VERIFIED, None)
+PARITY_SILENT = (STATUS_UNKNOWN, "NO_NATIVE_ACTIVITY")
+
+
+def parity_fact(**overrides):
+    """One Legacy answer in the monitor's own vocabulary."""
+    payload = {"instanceId": PARITY_INSTANCE, "deviceRef": PARITY_DEVICE,
+               "sessionRef": PARITY_SESSION, "runId": PARITY_RUN,
+               "deliveryId": PARITY_DELIVERY, "bootId": PARITY_BOOT,
+               "status": "completed"}
+    payload.update(overrides)
+    return payload
+
+
+PARITY_ASSISTANT_TURN = [{"role": "user", "content": "go"},
+                         {"role": "assistant", "content": "native output"}]
+
+#: name, the one Legacy answer, the verdict both paths owe, grants, and whether
+#: the answer only becomes readable once its carrier is folded.
+PARITY_CASES = (
+    {"name": "message",
+     "fact": parity_fact(lastAssistantMessage={"content": "native output"}),
+     "expected": PARITY_VERIFIED},
+    {"name": "assistant_turn",
+     "fact": parity_fact(transcript=PARITY_ASSISTANT_TURN),
+     "expected": PARITY_VERIFIED, "carrier": True},
+    {"name": "bare_string",
+     "fact": parity_fact(transcript=["x"]),
+     "expected": PARITY_SILENT, "carrier": True},
+    {"name": "prompt_only",
+     "fact": parity_fact(transcript=[{"role": "user", "content": "do it"}]),
+     "expected": PARITY_SILENT, "carrier": True},
+    {"name": "empty_turn",
+     "fact": parity_fact(transcript=[{"role": "assistant", "content": "   "}]),
+     "expected": PARITY_SILENT, "carrier": True},
+    {"name": "foreign_turn",
+     "fact": parity_fact(transcript=[{"role": "assistant", "content": "stolen",
+                                      "runId": "run-other"}]),
+     "expected": PARITY_SILENT, "carrier": True},
+    {"name": "no_output",
+     "fact": parity_fact(),
+     "expected": PARITY_SILENT},
+    {"name": "unbound_artifact",
+     "fact": parity_fact(artifacts=[{"verified": True}]),
+     "expected": PARITY_SILENT},
+    # The watch names no commit, so the artifact names nothing to be bound to:
+    # #508 D2, which the pre-fix adapter read as "verified".
+    {"name": "unbound_artifact_no_sha",
+     "fact": parity_fact(artifacts=[{"verified": True}]),
+     "expected": PARITY_SILENT, "watch": {"expected_source_sha": None}},
+    {"name": "sha_other",
+     "fact": parity_fact(artifacts=[{"verified": True, "sha": PARITY_OTHER_SHA}]),
+     "expected": PARITY_SILENT},
+    {"name": "sha_bound",
+     "fact": parity_fact(artifacts=[{"verified": True, "sha": PARITY_SHA}]),
+     "expected": PARITY_VERIFIED},
+    {"name": "boot_other",
+     "fact": parity_fact(bootId="boot-parity-2",
+                         lastAssistantMessage={"content": "native output"}),
+     "expected": (STATUS_UNKNOWN, "BOOT_MISMATCH")},
+    {"name": "run_other",
+     "fact": parity_fact(runId="run-parity-2",
+                         lastAssistantMessage={"content": "native output"}),
+     "expected": (STATUS_UNKNOWN, "IDENTITY_MISMATCH")},
+    {"name": "denied",
+     "fact": parity_fact(lastAssistantMessage={"content": "native output"}),
+     "expected": (STATUS_DENIED, "NOT_GRANTED"),
+     "devices": (PARITY_VICTIM,)},
+)
+
+
+def _child_python(program: str, workdir: Path) -> subprocess.CompletedProcess:
+    """Run a snippet in a fresh interpreter with this tree's packages on its path."""
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("FLEET_NEXT_AGENT_MONITOR_")}
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(MONITOR_ROOT), str(PACKAGE_ROOT), str(REPO)])
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return subprocess.run([sys.executable, "-c", program], cwd=str(workdir),
+                          env=env, capture_output=True, text=True, timeout=120)
+
+
+def the_monitor_does_not_run_here(workdir: Path) -> str | None:
+    """Why the two-process comparison cannot run on this platform, or None.
+
+    The monitor's own core locks its cursor with `fcntl`, which is POSIX-only,
+    so on Windows `python -m fleet_next_agent_monitor` does not start at all —
+    the same reason #493's own test file is red there. Skipping is the honest
+    statement: a parity assertion that cannot start two processes asserts
+    nothing, and a green one would be a claim about a run that never happened.
+    """
+    try:
+        done = _child_python("import fleet_next_agent_monitor.core\n", workdir)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"a child interpreter could not be started ({type(exc).__name__})"
+    if done.returncode == 0:
+        return None
+    lines = [line.strip() for line in (done.stderr or "").splitlines() if line.strip()]
+    detail = lines[-1] if lines else f"exit {done.returncode}"
+    return (f"the monitor's own core is not importable here ({detail}), so "
+            f"`python -m fleet_next_agent_monitor` cannot start. Its cursor lock is "
+            f"`fcntl`-based, which is the usual cause on Windows; whatever the "
+            f"cause, the two-process parity runs for real on Linux (hosted CI) and "
+            f"is not turned into a green assertion on a platform where the monitor "
+            f"itself does not run")
+
+
+def the_shipped_core_folds_a_carrier(workdir: Path) -> bool:
+    """Whether #493's own reader *and* classifier can see a carrier.
+
+    Asked of the shipped module in its own process, not of a copy of the file,
+    so a `.pyc` or an earlier import in this interpreter cannot answer for it.
+    Both halves are needed and both belong to the monitor owner: the closed
+    reader must admit the key (`offline.RUN_KEYS`) and the classifier must fold
+    it (`sources` has to reach `normalise_run_fact`). One alone changes nothing,
+    so one alone is not "folded".
+    """
+    program = (
+        "import inspect, sys\n"
+        "from fleet_next_agent_monitor import offline, sources\n"
+        "admits = 'transcript' in offline.RUN_KEYS and 'messages' in offline.RUN_KEYS\n"
+        "folds = 'normalise_run_fact' in inspect.getsource(sources)\n"
+        "sys.stdout.write('yes' if admits and folds else 'no')\n")
+    try:
+        done = _child_python(program, workdir)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0 and done.stdout.strip() == "yes"
+
+
+class TheTwoPathsAgreeOnOneFactTest(unittest.TestCase):
+    """One Legacy answer, both entry points, one journal on disk."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(tempfile.mkdtemp(prefix="w19e-parity-"))
+        unavailable = the_monitor_does_not_run_here(cls.root)
+        if unavailable:
+            shutil.rmtree(cls.root, ignore_errors=True)
+            raise unittest.SkipTest(unavailable)
+        cls.folds = the_shipped_core_folds_a_carrier(cls.root)
+        cls.strict = cls.folds or os.environ.get("W19_REQUIRE_NATIVE_PARITY") == "1"
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    # -- scenario: one answer, written twice from the same dict ------------
+    def _scenario(self, case, tag):
+        directory = self.root / f"{case['name']}-{tag}"
+        directory.mkdir(parents=True, exist_ok=True)
+        fact = case["fact"]
+        # Both documents are written from the SAME fact object, and both declare
+        # the same instance, route and boot: the premise of the comparison is
+        # that the two paths are asked about one answer, from one client.
+        declared = {"fleet_instance_id": PARITY_INSTANCE,
+                    "route_id": PARITY_ROUTE, "boot_id": PARITY_BOOT}
+        (directory / "facts.json").write_text(json.dumps(dict(
+            declared, ci={}, runs={PARITY_RUN: fact})), encoding="utf-8")
+        (directory / "fixture.json").write_text(json.dumps(dict(
+            declared, run=fact)), encoding="utf-8")
+        watch = {"kind": "run", "device_ref": PARITY_DEVICE,
+                 "session_ref": PARITY_SESSION, "run_id": PARITY_RUN,
+                 "delivery_id": PARITY_DELIVERY,
+                 "expected_boot_id": PARITY_BOOT,
+                 "expected_source_sha": PARITY_SHA, "major": True}
+        watch.update(case.get("watch") or {})
+        (directory / "config.json").write_text(json.dumps({
+            "schema": "serveros/fleet-next-agent-monitor-config.v1",
+            "grant": {"principal": "w19e",
+                      "devices": list(case.get("devices") or (PARITY_DEVICE,)),
+                      "sessions": [PARITY_SESSION], "projects": ["serveros"],
+                      "views": ["run"]},
+            "watches": [watch],
+            "bounds": {"debounce_ticks": 1, "stale_after_seconds": 3600,
+                       "max_warnings": 8},
+        }), encoding="utf-8")
+        return directory
+
+    def _env(self, directory):
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith("FLEET_NEXT_AGENT_MONITOR_")}
+        env["PYTHONPATH"] = os.pathsep.join([
+            str(PACKAGE_ROOT), str(PACKAGE_ROOT / "qa"), str(MONITOR_ROOT),
+            str(REPO / "integrations" / "fleet-v1-milestone-notify"), str(REPO)])
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["W19_JOURNAL"] = str(directory / "journal.jsonl")
+        env["W19_LEDGER"] = str(directory / "ledger.sqlite")
+        env["FLEET_NEXT_AGENT_MONITOR_CONFIG"] = str(directory / "config.json")
+        env["FLEET_NEXT_AGENT_MONITOR_STATE"] = str(directory / "state.json")
+        return env
+
+    def _run(self, argv, directory, label):
+        done = subprocess.run(argv, cwd=str(directory), env=self._env(directory),
+                              capture_output=True, text=True, timeout=300)
+        self.assertIn(done.returncode, (0, 3, 4),
+                      f"{label} exited {done.returncode}: {done.stderr[-800:]}")
+        self.assertTrue(done.stdout.strip(),
+                        f"{label} printed no tick: {done.stderr[-800:]}")
+        return json.loads(done.stdout)
+
+    def _native(self, directory):
+        """#493's own one-shot CLI, its own offline reader, its own core."""
+        return self._run([sys.executable, "-m", "fleet_next_agent_monitor",
+                          "--config", str(directory / "config.json"),
+                          "--state", str(directory / "state.json"),
+                          "--offline-facts", str(directory / "facts.json"),
+                          "--notifier-entry", "parity_probe:notifier"],
+                         directory, "native")
+
+    def _compat(self, directory):
+        """This adapter, the same core and the same notifier, own process."""
+        return self._run([sys.executable, str(PARITY_PROBE), "compat",
+                          str(directory)], directory, "compat")
+
+    @staticmethod
+    def _head(tick):
+        watches = tick.get("watches") or [{}]
+        return {"status": watches[0].get("status"),
+                "reason": watches[0].get("reason"),
+                "delivered": tick.get("delivered")}
+
+    @staticmethod
+    def _journal(directory):
+        path = directory / "journal.jsonl"
+        if not path.exists():
+            return 0
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines()
+                   if line.strip())
+
+    def _case(self, name):
+        return next(case for case in PARITY_CASES if case["name"] == name)
+
+    # -- the two claims ----------------------------------------------------
+    def test_one_fact_gets_one_verdict_and_one_send_budget(self):
+        for case in PARITY_CASES:
+            with self.subTest(case=case["name"]):
+                wanted = case["expected"]
+                verifying = wanted[0] == STATUS_TERMINAL_VERIFIED
+
+                compat_dir = self._scenario(case, "compat")
+                compat = self._head(self._compat(compat_dir))
+                self.assertEqual((compat["status"], compat["reason"]),
+                                 (wanted[0], wanted[1]),
+                                 "this adapter's path owes the documented verdict")
+                self.assertEqual(self._journal(compat_dir), 1 if verifying else 0,
+                                 "the compat path's send budget")
+
+                native_dir = self._scenario(case, "native")
+                native = self._head(self._native(native_dir))
+                sent = self._journal(native_dir)
+
+                if self.strict or not case.get("carrier"):
+                    self.assertEqual((native["status"], native["reason"]),
+                                     (compat["status"], compat["reason"]),
+                                     "one standard of evidence means two paths "
+                                     "cannot disagree about one fact")
+                    self.assertEqual(sent, 1 if verifying else 0,
+                                     "the native path's send budget")
+                else:
+                    # The monitor as it ships refuses the key before any
+                    # classifier can fold it (#493's closed `RUN_KEYS`). The
+                    # difference is pinned in the only safe direction: what it
+                    # could not read, it did not verify and did not send.
+                    self.assertEqual(native["status"], STATUS_UNKNOWN,
+                                     f"an unread carrier must read UNKNOWN, not "
+                                     f"{native['status']!r}")
+                    self.assertTrue(str(native["reason"] or "").startswith("REMOTE_"),
+                                    f"expected a named remote refusal, got "
+                                    f"{native['reason']!r}")
+                    self.assertEqual(sent, 0,
+                                     "a monitor that could not read the fact must "
+                                     "not have sent it")
+                    if verifying:
+                        # The paired half of the same claim: this direction is
+                        # the one that is not allowed until the core folds.
+                        self.assertNotEqual(compat["status"], STATUS_UNKNOWN,
+                                            "the adapter must still verify a fact it "
+                                            "can read, or the gate hides a regression")
+
+    def test_a_verified_fact_is_not_sent_twice_across_the_two_paths(self):
+        for name in ("message", "assistant_turn"):
+            case = self._case(name)
+            for order, first, second in (("compat_then_native", self._compat, self._native),
+                                         ("native_then_compat", self._native, self._compat)):
+                with self.subTest(case=name, order=order):
+                    directory = self._scenario(case, f"once-{order}")
+                    first(directory)
+                    later = second(directory)
+                    self.assertEqual(
+                        self._journal(directory), 1,
+                        f"{order}: one fact, two processes, one ledger — the second "
+                        f"tick must find the receipt, not send again")
+                    if self.strict or not case.get("carrier"):
+                        # Both paths reached the same dispatchable fact, so the
+                        # second one must have found the receipt rather than run
+                        # out of things to say. Without this, "one send" would
+                        # also be true of a process that never dispatched.
+                        self.assertEqual(later.get("delivered"), 0,
+                                         f"{order}: the second tick delivered again")
+                        self.assertGreaterEqual(
+                            int(later.get("duplicate") or 0), 1,
+                            f"{order}: the second tick saw no receipt for the fact "
+                            f"the first one delivered")
+
+
+class TheAdapterDoesNotImportTheMonitorTest(unittest.TestCase):
+    """The dependency runs one way, so a native→adapter cycle cannot form.
+
+    The monitor may import this package (it publishes `normalise_run_fact` for
+    exactly that). The reverse would close a cycle the moment the monitor also
+    imported the adapter — and a cycle between the two owners' packages is a
+    merge-order problem nobody can test.
+    """
+
+    def test_no_package_module_imports_the_monitor(self):
+        package = PACKAGE_ROOT / "fleet_next_monitor_source_adapter"
+        offenders = []
+        for path in sorted(package.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                    names = [node.module]
+                else:
+                    continue
+                for name in names:
+                    if name.split(".")[0] == "fleet_next_agent_monitor":
+                        offenders.append(f"{path.relative_to(PACKAGE_ROOT)}:{node.lineno}")
+        self.assertEqual(offenders, [],
+                         "the adapter must not import the monitor: publish the rule "
+                         "and let the owner import it, or vendor it — never both ways")
+
+    def test_the_probe_is_not_inside_the_package(self):
+        package = PACKAGE_ROOT / "fleet_next_monitor_source_adapter"
+        self.assertTrue(PARITY_PROBE.is_file(),
+                        "the two-process probe must exist for the parity test")
+        self.assertNotEqual(PARITY_PROBE.parent, package,
+                            "the probe lives beside the package, so importing the "
+                            "package cannot drag the monitor in through it")
 
 
 if __name__ == "__main__":
