@@ -132,7 +132,10 @@ jobs:
           fi
 
       - name: Install bounded Python test dependency
-        run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+        # `pytest` is the repository's own runner and the pin is the one
+        # `tests.yml` uses, so this gate measures the tree with the same
+        # instrument as the main suite rather than a second, quieter one.
+        run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2' 'pytest==9.1.1'
 
       - name: Check Python syntax
         shell: bash
@@ -177,7 +180,34 @@ jobs:
           # `unittest discover` answers `Ran 0 tests ... OK` for a file that is
           # not there, and a shard that collected nothing must never read as
           # green. Every file is therefore required to exist, to report at least
-          # `floor` collected tests, and to exit zero.
+          # `floor` *passing* tests, and to exit zero.
+          #
+          # The runner is `pytest`, the same one `tests.yml` uses. This is not a
+          # convenience: both test styles are live in this tree. The Wave files
+          # are `unittest.TestCase` classes, and
+          # `tests/test_fleet_next_legacy_survival.py` (#478/#483, on `main`) is
+          # plain `def test_*` — `unittest discover` imports it and finds zero
+          # cases, which this floor then reports as `exit=5 collected=0`. That
+          # reading is not wrong about what unittest saw, but it is wrong about
+          # the file: the contract is real and `tests.yml` runs it. A gate that
+          # reds a file because it looked with the wrong instrument is the same
+          # failure as one that greens it. `pytest` collects both styles, so
+          # "collected nothing" now means the tests are absent, not that they
+          # are written the other way.
+          #
+          # The floor counts *passed*, not *collected*: a file whose every test
+          # skips on this runner has run nothing and must not satisfy it.
+          #
+          # pytest's summary reads `1 failed, 29 passed in 0.5s` / `no tests ran`,
+          # so each count is read as a standalone `<n> <word>` token in that last
+          # line: the number must be preceded by a line start, a space or a comma
+          # and followed by one, which keeps `xpassed` out of the `passed` count.
+          count_in_log() {
+            local log="$1"
+            local word="$2"
+            grep -oE "(^|[ ,])[0-9]+ ${word}([ ,]|$)" "$log" | tail -1 \
+              | grep -oE '[0-9]+' | tail -1
+          }
           gate_file() {
             local file="$1"
             local floor="$2"
@@ -190,22 +220,35 @@ jobs:
               failures=$((failures + 1))
               return
             fi
-            python3 -m unittest discover -s tests -p "$(basename "$file")" -v \
-              >"$log" 2>&1
+            python3 -m pytest -q -p no:cacheprovider "$file" >"$log" 2>&1
             local status=$?
-            local collected
-            collected="$(sed -nE 's/^Ran ([0-9]+) tests? in .*/\1/p' "$log" | tail -1)"
-            collected="${collected:-0}"
-            printf '%-64s exit=%s collected=%s floor=%s\n' \
-              "$file" "$status" "$collected" "$floor" | tee -a test-output/gate.status
-            if [ "$collected" -lt "$floor" ]; then
-              printf 'FAIL_NO_COLLECTION: %s collected %s tests, floor is %s; ' \
-                "$file" "$collected" "$floor" >> test-output/gate.status
+            local passed skipped failed errors
+            passed="$(count_in_log "$log" 'passed')";    passed="${passed:-0}"
+            skipped="$(count_in_log "$log" 'skipped')";  skipped="${skipped:-0}"
+            failed="$(count_in_log "$log" 'failed')";    failed="${failed:-0}"
+            errors="$(count_in_log "$log" 'errors?')";   errors="${errors:-0}"
+            printf '%-64s exit=%s passed=%s skipped=%s failed=%s errors=%s floor=%s\n' \
+              "$file" "$status" "$passed" "$skipped" "$failed" "$errors" "$floor" \
+              | tee -a test-output/gate.status
+            local ran=$((passed + failed + errors + skipped))
+            # Order matters for the diagnosis, not for the verdict. A file whose
+            # one test failed was collected and ran; calling that "no
+            # collection" would send its owner looking for a missing test.
+            if [ "$status" -eq 5 ] || [ "$ran" -eq 0 ]; then
+              printf 'FAIL_NO_COLLECTION: %s collected nothing (exit=%s); ' \
+                "$file" "$status" >> test-output/gate.status
               printf 'a file that collects nothing is absent, not passing\n' \
                 >> test-output/gate.status
               failures=$((failures + 1))
-            elif [ "$status" -ne 0 ]; then
-              printf 'FAIL: %s exited %s\n' "$file" "$status" >> test-output/gate.status
+            elif [ "$failed" -ne 0 ] || [ "$errors" -ne 0 ] || [ "$status" -ne 0 ]; then
+              printf 'FAIL: %s failed=%s errors=%s exit=%s\n' \
+                "$file" "$failed" "$errors" "$status" >> test-output/gate.status
+              failures=$((failures + 1))
+            elif [ "$passed" -lt "$floor" ]; then
+              printf 'FAIL_NO_COLLECTION: %s passed %s of %s collected, floor is %s ' \
+                "$file" "$passed" "$ran" "$floor" >> test-output/gate.status
+              printf '(skipped=%s); a skip is not a pass\n' "$skipped" \
+                >> test-output/gate.status
               failures=$((failures + 1))
             fi
             cat "$log"

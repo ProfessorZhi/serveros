@@ -86,13 +86,45 @@ is never cancelled mid-flight.
 
 | job | what it refuses |
 | --- | --- |
-| `offline-unit-contracts` | a gated file that is missing (`FAIL_NO_FILE`), a file that collects fewer than its floor (`FAIL_NO_COLLECTION`) — `Ran 0 tests ... OK` is a failure, not a pass — and a checkout whose `HEAD` is not the head the run names (`FAIL_HEAD_MISMATCH`) |
+| `offline-unit-contracts` | a gated file that is missing (`FAIL_NO_FILE`), a file that passes fewer than its floor (`FAIL_NO_COLLECTION`) — `Ran 0 tests ... OK` and `no tests ran` are failures, not passes — and a checkout whose `HEAD` is not the head the run names (`FAIL_HEAD_MISMATCH`) |
 | `composition-runtime-tick` | a collection that is not exactly `3` (`FAIL_NO_COLLECTION`), any `skipped=` in the run (`FAIL_SKIPPED_COMPOSITION`), a run that does not end in a bare `OK`, a tree with no monitor package (`BLOCKED_COMPOSITION`), an unreachable subject (`BLOCKED_COMPOSITION_SHA`), and a stale witness (`COMPAT_WINDOW_EXPIRED`) |
 
 `offline-unit-contracts` does not run a hand-written list. It gates the coverage
 check first and then runs **every `tests/test_fleet_next_*.py` present in the
 tree**, so a new Wave's test file is collected without editing the workflow.
 `*_ledger.py` is excluded by name and says so in `gate.status`.
+
+### The runner is `pytest`, and that was a measurement, not a preference
+
+The first hosted run of this change (`40804892935`, head `0032028e`) was red
+with a reading worth keeping:
+
+```
+tests/test_fleet_next_legacy_survival.py    exit=5 collected=0 floor=1
+FAIL: 1 gated file(s) did not collect or did not pass
+```
+
+`exit=5` is pytest's "no tests collected" — but the job ran `unittest
+discover`, and this file (`#478`/`#483`, already on `main`) is written as plain
+`def test_*`. `unittest` imported it, found zero `TestCase`s, and the floor
+correctly refused to call that green. The floor was right; the instrument was
+wrong. Both test styles are live in this tree (every other Wave file is
+`unittest`), so a runner that sees only one of them reports on this repository
+incorrectly in *both* directions — red here, and silently blind to a
+`unittest`-only file anywhere else.
+
+The job now runs `python3 -m pytest -q -p no:cacheprovider`, the same command
+`tests.yml` runs, at the same pinned version (`'pytest==9.1.1'`, asserted equal
+to the `tests.yml` pin by a test so the two cannot drift). The floor counts
+**passed**, not collected: a file whose every test skips has run nothing and
+must not satisfy it, and `exit=5` is refused by name. Each line in
+`gate.status` now reads `exit= passed= skipped= failed= errors= floor=`, so a
+reader can tell a skip from an absence from a failure without opening the log.
+
+There is also a live check in `tests/test_fleet_next_ci_path_coverage.py`:
+`--collect-only` over every `tests/test_fleet_next_*.py` in the checkout, and
+it fails naming any file the runner collects nothing from. That is the check
+that would have caught this locally instead of on a runner.
 
 The two files that predate the families and match none of them —
 `tests/test_fleet_runtime_create_policy.py` and
@@ -183,6 +215,50 @@ into `test-output/` that does not exist fails, and under `pipefail` that turned
 a tolerated absence into a red. Every gate step now creates its own directory
 and states its exit status outright.
 
+### The offline gate, refused nine ways
+
+The offline step body is extracted the same way and run under the runner's own
+`bash -e -o pipefail -c`, with `python3` shimmed to this machine's interpreter.
+Nine controls: two on the real tree, seven on throwaway trees.
+
+| # | control | observed |
+| --- | --- | --- |
+| J | the real tree | `legacy_survival.py exit=0 passed=70 … floor=1` — the file that read `exit=5 collected=0` on the first hosted run is now measured as 70 passing tests |
+| K | the real tree, reds only | `FAIL: 3 gated file(s)`, and **no** `FAIL_NO_COLLECTION`: the three reds are `canary_start` (60 failed), `install` (69 failed) and `plugin_package` (1 failed), all Windows-only (symlink/permission/POSIX) and green on the hosted Linux run of the same head |
+| L | everything green | `exit=0`, `PASS: every gated Fleet Next contract collected and passed` — the probe can answer green, so the reds below mean something |
+| M | a pytest-style file | `passed=2`, `PASS:` — the style that was invisible is now collected |
+| N | every test skipped | `passed=0 skipped=2`, `FAIL_NO_COLLECTION … passed 0 of 2 collected, floor is 1` |
+| O | a file with no tests at all | `exit=5`, `FAIL_NO_COLLECTION … collected nothing` |
+| P | a file that fails | `FAIL: … failed=1 errors=0`, and specifically **not** `FAIL_NO_COLLECTION` |
+| Q | a gated file missing from the tree | `FAIL_NO_FILE: tests/test_fleet_runtime_create_policy.py` |
+| R | no `tests/test_fleet_next_*.py` at all | `FAIL_NO_FILE` for the coverage check **and** `FAIL_NO_COLLECTION: no tests/test_fleet_next_*.py in this tree` |
+
+Control P found a second real defect. The first draft checked the floor before
+the failure branch, so a file whose one test failed read
+`FAIL_NO_COLLECTION … passed 0` — "collected nothing" — when in fact it was
+collected and ran and failed. The verdict was right and the diagnosis was
+wrong, which sends an owner looking for a missing test file. The order is now
+`status == 5 or nothing ran` → `failed/errors` → `passed < floor`, and a test
+pins that order.
+
+### The trigger, mutated
+
+Four controls copy the real test file and both workflows into a throwaway root
+and mutate the workflow there:
+
+| # | mutation | observed |
+| --- | --- | --- |
+| S | none (positive control) | `9 passed` |
+| T | `pull_request.paths` loses `docs/fleet-next/**` | red, naming the four W19 canonical doc surfaces that "no longer trigger the workflow" |
+| U | `push.paths` loses the same pattern | red on PR/push parity — the drift a push-only edit produces |
+| V | a `**/*` catch-all is added | red on `test_no_pattern_is_a_catch_all` |
+
+Control U first came back green: the `-k` selection used to run these controls
+did not include `test_pull_request_and_push_agree_on_one_list`, so the mutation
+was measured by nothing. A control that cannot see its own mutation is the same
+false green this document is about; the selection now names it, and the reading
+above is from the corrected one.
+
 ## 6. Lark: #415 is now on `main`, and nothing is baselined
 
 `dd5919a9256246570e611a7fa86aea28b46ef14d` is an ancestor of `main` `93d9a1d2`
@@ -201,10 +277,12 @@ reach a 5/5.
 | # | gate | status | evidence |
 | --- | --- | --- | --- |
 | 1 | MAIN — #415 and #483 push CI are really 5/5 | **PASS** | `40802854642`, `40803065087`, both completed/success |
-| 2 | TRIGGER — 42 surfaces across RC / HubNode / Sidecar / QA / W19 landing / W19 docs | **PASS** | `test_every_required_surface_is_triggered` |
-| 3 | TRIGGER — unrelated paths excluded, no catch-all | **PASS** | `test_unrelated_paths_do_not_trigger`, `test_no_pattern_is_a_catch_all` |
-| 4 | TRIGGER — PR/push parity, push bounded, concurrency | **PASS** | three trigger tests |
-| 5 | COLLECT — no gate is green on `Ran 0 tests` | **PASS** | `FAIL_NO_COLLECTION` / `FAIL_NO_FILE`; per-file `exit=`/`collected=` |
+| 2 | TRIGGER — 42 surfaces across RC / HubNode / Sidecar / QA / W19 landing / W19 docs | **PASS** | `test_every_required_surface_is_triggered`; control T |
+| 3 | TRIGGER — unrelated paths excluded, no catch-all | **PASS** | `test_unrelated_paths_do_not_trigger`, `test_no_pattern_is_a_catch_all`; control V |
+| 4 | TRIGGER — PR/push parity, push bounded, concurrency | **PASS** | three trigger tests; control U |
+| 5 | COLLECT — no gate is green on nothing collected | **PASS** | `FAIL_NO_COLLECTION` / `FAIL_NO_FILE`; per-file `exit= passed= skipped= failed= errors=`; controls N/O/Q/R |
+| 5a | COLLECT — the runner sees both test styles, at the main suite's pin | **PASS** | controls J/M; `test_the_runner_version_matches_the_main_suite_pin`; live `--collect-only` check |
+| 5b | COLLECT — a failing file is not called absent | **PASS** | control P; `test_a_failing_file_is_not_reported_as_absent` |
 | 6 | SUBJECT — the composition is this run's head, not a fixed SHA | **PASS** | `test_the_subject_is_the_run_itself`, controls H/I |
 | 7 | SUBJECT — a pull request cannot name the commit | **PASS** | control F/G, `test_the_candidate_is_never_read_from_pull_request_content` |
 | 8 | WITNESS — dated, conditional, non-substitutable | **PASS** | controls B/C/D/E, `test_the_witness_is_dated_and_expires` |

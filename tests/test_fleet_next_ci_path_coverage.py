@@ -25,6 +25,19 @@ So there are two distinct defects to pin, and this file pins both:
    the exact count (`3`) and refuse a skipped result, and the offline job must
    run *this* file so the coverage claim is re-checked on every run.
 
+   The offline job's runner is `pytest`, not `unittest discover`, and that is a
+   measured requirement rather than a preference. Both test styles are live in
+   this tree: the Wave files are `unittest.TestCase` classes, and
+   `tests/test_fleet_next_legacy_survival.py` (#478/#483, already on `main`) is
+   plain `def test_*`. The first hosted run of this change read
+   `tests/test_fleet_next_legacy_survival.py  exit=5 collected=0 floor=1` —
+   `unittest` had imported a real 70-test contract and found nothing to run.
+   The floor was right to refuse that as green, but a gate that reds a file
+   because it looked with the wrong instrument is the same defect as one that
+   greens it. `pytest` is the runner `tests.yml` uses, it collects both styles,
+   and the tests below hold the gate to it — including a live check that no
+   `tests/test_fleet_next_*.py` in this tree is invisible to it.
+
 THE COMPOSITION SUBJECT (W19)
 -----------------------------
 #511 measured the composition by checking out the literal `05da04f8`. That was
@@ -49,6 +62,8 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -348,9 +363,81 @@ class TheRunCannotBeGreenWithoutCollecting(unittest.TestCase):
         self.assertIn(COVERAGE_TEST, steps,
                       "the offline job does not run the coverage check, so a "
                       "later `paths:` edit would be measured by nothing")
-        self.assertIn("Ran ", steps,
-                      "the offline job does not assert a collected-test floor; "
-                      "`discover` prints `Ran 0 tests ... OK` for a missing file")
+
+    def test_the_offline_job_uses_the_same_runner_as_the_main_suite(self):
+        """One instrument, and the same version as `tests.yml`.
+
+        `unittest discover` reports `Ran 0 tests ... OK` for an absent file and
+        collects zero cases from a `def test_*` file that is right there. Both
+        would be measured by a second, quieter runner than the one that decides
+        whether `main` is green.
+        """
+        steps = job_steps(self.document, "offline-unit-contracts")
+        self.assertIn("python3 -m pytest", steps,
+                      "the offline gate is not run with pytest, so a "
+                      "`def test_*` contract in this tree collects nothing and "
+                      "reads as red (or, with a laxer floor, as green)")
+        self.assertIn("-p no:cacheprovider", steps,
+                      "a nested runner that writes .pytest_cache into the "
+                      "checkout leaves state the next run can read")
+        self.assertNotIn("python3 -m unittest", steps,
+                         "the offline gate still shells out to unittest, whose "
+                         "`Ran 0 tests ... OK` is the reading this file exists "
+                         "to refuse")
+
+    def test_the_runner_version_matches_the_main_suite_pin(self):
+        """A second runner version is a second answer to the same question."""
+        steps = job_steps(self.document, "offline-unit-contracts")
+        pinned = re.findall(r"'pytest==([0-9][^']*)'", steps)
+        self.assertTrue(pinned, "the offline job does not pin a pytest version")
+        main_workflow = (REPO / ".github/workflows/tests.yml").read_text(
+            encoding="utf-8")
+        expected = re.findall(r"'pytest==([0-9][^']*)'", main_workflow)
+        self.assertTrue(expected, "tests.yml no longer pins pytest")
+        self.assertEqual(
+            set(pinned), set(expected),
+            f"the Fleet Next gate pins pytest {sorted(set(pinned))} but the "
+            f"main suite pins {sorted(set(expected))}; two versions of the "
+            "runner are two different answers about the same tree")
+
+    def test_the_floor_counts_passes_and_not_collections(self):
+        """A file whose every test skips has run nothing.
+
+        `collected >= floor` is satisfied by three skipped tests under a
+        package import that does not resolve — which is exactly the #503
+        reading, one job over.
+        """
+        steps = job_steps(self.document, "offline-unit-contracts")
+        self.assertIn("count_in_log", steps,
+                      "the offline gate does not parse pytest's summary, so its "
+                      "floor is not reading a count at all")
+        self.assertIn("FAIL_NO_COLLECTION", steps,
+                      "the offline gate does not name the absent-file case")
+        self.assertIn('passed" -lt "$floor"', steps,
+                      "the floor is not applied to the passing count; a gated "
+                      "file whose tests all skip would satisfy it")
+        self.assertIn('status" -eq 5', steps,
+                      "pytest exits 5 when it collected nothing, and that exit is "
+                      "the one reading that must never be called green")
+
+    def test_a_failing_file_is_not_reported_as_absent(self):
+        """A file whose one test failed was collected; it ran.
+
+        The floor and the failure branch must be ordered so the diagnosis says
+        `FAIL: … failed=1`, not `FAIL_NO_COLLECTION`. A control on the first
+        draft caught exactly that: the floor was checked first, so a single
+        failing test in a file with floor 1 read as "collected nothing" and sent
+        its owner looking for a missing test file.
+        """
+        steps = job_steps(self.document, "offline-unit-contracts")
+        self.assertIn("passed + failed + errors + skipped", steps,
+                      "the gate does not distinguish 'nothing ran' from 'ran "
+                      "and failed'")
+        failing = steps.index("FAIL: %s failed=")
+        floor = steps.index("passed %s of %s collected")
+        self.assertLess(failing, floor,
+                        "the floor is still checked before the failure branch, "
+                        "so a failing file is reported as an absence")
 
     def test_naming_a_family_did_not_drop_the_older_files(self):
         """The families are an addition; the files they do not match stay."""
@@ -362,6 +449,45 @@ class TheRunCannotBeGreenWithoutCollecting(unittest.TestCase):
                 f"{older} was gated by this workflow before the path families "
                 "were named and matches none of them; dropping it turns a "
                 "widening into a silent narrowing")
+
+
+class NoFleetNextFileIsInvisibleToTheRunner(unittest.TestCase):
+    """The live half: ask the runner itself, on this tree.
+
+    The static tests above pin *how* the offline job collects. This one answers
+    whether, right now, every `tests/test_fleet_next_*.py` in the checkout
+    yields at least one node to that runner. It is the check that would have
+    caught the first hosted run of this change locally:
+    `tests/test_fleet_next_legacy_survival.py` was collected by pytest 70 times
+    and by `unittest` zero times.
+    """
+
+    def test_every_contract_in_this_tree_is_collected(self):
+        files = sorted(p.name for p in (REPO / "tests").glob("test_fleet_next_*.py"))
+        self.assertTrue(files, "no tests/test_fleet_next_*.py in this tree")
+        gated = [f for f in files if not f.endswith("_ledger.py")]
+        self.assertTrue(gated, "every Fleet Next contract was excluded by name")
+        proc = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+             "--collect-only", *[f"tests/{name}" for name in gated]],
+            cwd=str(REPO), capture_output=True, text=True)
+        output = proc.stdout + proc.stderr
+        self.assertEqual(
+            proc.returncode, 0,
+            f"pytest could not collect this tree (exit {proc.returncode}):\n"
+            f"{output[-4000:]}")
+        counted: dict[str, int] = {}
+        for line in output.splitlines():
+            match = re.match(r"(tests/[^:]+)::", line.strip())
+            if match:
+                counted[match.group(1)] = counted.get(match.group(1), 0) + 1
+        invisible = [f"tests/{name}" for name in gated
+                     if counted.get(f"tests/{name}", 0) == 0]
+        self.assertEqual(
+            invisible, [],
+            f"the runner collects nothing from {invisible}; a file whose tests "
+            "the gate cannot see is not measured, and a gate that reports it "
+            "red is reporting its own instrument")
 
 
 class TheCompositionMeasuresTheRunNotAMuseumPiece(unittest.TestCase):
