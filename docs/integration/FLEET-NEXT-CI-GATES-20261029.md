@@ -43,6 +43,26 @@ pre-#511 workflow, whose `paths:` names only the `fleet_mcp/deploy/next_*` era.
 `tests/test_fleet_next_agent_monitor_activation_runtime_tick.py` are all
 absent). That fact is what the compatibility window in §4 exists for.
 
+### 0.1 W19E (2026-10-29): the stack is on `main`, so the window is closed
+
+The readings above are the state this change was written against. They are
+superseded on the stack question, and the record keeps both so a reader can see
+which fact moved:
+
+| item | reading at W19E |
+| --- | --- |
+| `main` | `44f039d70dc4f593ea9db73aae873be3455fc48c` (#521 landed the W19 mainline DAG) |
+| `main` push Tests | run `40827808966` — **completed / success**, 5/5 |
+| monitor stack first landed | `99c06fab07bd301e7df1ff7fa253f670b4d51d4d` (#520: `runtime.py`, `activation.py`, runtime-tick regression in one tree) |
+| stack completed | `b27c93e346d5503a75f95ec068c386b416841a62` (#519) |
+| stack present on this head | yes — all three files (`git cat-file -e HEAD`) |
+
+So `STACK_ABSORBED_ON` is no longer `none`: it names `99c06fa`, the *first*
+landing. Naming the first rather than the completion is the weaker claim and
+therefore the stricter gate — every head carrying the complete stack also
+carries `99c06fa`, so a head that lost the stack is red from the earlier commit
+rather than excused until the later one.
+
 ## 1. The trigger: families, not the whole repository
 
 `paths:` names Fleet Next families and nothing else. The `pull_request` and
@@ -160,31 +180,52 @@ either measures it or refuses. A reader can tell which from the log:
 
 ## 4. The compatibility window: short, dated, and self-closing
 
-`main` does not carry the monitor stack yet (§0). A bare "measure the head" rule
-would be red on every `main` push until W19 lands it — and a permanently red
-gate is noise a reader learns to ignore, which is the same failure as a gate
-that never runs.
+`main` carried no monitor stack when this gate was written (§0), so a bare
+"measure the head" rule would have been red on every `main` push until W19
+landed it — and a permanently red gate is noise a reader learns to ignore,
+which is the same failure as a gate that never runs. The window is **now
+closed** (§0.1): the stack is on `main`, and the witness is what the switch
+retires.
 
 | literal | value | meaning |
 | --- | --- | --- |
 | `COMPAT_PIN` | `05da04f8c78f302b029c6304ed96f4e8ded5fc9b` | last known composable tree |
 | `COMPAT_PIN_EXPIRES` | `2026-11-19` | after this date an absent stack is **red** (`COMPAT_WINDOW_EXPIRED`) |
-| `STACK_ABSORBED_ON` | `none` | set to the landing merge SHA once the stack is on `main`; from then on an absent stack is **red** (`BLOCKED_COMPOSITION_REMOVED`) |
+| `STACK_ABSORBED_ON` | `99c06fab07bd301e7df1ff7fa253f670b4d51d4d` | the landing that put the stack on `main` (#520); from then on an absent stack is **red** (`BLOCKED_COMPOSITION_REMOVED`) |
 
 Rules the workflow enforces, each pinned by a test:
 
 * the witness runs **only** when the head does not carry the stack
-  (`if: steps.presence.outputs.stack_present == '0'`), so it can never stand in
-  for a head that was not measured;
+  (`if: steps.presence.outputs.stack_present == '0' && env.STACK_ABSORBED_ON == 'none'`),
+  so it can never stand in for a head that was not measured — and, once the
+  stack is absorbed, it cannot run at all;
 * when it does run, it must be the pinned commit, must carry all three modules,
   must collect exactly `3`, must not skip, and must end in a bare `OK`;
 * once the window closes, only two moves exist: land the stack and set
   `STACK_ABSORBED_ON`, or re-pin by reviewed diff. Both are diffs, so neither
   can happen by accident.
 
-So there is one short-lived pin, it is dated, it is asserted, and the head path
-is already the primary one — the pin cannot become a permanent fixture of
-`main`.
+**The revert this section exists to make loud.** `STACK_ABSORBED_ON` is a
+literal in this file, so the quiet regression is not a missing feature but a
+one-line edit back to `none`: on a tree that has already lost the stack, that
+revives the dated witness and the gate measures `05da04f8` instead of reddening.
+Three checks close it, and all three were observed to flip:
+
+1. `test_a_tree_that_carries_the_stack_may_not_say_none` — the checkout runs
+   this file, so it can see whether *this* tree carries the stack; if it does,
+   the switch may not be `none`;
+2. `test_the_declared_landing_is_a_real_ancestor_of_this_head` — the named SHA
+   must be a commit in the clone and an ancestor of `HEAD`
+   (`git merge-base --is-ancestor`), so the switch cannot be satisfied by a
+   plausible-looking string;
+3. the witness steps require `env.STACK_ABSORBED_ON == 'none'` in addition to
+   `stack_present == '0'`, so even a tree that eluded the presence step cannot
+   reach the pin.
+
+With `STACK_ABSORBED_ON` reverted to `none` in a scratch edit, the file reads
+`3 failed, 45 passed`; restored, it reads `48 passed`. The pin therefore cannot
+become a permanent fixture of `main`, and it cannot be quietly re-opened
+either.
 
 ## 5. Controls (observed, not asserted in prose)
 
@@ -214,6 +255,29 @@ These controls also found a defect in the first draft of this change: a `tee`
 into `test-output/` that does not exist fails, and under `pipefail` that turned
 a tolerated absence into a red. Every gate step now creates its own directory
 and states its exit status outright.
+
+### W19E: the removed-stack control, now executed on every run
+
+Controls A–I were run by hand while writing the gate. The one that matters most
+after absorption is now a test that re-runs on every CI run, because a
+hand-run control is a memory and this one has to hold later:
+`ThePresenceDecisionFailsClosedOnItsOwn` extracts the presence step's `run:`
+body from the YAML and executes it under `bash -e` in a throwaway tree with
+three stand-in files.
+
+| control | tree | observed |
+| --- | --- | --- |
+| W19E-a | all three stack files present, switch = `99c06fa` | `exit=0`, `stack_present=1`, no `BLOCKED_COMPOSITION_REMOVED` |
+| W19E-b | **the same tree with `activation.py` removed** | `exit=1`, `BLOCKED_COMPOSITION_REMOVED`, naming `99c06fa`, and **no** `COMPOSITION_SUBJECT_ABSENT` — the removed-stack tree is not excused as a pre-absorption head |
+| W19E-c | no stack, switch `none`, expiry `2020-01-01` | `exit=1`, `COMPAT_WINDOW_EXPIRED` |
+| W19E-d | no stack, switch `none`, expiry `not-a-date` | `exit=1`, `COMPAT_PIN_UNPARSEABLE` |
+| W19E-e | no stack, switch `none`, expiry `2099-01-01` | `exit=0`, `COMPOSITION_SUBJECT_ABSENT` — the one honest use left: a maintainer measuring a pre-absorption commit on purpose |
+
+W19E-b is the control that would have been missing: A and B differ by one
+deleted file, so "the stack is gone" is measured rather than described. The
+same edit reverted in the switch itself (`STACK_ABSORBED_ON: 'none'` on a tree
+that carries the stack) reads `3 failed, 45 passed` in the offline file;
+restored, `48 passed`.
 
 ### The offline gate, refused nine ways
 
@@ -286,7 +350,9 @@ reach a 5/5.
 | 6 | SUBJECT — the composition is this run's head, not a fixed SHA | **PASS** | `test_the_subject_is_the_run_itself`, controls H/I |
 | 7 | SUBJECT — a pull request cannot name the commit | **PASS** | control F/G, `test_the_candidate_is_never_read_from_pull_request_content` |
 | 8 | WITNESS — dated, conditional, non-substitutable | **PASS** | controls B/C/D/E, `test_the_witness_is_dated_and_expires` |
-| 9 | COMPOSE — exactly 3 tests, no skip, on the subject | **TARGET** | hosted `composition-runtime-tick` on this head |
+| 8a | ABSORPTION — the stack is on `main`, and losing it is red | **PASS** | `STACK_ABSORBED_ON = 99c06fa` (ancestor of this head); `TheAbsorbedStackIsRealAndCannotBeRevived`; executed control W19E-a/b; the `none` revert reads `3 failed, 45 passed` |
+| 8b | ABSORPTION — the witness cannot be revived by an edit to the pin | **PASS** | both witness steps require `env.STACK_ABSORBED_ON == 'none'`; `test_the_witness_cannot_run_once_the_stack_is_absorbed` |
+| 9 | COMPOSE — exactly 3 tests, no skip, on the subject | **TARGET** | hosted `composition-runtime-tick` on this head; the subject now carries the stack, so presence is `1` and the three tests run on the head itself rather than on the witness |
 | 10 | LOGS — a red step still carries its reading | **PASS** | `set +e` + `mkdir -p` + `cat "$log"`; controls found the `tee` defect |
 | 11 | SAFETY — `contents: read`, no secrets, bounded timeouts | **PASS** | three safety tests |
 | 12 | HOSTED — this workflow green on this branch's exact head | **TARGET** | recorded in the Draft PR; a doc commit recording a run would move the head |

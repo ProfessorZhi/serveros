@@ -61,9 +61,12 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -638,6 +641,247 @@ class TheCompositionCannotBeQuietlyAbsent(unittest.TestCase):
                 forbidden, self.serialized,
                 f"`{forbidden}` in the composition job means a composition that "
                 "could not be built is being made to look built")
+
+
+PRESENCE_STEP = "Decide whether this head carries the composition"
+
+STACK_FILES = {
+    "MONITOR_RUNTIME":
+        "integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/runtime.py",
+    "ACTIVATION":
+        "integrations/fleet-next-agent-monitor-activation/activation.py",
+    "RUNTIME_TICK":
+        "tests/test_fleet_next_agent_monitor_activation_runtime_tick.py",
+}
+
+
+def presence_script(document: dict) -> str:
+    """The presence step's shell as written — executed, not pattern-matched."""
+    steps = [step for step in composition_job(document)["steps"]
+             if step.get("name") == PRESENCE_STEP]
+    if len(steps) != 1:
+        raise AssertionError(
+            f"composition-runtime-tick: step `{PRESENCE_STEP}` is missing, so "
+            "the decision that excuses an absent stack cannot be measured")
+    return str(steps[0]["run"])
+
+
+class TheAbsorbedStackIsRealAndCannotBeRevived(unittest.TestCase):
+    """#520 put the stack on `main`; from that commit, absence is red.
+
+    The switch is what stands between "tolerated absence" and "the stack was
+    deleted". A revert to `none` is the quiet failure: the dated witness
+    becomes reachable again and a tree that lost the stack measures a museum
+    piece instead. Two of these tests exist only to make that revert loud —
+    one reads the switch against the tree this test runs in, the other proves
+    the declared landing is a real ancestor rather than a decorative string.
+    """
+
+    def setUp(self):
+        self.text, self.document = load_workflow()
+        self.job = composition_job(self.document)
+        self.env = {k: str(v) for k, v in (self.job.get("env") or {}).items()}
+        self.serialized = job_steps(self.document, "composition-runtime-tick")
+
+    def test_a_tree_that_carries_the_stack_may_not_say_none(self):
+        present = [rel for rel in STACK_FILES.values() if (REPO / rel).is_file()]
+        self.assertEqual(
+            len(present), len(STACK_FILES),
+            "this checkout does not carry the monitor stack, so it cannot say "
+            f"what `main` absorbed; missing: "
+            f"{sorted(set(STACK_FILES.values()) - set(present))}")
+        absorbed = self.env.get("STACK_ABSORBED_ON", "")
+        self.assertNotEqual(
+            absorbed, "none",
+            "this tree carries `runtime.py`, `activation.py` and the "
+            "runtime-tick regression, so `main` has absorbed the stack — but "
+            "STACK_ABSORBED_ON still says `none`. That is the revert that "
+            "re-opens the dated witness: a later tree that loses the stack "
+            "would fall back to COMPAT_PIN and go green against a museum piece "
+            "instead of red with BLOCKED_COMPOSITION_REMOVED")
+        self.assertRegex(absorbed, r"^[0-9a-f]{40}$",
+                         f"STACK_ABSORBED_ON={absorbed!r} is not a 40-hex "
+                         "landing commit")
+
+    def test_the_declared_landing_is_a_real_ancestor_of_this_head(self):
+        absorbed = self.env["STACK_ABSORBED_ON"]
+        git = shutil.which("git")
+        if git is None or not (REPO / ".git").exists():
+            self.skipTest("no git history in this checkout to read ancestry from")
+        known = subprocess.run(
+            [git, "cat-file", "-e", f"{absorbed}^{{commit}}"],
+            cwd=REPO, capture_output=True, text=True)
+        self.assertEqual(
+            known.returncode, 0,
+            f"STACK_ABSORBED_ON={absorbed} names nothing in this clone; the "
+            "switch has to point at the landing that actually put the stack on "
+            "main, not at a plausible-looking sha")
+        merged = subprocess.run(
+            [git, "merge-base", "--is-ancestor", absorbed, "HEAD"],
+            cwd=REPO, capture_output=True, text=True)
+        self.assertEqual(
+            merged.returncode, 0,
+            f"{absorbed} is not an ancestor of this head, yet the workflow "
+            "uses it to claim the stack is already on `main`")
+
+    def test_the_witness_cannot_run_once_the_stack_is_absorbed(self):
+        witness = [step for step in self.job["steps"]
+                   if step.get("name", "").startswith(
+                       ("Check out the compatibility witness",
+                        "Prove the witness is the pinned commit"))]
+        self.assertEqual(len(witness), 2,
+                         "the compatibility witness steps are missing")
+        for step in witness:
+            condition = str(step.get("if", ""))
+            self.assertIn(
+                "env.STACK_ABSORBED_ON == 'none'", condition,
+                f"`{step['name']}` runs on a head that lacks the stack even "
+                "after absorption; the presence step reds that head, but the "
+                "witness condition is the structural half — without it, "
+                "re-adding the witness is one edit away")
+
+    def test_the_presence_decision_still_reads_the_absorbed_switch_first(self):
+        self.assertIn('if [ "$STACK_ABSORBED_ON" != "none" ]', self.serialized,
+                      "the absorbed switch is not read before tolerating an "
+                      "absent stack")
+        self.assertLess(
+            self.serialized.index('if [ "$STACK_ABSORBED_ON" != "none" ]'),
+            self.serialized.index("COMPAT_WINDOW_EXPIRED"),
+            "the dated witness is decided before the absorbed switch, so an "
+            "expired-but-absorbed head would report the wrong reason")
+
+
+class ThePresenceDecisionFailsClosedOnItsOwn(unittest.TestCase):
+    """Execute the job's own presence step: stack present, then removed.
+
+    Every other test in this file reads the workflow. This one *runs* the shell
+    the job will run, against a tree built for the purpose, so the claim
+    "a removed stack is red" is a measurement rather than a quote. The
+    controls go in both directions: the same tree is green while it carries
+    the stack, red once it loses it, and the only shape that still tolerates
+    absence is the pre-absorption one, bounded by its date.
+    """
+
+    def setUp(self):
+        self.text, self.document = load_workflow()
+        self.env = {k: str(v) for k, v in
+                    (composition_job(self.document).get("env") or {}).items()}
+        self.script = presence_script(self.document)
+        if shutil.which("bash") is None:
+            self.skipTest("no bash on this host; the hosted gate is the place "
+                          "this step actually runs")
+
+    def run_presence(self, *, files: int, absorbed: str, expires: str):
+        """Build a throwaway tree and run the step's shell inside it."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            for index, rel in enumerate(STACK_FILES.values()):
+                if index < files:
+                    target = root / rel
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(
+                        "# stand-in: the step reads presence, not content\n",
+                        encoding="utf-8")
+            (root / "test-output").mkdir()
+            output = root / "github_output"
+            output.write_text("", encoding="utf-8")
+            environment = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "GITHUB_OUTPUT": str(output),
+                "STACK_ABSORBED_ON": absorbed,
+                "COMPAT_PIN_EXPIRES": expires,
+            }
+            environment.update(STACK_FILES)
+            completed = subprocess.run(
+                ["bash", "-e", "-c", self.script],
+                cwd=root, env=environment, capture_output=True, text=True,
+                timeout=120)
+            log_path = root / "test-output" / "composition-identity.log"
+            log = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+            return completed, log, output.read_text(encoding="utf-8")
+
+    def test_the_tree_that_carries_the_stack_is_measured_not_excused(self):
+        completed, log, output = self.run_presence(
+            files=3, absorbed=self.env["STACK_ABSORBED_ON"], expires="2099-01-01")
+        self.assertEqual(completed.returncode, 0,
+                         f"a tree carrying all three stack files was refused:\n"
+                         f"{completed.stdout}\n{completed.stderr}\n{log}")
+        self.assertIn("stack_present=1", output)
+        self.assertNotIn("BLOCKED_COMPOSITION_REMOVED", log,
+                         "the control tree was read as having removed the stack")
+
+    def test_the_same_tree_after_the_stack_is_removed_is_red(self):
+        completed, log, _ = self.run_presence(
+            files=2, absorbed=self.env["STACK_ABSORBED_ON"], expires="2099-01-01")
+        self.assertEqual(
+            completed.returncode, 1,
+            "a tree that lost the stack — with the switch already naming the "
+            f"landing — did not fail; it silently became a witness run:\n{log}")
+        self.assertIn("BLOCKED_COMPOSITION_REMOVED", log)
+        self.assertIn(self.env["STACK_ABSORBED_ON"], log,
+                      "the failure does not name the landing it expected")
+        self.assertNotIn("COMPOSITION_SUBJECT_ABSENT", log,
+                         "the removed-stack tree was excused as a pre-absorption "
+                         "head, which is the false green the switch exists to stop")
+
+    def test_an_expired_window_does_not_excuse_an_absent_stack(self):
+        completed, log, _ = self.run_presence(
+            files=0, absorbed="none", expires="2020-01-01")
+        self.assertEqual(completed.returncode, 1,
+                         f"an absent stack past the expiry was tolerated:\n{log}")
+        self.assertIn("COMPAT_WINDOW_EXPIRED", log)
+
+    def test_an_unparseable_expiry_is_red_rather_than_open_ended(self):
+        completed, log, _ = self.run_presence(
+            files=0, absorbed="none", expires="not-a-date")
+        self.assertEqual(completed.returncode, 1,
+                         f"an unparseable expiry left the witness open-ended:\n{log}")
+        self.assertIn("COMPAT_PIN_UNPARSEABLE", log)
+
+    def test_the_pre_absorption_witness_is_still_reachable_on_purpose(self):
+        completed, log, output = self.run_presence(
+            files=0, absorbed="none", expires="2099-01-01")
+        self.assertEqual(completed.returncode, 0,
+                         "a maintainer can no longer measure a pre-absorption "
+                         f"commit at all:\n{log}")
+        self.assertIn("COMPOSITION_SUBJECT_ABSENT", log)
+        self.assertIn("stack_present=0", output)
+
+
+class TheGateCannotEscalate(unittest.TestCase):
+    """Read-only token, no `pull_request_target`, no secret, no PR-named SHA."""
+
+    def setUp(self):
+        self.text, self.document = load_workflow()
+
+    def test_the_token_is_read_only(self):
+        permissions = {k: str(v) for k, v in
+                       (self.document.get("permissions") or {}).items()}
+        self.assertEqual(permissions, {"contents": "read"},
+                         "the workflow's token is not read-only")
+
+    def test_no_job_widens_the_token(self):
+        for name, job in self.document["jobs"].items():
+            self.assertNotIn(
+                "permissions", job,
+                f"job `{name}` declares its own permissions; a job-level block "
+                "can widen what the workflow-level read-only grant allows")
+
+    def test_there_is_no_pull_request_target_and_no_secret(self):
+        self.assertNotIn(
+            "pull_request_target", self.text,
+            "`pull_request_target` runs with the base repository's token and "
+            "secrets against untrusted content")
+        self.assertNotIn("secrets.", self.text,
+                         "this gate needs no secret; one here is an escalation "
+                         "waiting for a use")
+
+    def test_no_arbitrary_sha_arrives_from_pull_request_content(self):
+        for banned in ("pull_request.body", "pull_request.title",
+                       "pull_request.labels", "pull_request.head.label"):
+            self.assertNotIn(banned, self.text,
+                             f"`{banned}` lets a pull request name the commit "
+                             "this gate measures")
 
 
 class EveryFailureLeavesItsReadingBehind(unittest.TestCase):

@@ -256,7 +256,14 @@ jobs:
 
           # The coverage check is gated first: it is the file that decides
           # whether a later `paths:` edit still covers what this workflow owns.
-          gate_file tests/test_fleet_next_ci_path_coverage.py 10
+          #
+          # The floor is 46 of the file's 48 tests. The two it tolerates are the
+          # ones that need something a bare checkout may not have: git history
+          # for the ancestry of `STACK_ABSORBED_ON`, and `bash` to execute the
+          # presence decision. Both run here; the slack is so a future runner
+          # image without one of them reports a skip instead of a floor
+          # failure — while a mass loss of this file's tests still reds.
+          gate_file tests/test_fleet_next_ci_path_coverage.py 46
 
           # These two sat in this workflow before the families were named and
           # do not match `test_fleet_next_*`; they are listed so that naming a
@@ -327,20 +334,35 @@ jobs:
   # commit. Nothing here runs with the base repository's token, and there is no
   # secret: the job only ever needs `contents: read` on the commit it measures.
   #
-  # `main` does not carry the monitor package yet (checked at `3bc7adfe`), so a
-  # bare "measure the head" rule would be red on every main push until W19
-  # lands the stack — and a permanently red gate is noise a reader learns to
-  # ignore. The tolerance is therefore *dated and versioned*, not open-ended:
+  # THE STACK IS ON `main` NOW, AND THAT IS WHAT `STACK_ABSORBED_ON` RECORDS.
+  # -----------------------------------------------------------------------
+  # When this gate was written, `main` did not carry the monitor package (it
+  # was checked at `3bc7adfe`), so a bare "measure the head" rule would have
+  # been red on every main push until W19 landed the stack — and a permanently
+  # red gate is noise a reader learns to ignore. The tolerance is therefore
+  # *dated and versioned*, not open-ended:
   #
   #   * `COMPAT_PIN` is the last known composable tree; it runs as an explicit
   #     witness ONLY when the head does not carry the stack.
   #   * `COMPAT_PIN_EXPIRES` bounds that: after it, an absent stack is red.
-  #   * `STACK_ABSORBED_ON` is `none` until a landing PR puts the stack on
-  #     `main`; that PR sets the merge SHA, and from then on an absent stack is
-  #     red (`BLOCKED_COMPOSITION_REMOVED`) rather than excused.
+  #   * `STACK_ABSORBED_ON` is the landing that put the stack on `main`. It is
+  #     `99c06fa` — #520, the first landing that carried `runtime.py`,
+  #     `activation.py` and the runtime-tick regression together. #519
+  #     (`b27c93e`) completed the stack afterwards; naming the first landing
+  #     is the stricter choice, because every head that carries the complete
+  #     stack also carries `99c06fa`, and a head that lost the stack is red
+  #     from the earlier commit rather than the later one.
   #
-  # So there is exactly one short-lived pin, it is dated, it is pinned by a
-  # test, and its successor (the head) is already the primary path.
+  # Once absorbed, absence is `BLOCKED_COMPOSITION_REMOVED` — red — and the
+  # dated witness is unreachable *by construction*: both of its steps also
+  # require `env.STACK_ABSORBED_ON == 'none'`, so clearing the stack cannot
+  # quietly revive a museum piece. The pin survives only for the one honest
+  # case left: a maintainer dispatching a pre-absorption commit on purpose.
+  #
+  # `tests/test_fleet_next_ci_path_coverage.py` holds this: it refuses a tree
+  # that carries the stack while the switch still says `none` (the revert that
+  # would re-open the fallback), and it executes the presence decision against
+  # a tree that has the stack and then loses it.
   composition-runtime-tick:
     name: 'composition #493 × #498/#503 — 3 tests, no skip, on this run''s own head'
     runs-on: ubuntu-latest
@@ -356,9 +378,18 @@ jobs:
       # never silently. It is a witness, never the primary measurement.
       COMPAT_PIN: '05da04f8c78f302b029c6304ed96f4e8ded5fc9b'
       COMPAT_PIN_EXPIRES: '2026-11-19'
-      # Set to the merge SHA of the landing PR that first puts the monitor
-      # stack on `main`. `none` means "the stack is not expected here yet".
-      STACK_ABSORBED_ON: 'none'
+      # The landing that first put the monitor stack on `main`: #520, merge
+      # 99c06fa, which added `runtime.py`, `activation.py` and the runtime-tick
+      # regression in one tree. #519 (`b27c93e`) completed the stack after it;
+      # the earlier landing is named because it is the weaker claim — every
+      # head with the complete stack also has this one.
+      #
+      # It is NOT `none`, and reverting it to `none` is what would make the
+      # dated witness reachable again on a tree that lost the stack. From here
+      # on an absent stack is `BLOCKED_COMPOSITION_REMOVED`, and the witness
+      # steps additionally require `env.STACK_ABSORBED_ON == 'none'`, so the
+      # fallback cannot be re-opened by editing the pin alone.
+      STACK_ABSORBED_ON: '99c06fab07bd301e7df1ff7fa253f670b4d51d4d'
     steps:
       - name: Resolve the subject this run measures
         id: subject
@@ -366,7 +397,6 @@ jobs:
         run: |
           set -uo pipefail
           set +e
-          mkdir -p test-output
           mkdir -p test-output
           subject="$HEAD_SHA"
           if [ -n "${CANDIDATE_SHA:-}" ]; then
@@ -454,7 +484,11 @@ jobs:
             exit 1
           fi
 
-          # Not absorbed yet: a dated witness is allowed, and it is bounded.
+          # NOT ABSORBED: the branch below is the dated-witness tolerance. It is
+          # dead for every head at or after `99c06fa`, and it stays only so a
+          # maintainer can dispatch a pre-absorption commit on purpose. It is
+          # bounded twice: by the date here, and by the `if:` on both witness
+          # steps, which requires `STACK_ABSORBED_ON == 'none'` as well.
           today_epoch="$(date -u +%s)"
           expires_epoch="$(date -u -d "$COMPAT_PIN_EXPIRES" +%s 2>/dev/null)"
           if [ -z "$expires_epoch" ]; then
@@ -483,7 +517,11 @@ jobs:
           exit 0
 
       - name: Check out the compatibility witness
-        if: steps.presence.outputs.stack_present == '0'
+        # Two conditions, not one. Once `STACK_ABSORBED_ON` names a landing,
+        # a head without the stack is red in the presence step above; this
+        # conjunct makes the witness unreachable as well, so the fallback
+        # cannot be revived by a tree that merely lost the stack.
+        if: steps.presence.outputs.stack_present == '0' && env.STACK_ABSORBED_ON == 'none'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ env.COMPAT_PIN }}
@@ -491,7 +529,7 @@ jobs:
           fetch-depth: 1
 
       - name: Prove the witness is the pinned commit
-        if: steps.presence.outputs.stack_present == '0'
+        if: steps.presence.outputs.stack_present == '0' && env.STACK_ABSORBED_ON == 'none'
         shell: bash
         run: |
           set -uo pipefail
