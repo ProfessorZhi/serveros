@@ -247,8 +247,23 @@ class TheLandedRecordCarriesItsGates(unittest.TestCase):
         self.assertEqual(second["files"], 67)
         self.assertEqual(second["merged_additions"], 20)
         self.assertEqual(second["pr_ci"]["run"], "40810813359")
-        self.assertEqual(second["qa"]["pr"], 524)
-        self.assertEqual(second["qa"]["verdict"], "LANDING_READY")
+        qa = second["qa"]
+        self.assertEqual(qa["pr"], 524)
+        self.assertEqual(qa["head"], PINNED_PRS[524])
+        self.assertEqual(qa["review_url"],
+                         "https://github.com/ProfessorZhi/serveros/pull/524")
+        self.assertEqual(
+            qa["evidence_path"],
+            "integrations/fleet-next-w19-release-acceptance/evidence/"
+            "w19-acceptance-20261029.json")
+        self.assertEqual(
+            qa["evidence_blob"],
+            _text("rev-parse", f"{PINNED_PRS[524]}:{qa['evidence_path']}"))
+        self.assertEqual(
+            qa["evidence_sha256"],
+            _blob_digest(f"{PINNED_PRS[524]}:{qa['evidence_path']}"))
+        self.assertNotIn("review_comment_id", qa)
+        self.assertEqual(qa["verdict"], "LANDING_READY")
         self.assertEqual(second["main_push_ci"]["run"], "40811251506")
         self.assertEqual(first["legacy_delta"], [])
         self.assertFalse(first["baseline_added"])

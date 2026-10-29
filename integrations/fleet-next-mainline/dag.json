@@ -71,8 +71,11 @@
    "qa": {
     "pr": 524,
     "head": "3e6a4ee1b20b853c9df71c3889bdd7eb9140966d",
-    "verdict": "LANDING_READY",
-    "review_comment_id": 6486978745
+    "review_url": "https://github.com/ProfessorZhi/serveros/pull/524",
+    "evidence_path": "integrations/fleet-next-w19-release-acceptance/evidence/w19-acceptance-20261029.json",
+    "evidence_blob": "096986b712def228c8fc684f436f9a65502ff4f0",
+    "evidence_sha256": "06e490cc30b6f43e39e9c3890c935d33f89c3f3dcff70ae2428c25a6efab92d0",
+    "verdict": "LANDING_READY"
    },
    "main_push_ci": {
     "run": "40811251506",

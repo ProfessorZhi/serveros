@@ -15,7 +15,7 @@ old Fleet **0.1.0** control API is untouched.
 | second landing | **#519**, head `cd8b875b0722718b31750da9beee1c4df072b415`, tree `206a4f4583162204cc5172e928f7ab243da73eaf`, merge `b27c93e346d5503a75f95ec068c386b416841a62` |
 | main after | `b27c93e` (Push CI `40811251506` 5/5, all shards `0 new`) |
 | #520 independent QA | W19B review comment [`6486841401`](https://github.com/ProfessorZhi/serveros/issues/515#issuecomment-6486841401), `SIGNED_PASS`; this is the reviewer's own signoff, not the earlier #517 NO_LANDING_PR verdict |
-| #519 independent QA | #524 `LANDING_VERDICT READY / SIGNED_PASS`, plus #515 comment `6486978745`; release verdict stays BLOCKED |
+| #519 independent QA | #524 PR `https://github.com/ProfessorZhi/serveros/pull/524`, `LANDING_VERDICT READY`; evidence `integrations/fleet-next-w19-release-acceptance/evidence/w19-acceptance-20261029.json` blob `096986b7…` / sha256 `06e490cc…`; release verdict BLOCKED |
 
 The machine-readable DAG is
 `integrations/fleet-next-mainline/dag.json`; the claim is asserted by
