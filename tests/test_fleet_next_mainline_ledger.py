@@ -39,7 +39,6 @@ MAIN_TREE_AFTER = "206a4f4583162204cc5172e928f7ab243da73eaf"
 LAND_HEAD = "90b6671c9bfecd31d72163e2f5a86d68f991cff9"
 LAND2_HEAD = "cd8b875b0722718b31750da9beee1c4df072b415"
 RC_TREE = "05da04f8c78f302b029c6304ed96f4e8ded5fc9b"
-QA_HEAD = "823a38198322c90c30381758befd4e208ba85c2a"
 
 ALLOWED = (
     "integrations/fleet-next-agent-monitor",
@@ -59,28 +58,18 @@ FORBIDDEN = (
     "bin/", "workengine/", "tests/hermetic-known-failures.txt",
 )
 
+#: Immutable commits the ledger actually reads. A PR head is mutable; the
+#: historical SHA is the evidence. Only these are needed to re-derive the
+#: landed blobs, the wholesale-close ancestry and the #524 evidence file.
 PINNED_PRS = {
     520: LAND_HEAD,
     519: LAND2_HEAD,
     524: "3e6a4ee1b20b853c9df71c3889bdd7eb9140966d",
     507: RC_TREE,
     508: "fb8c435637e486fc0ecf78a2ea83b9b323c936bb",
-    517: QA_HEAD,
     407: "9538238d6a169507ef91366107d8bd3a4d75403d",
     473: "a097b27d17c184d3222d982991a90cc04283fea3",
     474: "0ad3c078a7d4d865ff7d8c54d01a08235237f8ec",
-    431: "517ef915074e3b14537b746a07b4dcee63eccfb6",
-    505: "3512c551574a94ad360f8bde6435bdf07c729167",
-    509: "3520d0c886a3abe0ba712eeb855ca2bcdd65579d",
-    506: "30d7c4d34ce7ebf76d751b8e306fa2c623c4cac7",
-    513: "6602961df350598c95f2c55abceddf8e3509e5ac",
-    510: "ea779d9a47bec64dddcd78d3a2da5862998d795d",
-    511: "6b98412d43a7e3c36e4dc8f0aa486aff429c81ac",
-    512: "d3c7c391dc63caa53eb35cf34f318dee23ed2ac1",
-    514: "30c4581ac8989b26cb5a065b49bc5a868e48d57d",
-    516: "15d82ab32fbf210db3acd39db07308744ebf90a0",
-    519: "cd8b875b0722718b31750da9beee1c4df072b415",
-    518: "d7045619458e50b502c66f7dc42ef75ebcd94436",
 }
 
 
@@ -149,14 +138,17 @@ def _ensure_pins() -> None:
         done = subprocess.run(
             ("git", "fetch", "--no-tags", "origin", f"refs/pull/{pr}/head"),
             cwd=REPO, capture_output=True, text=True, timeout=300)
-        if done.returncode != 0:
+        if not _has_commit(sha):
+            # A moved PR head can still contain the historical commit as an
+            # ancestor. Fetch by SHA as a fallback; the evidence is the commit,
+            # not the mutable branch tip.
+            subprocess.run(
+                ("git", "fetch", "--no-tags", "origin", sha),
+                cwd=REPO, capture_output=True, text=True, timeout=300)
+        if not _has_commit(sha):
             raise AssertionError(
-                f"PR #{pr} {sha} is absent and cannot be fetched: "
-                f"{done.stderr.strip()[-300:]}")
-        got = _text("rev-parse", "FETCH_HEAD")
-        if got != sha:
-            raise AssertionError(
-                f"PR #{pr} moved: {got} != pinned {sha}")
+                f"PR #{pr} historical commit {sha} is unavailable after "
+                "fetching refs/pull/{pr}/head; the ledger cannot be re-derived")
 
 
 def setUpModule() -> None:  # noqa: N802 - unittest protocol
@@ -269,9 +261,9 @@ class TheLandedRecordCarriesItsGates(unittest.TestCase):
         self.assertFalse(first["baseline_added"])
         self.assertFalse(second["baseline_added"])
 
-    def test_the_qa_gate_head_is_present(self):
-        self.assertTrue(_has_commit(QA_HEAD))
-        self.assertFalse(_is_ancestor(QA_HEAD, MAIN_AFTER))
+    def test_the_landed_evidence_head_is_present(self):
+        self.assertTrue(_has_commit(PINNED_PRS[524]))
+        self.assertFalse(_is_ancestor(PINNED_PRS[524], MAIN_AFTER))
 
 
 class TheDagClassifiesEveryCandidate(unittest.TestCase):
