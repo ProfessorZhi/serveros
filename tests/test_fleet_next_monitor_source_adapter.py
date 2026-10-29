@@ -1369,14 +1369,16 @@ def the_shipped_core_folds_a_carrier(workdir: Path) -> bool:
     so a `.pyc` or an earlier import in this interpreter cannot answer for it.
     Both halves are needed and both belong to the monitor owner: the closed
     reader must admit the key (`offline.RUN_KEYS`) and the classifier must fold
-    it (`sources` has to reach `normalise_run_fact`). One alone changes nothing,
-    so one alone is not "folded".
+    it (`sources` has to reach `normalise_run_fact`, or carry its own fold,
+    `_normalise_native`, as #527 landed it). One alone changes nothing, so one
+    alone is not "folded".
     """
     program = (
         "import inspect, sys\n"
         "from fleet_next_agent_monitor import offline, sources\n"
         "admits = 'transcript' in offline.RUN_KEYS and 'messages' in offline.RUN_KEYS\n"
-        "folds = 'normalise_run_fact' in inspect.getsource(sources)\n"
+        "folds = ('normalise_run_fact' in inspect.getsource(sources)\n"
+        "         or callable(getattr(sources, '_normalise_native', None)))\n"
         "sys.stdout.write('yes' if admits and folds else 'no')\n")
     try:
         done = _child_python(program, workdir)
