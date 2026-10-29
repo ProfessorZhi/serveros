@@ -121,6 +121,140 @@ def _first(payload: Mapping[str, Any], *names: str) -> Any:
     return None
 
 
+#: A native answer may carry the run's assistant turns as `transcript` or
+#: `messages` rather than the single `lastAssistantMessage` field. That is a
+#: carrier of the same fact, not a second standard of evidence, so it is folded
+#: into the one shape the classifier reads.
+_CARRIER_KEYS = ("transcript", "messages")
+_MESSAGE_KEYS = ("lastAssistantMessage", "last_assistant_message")
+
+#: Only an assistant turn is something the run produced. A user prompt, a system
+#: preamble or a tool result is input, and calling it output would let a run that
+#: merely received a message look finished.
+_ASSISTANT_ROLES = frozenset({"assistant"})
+
+#: A turn may name an identity of its own. If it names one, it must be *this*
+#: run's: a foreign turn in a shared transcript is not this run's output.
+_TURN_IDENTITY = (
+    ("instanceId", "instance_id", "fleet_instance_id"),
+    ("deviceRef", "device_ref"),
+    ("sessionRef", "session_ref"),
+    ("runId", "run_id"),
+    ("deliveryId", "delivery_id"),
+    ("bootId", "boot_id"),
+)
+
+#: The carrier is bounded before it is read: 64 turns, 64 KiB per turn, 256 KiB
+#: in total. A larger carrier is a payload the monitor *refuses*, never one it
+#: truncates — dropping the tail could drop the very turn that was evidence, and
+#: a short window keeps an untrusted answer from making the tick's cost unbounded.
+MAX_CARRIER_TURNS = 64
+MAX_TURN_CHARS = 64 * 1024
+MAX_CARRIER_CHARS = 256 * 1024
+
+
+class _CarrierRefused(Exception):
+    """A carrier outside the bounded shape. The read becomes `BAD_PAYLOAD`."""
+
+
+def _bounded_carrier(payload: Mapping[str, Any]) -> Any:
+    """The carrier, when its shape is bounded; else `_CarrierRefused`."""
+    carrier = _first(payload, *_CARRIER_KEYS)
+    if carrier is None:
+        return None
+    if not isinstance(carrier, (list, tuple)):
+        raise _CarrierRefused("a carrier is a list of turns")
+    if len(carrier) > MAX_CARRIER_TURNS:
+        raise _CarrierRefused("too many turns")
+    total = 0
+    for turn in carrier:
+        if isinstance(turn, Mapping):
+            content = turn.get("content")
+            text = content if isinstance(content, str) else ""
+        elif isinstance(turn, str):
+            text = turn
+        else:
+            raise _CarrierRefused("a turn is an object or a bare string")
+        if len(text) > MAX_TURN_CHARS:
+            raise _CarrierRefused("a turn is over the byte bound")
+        total += len(text)
+    if total > MAX_CARRIER_CHARS:
+        raise _CarrierRefused("the carrier is over the byte bound")
+    return carrier
+
+
+def _is_own_turn(turn: Mapping[str, Any], fact: Mapping[str, Any]) -> bool:
+    """False when the turn names an identity that contradicts the fact's own."""
+    for names in _TURN_IDENTITY:
+        claimed = _first(turn, *names)
+        if claimed is None:
+            continue
+        ours = _first(fact, *names)
+        if ours is not None and claimed != ours:
+            return False
+    return True
+
+
+def _message_from_carrier(carrier: Any, payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The run's last assistant turn, or nothing at all.
+
+    Only the *last* assistant turn is a candidate: an earlier one cannot be
+    promoted over a later one. If that turn is foreign, empty, or carries no
+    text, the answer has no usable output — a later user prompt does not make an
+    earlier assistant turn count, and a bare string names no role at all.
+    """
+    for turn in reversed(carrier):
+        if not isinstance(turn, Mapping):
+            # A bare string names no role, so it cannot be shown to be output.
+            continue
+        role = str(turn.get("role") or "").strip().lower()
+        if role not in _ASSISTANT_ROLES:
+            continue
+        if not _is_own_turn(turn, payload):
+            return None
+        content = turn.get("content")
+        if isinstance(content, str) and content.strip():
+            # Only the text is forwarded; a turn's own identifiers are not
+            # merged into the observation's identity.
+            return {"content": content}
+        return None
+    return None
+
+
+def _normalise_native(payload: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+    """The fact with its native evidence in one shape: `(fact, refused)`.
+
+    A declared `lastAssistantMessage` — even a blank one — keeps its text and is
+    never upgraded by a carrier the same answer also shipped: the device's own
+    word about whether it produced anything outranks a wrapper's convenience
+    field. A carrier is consulted only when no message was declared.
+
+    `refused` is True when a carrier was outside the bounded shape. The caller
+    must then report `BAD_PAYLOAD`, never classify a truncated carrier.
+    """
+    try:
+        carrier = _bounded_carrier(payload)
+    except _CarrierRefused:
+        return dict(payload), True
+    fact = dict(payload)
+    for name in _MESSAGE_KEYS:
+        if name in payload:
+            declared = payload[name]
+            fact["lastAssistantMessage"] = (
+                {"content": declared["content"]}
+                if isinstance(declared, Mapping) and "content" in declared else {})
+            return fact, False
+    if carrier is not None:
+        message = _message_from_carrier(carrier, payload)
+        if message is not None:
+            fact["lastAssistantMessage"] = message
+        else:
+            # No usable turn: the absence is explicit, so a stray snake-spelling
+            # key cannot later be read as evidence.
+            fact["lastAssistantMessage"] = {}
+    return fact, False
+
+
 def _grant_token(value: Any, name: str) -> frozenset[str]:
     if not isinstance(value, (list, tuple, set, frozenset)):
         raise MonitorRefused("BAD_GRANT", f"`{name}` must be a list of strings")
@@ -384,7 +518,17 @@ class LegacyFactsSource:
                                      reason=f"RUN_{status.upper()}", retryable=False)
         if status in ("completed", "succeeded", "success", "done"):
             # THE gate. A completed run without native activity is UNKNOWN.
-            if not self._has_native_activity(payload, expected_source_sha):
+            native, refused = _normalise_native(payload)
+            if refused:
+                # An unbounded carrier is a payload the monitor will not read,
+                # not a shorter one it will. Truncating could drop the turn that
+                # would have been the evidence, which is the same as inventing a
+                # result from what happened to fit.
+                return self._observation(view=VIEW_RUN, status=STATUS_UNKNOWN,
+                                         identity=identity,
+                                         reason=REASON_BAD_PAYLOAD,
+                                         retryable=False)
+            if not self._has_native_activity(native, expected_source_sha):
                 return self._observation(view=VIEW_RUN, status=STATUS_UNKNOWN,
                                          identity=identity,
                                          reason=REASON_NO_NATIVE_ACTIVITY,
