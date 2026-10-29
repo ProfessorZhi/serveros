@@ -257,12 +257,13 @@ jobs:
           # The coverage check is gated first: it is the file that decides
           # whether a later `paths:` edit still covers what this workflow owns.
           #
-          # The floor is 46 of the file's 48 tests. The two it tolerates are the
-          # ones that need something a bare checkout may not have: git history
-          # for the ancestry of `STACK_ABSORBED_ON`, and `bash` to execute the
-          # presence decision. Both run here; the slack is so a future runner
-          # image without one of them reports a skip instead of a floor
-          # failure — while a mass loss of this file's tests still reds.
+          # The floor is 46 of the file's 49 tests. The ones it tolerates need
+          # something a bare checkout may not have: `bash` to execute the
+          # presence decision, and — only where the history is truncated — git
+          # ancestry for `STACK_ABSORBED_ON`. This job fetches the full history,
+          # so the ancestry assertion runs here for real and the slack exists
+          # only so a future image without `bash` reports a skip instead of a
+          # floor failure — while a mass loss of this file's tests still reds.
           gate_file tests/test_fleet_next_ci_path_coverage.py 46
 
           # These two sat in this workflow before the families were named and

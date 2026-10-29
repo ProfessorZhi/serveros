@@ -711,11 +711,25 @@ class TheAbsorbedStackIsRealAndCannotBeRevived(unittest.TestCase):
         known = subprocess.run(
             [git, "cat-file", "-e", f"{absorbed}^{{commit}}"],
             cwd=REPO, capture_output=True, text=True)
-        self.assertEqual(
-            known.returncode, 0,
-            f"STACK_ABSORBED_ON={absorbed} names nothing in this clone; the "
-            "switch has to point at the landing that actually put the stack on "
-            "main, not at a plausible-looking sha")
+        if known.returncode != 0:
+            # A truncated clone cannot tell a bogus sha from an old one: the
+            # shards check out with `fetch-depth: 1`, where only HEAD exists and
+            # `cat-file -e` exits 128 for any landing that is not the tip. So
+            # this half is measured where history is complete — the offline job
+            # fetches the full history on purpose, and
+            # `test_the_strict_ancestry_check_runs_where_history_is_complete`
+            # keeps it that way. Reading a shallow absence as "names nothing"
+            # would red the shards on a correct switch.
+            if self._is_shallow(git):
+                self.skipTest(
+                    f"shallow clone: {absorbed} is not in this depth-1 checkout, "
+                    "so ancestry is unmeasurable here — the offline gate, which "
+                    "checks out with fetch-depth: 0, is where this assertion "
+                    "actually runs")
+            self.fail(
+                f"STACK_ABSORBED_ON={absorbed} names nothing in this clone; the "
+                "switch has to point at the landing that actually put the stack "
+                "on main, not at a plausible-looking sha")
         merged = subprocess.run(
             [git, "merge-base", "--is-ancestor", absorbed, "HEAD"],
             cwd=REPO, capture_output=True, text=True)
@@ -723,6 +737,32 @@ class TheAbsorbedStackIsRealAndCannotBeRevived(unittest.TestCase):
             merged.returncode, 0,
             f"{absorbed} is not an ancestor of this head, yet the workflow "
             "uses it to claim the stack is already on `main`")
+
+    def _is_shallow(self, git):
+        probe = subprocess.run(
+            [git, "rev-parse", "--is-shallow-repository"],
+            cwd=REPO, capture_output=True, text=True)
+        return probe.stdout.strip() == "true"
+
+    def test_the_strict_ancestry_check_runs_where_history_is_complete(self):
+        """The shallow skip above is not an escape hatch, and this pins why.
+
+        If every checkout were shallow, the ancestry assertion would never run
+        and any 40-hex string would do. The offline job is the one that runs this
+        file's contracts for real, and it must keep the full history — the same
+        job that owns the `gate_file` counters.
+        """
+        offline = self.document["jobs"]["offline-unit-contracts"]
+        checkouts = [step for step in offline["steps"]
+                     if "actions/checkout@" in str(step.get("uses", ""))]
+        self.assertEqual(len(checkouts), 1,
+                         "the offline job must check out exactly once")
+        depth = str((checkouts[0].get("with") or {}).get("fetch-depth"))
+        self.assertEqual(
+            depth, "0",
+            f"offline-unit-contracts checks out with fetch-depth={depth}; with a "
+            "truncated history the ancestry assertion in this file can only ever "
+            "skip, and STACK_ABSORBED_ON becomes a decorative string")
 
     def test_the_witness_cannot_run_once_the_stack_is_absorbed(self):
         witness = [step for step in self.job["steps"]

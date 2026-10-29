@@ -223,7 +223,7 @@ Three checks close it, and all three were observed to flip:
    reach the pin.
 
 With `STACK_ABSORBED_ON` reverted to `none` in a scratch edit, the file reads
-`3 failed, 45 passed`; restored, it reads `48 passed`. The pin therefore cannot
+`3 failed, 46 passed`; restored, it reads `49 passed`. The pin therefore cannot
 become a permanent fixture of `main`, and it cannot be quietly re-opened
 either.
 
@@ -276,8 +276,8 @@ three stand-in files.
 W19E-b is the control that would have been missing: A and B differ by one
 deleted file, so "the stack is gone" is measured rather than described. The
 same edit reverted in the switch itself (`STACK_ABSORBED_ON: 'none'` on a tree
-that carries the stack) reads `3 failed, 45 passed` in the offline file;
-restored, `48 passed`.
+that carries the stack) reads `3 failed, 46 passed` in the offline file;
+restored, `49 passed`.
 
 ### The offline gate, refused nine ways
 
