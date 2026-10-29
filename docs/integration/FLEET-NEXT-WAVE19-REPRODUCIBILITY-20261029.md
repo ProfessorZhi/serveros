@@ -153,6 +153,18 @@ check in CI from the committed pack.
 The Wave 18 pack in `../evidence/` is retained for history and marked
 superseded for digests.
 
+### 7.1 Commits and change surface
+
+| commit | what |
+|---|---|
+| `d0d12bb` | hermetic Git transform, CRLF refusal, non-installable composition, RED/GREEN/QA tests |
+| `3928c3c` | W19 evidence, environment matrix, this report, supersession note |
+
+`git diff --stat 3520d0c..3928c3c` — 10 files, +1483/−10, no change to
+`fleet_mcp/**`, `fleet/**`, `runtime/**` or `scripts/`. Changed-tree listing
+digest at `3928c3c`:
+`sha256:dbaed680c5ac87d169459f71924b5eb70132f9b3da729dc930a7197f3abc8710`.
+
 ## 8. Non-goals honoured
 
 * No `main` merge, no real install, no service/port/socket change.
