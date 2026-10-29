@@ -109,10 +109,13 @@ def fetch_tree(ref: str, sha: str, dest: str | Path) -> Path:
         init = _run(["git", "init", "--bare", str(bare)])
         if init.returncode != 0:
             raise ComposeError(init.stderr.decode(errors="replace"))
-        fetched = _run(["git", "-C", str(bare), "fetch", "--depth=1",
-                        "--no-tags", DEFAULT_REMOTE, ref])
-        if fetched.returncode != 0:
-            raise ComposeError(fetched.stderr.decode(errors="replace")[-400:])
+    # Always fetch: main and #507 share the bare repo, and a skipped fetch
+    # would leave FETCH_HEAD pointing at the previous ref (the Wave17 QA bug:
+    # a shallow CI checkout got main's SHA for refs/pull/507/head).
+    fetched = _run(["git", "-C", str(bare), "fetch", "--depth=1",
+                    "--no-tags", DEFAULT_REMOTE, ref])
+    if fetched.returncode != 0:
+        raise ComposeError(fetched.stderr.decode(errors="replace")[-400:])
     head = _run(["git", "-C", str(bare), "rev-parse", "FETCH_HEAD"])
     got = head.stdout.decode().strip()
     if got != sha:
