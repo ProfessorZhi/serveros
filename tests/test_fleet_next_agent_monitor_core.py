@@ -412,6 +412,119 @@ class NoFalseSuccessTest(MonitorProcessTest):
         self.assertEqual(rows[0]["payload"]["run"]["status"], "completed")
 
 
+class NativeTranscriptTest(MonitorProcessTest):
+    """The native carrier the adapter reads: `transcript` / `messages`.
+
+    #508 P1 measured one run fact classified two ways: the adapter's path reached
+    `TERMINAL_VERIFIED`, while this monitor's closed reader refused the key
+    before any classifier saw it (`UNKNOWN` / `REMOTE_ValueError`). Accepting a
+    carrier closes the divergence; it must not lower the bar. Every case below
+    runs the real CLI in a fresh interpreter against the real offline reader, so
+    what is proven is the shipping acceptance, not a mocked one.
+    """
+
+    def fact(self, **overrides):
+        fact = {"instanceId": "legacy-01", "deviceRef": "device:dev-1",
+                "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
+                "status": "completed"}
+        fact.update(overrides)
+        return fact
+
+    def observe(self, *, watch=None, **overrides):
+        completed = self.run_cli(
+            config=self.config_document([watch or self.run_watch()]),
+            facts=self.facts_document(runs={"run-1": self.fact(**overrides)}))
+        return completed, self.document(completed)
+
+    def assert_no_evidence(self, *, reason="NO_NATIVE_ACTIVITY", watch=None, **overrides):
+        completed, tick = self.observe(watch=watch, **overrides)
+        self.assertEqual(tick["counts"], {"UNKNOWN": 1},
+                         f"a carrier without assistant text was counted as output: {tick}")
+        self.assertEqual(tick["watches"][0]["reason"], reason)
+        self.assertEqual(self.journal_rows(), [],
+                         "an UNKNOWN must never reach the notifier")
+        self.assertEqual(completed.returncode, 4)
+
+    # -- carriers that do carry output --------------------------------------
+
+    def test_an_assistant_transcript_verifies_a_completed_run(self):
+        completed, tick = self.observe(
+            transcript=[{"role": "assistant", "content": "real output"}])
+        self.assertEqual(tick["counts"], {"TERMINAL_VERIFIED": 1})
+        self.assertEqual(tick["delivered"], 1)
+        self.assertEqual(completed.returncode, 0)
+        rows = self.journal_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source"], "cloudcli")
+
+    def test_an_assistant_turn_inside_messages_verifies_too(self):
+        completed, tick = self.observe(messages=[
+            {"role": "user", "content": "the prompt"},
+            {"role": "assistant", "content": "the answer"}])
+        self.assertEqual(tick["counts"], {"TERMINAL_VERIFIED": 1})
+        self.assertEqual(len(self.journal_rows()), 1)
+
+    # -- carriers that do not ------------------------------------------------
+
+    def test_bare_strings_name_no_role_and_are_not_output(self):
+        self.assert_no_evidence(transcript=["done", "looks finished"])
+
+    def test_a_user_only_transcript_is_not_the_runs_output(self):
+        self.assert_no_evidence(transcript=[{"role": "user", "content": "please run"}])
+
+    def test_a_blank_assistant_turn_is_not_output(self):
+        self.assert_no_evidence(transcript=[{"role": "assistant", "content": "   \n "}])
+
+    def test_a_turn_from_another_run_is_not_this_runs_output(self):
+        self.assert_no_evidence(transcript=[
+            {"role": "assistant", "content": "someone else's answer",
+             "runId": "run-other"}])
+
+    def test_a_declared_blank_message_is_not_upgraded_by_a_carrier(self):
+        self.assert_no_evidence(
+            lastAssistantMessage={"content": ""},
+            transcript=[{"role": "assistant", "content": "a carrier says otherwise"}])
+
+    def test_a_transcript_over_the_turn_bound_is_refused_not_truncated(self):
+        self.assert_no_evidence(reason="BAD_PAYLOAD",
+                                transcript=[{"role": "assistant", "content": "x"}] * 65)
+
+    def test_a_transcript_over_the_byte_bound_is_refused_not_truncated(self):
+        self.assert_no_evidence(
+            reason="BAD_PAYLOAD",
+            transcript=[{"role": "assistant", "content": "x" * (64 * 1024 + 1)}])
+
+    # -- adding a carrier must not loosen the other evidence -----------------
+
+    def test_a_verified_artifact_without_a_sha_is_not_evidence(self):
+        self.assert_no_evidence(
+            watch=self.run_watch(expected_source_sha=SHA_GREEN),
+            artifacts=[{"verified": True, "name": "report"}])
+
+    def test_a_verified_artifact_on_another_sha_is_not_evidence(self):
+        self.assert_no_evidence(
+            watch=self.run_watch(expected_source_sha=SHA_GREEN),
+            artifacts=[{"verified": True, "sourceSHA": SHA_OTHER}])
+
+    def test_a_wrong_boot_beats_a_good_transcript(self):
+        completed, tick = self.observe(
+            watch=self.run_watch(expected_boot_id="boot-2"),
+            transcript=[{"role": "assistant",
+                         "content": "output from another boot"}])
+        self.assertEqual(tick["watches"][0]["reason"], "BOOT_MISMATCH")
+        self.assertEqual(self.journal_rows(), [])
+
+    def test_a_transcript_on_a_running_run_proves_nothing(self):
+        completed, tick = self.observe(
+            status="running",
+            transcript=[{"role": "assistant", "content": "a partial turn"}])
+        self.assertEqual(tick["watches"][0]["status"], "RUNNING")
+        self.assertEqual(tick["state"], "TICKED")
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(self.journal_rows(), [],
+                         "a running run was delivered as if it had finished")
+
+
 class FencingTest(MonitorProcessTest):
     def test_boot_mismatch_fails_closed(self):
         completed = self.run_cli(
@@ -1367,6 +1480,106 @@ class SurfaceTest(unittest.TestCase):
                              f"{word!r} is a status; it must be expressible only as "
                              f"TERMINAL_VERIFIED with native activity behind it")
         self.assertNotIn("TERMINAL_VERIFIED", contract.NOT_SUCCESS)
+
+
+#: #522's shared evidence module. `main` carries the adapter package at its
+#: pre-fix bytes and no `evidence.py`, so this joint test skips here and runs for
+#: real in the composed tree (#522 + this branch). The adapter is never
+#: modified: the test imports it in a subprocess and compares verdicts.
+ADAPTER_EVIDENCE = (REPO / "integrations" / "fleet-next-monitor-source-adapter"
+                    / "fleet_next_monitor_source_adapter" / "evidence.py")
+
+#: One fact, one expected verdict, on both read paths.
+JOINT_MATRIX = (
+    ("assistant transcript",
+     {"transcript": [{"role": "assistant", "content": "out"}]}, True),
+    ("assistant messages",
+     {"messages": [{"role": "user", "content": "q"},
+                   {"role": "assistant", "content": "a"}]}, True),
+    ("bare strings", {"transcript": ["done"]}, False),
+    ("user only", {"transcript": [{"role": "user", "content": "hi"}]}, False),
+    ("blank assistant",
+     {"transcript": [{"role": "assistant", "content": "  "}]}, False),
+    ("foreign run",
+     {"transcript": [{"role": "assistant", "content": "x",
+                      "runId": "run-other"}]}, False),
+    ("declared blank + carrier",
+     {"lastAssistantMessage": {"content": ""},
+      "transcript": [{"role": "assistant", "content": "x"}]}, False),
+    ("artifact without sha", {"artifacts": [{"verified": True}]}, False),
+    ("artifact on another sha",
+     {"artifacts": [{"verified": True, "sourceSHA": SHA_OTHER}]}, False),
+)
+
+
+class JointAdapterAgreementTest(unittest.TestCase):
+    """Both read paths, one standard of evidence (#508 P1).
+
+    The monitor's classifier and #522's adapter normaliser are separate
+    implementations of one rule. This test runs the same facts through both in a
+    single subprocess and requires the same verdict, so a future change to
+    either path goes red instead of silently diverging again.
+    """
+
+    def setUp(self):
+        if not ADAPTER_EVIDENCE.exists():
+            self.skipTest("#522's evidence.py is not in this tree; the joint run "
+                          "belongs to the composed tree (#522 + this branch)")
+
+    @staticmethod
+    def _script():
+        return r'''
+import json, sys
+from fleet_next_monitor_source_adapter.evidence import normalise_run_fact, native_evidence
+from fleet_next_agent_monitor.offline import OfflineFactsClient
+from fleet_next_agent_monitor.sources import Grant, LegacyFactsSource
+
+matrix = json.loads(sys.argv[1])
+sha = sys.argv[2]
+out = []
+for entry in matrix:
+    fact = {k: v for k, v in entry.items() if k != "expected"}
+    body = {"instanceId": "legacy-01", "deviceRef": "device:dev-1",
+            "sessionRef": "ses-1", "runId": "run-1", "bootId": "boot-1",
+            "status": "completed"}
+    body.update(fact)
+    document = {"fleet_instance_id": "legacy-01", "route_id": "route-a",
+                "boot_id": "boot-1", "provider": "cloudcli",
+                "runs": {"run-1": body}, "ci": {}}
+    source = LegacyFactsSource(OfflineFactsClient(document),
+        Grant(principal="owner", devices=["device:dev-1"],
+              sessions=["ses-1"], views=["run"]))
+    observation = source.observe_run(device_ref="device:dev-1",
+        session_ref="ses-1", run_id="run-1", expected_boot_id="boot-1",
+        expected_source_sha=sha)
+    out.append({
+        "monitor": observation["status"] == "TERMINAL_VERIFIED",
+        "adapter": bool(native_evidence(normalise_run_fact(body), sha)),
+        "status": observation["status"],
+        "reason": observation["reason"],
+    })
+print(json.dumps(out))
+'''
+
+    def test_the_two_paths_agree_on_the_evidence_matrix(self):
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join([
+            str(PACKAGE_PARENT),
+            str(REPO / "integrations" / "fleet-next-monitor-source-adapter")])
+        matrix = [dict(fact, expected=expected)
+                  for _, fact, expected in JOINT_MATRIX]
+        completed = subprocess.run(
+            [sys.executable, "-c", self._script(), json.dumps(matrix), SHA_GREEN],
+            cwd=str(REPO), env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        rows = json.loads(completed.stdout)
+        self.assertEqual(len(rows), len(JOINT_MATRIX))
+        for (name, _, expected), row in zip(JOINT_MATRIX, rows):
+            with self.subTest(name):
+                self.assertEqual(row["monitor"], expected, f"{name}: monitor path")
+                self.assertEqual(row["adapter"], expected, f"{name}: adapter path")
+                self.assertEqual(row["monitor"], row["adapter"],
+                                 f"{name}: the two paths disagree")
 
 
 if __name__ == "__main__":
