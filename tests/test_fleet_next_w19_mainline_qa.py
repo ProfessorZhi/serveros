@@ -345,12 +345,41 @@ class CompositionTests(unittest.TestCase):
                     / "milestone_notify.py").read_bytes()
         self.assertIn(b"def send_text", notifier)
 
-    def test_the_candidate_adds_only_allowlisted_paths(self):
-        delta = compose.delta_paths(MAIN_TREE, TREE)
-        self.assertTrue(delta)
-        self.assertEqual(compose.forbidden(delta), [])
-        unexpected = [path for path in delta if not compose.allowed(path)]
-        self.assertEqual(unexpected, [], "the candidate copied outside its allowlist")
+    def test_main_carries_the_landed_monitor_stack(self):
+        self.assertEqual(compose.MAIN, "44f039d70dc4f593ea9db73aae873be3455fc48c")
+        self.assertEqual(compose.LANDED, {
+            520: "99c06fab07bd301e7df1ff7fa253f670b4d51d4d",
+            519: "b27c93e346d5503a75f95ec068c386b416841a62",
+            521: "44f039d70dc4f593ea9db73aae873be3455fc48c",
+        })
+        for relative in compose.ALLOWED_DIRS:
+            with self.subTest(path=relative):
+                self.assertTrue((MAIN_TREE / relative).is_dir())
+                self.assertTrue((TREE / relative).is_dir())
+        for relative in compose.RUNTIME_TESTS:
+            self.assertTrue((MAIN_TREE / relative).is_file())
+
+    def test_main_landing_ledger_records_the_three_batches(self):
+        dag = json.loads((TREE / "integrations/fleet-next-mainline"
+                          / "dag.json").read_text(encoding="utf-8"))
+        self.assertEqual(dag["main"]["after"],
+                         "b27c93e346d5503a75f95ec068c386b416841a62")
+        self.assertEqual([row["pr"] for row in dag["landed"]], [520, 519])
+        self.assertEqual(dag["landed"][0]["merge"],
+                         "99c06fab07bd301e7df1ff7fa253f670b4d51d4d")
+        self.assertEqual(dag["landed"][1]["merge"],
+                         "b27c93e346d5503a75f95ec068c386b416841a62")
+        self.assertEqual(dag["landed"][0]["qa"]["review"]["comment_id"],
+                         6486841401)
+        evidence = dag["landed"][1]["qa"]
+        self.assertEqual(evidence["head"],
+                         "3e6a4ee1b20b853c9df71c3889bdd7eb9140966d")
+        self.assertEqual(evidence["evidence_path"],
+                         "integrations/fleet-next-w19-release-acceptance/evidence/"
+                         "w19-acceptance-20261029.json")
+        self.assertEqual(evidence["evidence_blob"], "096986b712def228c8fc684f436f9a65502ff4f0")
+        self.assertEqual(evidence["evidence_sha256"],
+                         "06e490cc30b6f43e39e9c3890c935d33f89c3f3dcff70ae2428c25a6efab92d0")
 
     def test_the_full_507_tree_is_vetoed_not_signed(self):
         full = compose.delta_paths(MAIN_TREE, RC_TREE)
@@ -362,18 +391,15 @@ class CompositionTests(unittest.TestCase):
             self.assertTrue(any(path.startswith(prefix) for path in full),
                             f"#507 does not touch {prefix}? re-read the RC")
 
-    def test_production_and_legacy_trees_are_byte_identical_to_main(self):
-        for relative in ("fleet_mcp", "runtime", "plugin", "serverosd",
-                         "fleet", "native", "plugins", "scripts"):
-            if not (MAIN_TREE / relative).exists():
-                continue
-            with self.subTest(path=relative):
-                self.assertEqual(compose.file_map(MAIN_TREE / relative),
-                                 compose.file_map(TREE / relative))
-
-    def test_main_has_no_monitor_package_so_the_candidate_is_a_real_delta(self):
-        self.assertFalse((MAIN_TREE / "integrations/fleet-next-agent-monitor").exists())
-        self.assertTrue((TREE / "integrations/fleet-next-agent-monitor").is_dir())
+    def test_landed_monitor_paths_are_allowlisted_and_legacy_tree_unchanged(self):
+        monitor_paths = [path.relative_to(TREE).as_posix()
+                         for directory in compose.ALLOWED_DIRS
+                         for path in (TREE / directory).rglob("*") if path.is_file()]
+        self.assertTrue(monitor_paths)
+        self.assertEqual(compose.forbidden(monitor_paths), [])
+        self.assertTrue(all(compose.allowed(path) for path in monitor_paths))
+        self.assertEqual(compose.file_map(TREE / "fleet_mcp"),
+                         compose.file_map(RC_TREE / "fleet_mcp"))
 
     def test_baseline_500_reproduces_the_four_old_defects(self):
         rc = compose.baseline_500()
@@ -451,7 +477,7 @@ class MainBaselineTests(unittest.TestCase):
         self.assertIn("passed", done.stdout)
         self.assertNotIn("failed", done.stdout)
 
-    def test_no_public_landing_pr_means_blocked_owner_not_signed_pass(self):
+    def test_the_landing_check_still_separates_landing_from_release(self):
         done = subprocess.run(
             [sys.executable, str(QA_DIR / "landing_check.py")],
             cwd=str(REPO), env={**_clean_env(), "PYTHONPATH": str(QA_DIR),
@@ -459,13 +485,15 @@ class MainBaselineTests(unittest.TestCase):
             capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
         verdict = json.loads(done.stdout)
-        self.assertEqual(verdict["verdict"], "BLOCKED_OWNER")
-        self.assertEqual(verdict["code"], "NO_LANDING_PR")
         self.assertEqual(verdict["release_gate"]["verdict"], "BLOCKED")
         self.assertIn("BLOCKED_PARTIAL_UPGRADE_TRAPS_ROOT:#506",
                       verdict["release_gate"]["blockers"])
         self.assertIn("BLOCKED_ARTIFACT_NOT_REPRODUCIBLE:#509",
                       verdict["release_gate"]["blockers"])
+        # No new landing PR is being signed by this call; it is a release
+        # statement only. The W19 landings are recorded in the main DAG.
+        self.assertEqual(verdict["verdict"], "BLOCKED_OWNER")
+        self.assertEqual(verdict["code"], "NO_LANDING_PR")
 
     def test_the_qa_pr_does_not_carry_the_508_or_507_trees(self):
         self.assertFalse((MAIN_TREE / "integrations/fleet-next-wave18-crosspr-qa").exists())

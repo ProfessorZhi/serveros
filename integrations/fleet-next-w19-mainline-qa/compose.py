@@ -1,24 +1,20 @@
-"""W19 mainline QA: a narrow, verifiable candidate built from exact commits.
+"""W19 mainline QA: run the independent 43 assertions against current main.
 
-The W19 question is not "does #507 pass its own old-tree CI?" — it has 270
-changed files and 67,976 insertions relative to main, including runtime,
-plugin, serverosd, native, plugins, fleet and scripts. It is not a mainline
-landing candidate.
+The stack is now landed. This module no longer builds a #507 overlay fixture:
 
-This module builds a **read-only candidate fixture** instead:
+    44f039d (main, #521 landing ledger)
+      <- b27c93e (#519 tests/docs/contract)
+      <- 99c06fa (#520 monitor source)
+      <- 3bc7adf (pre-landing Legacy coexistence)
 
-    main 3bc7adf
-      + only the Fleet Next monitor/activation/adapter/notify/batch/observer/
-        runner/sources integration directories, byte-for-byte from #507 05da04f
-      + the three runtime-tick tests from #507
+`build_candidate()` returns the **current main tree** as both candidate and
+main. If main does not carry the allowlisted monitor directories, it raises
+`BLOCKED_SOURCE` rather than manufacturing a green tree. #507 is still fetched
+at its exact SHA for the archive/veto comparison, but it is not copied over
+main.
 
-It never copies `runtime/`, `plugin/`, `serverosd/`, `native/`, `plugins/`,
-`fleet/`, `scripts/`, `.github/`, `fleet_mcp/` or any other production path.
-The main tree and the RC tree are both fetched by exact SHA; every candidate
-file is compared to its #507 blob. A path outside the allowlist is a veto, not
-a warning.
-
-No public landing PR exists yet, so this is a fixture, not a signed landing.
+`fleet_mcp/`, `runtime/`, `plugin/`, `serverosd/`, `native/`, `plugins/`,
+`fleet/`, `scripts/`, `.github/` and baseline files are never touched.
 """
 from __future__ import annotations
 
@@ -31,10 +27,17 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-MAIN = "3bc7adfe40274741cc528c7dd96167d2b67b00ec"
+MAIN = "44f039d70dc4f593ea9db73aae873be3455fc48c"
 RC = "05da04f8c78f302b029c6304ed96f4e8ded5fc9b"
 QA508 = "fb8c435637e486fc0ecf78a2ea83b9b323c936bb"
 WAVE18 = "80220a4ad1b009946f11bda0ce96dd8ff8e05468"
+
+#: The three landed source batches this QA now measures.
+LANDED = {
+    520: "99c06fab07bd301e7df1ff7fa253f670b4d51d4d",
+    519: "b27c93e346d5503a75f95ec068c386b416841a62",
+    521: "44f039d70dc4f593ea9db73aae873be3455fc48c",
+}
 
 ALLOWED_DIRS = (
     "integrations/fleet-next-agent-monitor",
@@ -147,31 +150,27 @@ def build_candidate(root: str | Path | None = None
                     ) -> tuple[Path, Path, Path, Path]:
     """Return (base, candidate, main, rc) trees.
 
-    The candidate starts as the exact main tree, then each allowlisted
-    integration directory and the runtime-tick test are replaced with #507's
-    bytes. Nothing else is copied.
+    Candidate == current main. The landed stack is measured as it actually is;
+    a main tree without it is `BLOCKED_SOURCE`, not a fixture that overlays
+    #507 and pretends the landing happened.
     """
-    base = Path(root) if root else Path(tempfile.mkdtemp(prefix="w19-candidate-"))
+    base = Path(root) if root else Path(tempfile.mkdtemp(prefix="w19-mainline-"))
     base.mkdir(parents=True, exist_ok=True)
     main = main_tree(base / "main")
     rc = rc_tree(base / "rc")
     candidate = base / "candidate"
     shutil.copytree(main, candidate)
-    for relative in ALLOWED_DIRS:
-        source = rc / relative
-        if not source.is_dir():
-            raise ComposeError(f"#507 has no {relative}")
-        target = candidate / relative
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(source, target)
+    missing = [relative for relative in ALLOWED_DIRS
+               if not (candidate / relative).is_dir()]
+    if missing:
+        raise ComposeError(
+            "BLOCKED_SOURCE: current main does not carry the landed monitor "
+            f"stack; missing {missing}")
     for relative in RUNTIME_TESTS:
-        source = rc / relative
-        if not source.is_file():
-            raise ComposeError(f"#507 has no {relative}")
-        target = candidate / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
+        if not (candidate / relative).is_file():
+            raise ComposeError(
+                f"BLOCKED_SOURCE: current main has no {relative}; the #519 "
+                "landing is incomplete")
     return base, candidate, main, rc
 
 
