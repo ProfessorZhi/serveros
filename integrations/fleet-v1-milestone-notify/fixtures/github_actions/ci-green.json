@@ -1,0 +1,19 @@
+{
+  "device_ref": "device:tokyo-shared-dev-01",
+  "observed_at": "2026-10-27T09:22:00Z",
+  "source_trusted": true,
+  "milestone": true,
+  "gates_required": ["plugin", "shard-1", "shard-2", "shard-3", "shard-4"],
+  "gates_passed": ["plugin", "shard-1", "shard-2", "shard-3", "shard-4"],
+  "summary": "The Tests matrix is green for the milestone pull request.",
+  "refs": ["pr:415", "sha:dd5919a9"],
+  "workflow_run": {
+    "id": 40479463067,
+    "name": "Tests",
+    "head_branch": "fix/ci-lark-card-window-20261027",
+    "head_sha": "dd5919a9256246570e611a7fa86aea28b46ef14d",
+    "status": "completed",
+    "conclusion": "success",
+    "event": "pull_request"
+  }
+}
