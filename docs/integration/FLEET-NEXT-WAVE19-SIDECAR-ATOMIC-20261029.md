@@ -78,17 +78,24 @@ directory, because `os.replace` is atomic only within one filesystem: across
 mount points it degrades to copy-then-delete, which is the operation being
 avoided.
 
-Two further details that are not cosmetic:
+Three further details that are not cosmetic — the first is a property, the other
+two are defects the tests found in the process of measuring it:
 
 * `_commit()` skips a target that already holds its new bytes. That is what makes
   a commit interrupted *after* its rename resumable: the staged copy was consumed
   by the rename, so "already done" is the only honest reading.
-* The four files this module writes with `_write_atomic` (`journal`, `receipt`,
-  `marker`, and their staging siblings' targets) leave `<name>.tmp-<pid>`
-  siblings when a kill lands between the write and the rename. `_write_temps()`
-  names exactly those three prefixes so `recover()` can remove this module's own
-  litter — and nothing else — instead of leaving a file that makes every later
-  revoke refuse.
+* The three files this module writes with `_write_atomic` (`journal`, `receipt`,
+  `marker`) leave `<name>.tmp-<pid>` siblings when a kill lands between the write
+  and the rename — `_write_atomic`'s `finally` never runs, because the process
+  did not survive to run it. A leftover temp is a file no receipt names, so every
+  later revoke refused on it. `_write_temps()` names exactly those three
+  prefixes, and `recover()`/`_finish()` remove this module's own litter — and
+  nothing else.
+* A refusal **before** the commit still has to undo. `install()` had a path where
+  `_verify_staged()` refused and the code called `_finish()` alone: nothing was
+  committed, so nothing looked wrong, but the transaction had already written
+  `.sidecar-backup/<previous version>/*` — files no receipt owns. That is #514's
+  shape in a second place, and the refusal now compensates like any other.
 
 ## 4. `recover()`: finish, undo, or refuse
 
