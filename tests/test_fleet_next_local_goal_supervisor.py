@@ -310,6 +310,8 @@ def test_github_observation_parses_real_shape_and_never_invents(sv):
                     }
                 ]
             )
+        if argv[:3] == ["gh", "api", "repos/ProfessorZhi/serveros/commits/main"]:
+            return "e69fc0337ae5d33000478e3d5162077f525bc8cc"
         if argv[:2] == ["git", "rev-parse"]:
             return "e69fc0337ae5d33000478e3d5162077f525bc8cc"
         raise AssertionError(f"unexpected command: {argv}")
@@ -370,6 +372,8 @@ def test_tick_writes_heartbeat_and_receipt_with_observed_ids_only(sv, tmp_path, 
     config["sources"]["fleet_snapshot"] = str(tmp_path / "absent.json")
 
     def runner(argv):
+        if argv[:3] == ["gh", "api", "repos/ProfessorZhi/serveros/commits/main"]:
+            return "abc123"
         if argv[:2] == ["git", "rev-parse"]:
             return "abc123"
         if argv[:2] == ["gh", "pr"]:
@@ -438,6 +442,8 @@ def test_tick_resolves_boot_epoch_when_omitted(sv, tmp_path):
     config["sources"]["fleet_snapshot"] = ""
 
     def runner(argv):
+        if argv[:3] == ["gh", "api", "repos/ProfessorZhi/serveros/commits/main"]:
+            return "abc123"
         if argv[:2] == ["git", "rev-parse"]:
             return "abc123"
         if argv[:3] == ["gh", "pr", "list"]:
@@ -519,3 +525,49 @@ def test_task_key_is_stable_when_session_order_changes(sv):
     keys_first = {x["session_ref"]: x["task_key"] for x in first["would_dispatch"]}
     keys_second = {x["session_ref"]: x["task_key"] for x in second["would_dispatch"]}
     assert keys_first == keys_second
+
+
+def test_github_head_comes_from_the_remote_not_the_local_checkout(sv):
+    """A stale local checkout must not be reported as the repository's HEAD."""
+    remote = "44f039d70dc4f593ea9db73aae873be3455fc48c"
+    stale_local = "e69fc0337ae5d33000478e3d5162077f525bc8cc"
+
+    def runner(argv):
+        if argv[:3] == ["gh", "api", "repos/ProfessorZhi/serveros/commits/main"]:
+            return remote
+        if argv[:2] == ["git", "rev-parse"]:
+            return stale_local
+        if argv[:3] == ["gh", "pr", "list"]:
+            return "[]"
+        if argv[:2] == ["gh", "issue"]:
+            return "{}"
+        raise AssertionError(argv)
+
+    obs = sv.observe_github(
+        repo="ProfessorZhi/serveros", runner=runner, prs=[], issues=[]
+    )
+
+    assert obs["head_sha"] == remote
+    assert obs["head_source"] == "remote"
+
+
+def test_github_head_does_not_fall_back_to_a_stale_local_head(sv):
+    """If the remote read fails, the answer is UNKNOWN — not the local HEAD."""
+    def runner(argv):
+        if argv[:3] == ["gh", "api", "repos/ProfessorZhi/serveros/commits/main"]:
+            raise RuntimeError("network unavailable")
+        if argv[:2] == ["git", "rev-parse"]:
+            return "e69fc0337ae5d33000478e3d5162077f525bc8cc"
+        if argv[:3] == ["gh", "pr", "list"]:
+            return "[]"
+        if argv[:2] == ["gh", "issue"]:
+            return "{}"
+        raise AssertionError(argv)
+
+    obs = sv.observe_github(
+        repo="ProfessorZhi/serveros", runner=runner, prs=[], issues=[]
+    )
+
+    assert obs["head_sha"] is None
+    assert obs["state"] == "UNKNOWN"
+    assert "github.head" in obs["error"]

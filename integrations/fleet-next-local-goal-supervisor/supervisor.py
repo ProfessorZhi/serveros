@@ -332,12 +332,21 @@ def observe_github(
     out: dict[str, Any] = {
         "state": "OK",
         "head_sha": None,
+        "head_source": None,
         "open_prs": [],
         "issues": {},
         "error": None,
     }
+    # The repository's HEAD is what GitHub says it is, not what this host's
+    # checkout happens to have fetched.  On 2026-10-29 the running supervisor
+    # reported e69fc03 for eight hours while main had moved to 44f039d: a
+    # local `git rev-parse` is a clock, not a fact about the remote.
     try:
-        out["head_sha"] = run(["git", "rev-parse", "HEAD"]) or None
+        sha = run(["gh", "api", f"repos/{repo}/commits/main", "--jq", ".sha"])
+        if not sha:
+            raise RuntimeError("empty sha from gh api")
+        out["head_sha"] = sha
+        out["head_source"] = "remote"
     except Exception as exc:  # a source adapter is untrusted by construction
         out["state"] = "UNKNOWN"
         out["error"] = f"github.head: {exc}"
