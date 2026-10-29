@@ -100,6 +100,7 @@ def test_four_units_build_verify_and_stay_disjoint(built):
     for kind, (count, deps) in expected.items():
         assert units[kind]["member_count"] == count, kind
         assert units[kind]["depends_on"] == deps, kind
+        assert units[kind]["installable"] is (kind != w18.COMPOSITION_KIND)
         assert units[kind]["tarball_sha256"].startswith("sha256:")
         assert len(units[kind]["tree_sha256"]) == 64
         assert all(char in "0123456789abcdef"
@@ -390,6 +391,7 @@ def test_release_is_not_claimed_and_device_is_not_run(built):
     assert result["why_blocked"]
     composition = result["units"][w18.COMPOSITION_KIND]
     assert composition["member_count"] == 0
+    assert composition["installable"] is False
     # The composition is a tested set, not a same-version atomic claim.
     from_l2 = built[2].read_artifact(
         built[0] / "v1" / f"{w18.COMPOSITION_KIND}-{VERSION}.tar.gz")
@@ -398,3 +400,172 @@ def test_release_is_not_claimed_and_device_is_not_run(built):
     assert manifest["rollback_order"] == [
         w18.NODE_KIND, w18.HUB_KIND, w18.AUTHORITY_KIND, w18.BASE_KIND]
     assert manifest["composition_rollback"]["kind"] == "compensating"
+
+
+# ---------------------------------------------------------------------------
+# W19 · reproducibility under a hostile Git line-ending configuration
+# ---------------------------------------------------------------------------
+REFERENCE_COMMIT = "ff514f4bd447588e77274753c34f0a664258ca64"
+REFERENCE_VERSION = "1.0.0+wave18"
+OLD_BUILDER_COMMIT = "3520d0c886a3abe0ba712eeb855ca2bcdd65579d"
+W19_EVIDENCE = BUILDER_DIR / "evidence-w19"
+
+
+def _load_old_builder(tmp_path: Path):
+    data = subprocess.run(
+        ["git", "-C", str(REPO), "show",
+         f"{OLD_BUILDER_COMMIT}:integrations/fleet-next-wave18-artifact-builder/"
+         f"wave18_builder.py"],
+        capture_output=True, check=True).stdout
+    path = tmp_path / "old_wave18_builder.py"
+    path.write_bytes(data)
+    return _load("old_wave18_builder", path)
+
+
+def _crlf_patched_tree(tmp_path: Path) -> Path:
+    """Apply CUT-A/CUT-B with `core.autocrlf=true`, exactly as #514's host did."""
+    root = tmp_path / "crlf-src"
+    root.mkdir()
+    archive = subprocess.run(
+        ["git", "-C", str(REPO), "archive", REFERENCE_COMMIT],
+        capture_output=True, check=True).stdout
+    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+        try:
+            tar.extractall(root, filter="data")
+        except TypeError:
+            tar.extractall(root)
+    env = {**__import__("os").environ,
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    for args in (("init", "-q"), ("config", "core.autocrlf", "true"),
+                 ("add", "-A"), ("commit", "-qm", "base")):
+        subprocess.run(["git", "-C", str(root), *args],
+                       check=True, capture_output=True, env=env)
+    for patch in ("cut_a_main_rebase.patch", "cut_b_hub_node_seam.patch"):
+        path = (REPO / "integrations/fleet-next-wave17-hub-node-release-cut/"
+                       "handoff" / patch)
+        subprocess.run(["git", "-C", str(root), "apply", str(path)],
+                       check=True, capture_output=True, env=env)
+    assert b"\r\n" in (root / "fleet_mcp/node/connector.py").read_bytes()
+    return root
+
+
+def test_red_old_builder_on_a_crlf_tree_reproduces_514(tmp_path):
+    """#514's four digests are the CRLF transform, not a stale text list."""
+    old = _load_old_builder(tmp_path)
+    root = _crlf_patched_tree(tmp_path)
+    old_l2 = old.load_builder(REPO)
+    source = old.Source(commit=REFERENCE_COMMIT, tree="0" * 40,
+                        archive_sha256="0" * 64, root=root, live_clean=True)
+    patches = (
+        old.PatchResult(id="CUT-A", path="x", sha256="0" * 64,
+                        owner_source="", owner_commit="", rebased_to=None,
+                        origin="", targets=()),
+        old.PatchResult(id="CUT-B", path="y", sha256="0" * 64,
+                        owner_source="", owner_commit="", rebased_to=None,
+                        origin="", targets=()),
+    )
+    units = old.build_units(old_l2, source, root, patches, REFERENCE_VERSION,
+                            tmp_path / "old-crlf-build")
+    produced = {kind: unit.sha256 for kind, unit in units.items()}
+    # #514's exact prefixes.
+    assert produced[w18.HUB_KIND].startswith("d9f57a3d")
+    assert produced[w18.NODE_KIND].startswith("5a2f3389")
+    assert produced[w18.BASE_KIND].startswith("38316cf9")
+    assert produced[w18.COMPOSITION_KIND].startswith("1156a806")
+    # The authority is unpatched, so it stayed the same: the clue that the
+    # difference is in the transform, not in the archive or the gzip header.
+    assert produced[w18.AUTHORITY_KIND].startswith("ace00295")
+
+
+def test_fixed_builder_refuses_a_crlf_transform(tmp_path):
+    """A CRLF result is refused, not published as a second digest."""
+    root = _crlf_patched_tree(tmp_path)
+    l2 = w18.load_builder(REPO)
+    source = w18.Source(commit=REFERENCE_COMMIT, tree="0" * 40,
+                        archive_sha256="0" * 64, root=root, live_clean=True)
+    patches = (
+        w18.PatchResult(id="CUT-A", path="x", sha256="0" * 64,
+                        owner_source="", owner_commit="", rebased_to=None,
+                        origin="", targets=()),
+        w18.PatchResult(id="CUT-B", path="y", sha256="0" * 64,
+                        owner_source="", owner_commit="", rebased_to=None,
+                        origin="", targets=()),
+    )
+    with pytest.raises(w18.Refused) as exc:
+        w18.build_units(l2, source, root, patches, REFERENCE_VERSION,
+                        tmp_path / "fixed-crlf-build")
+    assert exc.value.code == w18.BLOCKED_LINE_ENDING_DRIFT
+
+
+def _build_in_subprocess(builder: Path, repo: Path, commit: str,
+                         version: str, out: Path, env: dict) -> dict:
+    runner = out.parent / "runner.py"
+    runner.write_text(
+        "import importlib.util,sys,json\n"
+        "from pathlib import Path\n"
+        "spec=importlib.util.spec_from_file_location('b',sys.argv[1])\n"
+        "m=importlib.util.module_from_spec(spec);sys.modules['b']=m\n"
+        "spec.loader.exec_module(m)\n"
+        "b=m.build(Path(sys.argv[2]),sys.argv[3],sys.argv[4],Path(sys.argv[5]))\n"
+        "print(json.dumps({k:u.sha256 for k,u in sorted(b.units.items())},"
+        "sort_keys=True))\n", encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, "-I", str(runner), str(builder), str(repo), commit,
+         version, str(out)],
+        capture_output=True, text=True, env=env, timeout=180)
+    assert proc.returncode == 0, proc.stderr[-800:]
+    return json.loads(proc.stdout)
+
+
+def test_fixed_builder_is_invariant_under_hostile_git_config(tmp_path):
+    """Same commit, same 5/5, regardless of the caller's autocrlf/HOME."""
+    builder = BUILDER_DIR / "wave18_builder.py"
+    base_env = {**__import__("os").environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    normal = _build_in_subprocess(builder, REPO, REFERENCE_COMMIT, REFERENCE_VERSION,
+                                  tmp_path / "normal", base_env)
+    system = tmp_path / "hostile-system.gitconfig"
+    system.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
+    hostile_system = _build_in_subprocess(
+        builder, REPO, REFERENCE_COMMIT, REFERENCE_VERSION, tmp_path / "system",
+        {**base_env, "GIT_CONFIG_SYSTEM": str(system)})
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text("[core]\n\tautocrlf = true\n",
+                                     encoding="utf-8")
+    hostile_global = _build_in_subprocess(
+        builder, REPO, REFERENCE_COMMIT, REFERENCE_VERSION, tmp_path / "global",
+        {**base_env, "HOME": str(home)})
+    assert normal == hostile_system == hostile_global
+    assert len(normal) == 5
+
+
+def test_independent_qa_rebuild_matches_published_checksums(tmp_path):
+    """QA needs only the PR head: rebuild, compare 5/5, negative control."""
+    expected = W19_EVIDENCE / "ARTIFACTS.sha256"
+    provenance = json.loads((W19_EVIDENCE / "PROVENANCE.json").read_text())
+    assert expected.is_file()
+    result = w18.qa_rebuild(REPO, provenance["source"]["commit"],
+                            provenance["version"], expected,
+                            tmp_path / "qa")
+    assert result["checksums"]["ok"] is True
+    assert result["checksums"]["missing"] == []
+    assert result["checksums"]["extra"] == []
+    assert result["checksums"]["mismatch"] == []
+    assert result["ok"] is True
+    assert all(not answer["booted"]
+               for answer in result["negative_control"].values())
+
+
+def test_composition_is_manifest_only_and_never_installable(built):
+    out, result, l2 = built
+    composition = l2.read_artifact(
+        out / "v1" / f"{w18.COMPOSITION_KIND}-{VERSION}.tar.gz")
+    manifest = composition.manifest
+    assert manifest["members"] == []
+    assert composition.members == {}
+    assert manifest["install"]["independently_installable"] is False
+    assert manifest["install"]["blocked_by"]
+    assert result["units"][w18.COMPOSITION_KIND]["installable"] is False
+    for kind in w18.UNITS:
+        assert result["units"][kind]["installable"] is True

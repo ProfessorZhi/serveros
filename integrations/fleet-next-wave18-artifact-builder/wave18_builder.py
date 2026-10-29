@@ -181,6 +181,7 @@ BLOCKED_INPUT_ABSENT = "BLOCKED_INPUT_ABSENT"
 BLOCKED_BUILDER_DRIFT = "BLOCKED_BUILDER_DRIFT"
 BLOCKED_MANIFEST_DRIFT = "BLOCKED_MANIFEST_DRIFT"
 BLOCKED_UNSAFE_MEMBER = "BLOCKED_UNSAFE_MEMBER"
+BLOCKED_LINE_ENDING_DRIFT = "BLOCKED_LINE_ENDING_DRIFT"
 NEXT_SHADOW_WRITE_FORBIDDEN = "NEXT_SHADOW_WRITE_FORBIDDEN"
 NEXT_SHADOW_NOT_GRANTED = "NEXT_SHADOW_NOT_GRANTED"
 SHADOW_VERB_UNKNOWN = "SHADOW_VERB_UNKNOWN"
@@ -199,6 +200,28 @@ READ_VERBS = frozenset({
 FORBIDDEN_MEMBER = re.compile(
     r"(^|/)(\.env|.*\.(sock|lock|pid|state|pem|key)|"
     r".*(credential|token|secret|password).*)$", re.IGNORECASE)
+
+#: Text files whose bytes must not depend on the caller's Git line-ending
+#: configuration. The repair for #514 is here, not in a checksum file.
+TEXT_SUFFIXES = (".py", ".yaml", ".yml")
+
+#: Every internal git invocation is hermetic: no system/global config, no
+#: system attributes, no EOL conversion. `core.autocrlf=true` in the caller's
+#: environment used to rewrite patched files to CRLF and change four of the
+#: five artifact digests (#514).
+HERMETIC_GIT_FLAGS = (
+    "-c", "core.autocrlf=false",
+    "-c", "core.eol=lf",
+    "-c", "core.safecrlf=false",
+    "-c", "core.precomposeUnicode=false",
+    "-c", "core.ignoreCase=false",
+    "-c", "core.fileMode=false",
+)
+HERMETIC_GIT_ENV = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_ATTR_NOSYSTEM": "1",
+}
 
 
 class Prerequisite(RuntimeError):
@@ -270,10 +293,23 @@ def _portable_modules(answer: Mapping[str, Any], root: Path) -> list[list[Any]]:
     return out
 
 
+def _refuse_crlf(data: bytes, label: str) -> None:
+    """A text member with CRLF is a different artifact, not a formatting quirk."""
+    if b"\r\n" in data:
+        raise Refused(
+            BLOCKED_LINE_ENDING_DRIFT,
+            f"{label} contains CRLF; this build's bytes must not depend on the "
+            f"caller's core.autocrlf. The hermetic git configuration is the "
+            f"fix; a CRLF payload is refused rather than published as another "
+            f"artifact digest")
+
+
 def _git(repo: Path, *args: str, binary: bool = False,
          check: bool = True) -> bytes | str:
-    proc = subprocess.run(["git", "-C", str(repo), *args],
-                          capture_output=True, check=False)
+    proc = subprocess.run(
+        ["git", *HERMETIC_GIT_FLAGS, "-C", str(repo), *args],
+        capture_output=True, check=False,
+        env={**os.environ, **HERMETIC_GIT_ENV})
     if check and proc.returncode != 0:
         raise Refused(
             "GIT_FAILED",
@@ -329,6 +365,14 @@ def archive_source(repo: Path, commit: str, base: Path) -> Source:
             tar.extractall(root, filter="data")
         except TypeError:  # Python < 3.12
             tar.extractall(root)
+    for base_dir in ("fleet_mcp", "fleet"):
+        top = root / base_dir
+        if not top.is_dir():
+            continue
+        for path in sorted(top.rglob("*")):
+            if path.is_file() and path.suffix in TEXT_SUFFIXES:
+                _refuse_crlf(path.read_bytes(),
+                             path.relative_to(root).as_posix())
     return Source(resolved, tree, sha256_bytes(data), root, True)
 
 
@@ -380,6 +424,7 @@ def apply_patches(source: Source, repo: Path,
     shutil.copytree(source.root, work)
     env = {
         **os.environ,
+        **HERMETIC_GIT_ENV,
         "GIT_AUTHOR_NAME": "wave18-builder",
         "GIT_AUTHOR_EMAIL": "wave18@invalid",
         "GIT_COMMITTER_NAME": "wave18-builder",
@@ -390,8 +435,8 @@ def apply_patches(source: Source, repo: Path,
     }
     for args in (("init", "-q"), ("add", "-A"),
                  ("commit", "-qm", "wave18 sandbox base")):
-        proc = subprocess.run(["git", "-C", str(work), *args],
-                              capture_output=True, env=env)
+        proc = subprocess.run(["git", *HERMETIC_GIT_FLAGS, "-C", str(work),
+                               *args], capture_output=True, env=env)
         if proc.returncode != 0:
             raise Refused("GIT_FAILED",
                           f"git {' '.join(args)} on the sandbox failed: "
@@ -413,12 +458,15 @@ def apply_patches(source: Source, repo: Path,
         for rel in target_paths:
             candidate = work / rel
             if candidate.is_file():
-                pre[rel] = (sha256_bytes(candidate.read_bytes()),
+                current = candidate.read_bytes()
+                _refuse_crlf(current, f"input {rel}")
+                pre[rel] = (sha256_bytes(current),
                             str(_git(work, "hash-object", rel)))
             else:
                 pre[rel] = (None, None)
         checked = subprocess.run(
-            ["git", "-C", str(work), "apply", "--check", str(patch)],
+            ["git", *HERMETIC_GIT_FLAGS, "-C", str(work), "apply", "--check",
+             "--whitespace=nowarn", str(patch)],
             capture_output=True, env=env)
         if checked.returncode != 0:
             raise Refused(
@@ -426,7 +474,8 @@ def apply_patches(source: Source, repo: Path,
                 f"{spec['id']} does not apply to {source.commit}: "
                 f"{checked.stderr.decode('utf-8', 'replace').strip()[:300]}")
         applied = subprocess.run(
-            ["git", "-C", str(work), "apply", str(patch)],
+            ["git", *HERMETIC_GIT_FLAGS, "-C", str(work), "apply",
+             "--whitespace=nowarn", str(patch)],
             capture_output=True, env=env)
         if applied.returncode != 0:
             raise Refused("BLOCKED_PATCH_FAILED",
@@ -442,6 +491,7 @@ def apply_patches(source: Source, repo: Path,
             if not result_path.is_file():
                 raise Refused("BLOCKED_PATCH_RESULT_ABSENT", rel)
             result = result_path.read_bytes()
+            _refuse_crlf(result, f"patched {rel}")
             targets.append({
                 "path": rel,
                 "original_blob_sha": (
@@ -486,7 +536,10 @@ def module_files(builder: Any, root: Path,
         path = builder._resolve(name, Path(root))
         if path is None:
             continue
-        payload[path.relative_to(root).as_posix()] = path.read_bytes()
+        data = path.read_bytes()
+        if path.suffix in TEXT_SUFFIXES:
+            _refuse_crlf(data, path.relative_to(root).as_posix())
+        payload[path.relative_to(root).as_posix()] = data
     return dict(sorted(payload.items()))
 
 
@@ -640,6 +693,9 @@ class Unit:
             "member_count": len(self.members),
             "depends_on": list(self.manifest.get("depends_on") or ()),
             "entrypoints": list(self.manifest.get("entrypoints") or ()),
+            "installable": bool(
+                (self.manifest.get("install") or {}).get(
+                    "independently_installable")),
         }
 
 
@@ -731,6 +787,12 @@ def build_units(builder: Any, source: Source, root: Path, patches: Sequence[Patc
                          "tree_sha256": unit.tree_sha256}
                   for kind, unit in sorted(units.items())},
         "same_version_required": False,
+        "install": {
+            "independently_installable": False,
+            "requires_repository": False,
+            "blocked_by": ["manifest-only composition: it carries no file "
+                           "payload and must not be installed as one"],
+        },
         "install_order": [BASE_KIND, AUTHORITY_KIND, HUB_KIND, NODE_KIND],
         "rollback_order": [NODE_KIND, HUB_KIND, AUTHORITY_KIND, BASE_KIND],
         "composition_rollback": {
@@ -1443,8 +1505,19 @@ def evidence(repo: Path, commit: str, version: str,
             "builder": {"path": "integrations/fleet-next-wave18-artifact-builder/"
                                 "wave18_builder.py",
                         "sha256": "sha256:" + sha256_file(Path(__file__))},
-            "transform": {"mode": "cut",
-                          "patches": [patch.as_dict() for patch in first.patches]},
+            "transform": {
+                "mode": "cut",
+                "hermetic_git": {
+                    "core.autocrlf": False,
+                    "core.eol": "lf",
+                    "config_nosystem": True,
+                    "attr_nosystem": True,
+                    "line_ending_drift": BLOCKED_LINE_ENDING_DRIFT,
+                    "why": "#514: core.autocrlf=true rewrote patched files to "
+                           "CRLF and changed four of five digests",
+                },
+                "patches": [patch.as_dict() for patch in first.patches],
+            },
             "units": {kind: unit.as_dict()
                       for kind, unit in sorted(first.units.items())},
             "deterministic_rebuild": deterministic,
@@ -1480,6 +1553,45 @@ def evidence(repo: Path, commit: str, version: str,
         shutil.rmtree(work, ignore_errors=True)
 
 
+def compare_checksums(units: Mapping[str, Unit],
+                      expected_path: Path) -> dict:
+    """Compare this build to a published `ARTIFACTS.sha256`, exactly."""
+    expected: dict[str, str] = {}
+    for line in Path(expected_path).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        digest, name = line.split("  ", 1)
+        expected[name] = digest
+    actual = {unit.path.name: unit.sha256 for unit in units.values()}
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    mismatch = sorted(name for name in set(expected) & set(actual)
+                      if expected[name] != actual[name])
+    return {"ok": not (missing or extra or mismatch),
+            "expected": expected, "actual": actual,
+            "missing": missing, "extra": extra, "mismatch": mismatch}
+
+
+def qa_rebuild(repo: Path, commit: str, version: str,
+               expected_path: Path, outdir: Path) -> dict:
+    """One-command independent QA: rebuild, compare 5/5, negative control."""
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    first = build(repo, commit, version, outdir / "qa")
+    builder = load_builder(repo)
+    comparison = compare_checksums(first.units, Path(expected_path))
+    negatives = negative_control(builder, first.units, outdir / "qa-negative")
+    negative_ok = all(not answer["booted"] for answer in negatives.values())
+    return {
+        "ok": comparison["ok"] and negative_ok,
+        "checksums": comparison,
+        "negative_control": negatives,
+        "source": first.source.as_dict(),
+        "units": {kind: unit.as_dict()
+                  for kind, unit in sorted(first.units.items())},
+    }
+
+
 def _next_version(version: str) -> str:
     base, _, cache = version.partition("+")
     major, minor, patch = base.split(".")
@@ -1497,8 +1609,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True)
     parser.add_argument("--mode", choices=("cut", "baseline"), default="cut")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--expect-checksums",
+                        help="rebuild and compare against a published "
+                             "ARTIFACTS.sha256, then run the negative control")
     args = parser.parse_args(argv)
     try:
+        if args.expect_checksums:
+            result = qa_rebuild(Path(args.repo), args.commit, args.version,
+                                Path(args.expect_checksums), Path(args.out))
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True,
+                                 ensure_ascii=False))
+            else:
+                print(f"qa_ok  {result['ok']}")
+                print(f"checksums {result['checksums']}")
+                print(f"negative  { {k: v['booted'] for k, v in result['negative_control'].items()} }")
+            return 0 if result["ok"] else 3
         if args.mode == "baseline":
             result = baseline_evidence(Path(args.repo), args.commit,
                                        Path(args.out))
