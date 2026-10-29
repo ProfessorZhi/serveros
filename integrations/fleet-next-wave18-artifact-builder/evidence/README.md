@@ -1,5 +1,12 @@
 # Wave 18 evidence
 
+> **Superseded for artifact digests by [`../evidence-w19/`](../evidence-w19/).**
+> This pack was produced on a host with `core.autocrlf` unset and did not
+> reproduce on a host with `core.autocrlf=true` (#514). The four code digests
+> remain valid; the composition digest changed when its manifest was corrected
+> to `install.independently_installable: false`. Use the W19 pack and the
+> hermetic builder for any rebuild.
+
 Produced at code commit `ff514f4bd447588e77274753c34f0a664258ca64` from a
 `git archive` of that commit, with CUT-A/CUT-B applied to the isolated copy.
 

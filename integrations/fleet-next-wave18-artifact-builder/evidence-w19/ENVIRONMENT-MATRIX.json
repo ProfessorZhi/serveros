@@ -1,0 +1,119 @@
+{
+  "fix": "all internal git calls are hermetic (GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL=devnull, GIT_ATTR_NOSYSTEM, core.autocrlf=false, core.eol=lf); CRLF text is refused with BLOCKED_LINE_ENDING_DRIFT; the zero-member composition declares install=false.",
+  "modes": {
+    "fixed_builder_crlf_tree": {
+      "builder_commit": "d0d12bb",
+      "decision": "BLOCKED_LINE_ENDING_DRIFT",
+      "environment": "pre-made CRLF transform tree",
+      "note": "refused rather than published as another digest"
+    },
+    "fixed_builder_hostile_system": {
+      "artifact_sha256": {
+        "fleet-authority": "ace00295ca00a84026a8ee70b6a2328c29738cdf93fa77c0fba91533d70103e9",
+        "fleet-hub": "4ca314f502a80d17c31bcccf8d460df6163afc6ec9083f1d0b8f9ed58ed86534",
+        "fleet-next-composition": "82983d7f98f1049b64fa5fb3085af17ad6b60c983b2bedb994589bc4da840c6f",
+        "fleet-node": "381dbd8e1404082d4d9af4c952019e2a0e80a4b859ec639d052d4059a227251b",
+        "fleet-runtime-base": "333caea13df2e17de068fb69ab6d47299eed938a8767607b7cfa2b6b601f7649"
+      },
+      "builder_commit": "d0d12bb",
+      "environment": "GIT_CONFIG_SYSTEM core.autocrlf=true",
+      "matches_509_claim": {
+        "fleet-authority": true,
+        "fleet-hub": true,
+        "fleet-next-composition": false,
+        "fleet-node": true,
+        "fleet-runtime-base": true
+      },
+      "note": "identical to fixed_builder_normal"
+    },
+    "fixed_builder_normal": {
+      "artifact_sha256": {
+        "fleet-authority": "ace00295ca00a84026a8ee70b6a2328c29738cdf93fa77c0fba91533d70103e9",
+        "fleet-hub": "4ca314f502a80d17c31bcccf8d460df6163afc6ec9083f1d0b8f9ed58ed86534",
+        "fleet-next-composition": "82983d7f98f1049b64fa5fb3085af17ad6b60c983b2bedb994589bc4da840c6f",
+        "fleet-node": "381dbd8e1404082d4d9af4c952019e2a0e80a4b859ec639d052d4059a227251b",
+        "fleet-runtime-base": "333caea13df2e17de068fb69ab6d47299eed938a8767607b7cfa2b6b601f7649"
+      },
+      "builder_commit": "d0d12bb",
+      "environment": "core.autocrlf unset",
+      "matches_509_claim": {
+        "fleet-authority": true,
+        "fleet-hub": true,
+        "fleet-next-composition": false,
+        "fleet-node": true,
+        "fleet-runtime-base": true
+      },
+      "note": "four code units reproduce #509 exactly; composition manifest now says install=false"
+    },
+    "old_builder_crlf_apply_only": {
+      "artifact_sha256": {
+        "fleet-authority": "ace00295ca00a84026a8ee70b6a2328c29738cdf93fa77c0fba91533d70103e9",
+        "fleet-hub": "d9f57a3d22b6bba1d16bd0f9afecdfd477edafadc89cad44027ba20a3d8cca50",
+        "fleet-next-composition": "1156a80689a245758d2d7d44a5056c82dd5731e56eb53d994f4d0e2228b7ba9b",
+        "fleet-node": "5a2f338938be363dc0ea570b9fdd8a8862945838ea46a61d69ca3df26d382149",
+        "fleet-runtime-base": "38316cf96b96bddfaece9da181799174e6ae43c78e5168c2b6edfe27d11f8214"
+      },
+      "builder_commit": "3520d0c",
+      "environment": "local core.autocrlf=true during git apply",
+      "matches_509_claim": {
+        "fleet-authority": true,
+        "fleet-hub": false,
+        "fleet-next-composition": false,
+        "fleet-node": false,
+        "fleet-runtime-base": false
+      },
+      "note": "exactly #514: the authority is unpatched; the other four are CRLF"
+    },
+    "old_builder_hostile_system": {
+      "artifact_sha256": {
+        "fleet-authority": "7391f4596bd28ded2108607ffd47b4a9caf11b57c5048e07fc3f0140fdfc58be",
+        "fleet-hub": "1f3962e287c3f0f504910556097fdaa4fe0c44884df411e1e99beef15efc44a7",
+        "fleet-next-composition": "092c797c2ed766ad048bbd03a802f51155629c33f1adbf5d5e0e15ba2df84671",
+        "fleet-node": "cbe438b9d81a25b8941bae1c999484adf6664acd5ed6729a72ca8a2a4d0b4e84",
+        "fleet-runtime-base": "ae2da282ec4aa1ed582e45db2751f99f4125cba3bcf0a4729c65292246ce2b93"
+      },
+      "builder_commit": "3520d0c",
+      "environment": "GIT_CONFIG_SYSTEM core.autocrlf=true",
+      "matches_509_claim": {
+        "fleet-authority": false,
+        "fleet-hub": false,
+        "fleet-next-composition": false,
+        "fleet-node": false,
+        "fleet-runtime-base": false
+      },
+      "note": "git archive also converts; all five move"
+    },
+    "old_builder_normal": {
+      "artifact_sha256": {
+        "fleet-authority": "ace00295ca00a84026a8ee70b6a2328c29738cdf93fa77c0fba91533d70103e9",
+        "fleet-hub": "4ca314f502a80d17c31bcccf8d460df6163afc6ec9083f1d0b8f9ed58ed86534",
+        "fleet-next-composition": "2a0933b9bde9855b3732d34410a0cddf6ab6feb41f2470d0e7ed19171418ddc8",
+        "fleet-node": "381dbd8e1404082d4d9af4c952019e2a0e80a4b859ec639d052d4059a227251b",
+        "fleet-runtime-base": "333caea13df2e17de068fb69ab6d47299eed938a8767607b7cfa2b6b601f7649"
+      },
+      "builder_commit": "3520d0c",
+      "environment": "core.autocrlf unset",
+      "matches_509_claim": {
+        "fleet-authority": true,
+        "fleet-hub": true,
+        "fleet-next-composition": true,
+        "fleet-node": true,
+        "fleet-runtime-base": true
+      }
+    }
+  },
+  "real_device": "NOT_RUN",
+  "reference": {
+    "claimed_509": {
+      "fleet-authority": "ace00295ca00a84026a8ee70b6a2328c29738cdf93fa77c0fba91533d70103e9",
+      "fleet-hub": "4ca314f502a80d17c31bcccf8d460df6163afc6ec9083f1d0b8f9ed58ed86534",
+      "fleet-next-composition": "2a0933b9bde9855b3732d34410a0cddf6ab6feb41f2470d0e7ed19171418ddc8",
+      "fleet-node": "381dbd8e1404082d4d9af4c952019e2a0e80a4b859ec639d052d4059a227251b",
+      "fleet-runtime-base": "333caea13df2e17de068fb69ab6d47299eed938a8767607b7cfa2b6b601f7649"
+    },
+    "source_commit": "ff514f4bd447588e77274753c34f0a664258ca64",
+    "version": "1.0.0+wave18"
+  },
+  "root_cause": "git apply honouring core.autocrlf=true wrote the patched text files as CRLF. The authority unit carries no patched file, so it stayed identical; the Hub/Node/Base moved, and the composition moved because it pins their digests.",
+  "schema": "serveros/fleet-next-wave19-environment-matrix.v1"
+}
