@@ -5,6 +5,17 @@ description: Create a Fleet session inside the owner-configured managed profile 
 
 # Creating a session is routine inside the owner-max profile
 
+## At a glance
+
+- **Use when:** no idle session can carry the task, or a new project is needed.
+- **Input:** device, runtime, project (or a root from `fleet_status.owner_access` for a new one).
+- **Steps:** (1) new project only: `fleet_create_project` with a stable key, keep the `project_id`; (2) `fleet_create_session` with a stable `idempotency_key`; (3) read back the effective model and permission mode; (4) keep the returned references.
+- **Done when:** the session exists, its effective model/mode are read back, references are recorded.
+- **Refusals:** `SCOPE_DENIED` re-consent · `WRITE_NOT_GRANTED` device rule · `APPROVAL_REQUIRED` outside owner-max · `BAD_REQUEST` fix arguments.
+- **Never:** retry a refusal with other arguments; quote a model you did not read back.
+
+The sections below are the full contract behind each line.
+
 `fleet_create_session` mints a session that inherits a **working tree, a set of
 credentials and a reachable service set**. The owner configures the managed
 account / runtime / project ceiling once, at the native permissions the owner

@@ -5,6 +5,16 @@ description: Update the App-backed Fleet plugin without moving its identity — 
 
 # An update is the same plugin; a rebrand is not
 
+## At a glance
+
+- **Use when:** shipping changed Skills or a new version of this plugin.
+- **Input:** the previous release record and the new source tree.
+- **Steps:** build the overlay → check identity/version → a person uploads and reads back → confirm the previous archive as the rollback target (commands below).
+- **Done when:** same plugin id, higher version, every previous Skill still present, readback matches the plan.
+- **Never:** move the plugin id; claim avatar/display changes as verified; change MCP URL or scopes here.
+
+The sections below are the full contract behind each line.
+
 The private App-backed Fleet plugin has an identity that an overlay may not
 move: **plugin id**, `name`, `displayName` and the `apps` reference. An update
 changes Skills, version and optionally assets. Changing the identity is a

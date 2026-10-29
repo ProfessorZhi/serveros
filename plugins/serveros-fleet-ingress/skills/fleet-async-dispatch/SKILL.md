@@ -5,6 +5,16 @@ description: Preserve the exact execution coordinates after a Fleet create/send 
 
 # Dispatch is a handoff, not a wait
 
+## At a glance
+
+- **Use when:** right after any create/send ACK.
+- **Input:** the ACK.
+- **Steps:** (1) record device_ref, runtime, session_ref, run_id (or `NOT_RETURNED`), queued_message_uuid, idempotency_key, durability in the Work checkpoint; (2) return to coordination; (3) later, `fleet_get_run` / `fleet_read_session` / the artefact.
+- **Done when:** a fresh session could resume from the record alone.
+- **Never:** poll until settled; read a timeout as failure; resend with a fresh key to "find out".
+
+The sections below are the full contract behind each line.
+
 `fleet_create_session` and `fleet_send_to_session` return an **ACK**. The ACK
 says the request was accepted or delivered. It does **not** say the business
 task finished, and it is **not a result**. The result arrives later, from the

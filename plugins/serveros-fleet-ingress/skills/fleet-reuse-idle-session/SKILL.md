@@ -5,6 +5,16 @@ description: Continue an existing idle Claude/Codex session instead of starting 
 
 # Reuse the session that is already there
 
+## At a glance
+
+- **Use when:** before any create, and for "carry on with" / "ask the agent on that machine".
+- **Input:** a `session_ref`, or a device plus the project the work belongs to.
+- **Steps:** (1) resolve the session (named → read it; else filtered listing, pick by project and state); (2) `fleet_read_session` to confirm it is really idle; (3) `fleet_send_to_session` with a self-contained message and a stable `idempotency_key`; (4) keep the ACK references and return.
+- **Done when:** the ACK references are recorded; the result is read later via `fleet-evidence-review`.
+- **Never:** pick by recency alone; interrupt a quiet session; resend under a new key after an unknown outcome.
+
+The sections below are the full contract behind each line.
+
 Prefer an idle session that already owns the context; reusing it avoids a
 cold start. Inside the owner-max managed profile, creating a new session is also
 a routine, pre-authorized action when no idle session carries the task: do not

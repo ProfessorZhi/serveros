@@ -28,11 +28,14 @@ CC_DEV = ROOT / "integrations" / "fleet-cc-dev-plugin"
 FIRST_INSTALL = ROOT / "integrations" / "fleet-v1-first-install"
 
 EXPECTED_SKILLS = {
+    "fleet-ability-change",
+    "fleet-ability-inventory",
     "fleet-async-dispatch",
     "fleet-commander-orchestration",
     "fleet-create-with-grants",
     "fleet-device-and-session-discovery",
     "fleet-evidence-review",
+    "fleet-norm-audit",
     "fleet-plugin-update",
     "fleet-reuse-idle-session",
     "fleet-safety-boundaries",
@@ -348,6 +351,65 @@ class TheSkillsNameOnlyServedTools(unittest.TestCase):
                              for p in SHARED.glob("*/SKILL.md"))
         for invented in ("fleet_batch", "fleet_schedule", "fleet_dispatch"):
             self.assertNotIn(invented, all_text)
+
+
+ABILITY_FAMILY = ("fleet-ability-inventory", "fleet-ability-change", "fleet-norm-audit")
+
+
+class EverySkillOpensWithAtAGlance(unittest.TestCase):
+    """The first thing a model reads is what to do, not the caveats."""
+
+    def test_at_a_glance_follows_the_title_and_names_when_and_never(self) -> None:
+        for path in sorted(SHARED.glob("*/SKILL.md")):
+            if path.parent.name in ABILITY_FAMILY:
+                continue
+            with self.subTest(skill=path.parent.name):
+                text = path.read_text(encoding="utf-8").split("\n---\n", 1)[1]
+                head = text.lstrip().split("\n## ", 2)
+                self.assertTrue(head[0].startswith("# "))
+                self.assertTrue(head[1].startswith("At a glance"))
+                for label in ("**Use when:**", "**Never:**"):
+                    self.assertIn(label, head[1])
+
+
+class TheAbilityFamilyClosesTheLoop(unittest.TestCase):
+    """Change a device's abilities through the registry, prove it, roll back."""
+
+    def test_each_has_the_standard_sections(self) -> None:
+        for name in ABILITY_FAMILY:
+            with self.subTest(skill=name):
+                text = body(name)
+                for section in ("## When to use", "## Inputs", "## Steps",
+                                "## Success", "## Never"):
+                    self.assertIn(section, text)
+
+    def test_inventory_reads_the_device_receipt(self) -> None:
+        text = body("fleet-ability-inventory")
+        for word in ("control_plane.py readback", "serveros/ability-rollout-receipt.v1",
+                     "CONVERGED", "PROFILE_MISSING", "NOT_MANAGED"):
+            with self.subTest(word=word):
+                self.assertIn(word, text)
+
+    def test_change_goes_through_a_pinned_registry_revision_with_rollback(self) -> None:
+        text = body("fleet-ability-change")
+        for word in ("ability-management", "control_plane.py rollout", "--rev REV",
+                     "--apply", "Roll back", "fresh session"):
+            with self.subTest(word=word):
+                self.assertIn(word, text)
+        lowered = text.lower()
+        self.assertIn("never tell a device agent to edit its own", lowered)
+        self.assertIn("one device", lowered)
+
+    def test_audit_checks_installation_before_behaviour(self) -> None:
+        text = body("fleet-norm-audit")
+        self.assertLess(text.index("**Installed?**"), text.index("**Followed?**"))
+        self.assertIn("fleet-ability-inventory", text)
+        self.assertIn("fleet-ability-change", text)
+
+    def test_no_absolute_device_path_is_sent(self) -> None:
+        for name in ABILITY_FAMILY:
+            with self.subTest(skill=name):
+                self.assertIsNone(re.search(r"(?:/home/|/data/home/|[A-Z]:\\\\)", body(name)))
 
 
 if __name__ == "__main__":

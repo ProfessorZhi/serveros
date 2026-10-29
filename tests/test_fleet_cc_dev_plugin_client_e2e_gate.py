@@ -56,14 +56,17 @@ _spec.loader.exec_module(cc)
 #: deliberate act: change the digest in the same commit as the text, and say in
 #: the message which source the new text was judged against.
 PINNED_SKILLS = {
-    "fleet-async-dispatch": "ad0e4d3e3a3e6073b6ca57c324ce80d07fe3863ba791c2ec4f3f765394b17a4b",
-    "fleet-commander-orchestration": "c1824434c24a02afbb6f77214a13672a6dc483d9cdd76749458287cb54a3c86b",
-    "fleet-create-with-grants": "aad4d9474b0bad27c71948baba0ca1677dd35a2fbd911c3e7564e97ee2e4502f",
-    "fleet-device-and-session-discovery": "b017e17cf41bf8fa368fa3ae6d72159a53222c66f50bb4d2180ac4f265abc02e",
-    "fleet-evidence-review": "b4ab1d93513f7a10894e253fc74422f158508e9cb5bc61fbd71f85eada2ed67d",
-    "fleet-plugin-update": "bd4f8a0bb52ac1043981deea31a50fedbf49c8a898c6c2ac0d9dbfd1b5e352ae",
-    "fleet-reuse-idle-session": "20ed0be5886e0652dc5130864fd469e34303a0800d4fa66968a8bf52ee4ba1bc",
-    "fleet-safety-boundaries": "2408addd33f5dced3d03fce95154697d19f68db215a4380ce78178a9048715ef",
+    "fleet-ability-change": "74628d452c62b9fa5458305c16949dcf6f1f0c2e2ff40e1b1857ad42f6e031ec",
+    "fleet-ability-inventory": "4eca875dd3d11903c4d2f0855dae21ea1015ee9f5fab7c0a553d831adce99e24",
+    "fleet-async-dispatch": "1d493e5b1dbfbfe98ac3ea97afc274fb805a51b031c9d2107f65549a4b0ee659",
+    "fleet-commander-orchestration": "115069177d10e43cdd9b321849bff48b4d26bec4437d3b2e9b47a43c640d5867",
+    "fleet-create-with-grants": "7cc0a83d800677f8ded6a65fca995bddae84f8eb8b0627c090a60add9321b1e9",
+    "fleet-device-and-session-discovery": "eb3046466fefa7acc8080e904c0aa29835b61326252641afd65d55a19bb6b0af",
+    "fleet-evidence-review": "754fa0ab340bfc64fbf76939f8292e99b09ceb0017210bba74b122a428979d69",
+    "fleet-norm-audit": "56eb61da329b425de0b8d27f817c7d5dfa68f8d668ca414550b304a52adbac98",
+    "fleet-plugin-update": "0fb8600f0a9c3225ae5c163241bd5ad8cb12f86c77c2d9ce8ffcb9da566ba001",
+    "fleet-reuse-idle-session": "1dc7e6d6c33d6ac72760a71ff27273c457df3eaee6de0a9b8d2b3c2dac23a918",
+    "fleet-safety-boundaries": "08b357f013be28ece2d26a564569589e53d93da06eea637f3252db631a8a720e",
 }
 
 

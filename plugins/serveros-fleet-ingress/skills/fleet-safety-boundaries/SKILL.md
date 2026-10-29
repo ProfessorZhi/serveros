@@ -5,6 +5,16 @@ description: What the Fleet tool list does and does not authorize, which runtime
 
 # A tool list is not a permission
 
+## At a glance
+
+- **Use when:** before any Fleet write, and when choosing which runtime a task belongs on.
+- **Rule of four gates:** token scope · device binding · operator grant · node floor. A listed tool passes none of them by being listed.
+- **Owner-max:** configured once by the owner; routine create/send inside it needs no fresh human confirmation, and it is not OS-level authority.
+- **Sign-in:** password and one-time code go only into the server's page, never into chat.
+- **Never:** widen a grant from here; mix runtime profiles; treat `UNKNOWN` as open.
+
+The sections below are the full contract behind each line.
+
 The tool surface is a **catalogue of what can be asked for**, not a grant. Each
 verb is separately gated, and the gates are on other machines:
 

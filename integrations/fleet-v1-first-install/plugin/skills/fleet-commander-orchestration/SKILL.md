@@ -5,6 +5,16 @@ description: Coordinate several independent tasks without becoming a polling loo
 
 # The commander coordinates; it does not sit and wait
 
+## At a glance
+
+- **Use when:** more than one task is in play, or one task has dependent parts.
+- **Input:** the goal and the facts needed for it, no more.
+- **Steps:** (1) gather only the missing facts; (2) write the dependency graph in the Work checkpoint; (3) dispatch complete long tasks in parallel, independent short ones as a batch; (4) return; (5) inspect later and accept with `fleet-evidence-review`; (6) unblock only edges whose upstream evidence exists.
+- **Done when:** every task is dispatched with references, and the graph says honestly which edges have no runner.
+- **Never:** run a serial dispatch-and-wait loop; treat RDC as a control plane (it is a GUI fallback).
+
+The sections below are the full contract behind each line.
+
 A commander is doing its job when several pieces of work are moving at once.
 It is not doing its job when it dispatches one short task, waits for it, then
 dispatches the next. That pattern turns the commander into a slow serial
