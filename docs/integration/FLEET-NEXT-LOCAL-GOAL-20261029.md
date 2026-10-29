@@ -54,13 +54,13 @@ claude 2.1.308
 | `integrations/fleet-next-local-goal-supervisor/supervisor.py` | daemon + CLI |
 | `integrations/fleet-next-local-goal-supervisor/README.md` | 契约与边界 |
 | `integrations/fleet-next-local-goal-supervisor/fleet-next-local-goal-supervisor.service` | unit 模板 |
-| `tests/test_fleet_next_local_goal_supervisor.py` | 25 条契约测试 |
+| `tests/test_fleet_next_local_goal_supervisor.py` | 27 条契约测试 |
 | `docs/integration/FLEET-NEXT-LOCAL-GOAL-20261029.md` | 本文 |
 
 ### 3.2 运行时（派生安装，绝不回写源码）
 
 ```text
-源码 commit : 5da979a03db1ed4b819a5fa21c432d1d5335a13a
+源码 commit : db20d2ed079c7ab3b7f8967a45e1b8701f78e333
 运行时副本 : ~/runtime-assets/fleet-next-local-goal-supervisor/f925f2d3…/supervisor.py
 配置       : ~/.config/fleet-next-local-goal-supervisor/config.json
 状态       : ~/state/fleet-next-local-goal-supervisor/
@@ -213,7 +213,7 @@ ActiveState = active (running)，MainPID = 3821275
 ## 8. Operator handoff
 
 ```bash
-S=~/runtime-assets/fleet-next-local-goal-supervisor/5da979a03db1ed4b819a5fa21c432d1d5335a13a/supervisor.py
+S=~/runtime-assets/fleet-next-local-goal-supervisor/db20d2ed079c7ab3b7f8967a45e1b8701f78e333/supervisor.py
 STATE=~/state/fleet-next-local-goal-supervisor
 CONF=~/.config/fleet-next-local-goal-supervisor/config.json
 
@@ -278,3 +278,103 @@ systemctl --user daemon-reload
 - 不修改旧 Fleet 0.1.0、现有 ChatGPT plugin、旧路由/旧状态/OAuth secrets。
 - 不 main merge、不 force-push、不触碰其它 Owner 的 worktree/PR。
 - 证据全部落在本机隔离目录；仓库内只提交上述独占路径。
+
+---
+
+## 10. W19E 实时复验（2026-10-29T14:30–14:33+08:00）
+
+本节只记录本次实测，替代此前所有“撰写时 pending”的表述。
+
+### 10.1 修复前的实时状态
+
+```text
+now        2026-10-29T14:30:31+08:00
+unit       active (running) since 2026-10-29T02:54:05 CST；NRestarts=0
+MainPID    4137465（连续运行 11h）
+ticks      336
+heartbeat  2026-10-29T14:29:07+08:00，decision NO_DISPATCH_CAP
+sources    github=OK  ci=OK  local_agents=OK  fleet=STALE
+STOP       absent
+ledger     0 entries；dispatches=0
+cursor     e69fc0337ae5d33000478e3d5162077f525bc8cc
+```
+
+**发现缺陷**：远端 `main` 实际为
+`44f039d70dc4f593ea9db73aae873be3455fc48c`（2026-10-29T06:12Z），
+而 supervisor 报了 `e69fc03`。原因不是网络：`observe_github` 用的是本地
+canonical checkout 的 `git rev-parse HEAD`，该 checkout 未 fetch。
+**本地 HEAD 是时钟，不是远端事实。**
+
+### 10.2 修复
+
+- 改为 `gh api repos/<repo>/commits/main --jq .sha`，并记录
+  `head_source: "remote"`；
+- 远端读取失败时返回 `UNKNOWN`，**不回退**到本地 HEAD；
+- 新增两条测试：
+  `test_github_head_comes_from_the_remote_not_the_local_checkout`、
+  `test_github_head_does_not_fall_back_to_a_stale_local_head`；
+- 本地测试：**27 passed**（supervisor）+ **4 passed**（collection scope）；
+- commit `db20d2ed079c7ab3b7f8967a45e1b8701f78e333`。
+
+### 10.3 受控重启与修复后的实时证据
+
+授权依据：原始 user-scope 任务已授权本单元的启停与验证；本次只重启
+`fleet-next-local-goal-supervisor.service`，不触碰任何既有服务。
+
+```text
+restart    2026-10-29T14:32:47+08:00
+MainPID    4137465 → 130318
+boot       same boot epoch；resume_count=0（重启≠重开机）
+ticks      338（延续，未重置）
+head       44f039d70dc4f593ea9db73aae873be3455fc48c  (head_source=remote)
+sources    github=OK  ci=OK  local_agents=OK  fleet=FRESH
+decision   NO_DISPATCH_CAP；dispatches=0；ledger=0
+verify-lock  exit 1（运行中拿不到锁）
+2nd instance exit 3（already_running）
+STOP       absent
+```
+
+### 10.4 派发能力核查（为什么仍是 observe-only）
+
+| 候选 | 实测 | 结论 |
+|---|---|---|
+| `claude --bg` | 命令真实存在（`claude --help`） | 每次真实使用都会向模型发 prompt，属**付费模型路径**，W19E 明确排除；未创建 session |
+| 既有 user-scope credentialless provider | `serverosctl` 是控制 CLI，无 dispatch 后端；systemd 无 runner/dispatch 单元 | **不存在** |
+| Fleet MCP | `127.0.0.1:3411/mcp` 需 OAuth；`auth.pat_enabled: false` | 未启用 PAT/OAuth，未改 auth |
+| 本机 Claude agents | 17 个（15 idle / 2 busy） | 只读观察；发消息给 idle session 仍会触发付费模型，未做 |
+
+激活闸门实测（独立状态目录、临时配置、未改永久配置）：
+
+```text
+start 2026-10-29T14:32:22+08:00  end 2026-10-29T14:32:24+08:00
+tick_id            b24cf1d9ac2f
+decision           BLOCKED_ACTIVATION
+gap                NO_VERIFIED_DISPATCH_PROVIDER
+effective_inflight 9
+would_dispatch     0
+dispatches         0
+ledger             0
+```
+
+Fleet 快照实时值：120 sessions，**9 RUNNING_AGENT** / 87 MANAGED_IDLE /
+24 RESIDENT_HOST；`device:personal-dell` = `UNKNOWN_DEVICE`。
+
+### 10.5 解锁派发需要 Owner 选择（三选一）
+
+| 选项 | 内容 | 代价 / 边界 |
+|---|---|---|
+| **A** | 授权 `claude --bg` 的有界付费模型预算（例如 N 次/日，cap 3，STOP 可杀） | 产生模型费用；需预算与审计 |
+| **B** | 授权一个确定性的本地命令 provider（只允许 read/test 白名单，无模型） | 无模型费用；需 Owner 明确允许进程级 dispatch |
+| **C** | 配置一个已验证的 Fleet provider（PAT/OAuth） | 本任务明确禁止擅自启用；需 Owner 决策 |
+
+在 Owner 选择之前，`dispatch.enabled` 保持 `false`，supervisor 继续 observe-only。
+
+### 10.6 监控面待更新（需下次授权配置变更）
+
+当前永久配置仍 watch `issues [478,425,424,434]`、`prs [507,508,509]`。
+#515 已成为唯一收口主表；建议下次授权时更新为 `[515,478]` 与当前有效 PR。
+本次未改永久配置。
+
+#512 仍为 Draft；其 shard 4/4 失败项是
+`tests/test_direct_lark_notify.py`（相对 main 逐字节未改、本地同样失败），
+属 pre-existing，不由本 PR 引入。
