@@ -110,18 +110,53 @@ The command rebuilds, compares 5/5, runs the negative control and exits 0 only
 if both hold. A shallow PR checkout may not carry `47030bc`; the CI test then
 builds `HEAD` twice, compares 5/5 and runs the same negative control.
 
-## 5. Hosted CI
+## 5. Hosted CI — 4/5, blocked by a stale non-author pin
 
-Pending the candidate push. The target is **5/5 with no exemptions** (plugin +
-four Suite shards), because the Lark date-window bug is fixed on current main.
-The result will be recorded in the PR and the #515 handoff comment; this
-document is updated at the tested head.
+At head `a53866a`: plugin + Suite shards 1, 3 and 4 pass. Shard 2 reports 14
+new failures, **all** in `tests/test_fleet_next_mainline_ledger.py`, and all
+from its `setUpModule`:
+
+```text
+AssertionError: PR #517 moved:
+  818bfb1cc0615de1cdfe8859db6a4ead31b95dd6
+  != pinned 823a38198322c90c30381758befd4e208ba85c2a
+```
+
+The ledger test pins PR #517's old head. #517 advanced at 06:36 to
+`818bfb1` (“run W19 QA against current main 44f039d”); `823a381` is its
+ancestor, but it is not in main. A depth-1 PR checkout does not have
+`823a381`, so `_ensure_pins()` fetches `refs/pull/517/head`, gets `818bfb1`,
+and fails before any test runs.
+
+This is **not caused by this candidate**:
+
+* the candidate does not touch `tests/test_fleet_next_mainline_ledger.py`,
+  `integrations/fleet-next-mainline/dag.json`, or
+  `docs/integration/FLEET-NEXT-MAINLINE-20261029.md`;
+* in a full clone, `pytest tests/test_fleet_next_mainline_ledger.py -q` is
+  **14 passed, 128 subtests**;
+* the 20 Wave 18/19 builder tests and the 13 Wave 17 tests are not in the
+  failure list.
+
+The pin appears in three mainline-owner files, all still `823a381`:
+
+```
+tests/test_fleet_next_mainline_ledger.py:42   QA_HEAD
+integrations/fleet-next-mainline/dag.json:164 "head"
+docs/integration/FLEET-NEXT-MAINLINE-20261029.md:79  #517 row
+```
+
+Owner fix: set all three to `818bfb1cc0615de1cdfe8859db6a4ead31b95dd6` (or
+make the pin a set that accepts the current head), then re-run #526. No
+baseline exemption is needed or was added. `ci_state:
+BLOCKED_EXTERNAL_PIN`; `technical_verified` remains true.
 
 ## 6. Verdict and handoff
 
 | field | value |
 |---|---|
 | `technical_verified` | **true** — 5/5 reproducible, environment-invariant, isolation + negative control + rollback pass |
+| `ci_state` | `BLOCKED_EXTERNAL_PIN` — hosted 4/5; the only new failures are the mainline ledger's stale #517 pin (`823a381` vs `818bfb1`), not this candidate |
 | `source_state` | `BLOCKED_OWNER` — the CUT-A/CUT-B transforms are not landed in `fleet_mcp/**` |
 | `release_permitted` | **false** |
 | `real_device` | `NOT_RUN` |
