@@ -1,0 +1,41 @@
+{
+  "device_ref": "device:tokyo-shared-dev-01",
+  "session_ref": "session:codex:676632e0-630a-4ad3-8fab-6e977aa19e9a",
+  "observed_at": "2026-10-27T08:16:35Z",
+  "bound_boot_id": "a6d0f308-81df-4edb-8811-66400b51870e",
+  "source_trusted": true,
+  "milestone": true,
+  "gates_required": ["native-output", "boot-identity"],
+  "gates_passed": ["native-output", "boot-identity"],
+  "summary": "CloudCLI run completed with a readable result on the acknowledged boot.",
+  "refs": ["pr:415", "sha:dd5919a9"],
+  "run": {
+    "idKind": "run",
+    "runId": "a1b1c184-ea82-4079-8da9-a96bd3568cc3",
+    "deliveryId": null,
+    "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+    "source": "mcp",
+    "status": "completed",
+    "phase": null,
+    "toolName": null,
+    "activityNote": "This session has no activity record.",
+    "startedAt": {"relative": "just now", "iso": "2026-10-27T08:16:21.201Z"},
+    "completedAt": {"relative": "just now", "iso": "2026-10-27T08:16:31.734Z"},
+    "elapsedMs": 10615,
+    "bootId": "a6d0f308-81df-4edb-8811-66400b51870e",
+    "outcome": "settled",
+    "reason": null,
+    "lastAssistantMessage": {
+      "id": "45dee66c-1e85-45ac-96b9-ec35b1a74af7_0",
+      "sessionId": "676632e0-630a-4ad3-8fab-6e977aa19e9a",
+      "timestamp": "2026-10-27T08:16:31.167Z",
+      "provider": "claude",
+      "kind": "text",
+      "role": "assistant",
+      "content": "COMPAT-OK",
+      "forkAnchorId": "45dee66c-1e85-45ac-96b9-ec35b1a74af7"
+    },
+    "note": null,
+    "explanation": null
+  }
+}
