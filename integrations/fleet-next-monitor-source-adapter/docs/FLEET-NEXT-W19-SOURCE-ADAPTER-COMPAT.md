@@ -2,9 +2,10 @@
 
 **Lane:** FJ Adapter (original owner of #490/#499) · **Issue:** #515 (mainline
 consolidation) · **Input:** #508 Wave 18 cross-PR QA, its only P1
-· **Fix:** `f2911c6dcfd9664dd4ef20f4570c799864fd2bef` on
+· **Fix:** `064c6953` (the one standard of evidence), `68bac2dd` (this report),
+`5f2cc2dd` (the two-process parity test) on
 `fix/fleet-next-source-adapter-evidence-20261029` · **Draft PR:** #522, based on
-`main`
+`main` (`44f039d7`)
 **Scope:** CODE / UNIT / CI only. No main merge, no deployment, no device, no
 Legacy service, no credential, no Feishu, no model call.
 
@@ -16,8 +17,11 @@ Legacy service, no credential, no Feishu, no model call.
 > `'FAILED' != 'DELIVERED'`) that is a wall-clock bomb already fixed on `main` —
 > a fixture pinned to `2026-10-13` against a 14-day patch window
 > (`CARD_UPDATE_WINDOW_DAYS = 14`), measured 16 days later. It is not this
-> package's code. The branch is therefore rebuilt directly on `main`
-> (`99c06fab`), which is also what #515 is for.
+> package's code. The branch is therefore rebuilt directly on `main`, which is
+> also what #515 is for. It is now rebuilt again, from `99c06fab` onto
+> `44f039d7` (the W19 mainline DAG), by resetting onto `origin/main` and
+> re-applying the three commits — **not** by stacking, so the history has no
+> duplicate and no stale parent. `99c06fab` is an ancestor of `44f039d7`.
 >
 > What `main` already carries, byte for byte: the whole
 > `fleet-next-monitor-source-adapter` package **at the pre-fix bytes**
@@ -196,17 +200,28 @@ RUN_KEYS = frozenset({…, "lastAssistantMessage", "artifacts", "note", "transcr
 payload = normalise_run_fact(payload)
 ```
 
-The normaliser is importable as `from fleet_next_monitor_source_adapter import normalise_run_fact` (published in `__all__` for exactly this). **Owner's call:** importing it creates a monitor → adapter dependency edge; the alternative is vendoring the 30-line function into the monitor package, in which case this package's `test_the_monitors_vocabulary_is_pinned` and the parity table in §3.2 are the drift alarm. Either way the adapter's half is done and the direction of every remaining difference is fail-closed.
+The normaliser is importable as `from fleet_next_monitor_source_adapter import normalise_run_fact` (published in `__all__` for exactly this). **Owner's call:** importing it creates a monitor → adapter dependency edge; the alternative is vendoring the 30-line function into the monitor package, in which case this package's `test_the_monitors_vocabulary_is_pinned` and the parity table in §6 are the drift alarm. Either way the adapter's half is done and the direction of every remaining difference is fail-closed.
+
+One measured cost of the import route, from §6's patched run: an imported
+`normalise_run_fact` makes the monitor package **unimportable** to any process
+whose `PYTHONPATH` lacks `integrations/fleet-next-monitor-source-adapter`
+(the error surfaces as `ModuleNotFoundError: fleet_next_monitor_source_adapter`,
+not as a monitor refusal). Vendoring has no such cost, so it is the option this
+report recommends — but the decision is the owner's, and both are proven to work
+in §6.
 
 ## 4. This package's suite, and the governance gate
 
 | where | before | after |
 |---|---|---|
 | `tests/test_fleet_next_monitor_source_adapter.py`, `main`'s pre-fix package + this test file | **28 failed, 90 passed, 21 subtests** (Windows) | — |
-| same, `f2911c6d`, Windows | — | **97 passed, 48 subtests** (35 original + 45 W15 + 17 W19) |
-| same, `f2911c6d`, Linux (composition) | — | 97 passed, 48 subtests |
+| same, Windows, at `064c6953` | — | **97 passed, 48 subtests** (35 original + 45 W15 + 17 W19) |
+| same, Linux, at `064c6953` (composition) | — | 97 passed, 48 subtests |
+| same, Windows, at `5f2cc2dd` | — | **99 passed, 2 skipped, 48 subtests** (the two-process class skips here, see §6.4) |
+| same, Linux, at `5f2cc2dd` | — | **101 passed, 66 subtests** (66 = 48 + 18 parity subtests) |
+| same, Linux, patched core (§6.3) | 101 passed, 66 subtests | 101 passed, 66 subtests |
 | `test_declared_implementations.py` on the composition | — | 3 failed, 21 passed |
-| the same file on pristine `main` (`99c06fab`) | 3 failed, 21 passed | — |
+| the same file on pristine `main` (`99c06fab` / `44f039d7`) | 3 failed, 21 passed | — |
 
 The RED breakdown is the point: 7 top-level failures in
 `TheEvidenceIsTheMonitorsEvidenceTest` (the module does not exist; the rule has
@@ -223,34 +238,168 @@ untouched here, and no baseline entry was added. The two
 trees: this change adds no read of a name it does not own (the new module's
 string literals are the monitor's field names, read *from* its answers).
 
-Combined on the composition: `140 passed, 70 subtests` — #508's 43 + this
-package's 97.
+Combined on the composition: `144 passed, 88 subtests` — #508's 43 + this
+package's 101.
 
 ## 5. Reproduction
 
 ```bash
-# composition: main + this fix, plus #508's QA package (materialised, not edited)
-git worktree add --detach ~/tmp/wt-w19-main origin/main
-cd ~/tmp/wt-w19-main && git merge --no-ff f2911c6d
+# this branch, and #508's QA package (materialised, not edited)
+git worktree add --detach ~/tmp/wt-w19e-head origin/fix/fleet-next-source-adapter-evidence-20261029
+cd ~/tmp/wt-w19e-head
 git checkout fb8c4356 -- integrations/fleet-next-wave18-crosspr-qa tests/test_fleet_next_wave18_crosspr_qa.py
 
 python3 -m pytest tests/test_fleet_next_wave18_crosspr_qa.py -q      # 43 passed
-python3 -m pytest tests/test_fleet_next_monitor_source_adapter.py -q # 97 passed
+python3 -m pytest tests/test_fleet_next_monitor_source_adapter.py -q # 101 passed, 66 subtests
 
-# cross-path parity (harness in ~/tmp/w19, not in the repo)
-python3 ~/tmp/w19/w19_parity.py ~/tmp/wt-w19-main --json green.json  # exit 0
-git checkout origin/main -- integrations/fleet-next-monitor-source-adapter
-python3 ~/tmp/w19/w19_parity.py ~/tmp/wt-w19-main --json red.json    # exit 1
-git checkout HEAD -- integrations/fleet-next-monitor-source-adapter
+# the two-process parity that now ships: gated GREEN, strict RED
+python3 -m pytest tests/test_fleet_next_monitor_source_adapter.py -q -k TwoPaths
+W19_REQUIRE_NATIVE_PARITY=1 python3 -m pytest … -q -k TwoPaths       # 7 failed, 2 passed
+
+# the same two commands on a tree with §3.3 applied and not committed
+#   -> 2 passed / 2 passed, and the gate opens by itself
 ```
 
-Harness: `w19_parity.py` (driver), `compat_once.py` (compat path), and on the
-RED tree only `evidence_snapshot.py` — a byte copy of the committed
-`evidence.py`, sha256 `037532b73b6ef6a15646426d44269ad14664d0bcd5748eb22163d720c54c1f1b`,
-loaded because the pre-fix package has no such module; the driver prints which
-seam it used (`seam package` vs `seam standalone copy, sha256 …`).
+The wider harness of §3 (`~/tmp/w19/w19_parity.py`, `compat_once.py`,
+`evidence_snapshot.py`) is still the record of the first measurement — on the
+RED tree it loads a byte copy of the committed `evidence.py`, sha256
+`037532b73b6ef6a15646426d44269ad14664d0bcd5748eb22163d720c54c1f1b`, because the
+pre-fix package has no such module — but it is not needed to reproduce anything
+above; §6's test ships and runs the same comparison.
 
-## 6. What this is not
+## 6. Cross-path parity, in the repo, as two processes
+
+§3's evidence lives in a harness on one machine (`~/tmp/w19`). This section is
+the same claim, made by a test that ships: `qa/parity_probe.py` beside the
+package and `TheTwoPathsAgreeOnOneFactTest` in
+`tests/test_fleet_next_monitor_source_adapter.py`.
+
+### 6.1 What the two processes are
+
+*   **native** — `python -m fleet_next_agent_monitor --config … --state …
+    --offline-facts … --notifier-entry parity_probe:notifier`: #493's own
+    offline reader, its own core, #423's **real** `MilestoneNotifier` (sqlite
+    claim/receipt ledger and transport dedupe).
+*   **compat** — `python qa/parity_probe.py compat <scenario>`: this adapter's
+    `FixtureLegacyClient` + `LegacyReadOnlySourceAdapter` +
+    `CompatMonitorSource`, then the **same** `MonitorCore`, the **same** state
+    file, the **same** ledger and the **same** notifier.
+
+The only fake is the far end of the notification: a journal file, written with
+`O_APPEND` + `fsync` so two processes cannot interleave a line. The driver then
+reads the journal back, so "sent exactly once" and "sent nothing" are facts
+about the filesystem rather than about one interpreter's objects.
+
+"Same facts" is exact: `_scenario()` writes `facts.json` (the native document)
+and `fixture.json` (the adapter's) **from the same dict**, and both declare the
+same `fleet_instance_id` / `route_id` / `boot_id`, so the two clients describe
+the same instance, route and boot as well as the same run.
+
+The probe lives beside the package rather than inside it, and a test asserts
+that **no module of `fleet_next_monitor_source_adapter/` imports
+`fleet_next_agent_monitor`**: if the monitor imports the published rule, the
+reverse import would close a cycle, and a cycle between two owners' packages is
+a merge-order problem nobody can test.
+
+### 6.2 The fourteen facts
+
+Both paths, one row each, `5f2cc2dd` (this branch) on `44f039d7`. **native raw**
+is the monitor as it ships; **native raw @patched** is the same tree with the two
+lines of §3.3 applied locally and *not* committed.
+
+| case | compat (adapter) | native raw @head | native raw @patched | sends c / n |
+| --- | --- | --- | --- | --- |
+| message | TERMINAL_VERIFIED | TERMINAL_VERIFIED | TERMINAL_VERIFIED | 1 / 1 |
+| **assistant_turn** | TERMINAL_VERIFIED | **UNKNOWN / `REMOTE_ValueError`** | TERMINAL_VERIFIED | 1 / 0 |
+| **bare_string** | UNKNOWN / `NO_NATIVE_ACTIVITY` | **UNKNOWN / `REMOTE_ValueError`** | UNKNOWN / `NO_NATIVE_ACTIVITY` | 0 / 0 |
+| **prompt_only** | UNKNOWN / `NO_NATIVE_ACTIVITY` | **UNKNOWN / `REMOTE_ValueError`** | UNKNOWN / `NO_NATIVE_ACTIVITY` | 0 / 0 |
+| **empty_turn** | UNKNOWN / `NO_NATIVE_ACTIVITY` | **UNKNOWN / `REMOTE_ValueError`** | UNKNOWN / `NO_NATIVE_ACTIVITY` | 0 / 0 |
+| **foreign_turn** | UNKNOWN / `NO_NATIVE_ACTIVITY` | **UNKNOWN / `REMOTE_ValueError`** | UNKNOWN / `NO_NATIVE_ACTIVITY` | 0 / 0 |
+| no_output | UNKNOWN / `NO_NATIVE_ACTIVITY` | UNKNOWN / `NO_NATIVE_ACTIVITY` | UNKNOWN / `NO_NATIVE_ACTIVITY` | 0 / 0 |
+| unbound_artifact | UNKNOWN / `NO_NATIVE_ACTIVITY` | UNKNOWN / `NO_NATIVE_ACTIVITY` | UNKNOWN / `NO_NATIVE_ACTIVITY` | 0 / 0 |
+| unbound_artifact_no_sha | UNKNOWN / `NO_NATIVE_ACTIVITY` | UNKNOWN / `NO_NATIVE_ACTIVITY` | UNKNOWN / `NO_NATIVE_ACTIVITY` | 0 / 0 |
+| sha_other | UNKNOWN / `NO_NATIVE_ACTIVITY` | UNKNOWN / `NO_NATIVE_ACTIVITY` | UNKNOWN / `NO_NATIVE_ACTIVITY` | 0 / 0 |
+| sha_bound | TERMINAL_VERIFIED | TERMINAL_VERIFIED | TERMINAL_VERIFIED | 1 / 1 |
+| boot_other | UNKNOWN / `BOOT_MISMATCH` | UNKNOWN / `BOOT_MISMATCH` | UNKNOWN / `BOOT_MISMATCH` | 0 / 0 |
+| run_other | UNKNOWN / `IDENTITY_MISMATCH` | UNKNOWN / `IDENTITY_MISMATCH` | UNKNOWN / `IDENTITY_MISMATCH` | 0 / 0 |
+| denied | DENIED / `NOT_GRANTED` | DENIED / `NOT_GRANTED` | DENIED / `NOT_GRANTED` | 0 / 0 |
+
+Nine rows already agree on this branch, and they cover the whole fail-closed
+vocabulary: no output, an artifact with no commit to bind to (with and without a
+watch sha), another commit's artifact, a bound artifact, another boot, another
+`runId` and a denied read — `UNKNOWN`, `DENIED` or a named refusal, zero sends.
+The five bold rows are the carrier facts: exactly the five where the monitor as
+it ships cannot read what the adapter can, and in every one of them the
+difference is **UNKNOWN where the adapter is UNKNOWN or VERIFIED** — never a
+verification the monitor did not make, and never a send.
+
+`sent_on_negative_cases: 0` on both trees, measured by the driver over every
+solo directory: nine negative rows × 2 processes, zero journal lines.
+
+### 6.3 RED → GREEN, and what "RED" is a red *of*
+
+```bash
+# GREEN as it ships: the gate is closed, so the carrier rows assert the
+# fail-closed direction instead of equality.
+python3 -m pytest tests/test_fleet_next_monitor_source_adapter.py -q -k TwoPaths
+#   2 passed, 18 subtests passed
+
+# RED without the owner's change: force the strict equality the fix implies.
+W19_REQUIRE_NATIVE_PARITY=1 python3 -m pytest … -q -k TwoPaths
+#   7 failed, 2 passed, 11 subtests passed
+#   5 of them: one fact, two verdicts (the bold rows above)
+#   2 of them: assistant_turn is dispatched by one path and not by the other,
+#              so the second tick has no receipt to find
+```
+
+With §3.3's two lines applied to the tree and **not committed** (a scratch
+worktree; the owner's files are never modified by this branch):
+
+```bash
+python3 -m pytest … -q -k TwoPaths                       # 2 passed, 18 subtests
+W19_REQUIRE_NATIVE_PARITY=1 python3 -m pytest … -q -k TwoPaths   # 2 passed, 18 subtests
+```
+
+and the gate **opens by itself**, which is the part that matters: the test asks
+the shipped module, in its own process, whether `offline.RUN_KEYS` admits
+`transcript`/`messages` *and* whether `sources` reaches `normalise_run_fact`.
+Measured on the two trees: `admits False / folds False` before, `admits True /
+folds True` after. So the day the owner lands the change, the strict half runs
+without anyone editing a flag — and if only one of the two lines lands, it stays
+closed and the carrier rows keep asserting fail-closed, which is the correct
+reading of "one line landed".
+
+### 6.4 Why the strict half is a gate at all
+
+Two reasons, both stated rather than papered over:
+
+1.  **It is not this branch's change.** The five carrier rows cannot agree until
+    `integrations/fleet-next-agent-monitor/` changes, and that file belongs to
+    the Dell monitor owner. A test that asserted equality today would be red on
+    `main` for a reason this PR does not fix; the gate is what lets the same
+    test be the RED proof now and the regression proof afterwards.
+2.  **The gated branch still asserts something real**, and it is the half that
+    cannot regress: the monitor never verifies what it could not read and never
+    sends it, and the adapter still verifies the fact it *can* read (so the gate
+    cannot hide a regression behind a skip-like assertion).
+
+The class also **skips by name on a platform where the monitor does not run**.
+Its core locks the cursor with `fcntl`, which is POSIX-only, so on Windows
+`python -m fleet_next_agent_monitor` does not start at all — the same reason
+#493's own test file is red there (verified: `ModuleNotFoundError: No module
+named 'fcntl'`). The skip message says so; the two-process parity runs for real
+on Linux, which is where hosted CI runs it. Windows still runs the other 99
+tests and the import-cycle test.
+
+### 6.5 What this does not claim
+
+Not that the monitor path is verified for a transcript — it is not, until §3.3
+lands, and that is exactly what §6.3's RED measures. Not a device, not a live
+Legacy read, not a Feishu send: the notifier is real code over a journal file,
+which is the one fake in the composition, and every claim above is about the
+journal's line count.
+
+## 7. What this is not
 
 Not a claim of `REAL_DEVICE`, `PRODUCTION` or `AGENT MONITOR INTEGRATION`. No
 main merge, no deployment, no device, no Legacy service, no credential, no model
