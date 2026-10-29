@@ -126,8 +126,11 @@ python3 -I integrations/fleet-next-wave18-artifact-builder/wave18_builder.py \
 
 The command rebuilds, compares all five digests, runs the negative control and
 exits 0 only if both hold. The test
-`test_independent_qa_rebuild_matches_published_checksums` performs the same
-check in CI from the committed pack.
+`test_independent_qa_rebuild_or_head_determinism` performs the published
+comparison when `ff514f4` is present. A hosted PR checkout is shallow and may
+not carry that commit; in that case the same test builds `HEAD` twice,
+compares all five digests and runs the negative control, so CI still measures
+the builder rather than trusting this note.
 
 ## 6. Verdict
 

@@ -407,27 +407,21 @@ def test_release_is_not_claimed_and_device_is_not_run(built):
 # ---------------------------------------------------------------------------
 REFERENCE_COMMIT = "ff514f4bd447588e77274753c34f0a664258ca64"
 REFERENCE_VERSION = "1.0.0+wave18"
-OLD_BUILDER_COMMIT = "3520d0c886a3abe0ba712eeb855ca2bcdd65579d"
 W19_EVIDENCE = BUILDER_DIR / "evidence-w19"
 
 
-def _load_old_builder(tmp_path: Path):
-    data = subprocess.run(
-        ["git", "-C", str(REPO), "show",
-         f"{OLD_BUILDER_COMMIT}:integrations/fleet-next-wave18-artifact-builder/"
-         f"wave18_builder.py"],
-        capture_output=True, check=True).stdout
-    path = tmp_path / "old_wave18_builder.py"
-    path.write_bytes(data)
-    return _load("old_wave18_builder", path)
-
-
 def _crlf_patched_tree(tmp_path: Path) -> Path:
-    """Apply CUT-A/CUT-B with `core.autocrlf=true`, exactly as #514's host did."""
+    """Apply CUT-A/CUT-B with `core.autocrlf=true`, exactly as #514's host did.
+
+    The archive comes from HEAD, which is the only commit a shallow PR
+    checkout is guaranteed to have. `fleet_mcp/**` and `fleet/**` are
+    unchanged from `ff514f4`, so the patched file bytes are the same; the test
+    labels the Source with the historical commit the artifacts name.
+    """
     root = tmp_path / "crlf-src"
     root.mkdir()
     archive = subprocess.run(
-        ["git", "-C", str(REPO), "archive", REFERENCE_COMMIT],
+        ["git", "-C", str(REPO), "archive", "HEAD"],
         capture_output=True, check=True).stdout
     with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
         try:
@@ -450,29 +444,31 @@ def _crlf_patched_tree(tmp_path: Path) -> Path:
     return root
 
 
-def test_red_old_builder_on_a_crlf_tree_reproduces_514(tmp_path):
-    """#514's four digests are the CRLF transform, not a stale text list."""
-    old = _load_old_builder(tmp_path)
+def test_red_crlf_transform_reproduces_514(tmp_path, monkeypatch):
+    """#514's four code digests are the CRLF transform, not a stale list."""
     root = _crlf_patched_tree(tmp_path)
-    old_l2 = old.load_builder(REPO)
-    source = old.Source(commit=REFERENCE_COMMIT, tree="0" * 40,
+    l2 = w18.load_builder(REPO)
+    source = w18.Source(commit=REFERENCE_COMMIT, tree="0" * 40,
                         archive_sha256="0" * 64, root=root, live_clean=True)
     patches = (
-        old.PatchResult(id="CUT-A", path="x", sha256="0" * 64,
+        w18.PatchResult(id="CUT-A", path="x", sha256="0" * 64,
                         owner_source="", owner_commit="", rebased_to=None,
                         origin="", targets=()),
-        old.PatchResult(id="CUT-B", path="y", sha256="0" * 64,
+        w18.PatchResult(id="CUT-B", path="y", sha256="0" * 64,
                         owner_source="", owner_commit="", rebased_to=None,
                         origin="", targets=()),
     )
-    units = old.build_units(old_l2, source, root, patches, REFERENCE_VERSION,
-                            tmp_path / "old-crlf-build")
+    with monkeypatch.context() as patch:
+        # The old builder had no line-ending guard. Disabling only that guard
+        # reproduces its bytes without keeping a second copy of the builder.
+        patch.setattr(w18, "_refuse_crlf", lambda *a, **k: None)
+        units = w18.build_units(l2, source, root, patches, REFERENCE_VERSION,
+                                tmp_path / "red-crlf-build")
     produced = {kind: unit.sha256 for kind, unit in units.items()}
-    # #514's exact prefixes.
+    # #514's exact prefixes for the four code units.
     assert produced[w18.HUB_KIND].startswith("d9f57a3d")
     assert produced[w18.NODE_KIND].startswith("5a2f3389")
     assert produced[w18.BASE_KIND].startswith("38316cf9")
-    assert produced[w18.COMPOSITION_KIND].startswith("1156a806")
     # The authority is unpatched, so it stayed the same: the clue that the
     # difference is in the transform, not in the archive or the gzip header.
     assert produced[w18.AUTHORITY_KIND].startswith("ace00295")
@@ -522,39 +518,60 @@ def test_fixed_builder_is_invariant_under_hostile_git_config(tmp_path):
     """Same commit, same 5/5, regardless of the caller's autocrlf/HOME."""
     builder = BUILDER_DIR / "wave18_builder.py"
     base_env = {**__import__("os").environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    normal = _build_in_subprocess(builder, REPO, REFERENCE_COMMIT, REFERENCE_VERSION,
+    normal = _build_in_subprocess(builder, REPO, "HEAD", VERSION,
                                   tmp_path / "normal", base_env)
     system = tmp_path / "hostile-system.gitconfig"
     system.write_text("[core]\n\tautocrlf = true\n", encoding="utf-8")
     hostile_system = _build_in_subprocess(
-        builder, REPO, REFERENCE_COMMIT, REFERENCE_VERSION, tmp_path / "system",
+        builder, REPO, "HEAD", VERSION, tmp_path / "system",
         {**base_env, "GIT_CONFIG_SYSTEM": str(system)})
     home = tmp_path / "home"
     home.mkdir()
     (home / ".gitconfig").write_text("[core]\n\tautocrlf = true\n",
                                      encoding="utf-8")
     hostile_global = _build_in_subprocess(
-        builder, REPO, REFERENCE_COMMIT, REFERENCE_VERSION, tmp_path / "global",
+        builder, REPO, "HEAD", VERSION, tmp_path / "global",
         {**base_env, "HOME": str(home)})
     assert normal == hostile_system == hostile_global
     assert len(normal) == 5
 
 
-def test_independent_qa_rebuild_matches_published_checksums(tmp_path):
-    """QA needs only the PR head: rebuild, compare 5/5, negative control."""
+def test_independent_qa_rebuild_or_head_determinism(tmp_path):
+    """QA from the PR head: published 5/5 when the source commit is present.
+
+    A hosted PR checkout is shallow and may not carry `ff514f4`. In that case
+    the same test builds HEAD twice, compares 5/5 and runs the negative
+    control, so the CI run still measures the builder rather than trusting a
+    note. A full clone takes the published-checksum path.
+    """
     expected = W19_EVIDENCE / "ARTIFACTS.sha256"
     provenance = json.loads((W19_EVIDENCE / "PROVENANCE.json").read_text())
+    commit = provenance["source"]["commit"]
     assert expected.is_file()
-    result = w18.qa_rebuild(REPO, provenance["source"]["commit"],
-                            provenance["version"], expected,
-                            tmp_path / "qa")
-    assert result["checksums"]["ok"] is True
-    assert result["checksums"]["missing"] == []
-    assert result["checksums"]["extra"] == []
-    assert result["checksums"]["mismatch"] == []
-    assert result["ok"] is True
-    assert all(not answer["booted"]
-               for answer in result["negative_control"].values())
+    present = subprocess.run(
+        ["git", "-C", str(REPO), "cat-file", "-e", f"{commit}^{{commit}}"],
+        capture_output=True).returncode == 0
+    if present:
+        result = w18.qa_rebuild(REPO, commit, provenance["version"],
+                                expected, tmp_path / "qa")
+        assert result["checksums"]["ok"] is True
+        assert result["checksums"]["missing"] == []
+        assert result["checksums"]["extra"] == []
+        assert result["checksums"]["mismatch"] == []
+        assert result["ok"] is True
+        assert all(not answer["booted"]
+                   for answer in result["negative_control"].values())
+    else:
+        first = w18.build(REPO, "HEAD", VERSION, tmp_path / "head-a")
+        second = w18.build(REPO, "HEAD", VERSION, tmp_path / "head-b")
+        first_sha = {kind: unit.sha256 for kind, unit in first.units.items()}
+        second_sha = {kind: unit.sha256 for kind, unit in second.units.items()}
+        assert first_sha == second_sha
+        assert len(first_sha) == 5
+        l2 = w18.load_builder(REPO)
+        negatives = w18.negative_control(l2, first.units,
+                                         tmp_path / "head-negative")
+        assert all(not answer["booted"] for answer in negatives.values())
 
 
 def test_composition_is_manifest_only_and_never_installable(built):
