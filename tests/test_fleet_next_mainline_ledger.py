@@ -32,8 +32,12 @@ DAG = REPO / "integrations" / "fleet-next-mainline" / "dag.json"
 RECORD = REPO / "docs" / "integration" / "FLEET-NEXT-MAINLINE-20261029.md"
 
 MAIN_BEFORE = "3bc7adfe40274741cc528c7dd96167d2b67b00ec"
-MAIN_AFTER = "99c06fab07bd301e7df1ff7fa253f670b4d51d4d"
+MAIN_MID = "99c06fab07bd301e7df1ff7fa253f670b4d51d4d"
+MAIN_AFTER = "b27c93e346d5503a75f95ec068c386b416841a62"
+MAIN_TREE_MID = "c7ca9cc37ded86351df660ff11103ce0dec938a1"
+MAIN_TREE_AFTER = "206a4f4583162204cc5172e928f7ab243da73eaf"
 LAND_HEAD = "90b6671c9bfecd31d72163e2f5a86d68f991cff9"
+LAND2_HEAD = "cd8b875b0722718b31750da9beee1c4df072b415"
 RC_TREE = "05da04f8c78f302b029c6304ed96f4e8ded5fc9b"
 QA_HEAD = "823a38198322c90c30381758befd4e208ba85c2a"
 
@@ -57,6 +61,8 @@ FORBIDDEN = (
 
 PINNED_PRS = {
     520: LAND_HEAD,
+    519: LAND2_HEAD,
+    524: "3e6a4ee1b20b853c9df71c3889bdd7eb9140966d",
     507: RC_TREE,
     508: "fb8c435637e486fc0ecf78a2ea83b9b323c936bb",
     517: QA_HEAD,
@@ -116,7 +122,8 @@ def _ensure_main_history() -> None:
     landing head are then readable. A missing commit is a named failure, never
     a skip.
     """
-    if all(_has_commit(sha) for sha in (MAIN_BEFORE, MAIN_AFTER, LAND_HEAD)):
+    required = (MAIN_BEFORE, MAIN_MID, MAIN_AFTER, LAND_HEAD, LAND2_HEAD)
+    if all(_has_commit(sha) for sha in required):
         return
     done = subprocess.run(
         ("git", "fetch", "--no-tags", "--deepen=100", "origin", "main"),
@@ -124,7 +131,7 @@ def _ensure_main_history() -> None:
     if done.returncode != 0:
         raise AssertionError(
             f"cannot deepen main history: {done.stderr.strip()[-300:]}")
-    for sha in (MAIN_BEFORE, MAIN_AFTER, LAND_HEAD):
+    for sha in required:
         if not _has_commit(sha):
             done = subprocess.run(
                 ("git", "fetch", "--no-tags", "origin", sha),
@@ -171,30 +178,49 @@ def _forbidden(path: str) -> bool:
     return any(path == p or path.startswith(p) for p in FORBIDDEN)
 
 
+def _landed2_allowed(path: str) -> bool:
+    return (path.startswith("tests/") or path.startswith("docs/integration/")
+            or path == "integrations/chatgpt-fleet-next/batch_contract.py")
+
+
 class TheMergeIsTheExpectedShape(unittest.TestCase):
-    def test_main_moved_by_a_merge_of_the_expected_parents(self):
-        self.assertTrue(_is_ancestor(MAIN_BEFORE, MAIN_AFTER))
-        self.assertEqual(set(_merge_parents(MAIN_AFTER)),
+    def test_main_moved_by_two_landings(self):
+        self.assertTrue(_is_ancestor(MAIN_BEFORE, MAIN_MID))
+        self.assertTrue(_is_ancestor(MAIN_MID, MAIN_AFTER))
+        self.assertEqual(set(_merge_parents(MAIN_MID)),
                          {MAIN_BEFORE, LAND_HEAD})
+        self.assertEqual(set(_merge_parents(MAIN_AFTER)),
+                         {MAIN_MID, LAND2_HEAD})
+        self.assertEqual(_text("rev-parse", f"{MAIN_MID}^{{tree}}"),
+                         MAIN_TREE_MID)
         self.assertEqual(_text("rev-parse", f"{MAIN_AFTER}^{{tree}}"),
-                         "c7ca9cc37ded86351df660ff11103ce0dec938a1")
+                         MAIN_TREE_AFTER)
 
-    def test_the_landed_delta_is_exactly_47_allowed_additions(self):
-        status = _text("diff", "--name-status",
-                       f"{MAIN_BEFORE}..{MAIN_AFTER}").splitlines()
-        self.assertEqual(len(status), 47)
-        self.assertTrue(all(line.startswith("A\t") for line in status))
-        paths = [line.split("\t", 1)[1] for line in status]
-        self.assertEqual(sorted(paths), sorted(_dag()["landed_files"]))
-        self.assertEqual([p for p in paths if _forbidden(p)], [])
-        self.assertTrue(all(_allowed(p) for p in paths))
+    def test_both_landed_deltas_are_pure_additions(self):
+        first = _text("diff", "--name-status",
+                      f"{MAIN_BEFORE}..{MAIN_MID}").splitlines()
+        second = _text("diff", "--name-status",
+                       f"{MAIN_MID}..{MAIN_AFTER}").splitlines()
+        self.assertEqual(len(first), 47)
+        self.assertEqual(len(second), 20)
+        self.assertTrue(all(line.startswith("A\t") for line in first + second))
+        paths1 = [line.split("\t", 1)[1] for line in first]
+        paths2 = [line.split("\t", 1)[1] for line in second]
+        self.assertEqual(sorted(paths1), sorted(_dag()["landed_files"]))
+        self.assertEqual(sorted(paths2), sorted(_dag()["landed2_files"]))
+        self.assertEqual([p for p in paths1 + paths2 if _forbidden(p)], [])
+        self.assertTrue(all(_allowed(p) for p in paths1))
+        self.assertTrue(all(_landed2_allowed(p) for p in paths2))
 
-    def test_every_landed_blob_is_the_source_tree_blob(self):
+    def test_every_landed_blob_matches_its_source_tree(self):
         for path in _dag()["landed_files"]:
             with self.subTest(path=path):
-                self.assertEqual(
-                    _blob_digest(f"{MAIN_AFTER}:{path}"),
-                    _blob_digest(f"{RC_TREE}:{path}"))
+                self.assertEqual(_blob_digest(f"{MAIN_MID}:{path}"),
+                                 _blob_digest(f"{RC_TREE}:{path}"))
+        for path in _dag()["landed2_files"]:
+            with self.subTest(path=path):
+                self.assertEqual(_blob_digest(f"{MAIN_AFTER}:{path}"),
+                                 _blob_digest(f"{LAND2_HEAD}:{path}"))
 
     def test_the_legacy_tree_and_baseline_are_untouched(self):
         self.assertEqual(_text("rev-parse", f"{MAIN_BEFORE}:fleet_mcp"),
@@ -205,21 +231,28 @@ class TheMergeIsTheExpectedShape(unittest.TestCase):
 
 
 class TheLandedRecordCarriesItsGates(unittest.TestCase):
-    def test_the_landed_record_is_exact(self):
-        landed = _dag()["landed"][0]
-        self.assertEqual(landed["pr"], 520)
-        self.assertEqual(landed["head"], LAND_HEAD)
-        self.assertEqual(landed["merge"], MAIN_AFTER)
-        self.assertEqual(landed["files"], 47)
-        self.assertEqual(landed["pr_ci"]["run"], "40805524991")
-        self.assertEqual(landed["pr_ci"]["result"], "5/5")
-        self.assertEqual(landed["qa"]["pr"], 517)
-        self.assertEqual(landed["qa"]["verdict"], "SIGNED_PASS")
-        self.assertEqual(landed["qa"]["code"], "OK")
-        self.assertEqual(landed["main_push_ci"]["run"], "40806145632")
-        self.assertEqual(landed["main_push_ci"]["result"], "5/5")
-        self.assertEqual(landed["legacy_delta"], [])
-        self.assertFalse(landed["baseline_added"])
+    def test_the_two_landed_records_are_exact(self):
+        first, second = _dag()["landed"][0], _dag()["landed"][1]
+        self.assertEqual(first["pr"], 520)
+        self.assertEqual(first["head"], LAND_HEAD)
+        self.assertEqual(first["merge"], MAIN_MID)
+        self.assertEqual(first["files"], 47)
+        self.assertEqual(first["pr_ci"]["run"], "40805524991")
+        self.assertEqual(first["qa"]["review"]["comment_id"], 6486841401)
+        self.assertEqual(first["qa"]["review"]["verdict"], "SIGNED_PASS")
+        self.assertEqual(first["main_push_ci"]["run"], "40806145632")
+        self.assertEqual(second["pr"], 519)
+        self.assertEqual(second["head"], LAND2_HEAD)
+        self.assertEqual(second["merge"], MAIN_AFTER)
+        self.assertEqual(second["files"], 67)
+        self.assertEqual(second["merged_additions"], 20)
+        self.assertEqual(second["pr_ci"]["run"], "40810813359")
+        self.assertEqual(second["qa"]["pr"], 524)
+        self.assertEqual(second["qa"]["verdict"], "LANDING_READY")
+        self.assertEqual(second["main_push_ci"]["run"], "40811251506")
+        self.assertEqual(first["legacy_delta"], [])
+        self.assertFalse(first["baseline_added"])
+        self.assertFalse(second["baseline_added"])
 
     def test_the_qa_gate_head_is_present(self):
         self.assertTrue(_has_commit(QA_HEAD))
@@ -231,11 +264,14 @@ class TheDagClassifiesEveryCandidate(unittest.TestCase):
         prs = {item["pr"]: item for item in _dag()["prs"]}
         expected = {
             415: "merged_canonical", 483: "merged_canonical",
-            520: "merged_landing",
+            520: "merged_landing", 519: "merged_landing",
+            516: "merged_via_successor",
             507: "canonical_source_blocked_wholesale",
             508: "qa_composition_extract_only",
             517: "independent_qa_gate",
-            516: "unmerged_broader_shape", 519: "unmerged_broader_shape",
+            521: "ready_pending", 523: "ready_pending",
+            423: "closed_superseded", 449: "closed_superseded",
+            500: "closed_superseded",
             509: "release_artifact_blocked", 506: "sidecar_blocked",
             514: "release_acceptance_blocked",
             407: "no_direct_merge", 473: "no_direct_merge",
@@ -251,15 +287,22 @@ class TheDagClassifiesEveryCandidate(unittest.TestCase):
             with self.subTest(sha=sha[:9]):
                 self.assertFalse(_is_ancestor(sha, MAIN_AFTER))
 
-    def test_broader_drafts_are_kept_open(self):
+    def test_close_state_is_recorded(self):
         close = {item["pr"]: item for item in _dag()["close_candidates"]}
-        self.assertEqual(close[516]["status"], "keep open")
-        self.assertEqual(close[519]["status"], "keep open")
+        self.assertEqual(close[516]["status"], "merged via #519")
+        self.assertEqual(close[519]["status"], "merged landing")
         self.assertEqual(close[415]["status"], "already merged")
         self.assertEqual(close[483]["status"], "already merged")
         self.assertEqual(close[520]["status"], "already merged")
+        self.assertEqual(close[521]["status"], "keep open")
+        self.assertEqual(close[523]["status"], "keep open")
         for pr in (509, 506, 514, 407, 473, 474):
             self.assertEqual(close[pr]["status"], "keep open")
+        for pr in (423, 449, 500):
+            self.assertEqual(close[pr]["status"], "closed superseded")
+        self.assertEqual(len(_dag()["closeout_w19c"]["closed"]), 24)
+        self.assertEqual(_dag()["closeout_w19c"]["open_before"], 90)
+        self.assertEqual(_dag()["closeout_w19c"]["open_after"], 79)
 
     def test_path_dag_marks_landed_and_forbidden_paths(self):
         paths = _dag()["paths"]
@@ -307,11 +350,13 @@ class TheGateMatrixAndDocsPlanAreExplicit(unittest.TestCase):
 class TheRecordIsADeliverable(unittest.TestCase):
     def test_the_record_names_the_merge_and_the_boundaries(self):
         source = RECORD.read_text(encoding="utf-8")
-        for token in (MAIN_BEFORE[:9], MAIN_AFTER[:9], LAND_HEAD[:9],
-                      "SIGNED_PASS", "47", "0 forbidden", "40805524991",
-                      "40806145632", "BLOCKED", "NOT_RUN",
-                      "RELEASE_ARTIFACT", "REAL_DEVICE", "PRODUCTION",
-                      "NO DIRECT MERGE", "docs/fleet-next"):
+        for token in (MAIN_BEFORE[:9], MAIN_MID[:9], MAIN_AFTER[:9],
+                      LAND_HEAD[:9], LAND2_HEAD[:9], "6486841401",
+                      "SIGNED_PASS", "47", "20", "0 forbidden",
+                      "40805524991", "40810813359", "40811251506",
+                      "BLOCKED", "NOT_RUN", "RELEASE_ARTIFACT",
+                      "REAL_DEVICE", "PRODUCTION", "NO DIRECT MERGE",
+                      "docs/fleet-next", "24", "79"):
             with self.subTest(token=token):
                 self.assertIn(token, source)
 

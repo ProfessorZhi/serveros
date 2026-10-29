@@ -11,10 +11,11 @@ old Fleet **0.1.0** control API is untouched.
 | | |
 | --- | --- |
 | main before | `3bc7adfe40274741cc528c7dd96167d2b67b00ec` (Push CI `40803065087` 5/5) |
-| landed PR | **#520**, exact head `90b6671c9bfecd31d72163e2f5a86d68f991cff9`, tree `c7ca9cc37ded86351df660ff11103ce0dec938a1` |
-| merge commit | `99c06fab07bd301e7df1ff7fa253f670b4d51d4d` |
-| main after | `99c06fa` (Push CI `40806145632` 5/5) |
-| independent QA | #517, head `823a38198322c90c30381758befd4e208ba85c2a`, `landing_check.py` verdict **SIGNED_PASS / OK** |
+| first landing | **#520**, head `90b6671c9bfecd31d72163e2f5a86d68f991cff9`, tree `c7ca9cc37ded86351df660ff11103ce0dec938a1`, merge `99c06fab07bd301e7df1ff7fa253f670b4d51d4d` (Push CI `40806145632` 5/5) |
+| second landing | **#519**, head `cd8b875b0722718b31750da9beee1c4df072b415`, tree `206a4f4583162204cc5172e928f7ab243da73eaf`, merge `b27c93e346d5503a75f95ec068c386b416841a62` |
+| main after | `b27c93e` (Push CI `40811251506` 5/5, all shards `0 new`) |
+| #520 independent QA | W19B review comment [`6486841401`](https://github.com/ProfessorZhi/serveros/issues/515#issuecomment-6486841401), `SIGNED_PASS`; this is the reviewer's own signoff, not the earlier #517 NO_LANDING_PR verdict |
+| #519 independent QA | #524 `LANDING_VERDICT READY / SIGNED_PASS`, plus #515 comment `6486978745`; release verdict stays BLOCKED |
 
 The machine-readable DAG is
 `integrations/fleet-next-mainline/dag.json`; the claim is asserted by
@@ -22,31 +23,45 @@ The machine-readable DAG is
 
 ---
 
-## 1. The landed batch
+## 1. The two landed batches
 
-#520 is exactly the 47-file candidate #517 built from main + #507 tree
-`05da04f8c78f302b029c6304ed96f4e8ded5fc9b`:
+#520 is the 47-file source candidate from #507 tree
+`05da04f8c78f302b029c6304ed96f4e8ded5fc9b`: 8 Next-only integration
+directories plus the #503 runtime-tick test. **Delta `3bc7adf..99c06fa`: 47
+additions, 0 deletions, 0 renames, 0 forbidden paths.**
 
-* 8 Next-only integration directories: monitor, activation, source adapter,
-  milestone notify/batch/observer/runner/sources;
-* the #503 runtime-tick test.
-
-**Delta `3bc7adf..99c06fa`: 47 additions, 0 deletions, 0 renames, 0 forbidden
-paths.** Every blob equals the #507 source blob. `fleet_mcp` tree is unchanged
-(`fcc3a9f59…`), `tests/hermetic-known-failures.txt` is unchanged, and there is
-no `runtime/`, `plugin/`, `plugins/`, `serverosd/`, `native/`, `fleet/`,
-`scripts/`, `.github/`, `bin/` or `deploy/` path.
+#519 then landed the author tests/docs/contract: **delta `99c06fa..b27c93e`:
+20 additions, 0 modifications, 0 deletions**, preflighted with
+`git merge-tree` and verified after merge. Its PR CI `40810813359` is 5/5 with
+every shard `0 new`.
 
 | gate | reading |
 | --- | --- |
-| PR #520 hosted CI `40805524991` | **5/5**, all four shards `0 new` |
-| main Push CI `40806145632` | **5/5**, all four shards `0 new` |
-| #517 independent QA | **SIGNED_PASS**, 50 passed / 33 subtests / 0 xfail / 0 skip; runtime-tick 3/3 twice; #483 survival 70 passed; two mutation controls red |
-| author composite on the same blobs | 211 passed / 53 subtests (test files not in this PR) |
+| #520 PR CI `40805524991` | **5/5**, four shards `0 new` |
+| #519 PR CI `40810813359` | **5/5**, four shards `0 new` |
+| main Push CI `40811251506` | **5/5**, four shards `0 new` |
+| #520 independent QA | W19B review `6486841401` **SIGNED_PASS**; #517 QA gate 50 passed / 33 subtests / 0 xfail / 0 skip |
+| #519 independent QA | #524 `LANDING_READY`; #519 merge-tree added exactly 20 files |
 
-A 5/5 shard gate is **not** a whole-repository zero-failure claim: the
-baseline-listed failures remain, one codex-app-server test was flaky, and no
-new baseline entry was added.
+`fleet_mcp` tree is unchanged (`fcc3a9f59…`), `tests/hermetic-known-failures.txt`
+is unchanged, and neither landing touched `runtime/`, `plugin/`, `plugins/`,
+`serverosd/`, `native/`, `fleet/`, `scripts/`, `.github/`, `bin/` or `deploy/`.
+A 5/5 shard gate is **not** a whole-repository zero-failure claim.
+
+### W19C PR closeout
+
+24 PRs were closed as `CLOSED_SUPERSEDED` after the #515 reviewer matrix
+(`6486928239` / `6486978745`):
+
+```text
+423 426 446 459 464 470 472 481 482 488 490 493 497 498 499 503 504
+449 469 479 487 492 494 500
+```
+
+The first group is absorbed by main (`99c06fa` source / `b27c93e` tests);
+the second group is retained in the **still-open #507** (`05da04f`) and was
+**not** merged into main. Open PR count: **90 → 79** before #521 merge
+(**78** after). #511 waits for #523. No branch was deleted.
 
 ---
 
@@ -54,31 +69,24 @@ new baseline entry was added.
 
 | PR | head | classification | next action |
 | --- | --- | --- | --- |
-| #415 | `dd5919a` → merge `93d9a1d` | merged canonical | none; Lark test-only |
-| #483 | `644ee4a` → merge `3bc7adf` | merged canonical | none; 70 survival tests |
-| #520 | `90b6671` → merge `99c06fa` | **merged landing** | none; 47 files |
-| #517 | `823a381` | independent QA gate | keep Draft; `SIGNED_PASS` for #520; release gate BLOCKED |
-| #507 | `05da04f` | canonical source, **wholesale blocked** | 214 commits/270 files vs main, 21 Legacy-path crossings; narrow extraction only |
-| #508 | `fb8c435` | QA composition, **extract only** | 215/274; 43 QA assertions extracted to #517; P1 transcript open |
-| #516 | `15d82ab` | broader draft, **not QA-allowlisted** | CI 5/5 but 39 files incl. author tests + chatgpt contract; keep open |
-| #519 | `cd8b875` | broader stacked draft, **not QA-allowlisted** | CI 5/5; keep open; source shape superseded by #520 |
-| #431 | `517ef91` | release-lane candidate | D7; separate owner, 8/12 |
-| #505 | `3512c55` | release-lane candidate | depends on #431, 15/21 |
-| #509 | `3520d0c` | **release artifact BLOCKED** | 1/5 digests equal per #514 |
-| #506 | `30d7c4d` | **sidecar BLOCKED** | partial-upgrade orphan/revoke |
-| #513 | `6602961` | sidecar candidate, blocked | depends on #506 atomic upgrade |
-| #510 | `ea779d9` | release captain PRE_FLIGHT | no executor; not source |
-| #511 | `6b98412` | CI gate candidate | pin points at old RC; rebase/collect |
-| #512 | `d3c7c39` | local supervisor candidate | observe-only; `BLOCKED_ACTIVATION` |
-| #514 | `30c4581` | **release acceptance BLOCKED** | #506 + #509 |
-| #518 | `d704561` | artifact reproducibility candidate | separate release lane; 5/5 digests, not source |
-| #407 | `9538238d` | **NO DIRECT MERGE** | 106 files/28 Legacy paths; V2 root |
-| #473 | `a097b27d` | **NO DIRECT MERGE** | 116/31 Legacy; V2-rooted |
-| #474 | `0ad3c078` | **NO DIRECT MERGE** | 109/29 Legacy; V2-rooted |
-| #425 / #478 | issues | control matrix | #478 dual-track preserved; #425 source/CI/real gates still separate |
+| #415 | `dd5919a` → `93d9a1d` | merged canonical | none |
+| #483 | `644ee4a` → `3bc7adf` | merged canonical | none |
+| #520 | `90b6671` → `99c06fa` | **merged landing** | none; 47 source files |
+| #519 | `cd8b875` → `b27c93e` | **merged landing** | none; 20 test/docs/contract files |
+| #516 | `15d82ab` | **merged via #519** | ancestor, GitHub MERGED |
+| #521 | `6db7ddb` (updated) | READY_PENDING | this ledger; fresh CI + re-sign |
+| #523 | `83b5392` | READY_PENDING | `STACK_ABSORBED_ON` stale; owner fix then QA |
+| #517 | `823a381` | independent QA gate | keep Draft |
+| #524 | `3e6a4ee` | independent release gate | keep Draft; LANDING READY, RELEASE BLOCKED |
+| #507 | `05da04f` | canonical source, wholesale blocked | keep OPEN; 24 closed PRs' commits preserved here |
+| #508 | `fb8c435` | QA composition, extract only | keep; P1 #522 |
+| #509/#506/#513/#514/#518 | various | release/sidecar blocked | keep; release_permitted:false |
+| #511 | `6b98412` | superseded by #523 pending | keep until #523 lands |
+| #428/#460 | various | unique tests not in main | keep |
+| #407/#473/#474 | various | **NO DIRECT MERGE** | keep; V2 roots |
+| closed 24 | W19C | `CLOSED_SUPERSEDED` | per-PR comment; branch/ref retained |
 
-`mergeable: true` is not treated as release-ready. The only `SIGNED_PASS`
-source landing is #520; the release gate stays BLOCKED.
+`mergeable: true` is not release-ready. `CLOSED_SUPERSEDED` is not `merged`.
 
 ---
 
