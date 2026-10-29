@@ -1,33 +1,89 @@
 name: Fleet Next isolated canary contracts
+
+# WHY THIS FILE'S `paths:` LOOKS THE WAY IT DOES
+# ----------------------------------------------
+# A path filter fails silently. When it does not match, GitHub runs nothing and
+# reports nothing — not a skip, not a red, an absence. Wave 16's release
+# preflight (#502) and Wave 17's sidecar release (#506) each added an
+# `integrations/fleet-next-*` directory and the test file that proves it, and
+# neither was named below, so this workflow never ran on either PR. Their check
+# lists show the five `Tests` jobs only; a reader cannot tell the contract is
+# NOT_RUN.
+#
+# The filter therefore names *families* that belong to Fleet Next and nothing
+# else. Widening a family to cover its next wave is a one-line change here; a
+# pattern that matches the repository is not a filter (`tests/test_fleet_next_ci_path_coverage.py`
+# refuses one).
+#
+# The second half of the same false green is collection: `unittest discover`
+# prints `Ran 0 tests ... OK` for a file that is not in the tree. Every job
+# below asserts a collected-test floor, and the composition job asserts the
+# exact count and refuses a skipped result.
 on:
   pull_request:
     paths:
       - 'fleet_mcp/deploy/next_*'
       - 'fleet_mcp/deploy/serveros-fleet-next-mcp.service'
-      - 'tests/test_fleet_next_install.py'
-      - 'tests/test_fleet_next_dual_stack_preflight.py'
-      - 'tests/test_fleet_runtime_create_policy.py'
       - 'fleet_mcp/runtime_create_policy.py'
       - 'fleet_mcp/config.py'
       - 'fleet_mcp/fleet.py'
+      - 'tests/test_fleet_next_*.py'
+      - 'tests/test_fleet_runtime_create_policy.py'
+      - 'tests/test_fleet_create_session_runtime.py'
+      - 'integrations/fleet-next-*/**'
+      - 'docs/integration/FLEET-NEXT-*.md'
+      # W19-D moves the wave records into a stable tree. A migration PR that
+      # writes only under `docs/fleet-next/` is exactly the change a reader
+      # would expect this contract to cover, and it would otherwise be NOT_RUN.
+      - 'docs/fleet-next/**'
       - 'docs/fleet-next-runtime-model-defaults.md'
       - '.github/workflows/fleet-next-isolated-contracts.yml'
   push:
     branches:
-      - 'feat/fleet-next-isolated-rollout-20261015'
+      - 'main'
+      # A `push` run of the source commit is what the Waves' 5/5 claim is read
+      # from; the pull_request run is a merge commit and cannot stand in for it.
+      - 'feat/fleet-next-*'
+      - 'qa/fleet-next-*'
+      - 'fix/fleet-next-*'
+      - 'ci/fleet-next-*'
     paths:
       - 'fleet_mcp/deploy/next_*'
       - 'fleet_mcp/deploy/serveros-fleet-next-mcp.service'
-      - 'tests/test_fleet_next_install.py'
-      - 'tests/test_fleet_next_dual_stack_preflight.py'
-      - 'tests/test_fleet_runtime_create_policy.py'
       - 'fleet_mcp/runtime_create_policy.py'
       - 'fleet_mcp/config.py'
       - 'fleet_mcp/fleet.py'
+      - 'tests/test_fleet_next_*.py'
+      - 'tests/test_fleet_runtime_create_policy.py'
+      - 'tests/test_fleet_create_session_runtime.py'
+      - 'integrations/fleet-next-*/**'
+      - 'docs/integration/FLEET-NEXT-*.md'
+      - 'docs/fleet-next/**'
       - 'docs/fleet-next-runtime-model-defaults.md'
       - '.github/workflows/fleet-next-isolated-contracts.yml'
+  # The only way a SHA can be injected. `workflow_dispatch` needs write access
+  # to the repository, so the value comes from a maintainer, never from a pull
+  # request's content, labels or body.
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: >-
+          Exact 40-hex commit to measure as the composition subject.
+          Empty = measure the dispatched ref itself.
+        required: false
+        default: ''
+
+# Superseded pull-request runs cancel each other: the head that matters is the
+# newest one, and the composition job clones history that two queued runs would
+# clone twice. A push to `main` is never cancelled mid-flight — that run is
+# evidence, not a draft.
+concurrency:
+  group: fleet-next-isolated-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
+
 jobs:
   runner-smoke:
     runs-on: ubuntu-latest
@@ -37,47 +93,492 @@ jobs:
         run: |
           python3 --version
           printf 'runner started; no repository secrets or runtime operations used\n'
+
   offline-unit-contracts:
+    name: offline contracts on the exact head
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
+    env:
+      # `pull_request` checks out the merge commit by default, which is not the
+      # head the PR's checks are read from. Ask for the head explicitly and then
+      # prove the checkout is it.
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - name: Checkout the exact PR contents
+      - name: Check out exactly this head
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ env.EXPECTED_HEAD }}
           persist-credentials: false
+          # Some contracts read a commit that is not this branch's tip; a
+          # shallow clone would turn that into a FAIL about the clone.
+          fetch-depth: 0
+
       - name: Prepare test log
         run: mkdir -p test-output
+
+      - name: Prove the checkout is the head this run names
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          {
+            printf 'expected=%s\n' "$EXPECTED_HEAD"
+            printf 'checked_out=%s\n' "$head_sha"
+          } | tee test-output/head.log
+          if [ "$head_sha" != "$EXPECTED_HEAD" ]; then
+            printf 'FAIL_HEAD_MISMATCH: this run names %s but checked out %s\n' \
+              "$EXPECTED_HEAD" "$head_sha" | tee -a test-output/head.log
+            exit 1
+          fi
+
       - name: Install bounded Python test dependency
         run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+
       - name: Check Python syntax
         shell: bash
         run: |
-          set -o pipefail
+          set -euo pipefail
           {
-            python3 -m py_compile fleet_mcp/deploy/next_dual_stack_preflight.py
-            python3 -m py_compile fleet_mcp/deploy/next_install.py
-            python3 -m py_compile tests/test_fleet_next_install.py
-            python3 -m py_compile tests/test_fleet_next_dual_stack_preflight.py
-            python3 -m py_compile fleet_mcp/runtime_create_policy.py
-            python3 -m py_compile fleet_mcp/config.py
-            python3 -m py_compile fleet_mcp/fleet.py
-            python3 -m py_compile tests/test_fleet_runtime_create_policy.py
+            for source in \
+              fleet_mcp/deploy/next_dual_stack_preflight.py \
+              fleet_mcp/deploy/next_install.py \
+              fleet_mcp/runtime_create_policy.py \
+              fleet_mcp/config.py \
+              fleet_mcp/fleet.py \
+              tests/test_fleet_next_install.py \
+              tests/test_fleet_next_dual_stack_preflight.py \
+              tests/test_fleet_runtime_create_policy.py \
+              tests/test_fleet_create_session_runtime.py \
+              tests/test_fleet_next_ci_path_coverage.py
+            do
+              if [ ! -f "$source" ]; then
+                printf 'NOT_RUN: required file missing: %s\n' "$source"
+                printf 'required_file_missing %s\n' "$source" >> test-output/gate.status
+                exit 2
+              fi
+              python3 -m py_compile "$source"
+            done
           } 2>&1 | tee test-output/compile.log
-      - name: Run dual-stack isolation tests offline
+
+      - name: Run every Fleet Next contract in this tree, with a collection floor
         shell: bash
         run: |
-          set -o pipefail
-          {
-            python3 -m unittest discover -s tests -p 'test_fleet_next_dual_stack_preflight.py' -v
-            python3 -m unittest discover -s tests -p 'test_fleet_next_install.py' -v
-            python3 -m unittest discover -s tests -p 'test_fleet_runtime_create_policy.py' -v
-            python3 -m unittest discover -s tests -p 'test_fleet_create_session_runtime.py' -v
-          } 2>&1 | tee test-output/tests.log
+          set -uo pipefail
+          # The runner starts every bash step with `-e`. A gated file that
+          # fails would then kill the step inside `gate_file`, before the
+          # diagnosis below is printed — the job would be red with no reason
+          # in it. This gate is expected to fail, so `-e` is turned off here
+          # and the exit status is set explicitly at the end.
+          set +e
+          mkdir -p test-output
+          : > test-output/gate.status
+          failures=0
+
+          # `unittest discover` answers `Ran 0 tests ... OK` for a file that is
+          # not there, and a shard that collected nothing must never read as
+          # green. Every file is therefore required to exist, to report at least
+          # `floor` collected tests, and to exit zero.
+          gate_file() {
+            local file="$1"
+            local floor="$2"
+            local label
+            label="$(basename "$file" .py)"
+            local log="test-output/${label}.log"
+            if [ ! -f "$file" ]; then
+              printf 'FAIL_NO_FILE: %s is in the gated set but not in this tree\n' \
+                "$file" | tee -a test-output/gate.status
+              failures=$((failures + 1))
+              return
+            fi
+            python3 -m unittest discover -s tests -p "$(basename "$file")" -v \
+              >"$log" 2>&1
+            local status=$?
+            local collected
+            collected="$(sed -nE 's/^Ran ([0-9]+) tests? in .*/\1/p' "$log" | tail -1)"
+            collected="${collected:-0}"
+            printf '%-64s exit=%s collected=%s floor=%s\n' \
+              "$file" "$status" "$collected" "$floor" | tee -a test-output/gate.status
+            if [ "$collected" -lt "$floor" ]; then
+              printf 'FAIL_NO_COLLECTION: %s collected %s tests, floor is %s; ' \
+                "$file" "$collected" "$floor" >> test-output/gate.status
+              printf 'a file that collects nothing is absent, not passing\n' \
+                >> test-output/gate.status
+              failures=$((failures + 1))
+            elif [ "$status" -ne 0 ]; then
+              printf 'FAIL: %s exited %s\n' "$file" "$status" >> test-output/gate.status
+              failures=$((failures + 1))
+            fi
+            cat "$log"
+          }
+
+          # The coverage check is gated first: it is the file that decides
+          # whether a later `paths:` edit still covers what this workflow owns.
+          gate_file tests/test_fleet_next_ci_path_coverage.py 10
+
+          # These two sat in this workflow before the families were named and
+          # do not match `test_fleet_next_*`; they are listed so that naming a
+          # family is an addition, never a quiet removal.
+          gate_file tests/test_fleet_runtime_create_policy.py 1
+          gate_file tests/test_fleet_create_session_runtime.py 1
+
+          # Every other Fleet Next contract in the tree, discovered rather than
+          # listed: a new Wave adds its test file and is collected here without
+          # editing this workflow, which is the point of the path families.
+          # `*_ledger.py` is excluded by name: those record author commits that
+          # live on other branches and are gated by the RC's own ledger run.
+          shopt -s nullglob
+          discovered=(tests/test_fleet_next_*.py)
+          shopt -u nullglob
+          if [ "${#discovered[@]}" -eq 0 ]; then
+            printf 'FAIL_NO_COLLECTION: no tests/test_fleet_next_*.py in this tree\n' \
+              | tee -a test-output/gate.status
+            failures=$((failures + 1))
+          fi
+          for file in "${discovered[@]}"; do
+            case "$file" in
+              *_ledger.py)
+                printf '%-64s SKIPPED_BY_NAME (author history, not this tree)\n' \
+                  "$file" | tee -a test-output/gate.status
+                continue
+                ;;
+              tests/test_fleet_next_ci_path_coverage.py)
+                continue
+                ;;
+            esac
+            gate_file "$file" 1
+          done
+
+          if [ "$failures" -ne 0 ]; then
+            printf 'FAIL: %s gated file(s) did not collect or did not pass\n' \
+              "$failures" | tee -a test-output/gate.status
+            exit 1
+          fi
+          printf 'PASS: every gated Fleet Next contract collected and passed\n' \
+            | tee -a test-output/gate.status
+
       - name: Preserve bounded offline test output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fleet-next-test-output
-          path: test-output/*.log
+          path: test-output/*.log test-output/gate.status
           retention-days: 2
+          if-no-files-found: warn
+
+  # THE COMPOSITION CONTRACT, AND WHY IT IS NOT A FIXED SHA ANY MORE
+  # ---------------------------------------------------------------
+  # #511 measured the #493 × #498/#503 composition by checking out the literal
+  # `05da04f8`. That was reproducible, but it pinned the gate to a commit that
+  # `main` will never advance past: once the stack lands, the gate would keep
+  # testing a museum piece and say nothing about the head under review.
+  #
+  # The subject is now the run itself:
+  #
+  #   * `pull_request`  -> `github.event.pull_request.head.sha`
+  #   * `push`          -> `github.sha`
+  #   * `workflow_dispatch` -> `inputs.candidate_sha` if given (write access
+  #                            required to dispatch), else `github.sha`
+  #
+  # None of those is read from repository content, a PR body, a label or a file
+  # in the tree, so a pull request cannot point this gate at somebody else's
+  # commit. Nothing here runs with the base repository's token, and there is no
+  # secret: the job only ever needs `contents: read` on the commit it measures.
+  #
+  # `main` does not carry the monitor package yet (checked at `3bc7adfe`), so a
+  # bare "measure the head" rule would be red on every main push until W19
+  # lands the stack — and a permanently red gate is noise a reader learns to
+  # ignore. The tolerance is therefore *dated and versioned*, not open-ended:
+  #
+  #   * `COMPAT_PIN` is the last known composable tree; it runs as an explicit
+  #     witness ONLY when the head does not carry the stack.
+  #   * `COMPAT_PIN_EXPIRES` bounds that: after it, an absent stack is red.
+  #   * `STACK_ABSORBED_ON` is `none` until a landing PR puts the stack on
+  #     `main`; that PR sets the merge SHA, and from then on an absent stack is
+  #     red (`BLOCKED_COMPOSITION_REMOVED`) rather than excused.
+  #
+  # So there is exactly one short-lived pin, it is dated, it is pinned by a
+  # test, and its successor (the head) is already the primary path.
+  composition-runtime-tick:
+    name: 'composition #493 × #498/#503 — 3 tests, no skip, on this run''s own head'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      EXPECTED_TESTS: '3'
+      RUNTIME_TICK: 'tests/test_fleet_next_agent_monitor_activation_runtime_tick.py'
+      MONITOR_RUNTIME: 'integrations/fleet-next-agent-monitor/fleet_next_agent_monitor/runtime.py'
+      ACTIVATION: 'integrations/fleet-next-agent-monitor-activation/activation.py'
+      # Short-term compatibility pin. Versioned: bump it with a reviewed diff,
+      # never silently. It is a witness, never the primary measurement.
+      COMPAT_PIN: '05da04f8c78f302b029c6304ed96f4e8ded5fc9b'
+      COMPAT_PIN_EXPIRES: '2026-11-19'
+      # Set to the merge SHA of the landing PR that first puts the monitor
+      # stack on `main`. `none` means "the stack is not expected here yet".
+      STACK_ABSORBED_ON: 'none'
+    steps:
+      - name: Resolve the subject this run measures
+        id: subject
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          mkdir -p test-output
+          mkdir -p test-output
+          subject="$HEAD_SHA"
+          if [ -n "${CANDIDATE_SHA:-}" ]; then
+            # Only a maintainer-dispatched run may inject a SHA. On every other
+            # event `inputs` is empty, so this is belt and braces: a pull
+            # request cannot reach it.
+            if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+              printf 'BLOCKED_CANDIDATE_NOT_ALLOWED: %s cannot inject a candidate SHA.\n' \
+                "$GITHUB_EVENT_NAME" | tee -a test-output/composition-identity.log
+              printf 'Only workflow_dispatch (write access) may name the subject.\n' \
+                >> test-output/composition-identity.log
+              exit 1
+            fi
+            if ! printf '%s' "$CANDIDATE_SHA" | grep -qE '^[0-9a-f]{40}$'; then
+              printf 'BLOCKED_CANDIDATE_SHA: %s is not 40 lowercase hex.\n' \
+                "$CANDIDATE_SHA" | tee -a test-output/composition-identity.log
+              exit 1
+            fi
+            subject="$CANDIDATE_SHA"
+            printf 'subject_source=workflow_dispatch input\n' \
+              | tee -a test-output/composition-identity.log
+          else
+            printf 'subject_source=the event this run was started by\n' \
+              | tee -a test-output/composition-identity.log
+          fi
+          printf 'subject=%s\n' "$subject" | tee -a test-output/composition-identity.log
+          printf 'subject=%s\n' "$subject" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the subject
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ steps.subject.outputs.subject }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Prove the checkout is the subject
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          mkdir -p test-output
+          head_sha="$(git rev-parse HEAD)"
+          {
+            printf 'subject=%s\n' "${{ steps.subject.outputs.subject }}"
+            printf 'checked_out=%s\n' "$head_sha"
+          } | tee -a test-output/composition-identity.log
+          if [ "$head_sha" != "${{ steps.subject.outputs.subject }}" ]; then
+            printf 'BLOCKED_COMPOSITION_SHA: asked for %s, checked out %s.\n' \
+              "${{ steps.subject.outputs.subject }}" "$head_sha" \
+              | tee -a test-output/composition-identity.log
+            printf 'The subject is unreachable (force-push, deleted branch or GC).\n' \
+              >> test-output/composition-identity.log
+            printf 'Re-run against a reachable commit; a substitute tree is not accepted.\n' \
+              >> test-output/composition-identity.log
+            exit 1
+          fi
+
+      - name: Decide whether this head carries the composition
+        id: presence
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          mkdir -p test-output
+          missing=''
+          for required in "$MONITOR_RUNTIME" "$ACTIVATION" "$RUNTIME_TICK"; do
+            [ -f "$required" ] || missing="$missing $required"
+          done
+          if [ -z "$missing" ]; then
+            printf 'stack_present=1\n' | tee -a test-output/composition-identity.log
+            printf 'stack_present=1\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf 'stack_present=0 missing:%s\n' "$missing" \
+            | tee -a test-output/composition-identity.log
+          printf 'stack_present=0\n' >> "$GITHUB_OUTPUT"
+
+          # The stack was declared absorbed: it must be here. A tree that drops
+          # it is red, not "not applicable".
+          if [ "$STACK_ABSORBED_ON" != "none" ]; then
+            printf 'BLOCKED_COMPOSITION_REMOVED: the monitor stack is declared\n' \
+              | tee -a test-output/composition-identity.log
+            printf 'absorbed on main at %s, but this head does not carry it.\n' \
+              "$STACK_ABSORBED_ON" >> test-output/composition-identity.log
+            exit 1
+          fi
+
+          # Not absorbed yet: a dated witness is allowed, and it is bounded.
+          today_epoch="$(date -u +%s)"
+          expires_epoch="$(date -u -d "$COMPAT_PIN_EXPIRES" +%s 2>/dev/null)"
+          if [ -z "$expires_epoch" ]; then
+            printf 'COMPAT_PIN_UNPARSEABLE: COMPAT_PIN_EXPIRES=%s\n' \
+              "$COMPAT_PIN_EXPIRES" | tee -a test-output/composition-identity.log
+            exit 1
+          fi
+          if [ "$today_epoch" -ge "$expires_epoch" ]; then
+            printf 'COMPAT_WINDOW_EXPIRED: %s has passed and the monitor stack is\n' \
+              "$COMPAT_PIN_EXPIRES" | tee -a test-output/composition-identity.log
+            printf 'still not on this head, so the only way to run the three\n' \
+              >> test-output/composition-identity.log
+            printf 'runtime-tick tests would be a stale tree. Either land the stack\n' \
+              >> test-output/composition-identity.log
+            printf '(and set STACK_ABSORBED_ON), or re-pin with a reviewed diff.\n' \
+              >> test-output/composition-identity.log
+            exit 1
+          fi
+          printf 'COMPOSITION_SUBJECT_ABSENT: this head does not carry the monitor\n' \
+            | tee -a test-output/composition-identity.log
+          printf 'stack; a dated compatibility witness will run instead, expiring %s.\n' \
+            "$COMPAT_PIN_EXPIRES" >> test-output/composition-identity.log
+          # Say the status outright: under `-e` (and under `pipefail`) the last
+          # command's status is the step's status, and a `tee` that could not
+          # write must not turn a tolerated absence into a red.
+          exit 0
+
+      - name: Check out the compatibility witness
+        if: steps.presence.outputs.stack_present == '0'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ env.COMPAT_PIN }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Prove the witness is the pinned commit
+        if: steps.presence.outputs.stack_present == '0'
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          mkdir -p test-output
+          head_sha="$(git rev-parse HEAD)"
+          {
+            printf 'witness_pin=%s\n' "$COMPAT_PIN"
+            printf 'checked_out=%s\n' "$head_sha"
+          } | tee -a test-output/composition-identity.log
+          if [ "$head_sha" != "$COMPAT_PIN" ]; then
+            printf 'BLOCKED_COMPOSITION_SHA: witness asked for %s, checked out %s.\n' \
+              "$COMPAT_PIN" "$head_sha" | tee -a test-output/composition-identity.log
+            exit 1
+          fi
+
+      - name: Refuse a tree that cannot be composed
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          mkdir -p test-output
+          status=0
+          for required in "$MONITOR_RUNTIME" "$ACTIVATION" "$RUNTIME_TICK"; do
+            if [ ! -f "$required" ]; then
+              printf 'BLOCKED_COMPOSITION: %s is absent from the tree being measured.\n' \
+                "$required" | tee -a test-output/composition-identity.log
+              printf 'No stub, no override of the core root, no download, no green.\n' \
+                >> test-output/composition-identity.log
+              status=1
+            fi
+          done
+          if [ "$status" -ne 0 ]; then
+            exit 1
+          fi
+          printf 'composition present: monitor runtime, activation wrapper, runtime-tick regression\n' \
+            | tee -a test-output/composition-identity.log
+
+      - name: Assert the collection holds exactly the expected tests
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          mkdir -p test-output
+          status=0
+          python3 - "$RUNTIME_TICK" "$EXPECTED_TESTS" <<'PY' 2>&1 | tee -a test-output/collection.log || status=$?
+          import importlib.util
+          import sys
+          import unittest
+
+          path, expected = sys.argv[1], int(sys.argv[2])
+          spec = importlib.util.spec_from_file_location("runtime_tick", path)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules["runtime_tick"] = module
+          spec.loader.exec_module(module)
+          suite = unittest.TestLoader().loadTestsFromModule(module)
+
+          def walk(node):
+              """`loadTestsFromModule` nests one suite per TestCase class."""
+              for item in node:
+                  if isinstance(item, unittest.TestSuite):
+                      yield from walk(item)
+                  else:
+                      yield item.id()
+
+          ids = list(walk(suite))
+          print(f"collected={len(ids)} expected={expected}")
+          for one in ids:
+              print(f"  {one}")
+          if len(ids) != expected:
+              raise SystemExit(
+                  f"FAIL_NO_COLLECTION: collected {len(ids)} tests, the "
+                  f"composition contract is {expected}")
+          PY
+          if [ "$status" -ne 0 ]; then
+            printf 'FAIL_NO_COLLECTION: the collection step exited %s\n' "$status" \
+              | tee -a test-output/collection.log
+            exit 1
+          fi
+
+      - name: Run the composed regression and refuse a skip
+        shell: bash
+        run: |
+          set -uo pipefail
+          set +e
+          mkdir -p test-output
+          log=test-output/runtime-tick.log
+          status=0
+          timeout 420s python3 -m unittest discover -s tests \
+            -p 'test_fleet_next_agent_monitor_activation_runtime_tick.py' -v \
+            >"$log" 2>&1 || status=$?
+          # The whole log, not a tail: "the runner failed" is only actionable if
+          # the reading that made it fail is in the run.
+          cat "$log"
+          if [ "$status" -ne 0 ]; then
+            printf 'FAIL: the composed runtime-tick regression exited %s\n' "$status"
+            exit 1
+          fi
+          # A skip here means the composition was not built: #493's package is
+          # absent, or the host cannot import it. `OK (skipped=3)` is exactly the
+          # reading #503 was opened to remove, so it is a failure, not a pass.
+          if grep -qE 'skipped=' "$log"; then
+            printf 'FAIL_SKIPPED_COMPOSITION: the composed regression skipped tests; '
+            printf 'a skipped composition is NOT a passing one\n'
+            grep -nE 'skipped' "$log" | head -20
+            exit 1
+          fi
+          if ! grep -qE '^Ran 3 tests in ' "$log"; then
+            printf 'FAIL_NO_COLLECTION: the run did not report `Ran 3 tests`\n'
+            exit 1
+          fi
+          if ! grep -qx 'OK' "$log"; then
+            printf 'FAIL: the run did not end in `OK`\n'
+            exit 1
+          fi
+          if [ "${{ steps.presence.outputs.stack_present }}" = "1" ]; then
+            printf 'COMPOSITION_MEASURED_SUBJECT=%s\n' \
+              "${{ steps.subject.outputs.subject }}" | tee -a test-output/pass.log
+          else
+            printf 'COMPOSITION_WITNESS_PIN=%s\n' "$COMPAT_PIN" \
+              | tee -a test-output/pass.log
+          fi
+          printf 'PASS: 3 composed runtime-tick tests ran, none skipped\n' \
+            | tee -a test-output/pass.log
+
+      - name: Preserve composition evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fleet-next-composition-${{ github.run_id }}
+          path: test-output/*.log
+          retention-days: 7
           if-no-files-found: warn
