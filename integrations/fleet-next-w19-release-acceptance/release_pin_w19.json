@@ -1,0 +1,136 @@
+{
+ "_note": [
+  "What each PR claims to own. Written from the PR's title and description,",
+  "independently of what the tree turned out to contain, so that the",
+  "'added outside its own scope' check still has something to disagree with.",
+  "`measure()` compares each ref against `main` by blob and derives the rest."
+ ],
+ "main": "main",
+ "prs": [
+  {
+   "number": 483,
+   "ref": "p483",
+   "own_prefixes": ["integrations/fleet-next-legacy-safety/"],
+   "note": "legacy safety; merged into main"
+  },
+  {
+   "number": 506,
+   "ref": "p506",
+   "own_prefixes": [
+    "docs/integration/FLEET-NEXT-WAVE17-SIDECAR-REVOKE-20261028.md",
+    "integrations/fleet-next-wave17-sidecar-release/",
+    "tests/test_fleet_next_wave17_sidecar_release.py"
+   ],
+   "note": "wave17 sidecar release, partial upgrade"
+  },
+  {
+   "number": 507,
+   "ref": "p507",
+   "own_prefixes": [],
+   "note": "217-commit stack; claims no exclusive surface"
+  },
+  {
+   "number": 508,
+   "ref": "p508",
+   "own_prefixes": [],
+   "note": "QA branch on the 507 stack; claims no exclusive surface"
+  },
+  {
+   "number": 509,
+   "ref": "p509",
+   "own_prefixes": [
+    "docs/integration/FLEET-NEXT-WAVE17-HUB-NODE-CUT-20261028.md",
+    "docs/integration/FLEET-NEXT-WAVE18-ARTIFACT-BUILDER-20261029.md",
+    "integrations/fleet-next-wave17-hub-node-release-cut/",
+    "integrations/fleet-next-wave18-artifact-builder/",
+    "tests/test_fleet_next_wave17_hub_node_release_cut.py",
+    "tests/test_fleet_next_wave18_artifact_builder.py"
+   ],
+   "note": "artifact builder; its composition pin is superseded by 518"
+  },
+  {
+   "number": 512,
+   "ref": "p512",
+   "own_prefixes": [
+    "docs/integration/FLEET-NEXT-LOCAL-GOAL-20261029.md",
+    "integrations/fleet-next-local-goal-supervisor/",
+    "tests/test_fleet_next_local_goal_supervisor.py"
+   ],
+   "note": "local goal supervisor"
+  },
+  {
+   "number": 513,
+   "ref": "p513",
+   "own_prefixes": [
+    "docs/integration/FLEET-NEXT-WAVE17-SIDECAR-REVOKE-20261028.md",
+    "docs/integration/FLEET-NEXT-WAVE18-SIDECAR-20261029.md",
+    "integrations/fleet-next-wave17-sidecar-release/",
+    "integrations/fleet-next-wave18-sidecar-installer/",
+    "tests/test_fleet_next_wave17_sidecar_release.py",
+    "tests/test_fleet_next_wave18_sidecar_installer.py"
+   ],
+   "note": "wave18 sidecar installer; supersedes 506"
+  },
+  {
+   "number": 514,
+   "ref": "p514",
+   "own_prefixes": [
+    "docs/integration/FLEET-NEXT-WAVE18-RELEASE-READINESS-20261029.md",
+    "integrations/fleet-next-wave18-release-acceptance/",
+    "tests/test_fleet_next_wave18_release_acceptance.py"
+   ],
+   "note": "wave18 independent acceptance; this lane's previous PR"
+  },
+  {
+   "number": 516,
+   "ref": "p516",
+   "own_prefixes": [
+    "integrations/chatgpt-fleet-next/batch_contract.py",
+    "tests/fixtures/fleet_v1_milestone_runner/",
+    "tests/test_fleet_v1_milestone_"
+   ],
+   "note": "fleet v1 milestone batch"
+  },
+  {
+   "number": 517,
+   "ref": "p517",
+   "own_prefixes": [
+    "docs/integration/FLEET-NEXT-W19-INDEPENDENT-QA-20261029.md",
+    "integrations/fleet-next-w19-mainline-qa/",
+    "tests/test_fleet_next_w19_mainline_qa.py"
+   ],
+   "note": "W19 mainline QA lane"
+  },
+  {
+   "number": 518,
+   "ref": "p518",
+   "own_prefixes": [
+    "docs/integration/FLEET-NEXT-WAVE17-HUB-NODE-CUT-20261028.md",
+    "docs/integration/FLEET-NEXT-WAVE18-ARTIFACT-BUILDER-20261029.md",
+    "docs/integration/FLEET-NEXT-WAVE19-REPRODUCIBILITY-20261029.md",
+    "integrations/fleet-next-wave17-hub-node-release-cut/",
+    "integrations/fleet-next-wave18-artifact-builder/",
+    "integrations/fleet-v1-l2-release/",
+    "tests/test_fleet_l2_release_separation.py",
+    "tests/test_fleet_next_wave17_hub_node_release_cut.py",
+    "tests/test_fleet_next_wave18_artifact_builder.py",
+    "tests/test_l2_source_standalone_contract.py"
+   ],
+   "note": "artifact builder reproducibility; supersedes 509's pin"
+  },
+  {
+   "number": 519,
+   "ref": "p519",
+   "own_prefixes": [
+    "docs/integration/FLEET-NEXT-AGENT-MONITOR-ACTIVATION.md",
+    "docs/integration/FLEET-NEXT-SOURCE-ADAPTER.md",
+    "integrations/chatgpt-fleet-next/batch_contract.py",
+    "tests/fixtures/fleet_v1_milestone_runner/",
+    "tests/test_fleet_next_agent_monitor_",
+    "tests/test_fleet_next_monitor_source_adapter.py",
+    "tests/test_fleet_v1_milestone_"
+   ],
+   "note": "the canonical landing: both monitor packages' activation and tests"
+  }
+ ]
+}
