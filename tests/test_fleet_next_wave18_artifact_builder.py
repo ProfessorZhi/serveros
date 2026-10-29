@@ -544,14 +544,23 @@ def test_independent_qa_rebuild_or_head_determinism(tmp_path):
     control, so the CI run still measures the builder rather than trusting a
     note. A full clone takes the published-checksum path.
     """
-    expected = W19_EVIDENCE / "ARTIFACTS.sha256"
-    provenance = json.loads((W19_EVIDENCE / "PROVENANCE.json").read_text())
-    commit = provenance["source"]["commit"]
-    assert expected.is_file()
-    present = subprocess.run(
-        ["git", "-C", str(REPO), "cat-file", "-e", f"{commit}^{{commit}}"],
-        capture_output=True).returncode == 0
-    if present:
+    chosen = None
+    # Prefer the current-main pack; fall back to the historical #518 pack.
+    for pack in (BUILDER_DIR / "evidence-main", W19_EVIDENCE):
+        expected = pack / "ARTIFACTS.sha256"
+        provenance_path = pack / "PROVENANCE.json"
+        if not expected.is_file() or not provenance_path.is_file():
+            continue
+        provenance = json.loads(provenance_path.read_text())
+        commit = provenance["source"]["commit"]
+        present = subprocess.run(
+            ["git", "-C", str(REPO), "cat-file", "-e", f"{commit}^{{commit}}"],
+            capture_output=True).returncode == 0
+        if present:
+            chosen = (expected, provenance, commit)
+            break
+    if chosen is not None:
+        expected, provenance, commit = chosen
         result = w18.qa_rebuild(REPO, commit, provenance["version"],
                                 expected, tmp_path / "qa")
         assert result["checksums"]["ok"] is True

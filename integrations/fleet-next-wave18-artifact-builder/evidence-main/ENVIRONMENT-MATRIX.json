@@ -1,0 +1,51 @@
+{
+  "modes": {
+    "crlf_transform_tree": {
+      "decision": "BLOCKED_LINE_ENDING_DRIFT",
+      "note": "the fixed builder refuses a CRLF transform; the historical #514 RED output is in evidence-w19/ENVIRONMENT-MATRIX.json"
+    },
+    "hostile_global_autocrlf": {
+      "artifact_sha256": {
+        "fleet-authority": "38f7e6cc1726b31b9b74d5ebf35f7558578467828583b168d5d26627b309a01c",
+        "fleet-hub": "dce13bed52efa907ff160a34e49c614f2bc03099e7f2916f48305f68f83143f0",
+        "fleet-next-composition": "1a92993c654e6ea555cbb8c7193d90c6d29bc46444ef54332ce1d4454fb583b0",
+        "fleet-node": "ad9091491d514a4f3412030a7e954414c431f82d8363aa5791c39e6467f8b929",
+        "fleet-runtime-base": "885ab0e57194e2f8e29e7f9867aaf1b64f22331fb960af1679e52edbcb37fc8b"
+      },
+      "environment": "HOME/.gitconfig [core] autocrlf=true"
+    },
+    "hostile_system_autocrlf": {
+      "artifact_sha256": {
+        "fleet-authority": "38f7e6cc1726b31b9b74d5ebf35f7558578467828583b168d5d26627b309a01c",
+        "fleet-hub": "dce13bed52efa907ff160a34e49c614f2bc03099e7f2916f48305f68f83143f0",
+        "fleet-next-composition": "1a92993c654e6ea555cbb8c7193d90c6d29bc46444ef54332ce1d4454fb583b0",
+        "fleet-node": "ad9091491d514a4f3412030a7e954414c431f82d8363aa5791c39e6467f8b929",
+        "fleet-runtime-base": "885ab0e57194e2f8e29e7f9867aaf1b64f22331fb960af1679e52edbcb37fc8b"
+      },
+      "environment": "GIT_CONFIG_SYSTEM [core] autocrlf=true"
+    },
+    "normal": {
+      "artifact_sha256": {
+        "fleet-authority": "38f7e6cc1726b31b9b74d5ebf35f7558578467828583b168d5d26627b309a01c",
+        "fleet-hub": "dce13bed52efa907ff160a34e49c614f2bc03099e7f2916f48305f68f83143f0",
+        "fleet-next-composition": "1a92993c654e6ea555cbb8c7193d90c6d29bc46444ef54332ce1d4454fb583b0",
+        "fleet-node": "ad9091491d514a4f3412030a7e954414c431f82d8363aa5791c39e6467f8b929",
+        "fleet-runtime-base": "885ab0e57194e2f8e29e7f9867aaf1b64f22331fb960af1679e52edbcb37fc8b"
+      }
+    }
+  },
+  "real_device": "NOT_RUN",
+  "reference": {
+    "builder": {
+      "path": "integrations/fleet-next-wave18-artifact-builder/wave18_builder.py",
+      "sha256": "sha256:4a6b9b6bde1a8ed8d92c1474b86ea6b3f5cdf797293abf1bce34b63b357ffe61"
+    },
+    "source_commit": "47030bc1d9a728c4ce99f2b27ccd16017aea0eab",
+    "version": "1.0.0+wave19e"
+  },
+  "result": {
+    "digest_count": 5,
+    "identical_normal_system_global": true
+  },
+  "schema": "serveros/fleet-next-w19e-main-environment-matrix.v1"
+}

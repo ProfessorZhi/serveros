@@ -1,0 +1,71 @@
+{
+  "decision": "BLOCKED_CROSS_COMPONENT",
+  "leaks": {
+    "hub": {
+      "leaks": [
+        "fleet_mcp/node/__init__.py",
+        "fleet_mcp/node/connector.py"
+      ]
+    },
+    "node": {
+      "leaks": [
+        "fleet_mcp/audit.py",
+        "fleet_mcp/core_lite_readback.py",
+        "fleet_mcp/core_lite_source.py",
+        "fleet_mcp/dispatch.py",
+        "fleet_mcp/fleet.py",
+        "fleet_mcp/privacy.py",
+        "fleet_mcp/providers/fleet_node.py",
+        "fleet_mcp/registry.py",
+        "fleet_mcp/session_detail.py"
+      ]
+    }
+  },
+  "partition": {
+    "base_exact": false,
+    "hub_closure": 33,
+    "hub_own": 3,
+    "inadmissible": [
+      "fleet_mcp.audit",
+      "fleet_mcp.core_lite_readback",
+      "fleet_mcp.core_lite_source",
+      "fleet_mcp.dispatch",
+      "fleet_mcp.fleet",
+      "fleet_mcp.node",
+      "fleet_mcp.node.connector",
+      "fleet_mcp.privacy",
+      "fleet_mcp.providers.fleet_node",
+      "fleet_mcp.registry",
+      "fleet_mcp.session_detail"
+    ],
+    "node_closure": 30,
+    "node_own": 0,
+    "shared": 30
+  },
+  "reasons": [
+    "the Hub closure carries the Node connector through owner_setup; the Node closure carries the Hub's fleet, registry and service modules",
+    "own-files-only two-artifact payloads cannot boot; the missing piece is the other half, not a pip wheel"
+  ],
+  "schema": "serveros/fleet-next-wave18-artifact-builder.v1",
+  "source": {
+    "archive_sha256": "sha256:a1e01a66d8ac0e889247de77e520de364eb80982846923c1681f0d334bd642ad",
+    "built_from": "git archive --format=tar <commit>",
+    "commit": "47030bc1d9a728c4ce99f2b27ccd16017aea0eab",
+    "live_tree_clean_at_build": true,
+    "tree": "4288fc88f63b0a54eac9c9fd9237ba3ab4e90a93",
+    "workdir_used_as_artifact": false
+  },
+  "state": "RED_BASELINE",
+  "two_artifact_boot": {
+    "hub": {
+      "booted": false,
+      "error": "Traceback (most recent call last):\n  File \"<string>\", line 14, in <module>\n  File \"<path>/two-hub/fleet_mcp/owner_setup.py\", line 17, in <module>\n    from .node.connector import load_node_config\nModuleNotFoundError: No module named 'fleet_mcp.node'",
+      "files": 31
+    },
+    "node": {
+      "booted": false,
+      "error": "Traceback (most recent call last):\n  File \"<string>\", line 32, in <module>\n  File \"<path>/two-node/fleet_mcp/node/connector.py\", line 89, in <module>\n    from ..errors import BAD_REQUEST, FleetRefusal\nModuleNotFoundError: No module named 'fleet_mcp.errors'",
+      "files": 2
+    }
+  }
+}

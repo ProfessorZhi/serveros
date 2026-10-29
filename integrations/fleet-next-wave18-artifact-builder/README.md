@@ -9,7 +9,9 @@ control, independent rollback against a Legacy 0.1.0 fake, and the #483/#480
 release-footprint veto.
 
 It does not modify `fleet_mcp/**`, `runtime/**`, `scripts/release.py`, Legacy
-configuration, or the V2-rooted #461/#467/#473 files. Nothing is installed,
+configuration, or the V2-rooted #461/#467/#473 files. The D7 dependency is
+vendored byte-for-byte from #431 `517ef91` at `vendor/l2_release.py` with
+`vendor/VENDORED.json` provenance. Nothing is installed,
 started, bound, authenticated or sent. **REAL_DEVICE NOT_RUN.**
 
 ## What it builds

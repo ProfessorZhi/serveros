@@ -1,5 +1,8 @@
 # Wave 19 · Hub/Node artifact reproducibility repair (offline)
 
+> This document records the #518 stack fix. The current-main builder candidate
+> is `FLEET-NEXT-W19E-MAIN-BUILDER-20261029.md`.
+
 Date: 2026-10-29
 Scope: `ProfessorZhi/serveros`, source and offline builds only.
 Role: original builder owner of #505/#509, repairing #514's finding.

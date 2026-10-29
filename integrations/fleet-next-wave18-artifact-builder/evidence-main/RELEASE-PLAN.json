@@ -1,0 +1,65 @@
+{
+  "hub": {
+    "artifact_sha256": "sha256:dce13bed52efa907ff160a34e49c614f2bc03099e7f2916f48305f68f83143f0",
+    "backend_id": "next-hub",
+    "cred_state_root": "/var/lib/fleet-next/hub",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "install_path": "/opt/fleet-next/hub",
+    "lock": "/run/lock/fleet-next-hub.lock",
+    "oauth_audience": "https://next.invalid/mcp",
+    "port": 8101,
+    "socket": "/run/fleet-next/hub.sock",
+    "track": "next-hub",
+    "unit": "fleet-next-hub.service",
+    "version": "1.0.0+wave19e"
+  },
+  "legacy": {
+    "contract": [
+      "get_session",
+      "get_run",
+      "send"
+    ],
+    "track": "legacy-0.1.0",
+    "unchanged_by_this_build": true
+  },
+  "matrix": {
+    "code": "OK",
+    "collisions": [],
+    "decision": "OK"
+  },
+  "node": {
+    "artifact_sha256": "sha256:ad9091491d514a4f3412030a7e954414c431f82d8363aa5791c39e6467f8b929",
+    "backend_id": "next-node",
+    "cred_state_root": "/var/lib/fleet-next/node",
+    "device_ref": "device:tokyo-shared-dev-01",
+    "install_path": "/opt/fleet-next/node",
+    "lock": "/run/lock/fleet-next-node.lock",
+    "oauth_audience": "https://next-node.invalid/mcp",
+    "port": 3402,
+    "socket": "/run/fleet-next/node.sock",
+    "track": "next-node",
+    "unit": "fleet-next-node.service",
+    "version": "1.0.0+wave19e"
+  },
+  "schema": "serveros/fleet-next-release-plan.v1",
+  "shadow": {
+    "read": {
+      "code": "OK",
+      "decision": "OK",
+      "verb": "get_session"
+    },
+    "unknown": {
+      "code": "SHADOW_VERB_UNKNOWN",
+      "decision": "BLOCKED",
+      "verb": "frobnicate"
+    },
+    "write_even_if_granted": {
+      "code": "NEXT_SHADOW_WRITE_FORBIDDEN",
+      "decision": "BLOCKED",
+      "granted": true,
+      "note": "a shadow reads the current controller; granting a write verb does not make it one",
+      "verb": "send"
+    }
+  },
+  "version": "1.0.0+wave19e"
+}
