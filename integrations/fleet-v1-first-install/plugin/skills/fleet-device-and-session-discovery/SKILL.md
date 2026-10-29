@@ -5,6 +5,16 @@ description: Find out which ServerOS device, Linux account, credential profile a
 
 # Discover the device and the runtime before you name one
 
+## At a glance
+
+- **Use when:** a request names a device, session, "my laptop", or you are about to address one.
+- **Input:** whatever coordinates the request or checkpoint already has.
+- **Steps:** (1) known `session_ref`/`run_id` → read it directly (`fleet_get_session`, `fleet_get_run`); (2) unknown device → `fleet_list_devices`; (3) unknown session → `fleet_list_sessions` with the `device` filter; (4) route/credential trouble → `fleet_status`, as a diagnostic.
+- **Done when:** you can name device × OS user × credential instance × runtime × project, each from a read.
+- **Never:** guess from a hostname; treat `UNKNOWN` as permission; hardcode the tool count.
+
+The sections below are the full contract behind each line.
+
 Every Fleet tool takes a **device reference**, a **runtime** and a **session
 reference**. None of them may be guessed, and none of them is a hostname.
 
