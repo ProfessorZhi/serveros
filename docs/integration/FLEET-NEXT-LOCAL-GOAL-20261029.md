@@ -375,6 +375,19 @@ Fleet 快照实时值：120 sessions，**9 RUNNING_AGENT** / 87 MANAGED_IDLE /
 #515 已成为唯一收口主表；建议下次授权时更新为 `[515,478]` 与当前有效 PR。
 本次未改永久配置。
 
-#512 仍为 Draft；其 shard 4/4 失败项是
-`tests/test_direct_lark_notify.py`（相对 main 逐字节未改、本地同样失败），
-属 pre-existing，不由本 PR 引入。
+### 10.7 #512 与当前 main 的合流结果
+
+2026-10-29T14:35+08:00 将 `origin/main`（`44f039d70dc4`）合入本分支，未 rebase、
+未 force-push。合流后：
+
+```text
+head      ddb23ce12e59c45db47607642403889fa3bdf0f7
+base      44f039d70dc4f593ea9db73aae873be3455fc48c
+local     27 passed (supervisor) + 4 passed (collection scope)
+hosted    5/5 PASS  (4 shards + plugin-source)
+```
+
+此前基于 `e69fc03` 的 head 上，shard 4/4 的
+`tests/test_direct_lark_notify.py` 失败并非本 PR 引入；该修复已随 main 的
+#415 进入基线，合流后消失。**#512 保持 Draft**——它是 main-based candidate，
+但是否进入 main 仍取决于 §10.5 的派发选项决定。
