@@ -17,8 +17,11 @@ caller grant + injected read-only client
 |---|---|
 | `contract.py` | identities, statuses, grant, observation. No `DONE` status exists. |
 | `adapter.py` | authorization → one bounded read → classification; `FixtureLegacyClient` for offline use |
+| `evidence.py` | the one standard of evidence — closed key set, carrier fold, the monitor's predicate. Published for the monitor to import |
+| `compat.py` | the versioned seam #493's monitor reads this adapter through |
 | `serializer.py` | closed JSON input; refuses import-shaped keys; no `eval`/`exec`/`__import__` |
 | `cli.py` | one offline tick: JSON in, JSON out, exit |
+| `qa/parity_probe.py` | not shipped, not imported by the package: the second process of the two-process parity test (journal notifier + compat tick) |
 
 ## Identity discipline
 
@@ -49,9 +52,12 @@ FAILED · STALE · UNKNOWN · OFFLINE · DENIED
 
 There is no `DONE`.
 
-* native `completed` **without** a non-empty transcript and **without** a
-  verified artifact bound to the expected `sourceSHA` → `UNKNOWN` /
-  `NO_NATIVE_ACTIVITY`;
+* native `completed` **without** a non-empty `lastAssistantMessage.content` and
+  **without** a verified artifact bound to the expected `sourceSHA` → `UNKNOWN` /
+  `NO_NATIVE_ACTIVITY`. A `transcript` / `messages` list is folded into that
+  message only when its last assistant turn has text and names no other run
+  (`evidence.normalise_run_fact`) — a bare string, a prompt, an empty turn or
+  another run's turn yields nothing;
 * `RUN_NOT_FOUND` → `UNKNOWN` (its native `reason` and `retryable` are carried);
 * route offline → `OFFLINE`, never `FAILED`;
 * boot mismatch → `UNKNOWN` / `BOOT_MISMATCH`;
@@ -141,11 +147,15 @@ another boot gets `BOOT_MISMATCH`, never a verified run.
 
 * RED on the base commit: package absent → `ModuleNotFoundError`, collection
   error.
-* GREEN: `80 passed, 21 subtests passed` (`tests/test_fleet_next_monitor_source_adapter.py`)
-  — #490's original 35, plus 45 in six classes covering the `read_request`
-  rename, the `observe_watch` keyword seam, the native-activity vocabulary, the
-  CI vocabulary, `CompatMonitorSource`, and the composed seam's fail-closed
-  cases.
+* GREEN: `101 passed, 66 subtests passed` on Linux
+  (`tests/test_fleet_next_monitor_source_adapter.py`); `99 passed, 2 skipped,
+  48 subtests` on Windows, where the two-process class cannot start the
+  monitor (its cursor lock is `fcntl`-based) and says so instead of passing.
+  The count is #490's original 35, plus 45 in six classes covering the
+  `read_request` rename, the `observe_watch` keyword seam, the native-activity
+  vocabulary, the CI vocabulary, `CompatMonitorSource`, and the composed seam's
+  fail-closed cases, plus 17 for the shared evidence protocol (#508 P1 / W19),
+  plus 4 for the two-process parity in `qa/parity_probe.py` (W19E).
 * CLI smoke: a synthetic completed-without-transcript fixture prints
   `"status": "UNKNOWN", "reason": "NO_NATIVE_ACTIVITY"` and exits 0.
 

@@ -24,9 +24,18 @@ from .sources import RemoteRefused, RouteOffline, RunNotFound
 
 #: Facts a synthetic answer may carry. Closed on purpose: a key this client does
 #: not understand would be a behaviour the tests silently do not cover.
+#:
+#: `transcript` and `messages` are carriers of the same fact the monitor already
+#: reads — the run's last assistant turn — and the native client answers with
+#: them. Refusing the key here made the two read paths disagree on one run fact
+#: (#508 P1): the adapter reached `TERMINAL_VERIFIED`, this reader raised
+#: `ValueError` before any classifier saw it. The key is accepted for its *shape*
+#: here and bounded where it is read (`sources._normalise_native`); accepting a
+#: carrier is not accepting it as evidence.
 RUN_KEYS = frozenset({
     "instanceId", "deviceRef", "sessionRef", "sessionId", "runId", "deliveryId",
     "bootId", "status", "lastAssistantMessage", "artifacts", "note",
+    "transcript", "messages",
 })
 CI_KEYS = frozenset({
     "head_sha", "status", "conclusion", "draft", "verified", "trusted", "name", "id",

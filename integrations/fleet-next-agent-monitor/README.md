@@ -56,6 +56,9 @@ when the far end carried native activity:
 | far end says | monitor says |
 | --- | --- |
 | `completed`, non-empty assistant message | `TERMINAL_VERIFIED` |
+| `completed`, `transcript`/`messages` whose last assistant turn carries text | `TERMINAL_VERIFIED` |
+| `completed`, carrier holding bare strings, a user-only turn, a blank turn, another run's turn, or a declared blank message | `UNKNOWN` / `NO_NATIVE_ACTIVITY` |
+| `completed`, carrier outside the bound (64 turns, 64 KiB a turn, 256 KiB total) | `UNKNOWN` / `BAD_PAYLOAD` |
 | `completed`, no message, no verified artifact bound to the expected SHA | `UNKNOWN` / `NO_NATIVE_ACTIVITY` |
 | `completed` with a device note saying there was no readable message | `UNKNOWN` / `NO_NATIVE_ACTIVITY` |
 | run not issued | `UNKNOWN` / `NEVER_ISSUED` |
@@ -69,6 +72,17 @@ when the far end carried native activity:
 Only `TERMINAL_VERIFIED` and `FAILED` are ever handed to the notifier
 (`contract.DISPATCHABLE`). A watch that is still `UNKNOWN` produces a
 de-bounced warning in the tick document and **nothing** outbound.
+
+`transcript` and `messages` are *carriers* of that same fact, not a second
+standard of evidence. `sources._normalise_native` folds them into
+`lastAssistantMessage` under a bound and a role check: only the last
+assistant-role turn, only when it carries text and names no identity that
+contradicts the answer, and only when no `lastAssistantMessage` was declared
+(a declared blank stays blank). A carrier yields nothing for bare strings,
+user-only turns, blank turns or another run's turn. This is the same rule #522's
+adapter encodes in `evidence.py`; `JointAdapterAgreementTest` runs one fact
+matrix through both paths and requires the same verdict, so the two read paths
+cannot drift apart again (#508 P1).
 
 ## The exit code is part of the vocabulary
 

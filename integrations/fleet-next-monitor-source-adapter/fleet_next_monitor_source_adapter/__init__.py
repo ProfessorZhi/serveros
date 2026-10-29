@@ -23,11 +23,15 @@ from .adapter import (
     RunNotFound,
 )
 from .compat import COMPAT_SCHEMA, CompatMonitorSource
+# The one standard of evidence, published so the monitor can import it instead
+# of re-deriving a second one (#508 P1, #515).
+from .evidence import MONITOR_RUN_KEYS, native_evidence, normalise_run_fact
 
 __all__ = [
     "SCHEMA",
     "OBSERVATION_SCHEMA",
     "COMPAT_SCHEMA",
+    "MONITOR_RUN_KEYS",
     "CallerGrant",
     "Identity",
     "Observation",
@@ -39,4 +43,6 @@ __all__ = [
     "RunNotFound",
     "RouteOffline",
     "RemoteRefused",
+    "native_evidence",
+    "normalise_run_fact",
 ]
