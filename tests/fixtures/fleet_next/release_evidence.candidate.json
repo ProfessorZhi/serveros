@@ -104,7 +104,7 @@
       "reachable": true,
       "provenance": "LIVE",
       "receipt_ref": "evidence/runtime/claude-vince-main",
-      "effective_model": "deepseek-v4-flash-vision-anthropic",
+      "effective_model": "v4.1flash-anthropic",
       "effective_permission_mode": "bypassPermissions",
       "projects": ["proj-lab-notes"],
       "lifecycle": {

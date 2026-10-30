@@ -200,6 +200,24 @@ class CodexNeedsItsProvider(unittest.TestCase):
                       " ".join(evaluate(x)["blockers"]))
 
 
+class TheDeepSeekDefaultIsTokyoGatewayZero(unittest.TestCase):
+    """Owner, 2026-10-30: every CloudCLI Claude Code runtime defaults to
+    DeepSeek through Tokyo gateway 0, not the FJ production gateway's admin."""
+
+    def test_the_gateway_zero_model_passes(self):
+        x = load()
+        self.assertEqual(claude_row(x)["kind"], "cloudcli-deepseek")
+        self.assertEqual(claude_row(x)["effective_model"], "v4.1flash-anthropic")
+        self.assertNotIn("DeepSeek/CC owner default not verified",
+                         " ".join(evaluate(x)["blockers"]))
+
+    def test_the_production_admin_route_is_no_longer_the_default(self):
+        x = load()
+        claude_row(x)["effective_model"] = "deepseek-v4-flash-vision-anthropic"
+        self.assertIn("DeepSeek/CC owner default not verified",
+                      " ".join(evaluate(x)["blockers"]))
+
+
 class ReachabilityAndOwnership(unittest.TestCase):
     def test_a_runtime_that_is_not_reachable_has_no_live_observation(self):
         x = load()
