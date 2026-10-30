@@ -1,0 +1,66 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default"
+  },
+  "header": {
+    "template": "red",
+    "title": {
+      "tag": "plain_text",
+      "content": "🚨 报警 · 任务失败 · serveros · [示例]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "开始 10-29 14:25 · 持续 5 分钟"
+    }
+  },
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "⚠️ 示例数据 · 非实时采集"
+      },
+      {
+        "tag": "markdown",
+        "content": "**现象** run-7f3a（Tokyo）执行失败（RUN_FAILED）\n**影响** 待确认\n**建议** 用 fleet_read_session 查看该会话最后几轮，决定重试或修复"
+      },
+      {
+        "tag": "collapsible_panel",
+        "element_id": "det8f5b896bdc",
+        "expanded": false,
+        "header": {
+          "title": {
+            "tag": "markdown",
+            "content": "**技术详情**"
+          },
+          "vertical_align": "center",
+          "icon": {
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined",
+            "size": "16px 16px"
+          },
+          "icon_position": "follow_text",
+          "icon_expanded_angle": -180
+        },
+        "border": {
+          "color": "grey",
+          "corner_radius": "5px"
+        },
+        "padding": "8px 8px 8px 8px",
+        "vertical_spacing": "8px",
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "设备 device:tokyo-shared-dev-01\n对象 run:run-7f3a\n首次观测 10-29 14:25\n最近观测 10-29 14:25\n证据 device:tokyo-shared-dev-01|claude|s-1"
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "只读 · 未自动停止、重启或清理任何东西"
+      }
+    ]
+  }
+}

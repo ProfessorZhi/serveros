@@ -83,7 +83,9 @@ presentation = _load("serveros_runtime_presentation", "presentation.py")
 #: pictograms is the one that looks like a different product's icon.
 TEMPLATES = {
     "OK": ("green", "✅"),
-    "ATTENTION": ("orange", "⚠️"),
+    # Yellow, not orange (owner, 2026-10-30): the three levels a person sees
+    # are green 正常 / yellow 注意 / red 报警, on every card this product sends.
+    "ATTENTION": ("yellow", "⚠️"),
     "CRITICAL": ("red", "🚨"),
     "UNCONFIRMED": ("grey", "⚪"),
 }

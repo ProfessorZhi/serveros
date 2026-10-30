@@ -35,6 +35,34 @@ The binding must declare `inbox.path` (the same file `fleet_inbox` reads).
 `watch.sqlite`, `watch.lock` and `watch.heartbeat.json` sit next to it, all 0600.
 A second watcher on the same inbox exits 3.
 
+## Resource levels (M4) and Feishu cards (M3)
+
+`resources.py` reads each company device's Core-Lite summary and levels it with
+the node's own thresholds (`runtime/attribution-contract.yaml`): disk 85% 注意 /
+92% 报警, memory 90%, swap 90% (watermark), memory PSI some/full, a FAILED
+service, a device that was seen and is now gone. Recovery needs the reading to
+clear the bar by the contract's margin. GPU memory is shown, not judged (no
+threshold is declared). Level changes become `node.*` inbox events.
+
+`cards.py` renders three CardKit 2.0 cards; `notify.py` decides send vs patch:
+
+| card | colour | when a message is sent | when it changes in place |
+|---|---|---|---|
+| 资源播报卡 | worst device level | first tick of a workday, CN 08:00–20:00 | next :00/:30 slot if changed; at once on 报警 |
+| 报警卡 | 🟡 注意 / 🔴 报警 | an episode opens; yellow → red (old card turns grey 已升级) | red → yellow; 已恢复 (green) |
+| 任务完成卡 | 🟢 | completions gathered for 5 minutes | — |
+
+Feishu rules applied (open.feishu.cn message create/patch): `update_multi: true`
+on every card; patch only within 14 days (continued on a fresh card after 13);
+5 QPS per recipient (sends spaced, capped at 20 per tick, the rest next tick);
+30 KB per card (validated); a stable send key so a retry within the hour cannot
+duplicate. `--notify journal` (default) writes cards to `notify.journal.jsonl`
+and sends nothing; `--notify lark:<user:…|chat:…>` uses
+`runtime/message_transport.LarkMessageSender` and is the owner's decision.
+
+`samples/` holds one rendered card per kind and level, marked 示例; paste one
+into Feishu's card builder to preview it.
+
 ## Not done here
 
 - Not installed anywhere. `serveros-fleet-watch.service.template` is a
@@ -42,5 +70,7 @@ A second watcher on the same inbox exits 3.
 - Discovery cannot see a run that starts and ends between two passes.
 - The native `run_get` field naming the run's state is not yet observed on a
   live CloudCLI; `status` and `state` are both read. Confirm at M5.
-- Notification delivery (M3), node/resource events (M4), and
-  `decision.required` from pending approvals are not part of M2.
+- `decision.required` from pending approvals is not raised yet.
+- Workdays are Monday–Friday; CN public holidays are not known to it.
+- No card has been checked in a real Feishu client yet (R11): the samples are
+  JSON that passes the CardKit validator, not a screenshot.

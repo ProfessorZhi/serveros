@@ -1,0 +1,35 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default"
+  },
+  "header": {
+    "template": "green",
+    "title": {
+      "tag": "plain_text",
+      "content": "✅ 任务完成 · 3 个 · [示例]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "10-29 14:30（北京时间）"
+    }
+  },
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "⚠️ 示例数据 · 非实时采集"
+      },
+      {
+        "tag": "markdown",
+        "content": "- serveros · run-11ab（Tokyo）\n- ability-management · run-11ac（Tokyo）\n- lab-notes · run-90fe（Dell A6000）"
+      },
+      {
+        "tag": "markdown",
+        "content": "判定依据：读到了 agent 的实际输出 · 详细结果用 fleet_read_session 查看"
+      }
+    ]
+  }
+}

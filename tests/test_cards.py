@@ -1487,8 +1487,8 @@ class ColourTests(unittest.TestCase):
         card alarming on a quiet hour.
         """
         by_name = {i["scenario"]: i["card"] for i in scenarios.rendered()}
-        self.assertEqual(by_name["one_critical"]["header"]["template"], "orange")
-        self.assertEqual(by_name["pressure_boundary"]["header"]["template"], "orange")
+        self.assertEqual(by_name["one_critical"]["header"]["template"], "yellow")
+        self.assertEqual(by_name["pressure_boundary"]["header"]["template"], "yellow")
 
     def test_the_red_card_is_the_escalated_one_and_says_so(self):
         """Red has exactly one producer: a declared expectation whose subject
