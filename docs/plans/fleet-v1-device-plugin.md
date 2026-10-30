@@ -155,7 +155,7 @@ agent 干活 → information-management 记录过程和问题
 |---|---|
 | 指挥侧 OAuth 2.1 + 动态注册 + 同意页（CloudCLI） | 已有 |
 | 同意页写入类 scope 需再次输入密码 | 已有 |
-| 登录与同意页的 2FA（TOTP，RFC 6238） | **本轮在 CloudCLI 实现**（见对应 PR） |
+| 登录的 2FA（TOTP，RFC 6238）；同意页再确认密码 | **已在 CloudCLI 写好并通过测试**，待推送到 `ProfessorZhi/claudecodeui` |
 | 设备 `serveros enroll` 设备码登录 | 设计；依赖 Tokyo 对外地址（Tailscale / FQDN，owner 决定） |
 | 设备凭据轮换与吊销 | 设计；随 enroll 一起做 |
 
@@ -167,7 +167,7 @@ agent 干活 → information-management 记录过程和问题
 本轮（serveros）：node MCP `core`/`ops` 工具集；中枢看板三工具（`fleet-mcp-9`，48 个工具）；
 指挥侧 `fleet-work-drive`；本文档。
 本轮（ability-management）：`catalog.yaml` 与 `catalog list|search|install`；test-management 的 A/B 规则。
-本轮（CloudCLI）：登录 2FA。
+本轮（CloudCLI）：登录 2FA（TOTP、设置页开启、防重放），代码与测试已完成，待推送。
 
 需要 owner：Tokyo `claude remote-control`（M5 与实时清点）；Dell 设备编号；Windows 接入；
 第三方能力确认；OpenViking 采集开关；Tailscale / FQDN；生产日志白名单；飞书接收人。
