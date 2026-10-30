@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-8
+tool_surface_revision: fleet-mcp-9
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -392,6 +392,39 @@ tools:
       caller, which is why this stays a read. A surface with no inbox bound
       answers `inbox: NOT_CONFIGURED` rather than an empty list.
 
+  fleet_work_board:
+    verb: read
+    answers: >-
+      one project's requirement board: candidates awaiting the owner, and items
+      by state with their runs and evidence locations
+    answered_by: >-
+      the hub's Work Engine (state/serveros.db), the only copy of requirements
+      (design fleet-v1-resident-monitor-and-tokyo-hub section 4)
+    authorization: >-
+      fleet:read. A surface with no Work Engine bound answers
+      `board: NOT_CONFIGURED` rather than an empty board.
+
+  fleet_project_understanding:
+    verb: read
+    answers: >-
+      the owner's markdown records under records/projects/<project>/, as
+      written, with each record's update time
+    answered_by: the hub's records root
+    authorization: >-
+      fleet:read. `NOT_RECORDED` when nothing is written.
+
+  fleet_work_candidate_add:
+    verb: write
+    answers: >-
+      the candidate created, or the existing one for the same requirement from
+      the same source
+    answered_by: >-
+      the hub's Work Engine, recorded as source, observation, claim and
+      candidate so its provenance survives
+    authorization: >-
+      fleet:send. It only proposes: accepting, prioritising, numbering and
+      closing stay with the owner, and no verb on this surface does any of them.
+
 
 # ---------------------------------------------------------------------------
 # Addressability
@@ -685,7 +718,7 @@ native_mirror:
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 45
+  served_total: 48
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.

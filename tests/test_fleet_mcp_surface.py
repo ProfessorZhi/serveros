@@ -162,6 +162,8 @@ class ToolSurface(unittest.TestCase):
                 "fleet_read_session", "fleet_send_to_session", "fleet_get_run",
                 "fleet_status", "fleet_create_session", "fleet_interrupt_session",
                 "fleet_create_project", "fleet_delete_project", "fleet_inbox",
+                "fleet_work_board", "fleet_project_understanding",
+                "fleet_work_candidate_add",
             ]),
         )
 
@@ -181,13 +183,14 @@ class ToolSurface(unittest.TestCase):
         )
         self.assertEqual(fleet_tools.tool_names()[8:],
                          ["fleet_interrupt_session", "fleet_create_project",
-                          "fleet_delete_project", "fleet_inbox"])
+                          "fleet_delete_project", "fleet_inbox", "fleet_work_board",
+                          "fleet_project_understanding", "fleet_work_candidate_add"])
 
     def test_exactly_five_tools_are_not_read_only(self):
         writes = [t.name for t in fleet_tools.TOOLS if not t.annotations["readOnlyHint"]]
         self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session",
                                   "fleet_interrupt_session", "fleet_create_project",
-                                  "fleet_delete_project"])
+                                  "fleet_delete_project", "fleet_work_candidate_add"])
 
     def test_the_two_destructive_tools_are_named(self):
         """`fleet_interrupt_session` ends work in flight; `fleet_delete_project`

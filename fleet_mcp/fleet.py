@@ -38,6 +38,7 @@ from .audit import AuditLog, RateLimiter
 from .dispatch import DispatchGuard, delivery_receipt
 from .discovery import DiscoveryPool
 from .inbox import EventInbox, InboxError
+from .workboard import WorkBoard, WorkBoardError
 from . import cloudcli_native, core_lite_source, runtime_identity
 from .config import (CreateGrant, FleetConfig, OPERATOR_GRANT_VERBS,
                      provider_key)
@@ -221,7 +222,7 @@ class _AuthoredVerb:
 
 class FleetService:
     def __init__(self, config: FleetConfig, *, registry=None, providers=None,
-                 core_lite_source=None, attempts=None, inbox=None) -> None:
+                 core_lite_source=None, attempts=None, inbox=None, work=None) -> None:
         self.config = config
         self.registry = registry if registry is not None else load_registry(config.registry_path)
         self.providers: dict[str, DeviceProvider] = (
@@ -240,6 +241,10 @@ class FleetService:
         self.inbox = (inbox if inbox is not None
                       else EventInbox(config.inbox.path) if config.inbox is not None
                       else None)
+        #: The hub's requirement board, or None when this surface has none.
+        self.work = (work if work is not None
+                     else WorkBoard(config.work) if config.work is not None
+                     else None)
 
     # -- helpers -----------------------------------------------------------
 
@@ -509,6 +514,51 @@ class FleetService:
             raise refuse(BAD_REQUEST, str(exc)) from None
         result["inbox"] = "OK"
         return result
+
+    # -- the hub's requirement board (design §4) ------------------------------
+
+    def _board(self, principal: Principal, scope: str):
+        principal.require(scope)
+        self.admit(principal)
+        return self.work
+
+    _NO_BOARD = {"board": "NOT_CONFIGURED",
+                 "detail": "this Fleet surface has no Work Engine bound; an empty "
+                           "board here would read as 'nothing to do'"}
+
+    def work_board(self, principal: Principal, project: Any) -> dict[str, Any]:
+        """A project's board: candidates waiting for the owner, items by state."""
+        board = self._board(principal, SCOPE_READ)
+        if board is None:
+            return dict(self._NO_BOARD)
+        try:
+            return board.board(project) | {"board": "OK"}
+        except WorkBoardError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+
+    def project_understanding(self, principal: Principal, project: Any) -> dict[str, Any]:
+        """The owner's current records of what a project is and has decided."""
+        board = self._board(principal, SCOPE_READ)
+        if board is None:
+            return dict(self._NO_BOARD)
+        try:
+            return board.understanding(project) | {"board": "OK"}
+        except WorkBoardError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+
+    def work_candidate_add(self, principal: Principal, **fields: Any) -> dict[str, Any]:
+        """Propose one requirement, with its source and reason. Only the owner
+        accepts it; there is no verb here that does."""
+        board = self._board(principal, SCOPE_SEND)
+        if board is None:
+            return dict(self._NO_BOARD)
+        try:
+            result = board.propose(proposed_by=principal.name, **fields)
+        except WorkBoardError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+        except (ValueError, KeyError) as exc:
+            raise refuse(BAD_REQUEST, f"the Work Engine refused the proposal: {exc}") from None
+        return result | {"board": "OK"}
 
     def admit(self, principal: Principal) -> None:
         if self.limiter is not None:

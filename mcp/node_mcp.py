@@ -669,6 +669,36 @@ def tool_names() -> tuple[str, ...]:
 
 
 # ---------------------------------------------------------------------------
+# Toolsets. `TOOLS` above is the whole catalogue the daemon can answer; an
+# agent doing project work is served only `core`. What core answers is what a
+# working agent asks every day: where am I, where may I write, what can I use,
+# is this resource mine, which test environment holds which lease. The rest —
+# process traces, anomalies, alerts, hygiene sweeps, tunnels — is the node's
+# monitoring and operations surface. It belongs to serverosd and the Fleet hub,
+# and every tool here costs a description in every agent's context. `ops`
+# serves the whole catalogue for an operator or the hub; nothing is removed
+# from the daemon by narrowing what an agent is shown.
+# ---------------------------------------------------------------------------
+
+CORE_TOOLS: tuple[str, ...] = (
+    "device.show", "context.current", "path.resolve", "path.admit",
+    "ability.list", "ability.status", "ability.tree", "ability.inspect",
+    "ability.search", "ability.resolve",
+    "resource.summary", "runtime.status", "runtime.explain",
+    "environment.leases", "ports.ownership",
+)
+TOOLSETS: dict[str, tuple[str, ...]] = {"core": CORE_TOOLS, "ops": tool_names()}
+TOOLSET_ENV = "SERVEROS_NODE_MCP_TOOLSET"
+
+
+def served_tools(toolset: str = "ops") -> tuple[dict, ...]:
+    if toolset not in TOOLSETS:
+        raise ValueError(f"unknown toolset {toolset!r}; known: {sorted(TOOLSETS)}")
+    names = set(TOOLSETS[toolset])
+    return tuple(tool for tool in TOOLS if tool["name"] in names)
+
+
+# ---------------------------------------------------------------------------
 # The transport
 # ---------------------------------------------------------------------------
 
@@ -772,8 +802,11 @@ class NodeMcpServer:
     against a running control plane is a surface that gets tested by hand.
     """
 
-    def __init__(self, client=None) -> None:
+    def __init__(self, client=None, toolset: str = "ops") -> None:
         self.client = client or DaemonClient()
+        self.toolset = toolset
+        self.tools = served_tools(toolset)
+        self.names = tuple(tool["name"] for tool in self.tools)
 
     # -- MCP lifecycle -----------------------------------------------------
 
@@ -802,7 +835,7 @@ class NodeMcpServer:
         if method in ("notifications/initialized", "initialized"):
             return None  # a notification: no response, ever
         if method == "tools/list":
-            return _result(request_id, {"tools": [dict(t) for t in TOOLS]})
+            return _result(request_id, {"tools": [dict(t) for t in self.tools]})
         if method == "tools/call":
             return self._call_tool(request_id, params)
         if method == "ping":
@@ -819,16 +852,18 @@ class NodeMcpServer:
         name = params.get("name")
         arguments = params.get("arguments") or {}
 
-        if name not in tool_names():
+        if name not in self.names:
             # Named, not silently empty. A misspelled tool must not look like a
-            # tool that returned nothing.
+            # tool that returned nothing; one outside this toolset says where it is.
+            elsewhere = (f" It is in the ops toolset ({TOOLSET_ENV}=ops)."
+                         if name in tool_names() else "")
             return _result(request_id, {
                 "isError": True,
                 "content": [{"type": "text", "text":
-                             f"Unknown tool {name!r}. Available: {list(tool_names())}"}],
+                             f"Unknown tool {name!r}.{elsewhere} Available: {list(self.names)}"}],
             })
 
-        allowed = set(TOOLS[tool_names().index(name)]["inputSchema"]["properties"])
+        allowed = set(self.tools[self.names.index(name)]["inputSchema"]["properties"])
         unexpected = set(arguments) - allowed
         if unexpected:
             return _result(request_id, {
@@ -910,14 +945,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--socket", help="serverosd Unix socket path")
     parser.add_argument("--list-tools", action="store_true",
                        help="print the tool surface and exit")
+    parser.add_argument("--toolset", choices=sorted(TOOLSETS),
+                        default=os.environ.get(TOOLSET_ENV, "ops"),
+                        help=f"core (an agent's daily surface) or ops (everything); "
+                             f"default from {TOOLSET_ENV}, else ops")
     args = parser.parse_args(argv)
 
     if args.list_tools:
-        for tool in TOOLS:
+        for tool in served_tools(args.toolset):
             print(f"{tool['name']:<20} {tool['description'].splitlines()[0]}")
         return 0
 
-    server = NodeMcpServer(DaemonClient(Path(args.socket) if args.socket else None))
+    server = NodeMcpServer(DaemonClient(Path(args.socket) if args.socket else None),
+                           toolset=args.toolset)
     return serve(server=server)
 
 

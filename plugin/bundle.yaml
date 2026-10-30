@@ -249,6 +249,10 @@ mcp:
       # artifact contains files the build did not put there.
       env:
         PYTHONDONTWRITEBYTECODE: "1"
+        # An agent is served the daily `core` toolset (where am I, where may I
+        # write, what can I use). Monitoring and operations tools stay in the
+        # daemon and are served by `ops` to an operator or the Fleet hub.
+        SERVEROS_NODE_MCP_TOOLSET: core
 
     - name: serveros-agent
       # Separate from serveros-node: this facade may call provider APIs after

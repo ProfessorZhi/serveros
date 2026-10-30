@@ -458,6 +458,9 @@ class FleetConfig:
     #: Absent means this surface has no inbox: `fleet_inbox` says so rather
     #: than answering with an empty list that reads like "nothing happened".
     inbox: InboxBinding | None = None
+    #: The hub's Work Engine and records. Absent means this surface has no
+    #: board: the work tools say so rather than showing an empty board.
+    work: "WorkBinding | None" = None
     registry_path: Path | None = None
     #: Which OS account on this device is the device's OWN — the one the bare
     #: runtime tag belongs to. It is authored by the operator, never inferred:
@@ -1324,6 +1327,15 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
     inbox_raw = raw.get("inbox") or {}
     inbox = InboxBinding(path=Path(_expand(inbox_raw["path"]))) if inbox_raw.get("path") else None
 
+    work_raw = raw.get("work") or {}
+    work = None
+    if work_raw.get("state_dir"):
+        from .workboard import WorkBinding
+        work = WorkBinding(
+            state_dir=Path(_expand(work_raw["state_dir"])),
+            records_root=(Path(_expand(work_raw["records_root"]))
+                          if work_raw.get("records_root") else None))
+
     registry_raw = raw.get("registry_path")
     registry_path = Path(_expand(registry_raw)) if registry_raw else None
 
@@ -1337,6 +1349,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             policy=policy,
             audit=audit,
             inbox=inbox,
+            work=work,
             registry_path=registry_path,
             device_default_account=device_default_account,
         )
