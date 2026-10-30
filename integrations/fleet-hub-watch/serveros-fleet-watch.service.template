@@ -1,0 +1,27 @@
+# TEMPLATE — SOURCE ONLY. NOT INSTALLED, NOT ENABLED, NOT RUN.
+#
+# Rendering input for the hub watcher's user unit. Every @HUB_...@ is
+# substituted by the operator; nothing has a default. Enabling it on Tokyo is
+# step M5 of docs/plans/fleet-v1-resident-monitor-and-tokyo-hub.md and is the
+# owner's decision.
+
+[Unit]
+Description=ServerOS Fleet hub watcher (discovers runs, records outcomes once)
+Documentation=@HUB_DOC_URL@
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=PYTHONPATH=@HUB_REPO@:@HUB_REPO@/integrations/fleet-next-agent-monitor:@HUB_REPO@/integrations/fleet-hub-watch
+ExecStart=@HUB_PYTHON@ -m fleet_hub_watch --config @HUB_BINDING@ --interval 30
+Restart=on-failure
+RestartSec=30
+MemoryMax=256M
+TasksMax=32
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target
