@@ -20,7 +20,7 @@
 | 设备 | 账号 / runtime | 角色 |
 |---|---|---|
 | Tokyo `device:tokyo-shared-dev-01` | `vince` / `claude` | **中枢**：Fleet Next 入口、事件收件箱、常驻监控、项目理解与需求看板、LLM 总管会话 |
-| Dell A6000 `device:llm-lab-dell` | **`fjd`（我们是这台机器的管理员）** / `claude-fjd` | **计算节点 + 个人项目**：GPU 计算任务和个人项目都在这里。`vince` runtime 只保留做无损过渡，不再派发新工作 |
+| Dell A6000 `device:llm-lab-dell` | **`fjd`（owner 是这台机器的管理员）** / `claude-fjd` | **公司 GPU 计算 / 模型部署优先**；机器大部分时间闲置，owner 作为管理员用闲置算力做个人项目。公司任务在跑或排队时让路。`vince` runtime 只保留做无损过渡，不再派发新工作 |
 | FJPCOS `device:work-fj` | 授权用户 / `claude` | Windows 工作站 |
 
 Dell 上的约束不变：不得抢占他人的 GPU 任务，不得重启 Strata，不得占用 GPU 显存来做监控。core-lite 在 Dell 上只**读**显存摘要。
