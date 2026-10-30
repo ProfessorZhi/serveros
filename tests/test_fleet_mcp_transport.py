@@ -376,7 +376,7 @@ class HttpTransport(_HttpHarness):
         tools_out = payload["result"]["tools"]
         # The served surface is the hand-written Fleet tools PLUS the 31
         # inherited CloudCLI verbs — one MCP surface, discoverable whole.
-        self.assertEqual(len(tools_out), 45)
+        self.assertEqual(len(tools_out), 48)
         names = {tool["name"] for tool in tools_out}
         self.assertIn("fleet_list_devices", names)
         writes = [t["name"] for t in tools_out if not t["annotations"]["readOnlyHint"]]
@@ -385,7 +385,7 @@ class HttpTransport(_HttpHarness):
                         and not n.startswith("fleet_cloudcli_")]
         self.assertEqual(fleet_writes, ["fleet_send_to_session", "fleet_create_session",
                                         "fleet_interrupt_session", "fleet_create_project",
-                                        "fleet_delete_project"])
+                                        "fleet_delete_project", "fleet_work_candidate_add"])
         # ...and the inherited CloudCLI mirror contributes its own fifteen writes,
         # carrying CloudCLI's annotations rather than this surface's opinion.
         self.assertEqual(
@@ -639,7 +639,7 @@ class OAuthFlow(_HttpHarness):
             token=payload["access_token"],
         )
         self.assertEqual(status, 200)
-        self.assertEqual(len(body["result"]["tools"]), 45)  # 12 + 31 + manifest + capability
+        self.assertEqual(len(body["result"]["tools"]), 48)  # 15 + 31 + manifest + capability
 
     def test_a_code_is_single_use(self):
         status, headers, _ = self._approve()

@@ -32,7 +32,10 @@ SERVER_VERSION = "0.2.0"
 # `fleet-mcp-8`: `fleet_inbox`, the twelfth authored tool (45 total) — the
 # hub's event inbox (ARCHITECTURE §5.1): run and node facts recorded once, read
 # by sequence number, with a per-caller cursor that only moves forward.
-TOOL_SURFACE_REVISION = "fleet-mcp-8"
+# `fleet-mcp-9`: the hub's requirement board — `fleet_work_board`,
+# `fleet_project_understanding` (reads) and `fleet_work_candidate_add` (a
+# proposal with its source; only the owner accepts). Fifteen authored, 48 total.
+TOOL_SURFACE_REVISION = "fleet-mcp-9"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

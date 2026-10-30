@@ -717,7 +717,8 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(run_build(self.args("--write")).returncode, 0)
         for name in (".mcp.json", ".codex-mcp.json"):
             server = json.loads((self.out / name).read_text())["mcpServers"]["serveros-node"]
-            self.assertEqual(server["env"], {"PYTHONDONTWRITEBYTECODE": "1"})
+            self.assertEqual(server["env"], {"PYTHONDONTWRITEBYTECODE": "1",
+                                             "SERVEROS_NODE_MCP_TOOLSET": "core"})
 
     def test_starting_the_declared_server_writes_nothing(self):
         """The same property end-to-end: run the entry point the manifest names,

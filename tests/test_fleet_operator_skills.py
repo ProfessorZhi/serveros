@@ -39,6 +39,7 @@ EXPECTED_SKILLS = {
     "fleet-plugin-update",
     "fleet-reuse-idle-session",
     "fleet-safety-boundaries",
+    "fleet-work-drive",
 }
 
 # The exact old instructions this revision had to remove. They are kept as

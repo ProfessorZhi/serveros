@@ -35,6 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .workboard import CANDIDATE_KINDS, SOURCE_KINDS
 from . import cloudcli_native
 from .errors import BAD_REQUEST, FleetRefusal, refuse
 from .fleet import Principal
@@ -206,6 +207,21 @@ def _inbox(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.read_inbox(
         ctx.principal, since=args.get("since"), kinds=kinds, level=args.get("level"),
         limit=args.get("limit", 50), ack=bool(args.get("ack", False)))
+
+
+def _work_board(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.work_board(ctx.principal, args.get("project"))
+
+
+def _project_understanding(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.project_understanding(ctx.principal, args.get("project"))
+
+
+def _work_candidate_add(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.work_candidate_add(
+        ctx.principal, project=args.get("project"), title=args.get("title"),
+        kind=args.get("kind"), source_kind=args.get("source_kind"),
+        source=args.get("source"), reason=args.get("reason"))
 
 
 def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -808,6 +824,74 @@ TOOLS: tuple[Tool, ...] = (
         # device, session or other caller changes, so this stays a read.
         annotations=_read_only(),
         handler=_inbox,
+    ),
+    Tool(
+        name="fleet_work_board",
+        title="Read a project's requirement board",
+        description=(
+            "The hub's requirement board for one project: candidates waiting for "
+            "the owner's decision (each with where it came from), and items to "
+            "do, doing, delivered for review, and done — each with its runs and "
+            "where their evidence is. Read from the hub's Work Engine, the only "
+            "copy. `board: NOT_CONFIGURED` means this surface has no board, not "
+            "that there is nothing to do."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"project": _string("Project name, e.g. serveros.")},
+            "required": ["project"],
+            "additionalProperties": False,
+        },
+        annotations=_read_only(),
+        handler=_work_board,
+    ),
+    Tool(
+        name="fleet_project_understanding",
+        title="Read a project's current understanding",
+        description=(
+            "What the owner's records currently say a project is: its goals, key "
+            "decisions and open questions, as written, with when each record was "
+            "last updated. `NOT_RECORDED` means nothing is written yet."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"project": _string("Project name, e.g. serveros.")},
+            "required": ["project"],
+            "additionalProperties": False,
+        },
+        annotations=_read_only(),
+        handler=_project_understanding,
+    ),
+    Tool(
+        name="fleet_work_candidate_add",
+        title="Propose a requirement",
+        description=(
+            "Put one requirement on a project's board as a candidate. Say where "
+            "it came from (a conversation, a Feishu message, an idea, an online "
+            "error, an issue) and why it matters. It waits for the owner, who "
+            "accepts, defers or rejects it; nothing here accepts it, assigns a "
+            "number or starts work. Proposing the same requirement from the same "
+            "source again returns the existing candidate."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "project": _string("Project name, e.g. serveros."),
+                "title": _string("One line: what should change."),
+                "kind": {"type": "string", "enum": list(CANDIDATE_KINDS),
+                         "description": "What kind of requirement this is."},
+                "source_kind": {"type": "string", "enum": list(SOURCE_KINDS),
+                                "description": "Where it came from."},
+                "source": _string("Where to find the source: a link, a message "
+                                  "reference, or a short description of the conversation."),
+                "reason": _string("Why it matters, and what done looks like."),
+            },
+            "required": ["project", "title", "kind", "source_kind", "source", "reason"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": False,
+                     "idempotentHint": True, "openWorldHint": False},
+        handler=_work_candidate_add,
     ),
 )
 

@@ -434,7 +434,7 @@ class TheServedSurfaceIsUnchangedTest(unittest.TestCase):
     def test_the_tool_surface_is_still_forty_four_with_the_legacy_nine(self):
         from fleet_mcp import cloudcli_native, tools
         names = [t.name for t in tools.SERVED_TOOLS]
-        self.assertEqual(len(names), 45)
+        self.assertEqual(len(names), 48)
         self.assertEqual(len(cloudcli_native.NATIVE_TOOLS), 31)
         for nine in ("fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
                      "fleet_read_session", "fleet_send_to_session", "fleet_get_run",

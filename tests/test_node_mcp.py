@@ -377,3 +377,48 @@ def test_resolution_input_document_reaches_daemon_without_a_second_evaluator():
     response = rpc(srv, "tools/call", name="ability.resolve", arguments=arguments)
     assert not response["result"].get("isError")
     assert daemon.calls == [("ability.resolve", arguments)]
+
+
+# -- toolsets ------------------------------------------------------------------
+
+def test_core_is_a_subset_of_the_catalogue_and_ops_is_all_of_it():
+    assert set(mcp_mod.CORE_TOOLS) <= set(mcp_mod.tool_names())
+    assert mcp_mod.TOOLSETS["ops"] == mcp_mod.tool_names()
+    assert len(mcp_mod.CORE_TOOLS) == len(set(mcp_mod.CORE_TOOLS))
+
+
+def test_core_serves_an_agents_daily_questions_and_no_monitoring():
+    """An agent doing project work asks where it is, where it may write and
+    what it can use. Alerts, anomalies, traces and hygiene sweeps are the
+    node's monitoring surface and are not in an agent's context."""
+    core = set(mcp_mod.CORE_TOOLS)
+    for needed in ("context.current", "path.resolve", "path.admit",
+                   "ability.search", "ability.resolve", "resource.summary"):
+        assert needed in core, needed
+    for monitoring in ("alert.list", "alert.inspect", "anomaly.list", "anomaly.explain",
+                       "process.trace", "process.top", "runtime.hygiene", "fs.hygiene",
+                       "resource.anomaly.list", "tunnel.list"):
+        assert monitoring not in core, monitoring
+
+
+def test_a_core_server_lists_only_core_and_names_where_the_rest_is():
+    srv = NodeMcpServer(FakeDaemon(), toolset="core")
+    listed = [t["name"] for t in rpc(srv, "tools/list")["result"]["tools"]]
+    assert listed == [n for n in mcp_mod.tool_names() if n in mcp_mod.CORE_TOOLS]
+    refused = rpc(srv, "tools/call", name="alert.list", arguments={})["result"]
+    assert refused["isError"] and "ops toolset" in refused["content"][0]["text"]
+    unknown = rpc(srv, "tools/call", name="no.such", arguments={})["result"]
+    assert unknown["isError"] and "ops toolset" not in unknown["content"][0]["text"]
+
+
+def test_an_unknown_toolset_is_refused():
+    with pytest.raises(ValueError):
+        mcp_mod.served_tools("everything")
+
+
+def test_the_plugin_serves_core_to_agents():
+    import yaml
+
+    bundle = yaml.safe_load((REPO / "plugin/bundle.yaml").read_text())
+    node = next(s for s in bundle["mcp"]["servers"] if s["name"] == "serveros-node")
+    assert node["env"][mcp_mod.TOOLSET_ENV] == "core"
