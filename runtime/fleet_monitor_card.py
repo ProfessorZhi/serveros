@@ -909,7 +909,7 @@ def is_urgent(model):
                for item in (model.get("attention") or []))
 
 
-_TEMPLATES = {"OK": "green", "ATTENTION": "orange",
+_TEMPLATES = {"OK": "green", "ATTENTION": "yellow",
               "CRITICAL": "red", "UNCONFIRMED": "grey"}
 
 

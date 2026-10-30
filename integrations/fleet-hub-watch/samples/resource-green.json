@@ -1,0 +1,103 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default"
+  },
+  "header": {
+    "template": "green",
+    "title": {
+      "tag": "plain_text",
+      "content": "✅ Fleet 资源播报 · 正常 · [示例]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "10-29 周四 · 14:30 更新（北京时间）"
+    }
+  },
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "⚠️ 示例数据 · 非实时采集"
+      },
+      {
+        "tag": "markdown",
+        "content": "**2 台设备** · 🚨 报警 0 · ⚠️ 注意 0 · ✅ 正常 2 · ⚪ 无法确认 0"
+      },
+      {
+        "tag": "hr"
+      },
+      {
+        "tag": "collapsible_panel",
+        "element_id": "devaa6c4f4755",
+        "expanded": false,
+        "header": {
+          "title": {
+            "tag": "markdown",
+            "content": "**✅ Tokyo · 正常**"
+          },
+          "vertical_align": "center",
+          "icon": {
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined",
+            "size": "16px 16px"
+          },
+          "icon_position": "follow_text",
+          "icon_expanded_angle": -180
+        },
+        "border": {
+          "color": "grey",
+          "corner_radius": "5px"
+        },
+        "padding": "8px 8px 8px 8px",
+        "vertical_spacing": "8px",
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "CPU 18%\n内存 61% / 64 GiB\nSwap 4%（水位）\n内存压力 some 0.0% · full 0.0%\n磁盘 ROOT_FS 41% · 余 118 GiB\n磁盘 DATA 57% · 余 860 GiB\n读数时间 10-29 14:29"
+          }
+        ]
+      },
+      {
+        "tag": "collapsible_panel",
+        "element_id": "dev7d895145e0",
+        "expanded": false,
+        "header": {
+          "title": {
+            "tag": "markdown",
+            "content": "**✅ Dell A6000 · 正常**"
+          },
+          "vertical_align": "center",
+          "icon": {
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined",
+            "size": "16px 16px"
+          },
+          "icon_position": "follow_text",
+          "icon_expanded_angle": -180
+        },
+        "border": {
+          "color": "grey",
+          "corner_radius": "5px"
+        },
+        "padding": "8px 8px 8px 8px",
+        "vertical_spacing": "8px",
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "CPU 72%\n内存 64% / 256 GiB\n磁盘 DATA 78% · 余 820 GiB\nGPU0 显存 41/48 GiB\nGPU1 显存 12/48 GiB\n读数时间 10-29 14:29"
+          }
+        ]
+      },
+      {
+        "tag": "hr"
+      },
+      {
+        "tag": "markdown",
+        "content": "只读 · 未自动停止、重启或清理任何东西 · 工作日 08:00–20:00 每 30 分钟原位更新，出现报警立即更新"
+      }
+    ]
+  }
+}

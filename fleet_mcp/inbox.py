@@ -31,7 +31,7 @@ from typing import Any, Callable, Iterator
 KINDS = frozenset({
     "run.completed", "run.failed", "run.unknown", "run.stalled",
     "decision.required", "directive.issued", "preempted",
-    "node.unreachable", "node.pressure", "node.service_down",
+    "node.unreachable", "node.pressure", "node.service_down", "node.recovered",
 })
 #: `auto` is recorded and read; `notify` is also told to a person; `decide`
 #: needs one.
@@ -246,6 +246,14 @@ class EventInbox:
         if ack:
             result["cursor"] = self._advance(subscriber, position)
         return result
+
+    def ack(self, subscriber: str, seq: int) -> int:
+        """Move `subscriber`'s cursor to `seq` (never backwards). Returns it."""
+        if not isinstance(subscriber, str) or not subscriber:
+            raise InboxError("a subscriber is required")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            raise InboxError("`seq` must be a non-negative integer")
+        return self._advance(subscriber, seq)
 
     def _advance(self, subscriber: str, seq: int) -> int:
         with self._connect() as conn:

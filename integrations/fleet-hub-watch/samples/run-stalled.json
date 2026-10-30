@@ -1,0 +1,66 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default"
+  },
+  "header": {
+    "template": "yellow",
+    "title": {
+      "tag": "plain_text",
+      "content": "⚠️ 注意 · 任务运行时间过长 · lab-notes · [示例]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "开始 10-29 12:20 · 持续 2 小时 10 分钟"
+    }
+  },
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "⚠️ 示例数据 · 非实时采集"
+      },
+      {
+        "tag": "markdown",
+        "content": "**现象** run-22c1（Dell A6000）仍在运行，已超过 2 小时\n**影响** 待确认\n**建议** 确认任务是否仍在推进；长时间无进展可考虑中断"
+      },
+      {
+        "tag": "collapsible_panel",
+        "element_id": "det901b934dd1",
+        "expanded": false,
+        "header": {
+          "title": {
+            "tag": "markdown",
+            "content": "**技术详情**"
+          },
+          "vertical_align": "center",
+          "icon": {
+            "tag": "standard_icon",
+            "token": "down-small-ccm_outlined",
+            "size": "16px 16px"
+          },
+          "icon_position": "follow_text",
+          "icon_expanded_angle": -180
+        },
+        "border": {
+          "color": "grey",
+          "corner_radius": "5px"
+        },
+        "padding": "8px 8px 8px 8px",
+        "vertical_spacing": "8px",
+        "elements": [
+          {
+            "tag": "markdown",
+            "content": "设备 device:llm-lab-dell\n对象 run:run-22c1\n首次观测 10-29 12:20\n最近观测 10-29 14:20"
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "只读 · 未自动停止、重启或清理任何东西"
+      }
+    ]
+  }
+}
