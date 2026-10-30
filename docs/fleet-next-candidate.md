@@ -2,7 +2,7 @@
 
 > **HISTORICAL (2026-10-14 candidate).** This describes the five-branch
 > candidate as it stood at `fleet-mcp-3`; that work is now on `main`. The
-> current surface is `fleet-mcp-7`: **44 tools = 11 hand-written + 31 mirrored
+> current surface is `fleet-mcp-8`: **45 tools = 12 hand-written + 31 mirrored
 > CloudCLI verbs + 2 capability reads**, and the consent step is account +
 > password + TOTP with a PAT fallback. Numbers, revisions and status rows below
 > are what was measured at the time and are kept as a record, not as current

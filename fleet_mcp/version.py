@@ -29,7 +29,10 @@ SERVER_VERSION = "0.2.0"
 # project the surface would not accept. No tool was added and no result shape
 # changed, but the schema of one tool did: a client that cached `tools/list` at
 # `-6` would call it the same way and keep failing.
-TOOL_SURFACE_REVISION = "fleet-mcp-7"
+# `fleet-mcp-8`: `fleet_inbox`, the twelfth authored tool (45 total) — the
+# hub's event inbox (ARCHITECTURE §5.1): run and node facts recorded once, read
+# by sequence number, with a per-caller cursor that only moves forward.
+TOOL_SURFACE_REVISION = "fleet-mcp-8"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

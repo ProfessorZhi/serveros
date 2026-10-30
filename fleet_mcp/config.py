@@ -441,6 +441,12 @@ class AuditBinding:
 
 
 @dataclass(frozen=True)
+class InboxBinding:
+    #: The hub's event inbox (ARCHITECTURE §24: SQLite local to its owner).
+    path: Path
+
+
+@dataclass(frozen=True)
 class FleetConfig:
     source: Path | None
     local_device_ref: str
@@ -449,6 +455,9 @@ class FleetConfig:
     server: ServerBinding = field(default_factory=ServerBinding)
     policy: PolicyBinding = field(default_factory=PolicyBinding)
     audit: AuditBinding | None = None
+    #: Absent means this surface has no inbox: `fleet_inbox` says so rather
+    #: than answering with an empty list that reads like "nothing happened".
+    inbox: InboxBinding | None = None
     registry_path: Path | None = None
     #: Which OS account on this device is the device's OWN — the one the bare
     #: runtime tag belongs to. It is authored by the operator, never inferred:
@@ -1312,6 +1321,9 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             rate_limit_per_minute=int(audit_raw.get("rate_limit_per_minute", 240)),
         )
 
+    inbox_raw = raw.get("inbox") or {}
+    inbox = InboxBinding(path=Path(_expand(inbox_raw["path"]))) if inbox_raw.get("path") else None
+
     registry_raw = raw.get("registry_path")
     registry_path = Path(_expand(registry_raw)) if registry_raw else None
 
@@ -1324,6 +1336,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             server=server,
             policy=policy,
             audit=audit,
+            inbox=inbox,
             registry_path=registry_path,
             device_default_account=device_default_account,
         )

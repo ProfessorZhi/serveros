@@ -154,14 +154,14 @@ class Harness:
 class ToolSurface(unittest.TestCase):
     """What a connector reads before it decides what it is allowed to do."""
 
-    def test_the_surface_is_exactly_the_eleven_named_tools(self):
+    def test_the_surface_is_exactly_the_twelve_named_tools(self):
         self.assertEqual(
             sorted(fleet_tools.tool_names()),
             sorted([
                 "fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
                 "fleet_read_session", "fleet_send_to_session", "fleet_get_run",
                 "fleet_status", "fleet_create_session", "fleet_interrupt_session",
-                "fleet_create_project", "fleet_delete_project",
+                "fleet_create_project", "fleet_delete_project", "fleet_inbox",
             ]),
         )
 
@@ -181,7 +181,7 @@ class ToolSurface(unittest.TestCase):
         )
         self.assertEqual(fleet_tools.tool_names()[8:],
                          ["fleet_interrupt_session", "fleet_create_project",
-                          "fleet_delete_project"])
+                          "fleet_delete_project", "fleet_inbox"])
 
     def test_exactly_five_tools_are_not_read_only(self):
         writes = [t.name for t in fleet_tools.TOOLS if not t.annotations["readOnlyHint"]]

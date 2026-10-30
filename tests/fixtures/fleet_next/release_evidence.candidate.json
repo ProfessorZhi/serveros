@@ -23,7 +23,7 @@
       "fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
       "fleet_read_session", "fleet_send_to_session", "fleet_get_run", "fleet_status",
       "fleet_create_session", "fleet_interrupt_session", "fleet_create_project",
-      "fleet_delete_project",
+      "fleet_delete_project", "fleet_inbox",
       "fleet_cloudcli_overview", "fleet_cloudcli_projects_list",
       "fleet_cloudcli_sessions_list", "fleet_cloudcli_session_get",
       "fleet_cloudcli_session_read", "fleet_cloudcli_run_get",
