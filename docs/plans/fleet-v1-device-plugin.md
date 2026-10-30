@@ -68,17 +68,33 @@ C++ 的 `native/node-core` 负责高频采集，读数经 serverosd 汇总，再
 | 设备 | 角色 | profile | 额外常驻 |
 |---|---|---|---|
 | Tokyo `device:tokyo-shared-dev-01`（vince） | 主开发、A/B 容器、中枢 | `linux-work` | `build-release`；playwright、cloudcli MCP；指挥侧插件只装这台 |
-| Dell A6000 `device:llm-lab-dell`（fjd） | GPU 计算、个人项目 | `linux-work` + 计算礼仪 | 设备说明写明：不抢 GPU、不重启 Strata、显存只读 |
+| Dell A6000 `device:llm-lab-dell`（fjd） | 公司 GPU 计算 / 模型部署优先；闲置时 owner（管理员）做个人项目 | GPU 角色组合（`dell-gpu-compute`，serveros#454 草案），不套 `linux-work` | 见 2.2 |
 | FJPCOS `device:work-fj`（Windows） | 真实客户端 E2E、浏览器、办公文档 | Windows profile（待建） | computer-use、browser MCP；真实客户端 E2E 能力 |
 | DellPCOS `device:personal-dell` | 个人工作站 | 不纳入公司中枢 | — |
 | 共享网关、生产服务器 | 取证来源 | 不装 serveros | Tokyo 上只读查询 |
 
-现状差距（来自实测快照，Tokyo 2026-10-20、Windows 2026-09-12 恢复记录、Dell 无记录）：
-- Tokyo 两个 agent 都没装 workspace-management / test-management；opencli 一族 7 个、
-  MarketOps 4 个插件、muc-playwright-e2e 常驻；PR 与开发流程各有两份。
-- Claude Code 与 Codex 装的不一样，同一台设备两种 agent 行为不同。
-- Windows 的 skill 名是旧的（`cc-codex-ability-management`、`workspace-maintainer`）且未接入 Fleet；
-  Dell 在 ability-management 里没有设备编号。
+### 2.2 Dell A6000：公司 GPU 优先，闲置时 owner 自用
+
+- **归属不变**：`ownership: company`，角色 `gpu-compute-worker` + `development-worker`。
+- **使用顺序**：公司的 GPU 计算与模型部署优先。机器大部分时间闲置；owner 是这台机器的管理员，
+  闲置时用它做个人项目，这是常设许可，不需要每次另批。公司任务在跑或排队时，个人任务让路
+  （不抢显存、不抢占、可被中断）。
+- **个人项目不进公司流程**：不建公司 Work Item、不发公司飞书汇报、不把个人项目的源码和数据
+  同步到 Tokyo。公司委派到这台的 GPU 任务照常走 Work Item。
+- **硬约束**：不抢别人的 GPU 任务、不重启 Strata、监控只读显存。
+- **能力组合**：常驻核心之外只加 GPU 相关（显存 / 利用率只读读数、模型服务生命周期、隔离环境、
+  基准测试——后三者目前缺失，见 #39），不套 Tokyo 的开发全家桶，也不套北京专用的
+  `workspace-management` 写法。
+
+### 2.3 现状（2026-10-30 实测，ability-management#39 收口回执）
+
+| 设备 | 用户级观测 | 要点 |
+|---|---|---|
+| Tokyo | 77（Claude 50 / Codex 27） | `serveros-fleet-ingress` 仍是旧 8 skill；`hwz-server-os-linux-work` 安装记录与运行解析版本不一致；`hwz-server-os`、`serveros-testing` 未装；36 个 skill 在登记表里没有本设备安装记录（F39） |
+| Dell A6000 | 5 + 沙箱 3，全是内置插件 | 没有任何 serveros 能力、skill、MCP、hook；fjd 本人 HOME 与 CloudCLI 沙箱 HOME 是两个范围，同名插件内容不同；无模型服务栈 |
+| FJPCOS | 54（Claude 29 / Codex 25） | skill 仍是旧名；8 条 hook 写的是另一台 Linux 的路径，在 Windows 上恒不执行；Claude `bypassPermissions`、Codex `danger-full-access`，待 owner 确认 |
+
+三台都没有任何一条能力被确认为就绪或生效；登记表的安装记录卡在设备注册（F39），需 owner 授权。
 
 处理顺序：Tokyo 上 `claude remote-control` → `control_plane.py readback` 实时清点三台 → 按本表出
 增删变更单 → owner 批准 → 一个 `--rev` 推送到三台 → 读回一致。
@@ -169,5 +185,5 @@ agent 干活 → information-management 记录过程和问题
 本轮（ability-management）：`catalog.yaml` 与 `catalog list|search|install`；test-management 的 A/B 规则。
 本轮（CloudCLI）：登录 2FA（TOTP、设置页开启、防重放），代码与测试已完成，待推送。
 
-需要 owner：Tokyo `claude remote-control`（M5 与实时清点）；Dell 设备编号；Windows 接入；
+需要 owner：Tokyo `claude remote-control`（M5）；设备注册（F39，Tokyo / Dell 的安装记录才能落账）；Windows hook 与权限姿态；
 第三方能力确认；OpenViking 采集开关；Tailscale / FQDN；生产日志白名单；飞书接收人。
