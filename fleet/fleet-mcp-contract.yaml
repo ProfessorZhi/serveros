@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-7
+tool_surface_revision: fleet-mcp-8
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -377,6 +377,21 @@ tools:
       true` after an archive. That is a statement about the present; a cached
       answer would replay the past.
 
+  fleet_inbox:
+    verb: read
+    answers: the hub's recorded run and node facts, oldest first, each fact once
+    answered_by: this surface's own event inbox (ARCHITECTURE §24, SQLite local
+      to the hub), written by the resident watcher, never by a caller
+    authorization: >-
+      fleet:read. Only events for devices this registry enrolls are returned;
+      the rest are skipped and still move `next_since`, so a cursor never parks
+      in front of an event its caller can never read.
+    cursor: >-
+      Per principal and forward-only. `ack: true` advances the caller's own
+      cursor to `next_since`; it changes nothing on any device, session or other
+      caller, which is why this stays a read. A surface with no inbox bound
+      answers `inbox: NOT_CONFIGURED` rather than an empty list.
+
 
 # ---------------------------------------------------------------------------
 # Addressability
@@ -652,7 +667,7 @@ native_mirror:
   # The CloudCLI native surface, inherited whole. The 31 verbs are NOT
   # enumerated here: the surface is DERIVED once, in
   # `fleet_mcp/cloudcli_native.py`, and the MCP server serves it alongside the
-  # hand-written eleven. Restating 31 rows here would be a second copy that
+  # hand-written twelve. Restating 31 rows here would be a second copy that
   # drifts the first time CloudCLI adds a parameter.
   #
   # Two of the device's verbs are NOT mirrored: `project_create` and
@@ -666,11 +681,11 @@ native_mirror:
   native_version_recorded: '1.40.0'
   count: 31
   extension_claimed: ['project_create', 'project_delete']
-  # The hand-written eleven, the 31 mirrored verbs, plus the two read-only tools
+  # The hand-written twelve, the 31 mirrored verbs, plus the two read-only tools
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 44
+  served_total: 45
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.

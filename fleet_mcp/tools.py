@@ -198,6 +198,16 @@ def _status(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.status(ctx.principal)
 
 
+def _inbox(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    kinds = args.get("kinds")
+    if kinds is not None and (not isinstance(kinds, list)
+                              or not all(isinstance(k, str) for k in kinds)):
+        raise refuse(BAD_REQUEST, "`kinds` must be a list of strings")
+    return ctx.service.read_inbox(
+        ctx.principal, since=args.get("since"), kinds=kinds, level=args.get("level"),
+        limit=args.get("limit", 50), ack=bool(args.get("ack", False)))
+
+
 def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     project = args.get("project")
     if not isinstance(project, str) or not project.strip():
@@ -764,6 +774,40 @@ TOOLS: tuple[Tool, ...] = (
         annotations={"readOnlyHint": False, "destructiveHint": True,
                      "idempotentHint": False, "openWorldHint": True},
         handler=_delete_project,
+    ),
+    Tool(
+        name="fleet_inbox",
+        title="Read the event inbox",
+        description=(
+            "What happened to runs and nodes across the fleet, oldest first: a "
+            "run that completed with real output, failed, stalled or could not be "
+            "confirmed; a run waiting for a decision; a node under pressure, with "
+            "a service down, or unreachable. Each fact appears once.\n\n"
+            "Page with `since` (the `next_since` of the previous page). Without "
+            "`since` you read from your own cursor; `ack: true` moves your cursor "
+            "to `next_since`. Cursors are per caller and only move forward.\n\n"
+            "`run.unknown` means the outcome could not be confirmed. It is not a "
+            "success and not a failure. `inbox: NOT_CONFIGURED` means this surface "
+            "has no inbox, not that nothing happened."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "since": _integer("Return events after this sequence number. "
+                                  "Omit to read from your own cursor.", minimum=0),
+                "kinds": {"type": "array", "items": {"type": "string"},
+                          "description": "Only these kinds, e.g. run.failed, "
+                                         "decision.required, node.pressure."},
+                "level": _string("Only this level: auto, notify or decide."),
+                "limit": _integer("Page size.", minimum=1, maximum=200, default=50),
+                "ack": _boolean("Advance your own cursor to `next_since`."),
+            },
+            "additionalProperties": False,
+        },
+        # `ack` moves only the caller's own read position; nothing on any
+        # device, session or other caller changes, so this stays a read.
+        annotations=_read_only(),
+        handler=_inbox,
     ),
 )
 

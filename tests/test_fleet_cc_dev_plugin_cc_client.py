@@ -11,7 +11,7 @@ make a real client test meaningful and keeps them apart:
   tools, driven over stdio by a fixture device, with a `fleet:read` principal.
 
 The negative cases are the point of the second half: discovery advertises all
-44 tools, and a write is still refused `SCOPE_DENIED` before the fake provider
+45 tools, and a write is still refused `SCOPE_DENIED` before the fake provider
 is reached. No network, no credential, no model call, and the `claude` CLI is
 not invoked here; the real-client run is `run_cc_client_e2e.py`, whose receipt
 records `PLUGIN_LOAD_OK` / `MCP_INITIALIZE_OK` / `TOOLS_LIST_OK` / `AUTH_SCOPE`
@@ -205,8 +205,8 @@ class TheProtocolSurface(unittest.TestCase):
     def test_discovery_is_all_44_tools_and_is_not_entitlement(self) -> None:
         tools = self.rpc("tools/list")["result"]["tools"]
         names = [tool["name"] for tool in tools]
-        self.assertEqual(len(names), 44)
-        self.assertEqual(len(set(names)), 44)
+        self.assertEqual(len(names), 45)
+        self.assertEqual(len(set(names)), 45)
         self.assertIn("fleet_list_devices", names)
         self.assertIn("fleet_send_to_session", names)
         self.assertIn("fleet_cloudcli_native_capability", names)

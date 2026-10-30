@@ -163,7 +163,7 @@ class TheSchemaCarriesTheRuntimeAxis(unittest.TestCase):
         self.assertEqual(tool.input_schema["required"], ["device_ref"])
 
     def test_the_surface_is_still_forty_four_tools_and_six_scopes(self):
-        self.assertEqual(len(tools_mod.SERVED_TOOLS), 44)
+        self.assertEqual(len(tools_mod.SERVED_TOOLS), 45)
         self.assertEqual(len(tools_mod.NATIVE_MIRROR_TOOLS), 31)
         self.assertEqual(len(scopes_mod.ALLOWED_SCOPES), 6)
 

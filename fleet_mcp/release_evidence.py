@@ -122,7 +122,10 @@ ID = re.compile(r'^[A-Za-z0-9._:-]{1,128}$')
 # purpose: this string is the axis that keeps two accounts on one box apart, so
 # a value that cannot be an account name is not an account.
 OS_USER = re.compile(r'^[a-z_][a-z0-9._-]{0,31}$')
-DEFAULT_DEEPSEEK = 'deepseek-v4-flash-vision-anthropic'
+# The owner's default route for every CloudCLI Claude Code runtime is Tokyo
+# gateway 0, not the FJ production gateway's admin route (owner, 2026-10-30).
+# The id is the registered candidate; the device's read-back decides.
+DEFAULT_DEEPSEEK = 'v4.1flash-anthropic'
 
 
 def _https(value):

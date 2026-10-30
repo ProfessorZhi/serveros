@@ -7,12 +7,12 @@ One physical device and one OS UID may each host many Claude and Codex runtimes.
 
 ## DeepSeek candidates
 
-1. PRIMARY: FJ production gateway (admin) / v4.1flash model
-   deepseek-v4-flash-vision-anthropic
+1. PRIMARY (owner, 2026-10-30): Tokyo gateway 0 / v4.1flash model
+   v4.1flash-anthropic — the default for every device's CloudCLI Claude Code
 2. ALTERNATIVE: FJ production gateway (vince) / v4.1flash model
    deepseek-v4-flash-anthropic
-3. ALTERNATIVE: Tokyo gateway 0 / v4.1flash model
-   v4.1flash-anthropic
+3. NOT A DEFAULT: FJ production gateway (admin) / v4.1flash model
+   deepseek-v4-flash-vision-anthropic
 
 These are historical candidate route identifiers, NOT verified as live and
 authorized on every CloudCLI installation. The label "admin" is an upstream
@@ -36,7 +36,7 @@ Structure:
         kind: cloudcli-deepseek
         family: claude
         owner_approved: true
-        default_model: deepseek-v4-flash-vision-anthropic
+        default_model: v4.1flash-anthropic
         default_permission_mode: bypassPermissions
         allowed_models:
           - deepseek-v4-flash-vision-anthropic

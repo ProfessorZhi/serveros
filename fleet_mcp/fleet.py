@@ -37,6 +37,7 @@ from typing import Any
 from .audit import AuditLog, RateLimiter
 from .dispatch import DispatchGuard, delivery_receipt
 from .discovery import DiscoveryPool
+from .inbox import EventInbox, InboxError
 from . import cloudcli_native, core_lite_source, runtime_identity
 from .config import (CreateGrant, FleetConfig, OPERATOR_GRANT_VERBS,
                      provider_key)
@@ -220,7 +221,7 @@ class _AuthoredVerb:
 
 class FleetService:
     def __init__(self, config: FleetConfig, *, registry=None, providers=None,
-                 core_lite_source=None, attempts=None) -> None:
+                 core_lite_source=None, attempts=None, inbox=None) -> None:
         self.config = config
         self.registry = registry if registry is not None else load_registry(config.registry_path)
         self.providers: dict[str, DeviceProvider] = (
@@ -235,6 +236,10 @@ class FleetService:
         self.limiter = RateLimiter(config.audit.rate_limit_per_minute) if config.audit else None
         self.dispatch = DispatchGuard(attempts)
         self.discovery = DiscoveryPool(config.policy.discovery_workers)
+        #: The hub's event inbox, or None when this surface has none.
+        self.inbox = (inbox if inbox is not None
+                      else EventInbox(config.inbox.path) if config.inbox is not None
+                      else None)
 
     # -- helpers -----------------------------------------------------------
 
@@ -477,6 +482,33 @@ class FleetService:
                            ("id", "sessionId", "session_id", "native_session_id"))):
             raise refuse(BAD_SESSION_REF, "native session family or identity is unverified")
         return detail
+
+    def read_inbox(self, principal: Principal, *, since: int | None = None,
+                   kinds: list[str] | None = None, level: str | None = None,
+                   limit: int = 50, ack: bool = False) -> dict[str, Any]:
+        """Events from the hub's inbox, oldest first (ARCHITECTURE §5.1).
+
+        Reading is `fleet:read`, the same as every other read here, and returns
+        only events for devices this registry enrolls. `ack` advances the
+        caller's OWN cursor; every principal has its own, so two commanders
+        never consume each other's events.
+        """
+        principal.require(SCOPE_READ)
+        self.admit(principal)
+        if self.inbox is None:
+            return {"inbox": "NOT_CONFIGURED", "events": [], "next_since": since or 0,
+                    "more": False,
+                    "detail": "this Fleet surface has no event inbox bound; "
+                              "an empty list here would read as 'nothing happened'"}
+        enrolled = {entry.device_ref.ref for entry in self.registry.all()}
+        try:
+            result = self.inbox.read(
+                principal.name, since=since, kinds=kinds, level=level, limit=limit,
+                ack=ack, readable=lambda ref: ref is None or ref in enrolled)
+        except InboxError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+        result["inbox"] = "OK"
+        return result
 
     def admit(self, principal: Principal) -> None:
         if self.limiter is not None:

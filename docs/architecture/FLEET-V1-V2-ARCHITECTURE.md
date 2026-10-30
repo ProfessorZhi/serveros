@@ -210,7 +210,7 @@ fleet_inbox(since?: seq, kinds?: [...], level?: str, limit?: int ≤ 200, ack?: 
 
 ### 5.4 东京总管唤醒
 
-- 「总管」在 V1 是东京一个指定的 Claude Code Session：owner-max，使用 Fleet 本地默认运行配置（生产服 admin 账号创建、DeepSeek 模型；以回读的实际值为准），项目为 serveros 或 owner 指定的项目。
+- 「总管」在 V1 是东京一个指定的 Claude Code Session：owner-max，使用 Fleet 本地默认运行配置（DeepSeek，经东京网关0；以回读的实际值为准），项目为 serveros 或 owner 指定的项目。
 - 派发时若写了 `parent_ref`（接口 2），对应事件到达后由 `runtime/wake.py` 的接收器唤醒持有该检查点的总管 Session，送入「事件 + 检查点」，由它决定下一步。
 - 唤醒前必须重新验证：检查点仍是该工作项的当前持有者、授权仍有效（复用 `continuation_control.py` 的 ALLOW / DENY 判定）。
 
@@ -311,7 +311,7 @@ owner（舵手）
 
 1. 旧控制面 `mcp/agent_mcp.py`、`fleet/controller.py`、`fleet/agent_control_router.py` 退役（FOUR-LAYERS §6.2，工作包 D6）。
 2. 实验插件 `serveros-fleet-zip-lab-20261014` 删除（已在本次变更中删除）。
-3. 东京「总管」Session 使用 Fleet 的本地默认运行配置：由生产服 admin 账号创建、模型为 DeepSeek（当前默认 `deepseek-v4-flash-vision-anthropic`，以运行时回读的实际值为准，不在代码里写死）。
+3. 东京「总管」Session 使用 Fleet 的本地默认运行配置：模型为 DeepSeek，经东京网关0（当前默认 `v4.1flash-anthropic`，以运行时回读的实际值为准）；所有设备的 CloudCLI Claude Code 默认都走这条路由。
 
 待定：
 
