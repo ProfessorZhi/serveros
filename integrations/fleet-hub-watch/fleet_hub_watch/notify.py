@@ -18,6 +18,10 @@ place (a PATCH), following CARDS-STYLE R14/R17/R20:
 | red episode falls back to yellow              | patch, no new message          |
 | episode ends                                  | patch to green 已恢复          |
 | runs complete                                 | one green 任务完成卡 per 5 min |
+| workday, at the spec's report time            | one 日报卡 per day             |
+
+The workday window, slot length, completion batch and report time come from
+the broadcast spec (`spec.py`); the defaults are the values above.
 
 Feishu limits (open.feishu.cn, message create / patch): a card may be patched
 only within 14 days of sending and only if it declared `update_multi: true`;
@@ -40,12 +44,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
 from . import cards
+from . import spec as broadcast_spec
 from .levels import ALERT, OK, RANK, WARN, private_file
 
 SUBSCRIBER = "hub-notify"
-WINDOW_START, WINDOW_END = 8, 20          # CN local hours, workdays
-SLOT_MINUTES = 30
-BATCH_SECONDS = 300
 PATCH_WINDOW = timedelta(days=13)          # Feishu allows 14; leave a day of slack
 MAX_SENDS_PER_TICK = 20
 SPACING_SECONDS = 0.25                      # under 5 QPS per recipient
@@ -70,6 +72,13 @@ CREATE TABLE IF NOT EXISTS pending_completions (
     run_key    TEXT PRIMARY KEY,
     body       TEXT NOT NULL,
     first_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS daily_events (
+    day        TEXT NOT NULL,
+    event_key  TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    body       TEXT NOT NULL,
+    PRIMARY KEY (day, event_key, kind)
 );
 """
 
@@ -154,7 +163,9 @@ def _parse(value: str) -> datetime:
 class Notifier:
     def __init__(self, inbox: Any, ledger_path: str | Path, transport: Transport, *,
                  device_names: dict[str, str] | None = None,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 sleep: Callable[[float], None] = time.sleep,
+                 spec: dict | None = None) -> None:
+        self.spec = spec or broadcast_spec.load(None)
         self.inbox = inbox
         self.path = private_file(ledger_path)
         self.transport = transport
@@ -213,25 +224,29 @@ class Notifier:
 
     # -- 资源播报卡 -----------------------------------------------------------
 
-    @staticmethod
-    def in_window(now: datetime) -> bool:
-        local = now.astimezone(cards.CN)
-        if local.weekday() >= 5:
-            return False
-        minutes = local.hour * 60 + local.minute
-        return WINDOW_START * 60 <= minutes <= WINDOW_END * 60
+    def workday(self, now: datetime) -> bool:
+        return now.astimezone(cards.CN).isoweekday() in self.spec["schedule"]["workdays"]
 
-    @staticmethod
-    def slot(now: datetime) -> str:
+    def in_window(self, now: datetime) -> bool:
+        if not self.workday(now):
+            return False
         local = now.astimezone(cards.CN)
-        return f"{local:%Y-%m-%d} {local.hour:02d}:{(local.minute // SLOT_MINUTES) * SLOT_MINUTES:02d}"
+        start, _, end = self.spec["schedule"]["window"].partition("-")
+        minutes = local.hour * 60 + local.minute
+        return broadcast_spec.minutes(start) <= minutes <= broadcast_spec.minutes(end)
+
+    def slot(self, now: datetime) -> str:
+        local = now.astimezone(cards.CN)
+        size = self.spec["schedule"]["slot_minutes"]
+        start = (local.hour * 60 + local.minute) // size * size
+        return f"{local:%Y-%m-%d} {start // 60:02d}:{start % 60:02d}"
 
     def status(self, views: list[dict], now: datetime) -> str:
         """Send or patch today's 资源播报卡. Returns what happened."""
         if not views or not self.in_window(now):
             return "OUTSIDE_WINDOW" if views else "NO_VIEWS"
         card_key = f"status:{now.astimezone(cards.CN):%Y-%m-%d}"
-        card = cards.resource_card(views, now=now)
+        card = cards.resource_card(views, now=now, spec=self.spec)
         slot = self.slot(now)
         existing = self._card(card_key)
         if existing is None:
@@ -267,7 +282,7 @@ class Notifier:
             generation = (current["generation"] + 1) if current else 0
             card_key = f"episode:{episode}#{generation}"
             body = {**body, "first_seen": body.get("first_seen") or _iso(now), "state": "OPEN"}
-            if self._send(card_key, cards.alert_card(body, now=now), now):
+            if self._send(card_key, cards.alert_card(body, now=now, spec=self.spec), now):
                 self._save_episode(episode, card_key, generation, "OPEN", body)
             return
         previous = current["body"]
@@ -280,13 +295,13 @@ class Notifier:
             # patch window cannot change: both continue on a fresh card.
             if escalated:
                 self._patch(current["card_key"],
-                            cards.alert_card({**previous, "state": "ESCALATED"}, now=now), now)
+                            cards.alert_card({**previous, "state": "ESCALATED"}, now=now, spec=self.spec), now)
             generation = current["generation"] + 1
             card_key = f"episode:{episode}#{generation}"
-            if self._send(card_key, cards.alert_card(body, now=now), now):
+            if self._send(card_key, cards.alert_card(body, now=now, spec=self.spec), now):
                 self._save_episode(episode, card_key, generation, "OPEN", body)
             return
-        if self._patch(current["card_key"], cards.alert_card(body, now=now), now):
+        if self._patch(current["card_key"], cards.alert_card(body, now=now, spec=self.spec), now):
             self._save_episode(episode, current["card_key"], current["generation"], "OPEN", body)
 
     def _close(self, episode: str, now: datetime, *, text: str | None = None) -> None:
@@ -296,7 +311,7 @@ class Notifier:
         body = {**current["body"], "state": "RECOVERED", "recovered_at": _iso(now)}
         if text:
             body["text"] = text
-        if self._patch(current["card_key"], cards.alert_card(body, now=now), now):
+        if self._patch(current["card_key"], cards.alert_card(body, now=now, spec=self.spec), now):
             self._save_episode(episode, current["card_key"], current["generation"], "RECOVERED", body)
 
     # -- inbox ----------------------------------------------------------------
@@ -319,6 +334,16 @@ class Notifier:
             self.inbox.ack(SUBSCRIBER, handled_to)
         return len(page["events"])
 
+    def _note(self, event: dict, body: dict) -> None:
+        """Count an event into the day it happened (CN date) for the 日报."""
+        occurred = _parse(event.get("occurred_at") or _iso(datetime.now(timezone.utc)))
+        day = f"{occurred.astimezone(cards.CN):%Y-%m-%d}"
+        key = event.get("event_id") or f"{event.get('seq')}"
+        with self._connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO daily_events(day, event_key, kind, body)"
+                         " VALUES (?,?,?,?)",
+                         (day, key, event["kind"], json.dumps(body, ensure_ascii=False)))
+
     def _handle(self, event: dict, now: datetime) -> None:
         kind = event["kind"]
         name = self._name(event.get("device_ref"))
@@ -326,8 +351,12 @@ class Notifier:
             key, _, level = (event.get("evidence") or "|").partition("|")
             episode = f"{event['device_ref']}|{key}"
             if kind == "node.recovered":
+                self._note(event, {"episode": episode})
                 self._close(episode, now, text=event["summary"])
                 return
+            self._note(event, {"episode": episode, "subject": event["summary"].split("：")[0],
+                               "text": event["summary"].split("：", 1)[-1],
+                               "level": level if level in (WARN, ALERT) else WARN})
             self._open({"episode": episode, "key": key, "kind": kind,
                         "device_ref": event["device_ref"],
                         "subject": event["summary"].split("：")[0],
@@ -341,6 +370,7 @@ class Notifier:
         run_episode = f"run|{event.get('session_ref')}|{event.get('run_id')}"
         project = event.get("project") or "未分配项目"
         if kind == "run.completed":
+            self._note(event, {"episode": run_episode})
             self._close(run_episode, now, text="任务已完成，读到了实际输出")
             with self._connect() as conn:
                 conn.execute("INSERT OR IGNORE INTO pending_completions(run_key, body, first_at)"
@@ -358,6 +388,8 @@ class Notifier:
         reason = re.search(r"\(([A-Z0-9_]+)\)\s*$", event["summary"])
         if reason and kind != "run.stalled":
             detail += f"（{reason.group(1)}）"
+        self._note(event, {"episode": run_episode, "subject": f"{what} · {project}",
+                           "text": f"{event['run_id']}（{name}）{detail}", "level": level})
         self._open({"episode": run_episode, "key": f"run:{event.get('run_id')}", "kind": kind,
                     "device_ref": event.get("device_ref"),
                     "subject": f"{what} · {project}",
@@ -371,16 +403,60 @@ class Notifier:
         if not rows:
             return 0
         oldest = _parse(rows[0]["first_at"])
-        if not force and (now - oldest).total_seconds() < BATCH_SECONDS:
+        batch = self.spec["schedule"]["completion_batch_seconds"]
+        if not force and (now - oldest).total_seconds() < batch:
             return 0
         runs = [json.loads(r["body"]) for r in rows]
         card_key = f"done:{_key(*[r['run_key'] for r in rows])}"
-        if not self._send(card_key, cards.completion_card(runs, now=now), now):
+        if not self._send(card_key, cards.completion_card(runs, now=now, spec=self.spec), now):
             return 0
         with self._connect() as conn:
             conn.executemany("DELETE FROM pending_completions WHERE run_key=?",
                              [(r["run_key"],) for r in rows])
         return len(runs)
+
+    # -- 日报 -----------------------------------------------------------------
+
+    def day_summary(self, day: str) -> dict:
+        """What the 日报 for `day` (CN date, YYYY-MM-DD) says, from the ledger."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT kind, body FROM daily_events WHERE day=? ORDER BY rowid",
+                                (day,)).fetchall()
+            open_rows = conn.execute("SELECT body FROM episodes WHERE state='OPEN'").fetchall()
+        runs = {"completed": 0, "failed": 0, "unknown": 0, "stalled": 0}
+        problems, resources, recovered = [], {}, set()
+        for row in rows:
+            body = json.loads(row["body"])
+            kind = row["kind"]
+            if kind.startswith("run."):
+                runs[kind.split(".", 1)[1]] = runs.get(kind.split(".", 1)[1], 0) + 1
+                if kind != "run.completed":
+                    problems.append({k: body[k] for k in ("subject", "text", "level")})
+            elif kind == "node.recovered":
+                recovered.add(body["episode"])
+            elif kind.startswith("node."):
+                resources[body["episode"]] = {k: body[k] for k in ("subject", "text", "level")}
+        open_now = [{k: json.loads(r["body"]).get(k, "") for k in ("subject", "text", "level")}
+                    for r in open_rows]
+        return {"runs": runs, "problems": problems,
+                "resources": [{**r, "recovered": ep in recovered} for ep, r in resources.items()],
+                "open_now": open_now}
+
+    def daily(self, now: datetime) -> str:
+        """Send today's 日报 once, at or after the spec's report time on a workday."""
+        report = self.spec["daily_report"]
+        if not report["enabled"]:
+            return "DISABLED"
+        if not self.workday(now):
+            return "NOT_A_WORKDAY"
+        local = now.astimezone(cards.CN)
+        if local.hour * 60 + local.minute < broadcast_spec.minutes(self.spec["schedule"]["daily_report_at"]):
+            return "NOT_YET"
+        card_key = f"daily:{local:%Y-%m-%d}"
+        if self._card(card_key) is not None:
+            return "ALREADY_SENT"
+        card = cards.daily_card(self.day_summary(f"{local:%Y-%m-%d}"), now=now, spec=self.spec)
+        return "SENT" if self._send(card_key, card, now) else "SEND_FAILED"
 
     # -- one pass -------------------------------------------------------------
 
@@ -389,5 +465,6 @@ class Notifier:
         consumed = self.consume(now)
         completions = self.flush_completions(now)
         status = self.status(views, now)
+        daily = self.daily(now)
         return {"consumed": consumed, "completions_sent": completions,
-                "status": status, "messages": self._sent_this_tick}
+                "status": status, "daily": daily, "messages": self._sent_this_tick}

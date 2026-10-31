@@ -63,6 +63,25 @@ and sends nothing; `--notify lark:<user:…|chat:…>` uses
 `samples/` holds one rendered card per kind and level, marked 示例; paste one
 into Feishu's card builder to preview it.
 
+## What the cards say: `card-spec.yaml`
+
+Facts (levels, readings, run outcomes, thresholds) are code. Presentation is
+`card-spec.yaml`: titles, headings, advice lines, the workday window, the
+update slot, the completion batch, and the 日报 — its time (default 18:00 on
+workdays), its sections (`runs`, `problems`, `resources`, `open_now`) and their
+order. The `fleet-broadcast` skill (`skill/fleet-broadcast/SKILL.md`) is how a
+change is made. `python -m fleet_hub_watch --check-spec card-spec.yaml` proves a
+spec; the running watcher reloads the file when it changes, refuses a bad one by
+name, keeps the last good one, and records `card_spec` in its heartbeat.
+
+## 日报
+
+One card per workday at the spec's report time, built from what the notifier
+counted that day: runs completed / failed / unconfirmed / stalled, the runs that
+need a look, the resource episodes (with 已恢复 when they ended), and what is
+still open. The header colour is what is still open at report time, not the worst
+thing that happened. `samples/daily.json` is an example.
+
 ## Not done here
 
 - Not installed anywhere. `serveros-fleet-watch.service.template` is a

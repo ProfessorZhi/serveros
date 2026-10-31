@@ -31,6 +31,7 @@ EXPECTED_SKILLS = {
     "fleet-ability-change",
     "fleet-ability-inventory",
     "fleet-async-dispatch",
+    "fleet-broadcast-tune",
     "fleet-commander-orchestration",
     "fleet-create-with-grants",
     "fleet-device-and-session-discovery",
