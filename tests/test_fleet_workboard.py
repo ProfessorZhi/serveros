@@ -200,3 +200,19 @@ class TheBindingIsRead(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinishedRunsWithoutOutputAreNotDelivery(unittest.TestCase):
+    """serveros#531: `completed` with no assistant message is not a delivery."""
+
+    def test_verdicts(self):
+        from fleet_mcp.fleet import _with_delivery
+        self.assertEqual(_with_delivery({"status": "completed", "lastAssistantMessage": {"content": "OK"}},
+                                        waited=True)["delivery"], "OUTPUT_READ")
+        bare = _with_delivery({"status": "completed", "lastAssistantMessage": None}, waited=False)
+        self.assertEqual(bare["delivery"], "UNVERIFIED")
+        self.assertIn("wait=true", bare["delivery_hint"])
+        waited = _with_delivery({"status": "completed"}, waited=True)
+        self.assertIn("fleet_read_session", waited["delivery_hint"])
+        self.assertNotIn("delivery", _with_delivery({"status": "running"}, waited=False))
+        self.assertNotIn("delivery", _with_delivery({"status": "failed"}, waited=False))

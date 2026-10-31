@@ -1,0 +1,50 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default"
+  },
+  "header": {
+    "template": "yellow",
+    "title": {
+      "tag": "plain_text",
+      "content": "📋 Fleet 日报 · 10-29 周四 · [示例]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "18:30 生成（北京时间） · 统计当天 00:00 起"
+    }
+  },
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "⚠️ 示例数据 · 非实时采集"
+      },
+      {
+        "tag": "markdown",
+        "content": "**今日任务**\n✅ 完成 6 · 🚨 失败 1 · ⚪ 无法确认 1 · ⏳ 超时 0"
+      },
+      {
+        "tag": "markdown",
+        "content": "**需要看一眼的任务**\n- 🚨 任务失败 · serveros：run-7f3a（Tokyo）执行失败（RUN_FAILED）\n- ⚠️ 任务结果无法确认 · litellm：run-5b20（Tokyo）没能确认它完成了，也没能确认它失败了"
+      },
+      {
+        "tag": "markdown",
+        "content": "**今日资源报警**\n- 🚨 Dell A6000 · 磁盘 DATA：已用 93% · 余 260 GiB（已恢复）"
+      },
+      {
+        "tag": "markdown",
+        "content": "**到现在仍未结束**\n- ⚠️ 任务运行时间过长 · lab-notes：run-22c1（Dell A6000）仍在运行，已超过 2 小时"
+      },
+      {
+        "tag": "hr"
+      },
+      {
+        "tag": "markdown",
+        "content": "数字由程序统计 · 只读，未自动处理任何事项"
+      }
+    ]
+  }
+}

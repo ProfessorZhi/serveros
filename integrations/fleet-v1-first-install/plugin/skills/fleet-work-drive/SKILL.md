@@ -43,36 +43,65 @@ The owner's choice of device or agent type overrides this table. Use
 `fleet-device-and-session-discovery` to find a live session; prefer
 `fleet-reuse-idle-session` over creating one.
 
-## 3. Dispatch in phases, one message each
+## 3. Size the work, then dispatch only the parts it needs
+
+The main line is requirement → research → design → implement → test → report,
+but a piece of work may be any part of it (only research, only a log-analysis
+report, only a small fix). Pick the tier and send only its phases:
+
+| tier | when | phases |
+|---|---|---|
+| small | a small bug, no outward behaviour change | intake/reproduce → fix + A/B → PR (source and root cause in the PR) |
+| standard | outward behaviour changes | + requirement note, design note |
+| large | protocol, permission, routing, cross-module, paid upstream, production | + research, independent review, real-client E2E, release and rollback |
 
 Send each phase with `fleet_send_to_session` (or `fleet_create_session` per
 `fleet-create-with-grants`). The message states the need and the outcome
 wanted, plus the earlier phases' read-back facts. It does not prescribe file
-paths or names.
+paths or names: placement and naming belong to the device's own rules.
 
 1. **Intake and reproduce.** "Open a work item for: <need> (source: <link>).
    Reproduce it first, in a container that will serve as the A side of the
    A/B, and report the item id, the baseline revision and the reproduction
    evidence location." A bug that does not reproduce stops here and comes back
    to the owner.
-2. **Fix and A/B.** "In the same item: fix it in a worktree, stand up the B
+2. **Research (standard when a cause is unclear; always for large).** You
+   search the web for leads (upstream issues, PRs, release notes, discussions)
+   and pass the links in the message; the device verifies them against code,
+   history and logs and writes the research record. **For LiteLLM, look for an
+   existing fix first**: the team repo `79JaX/litellm-fjd`, then upstream
+   `BerriAI/litellm`. The verdict is one of: fixed upstream (upgrade or take the
+   exact commits) / open PR (take that PR's commits) / reported, unfixed (fix it
+   ourselves, consider sending it upstream) / unreported (fix it, report it
+   upstream). Your search results are leads; the device's record is evidence.
+3. **Design (standard and large).** "Write the design note: root cause, the
+   change, acceptance, non-goals, risks, how it will be verified." Our own fix
+   is the smallest change that works: an extension point (config, callback,
+   plugin, wrapper) before core code, no drive-by refactors, a regression test,
+   and an entry in the project's carried-patch list (id, files, reason, upstream
+   link, when it can be dropped) so a later upstream merge stays easy.
+4. **Fix and A/B.** "In the same item: fix it in a worktree, stand up the B
    side from the candidate revision, run the same E2E matrix against A and B,
-   and report both revisions, the running source SHA in each container, and
-   the result table." State the A/B type the device chose: `VERSION` (old vs
-   new code) or `CONFIG` (same code, feature off vs on).
-3. **Real client (when the user's path goes through a client).** To FJPCOS:
+   and report both revisions, both container names, the running source SHA in
+   each container, and the result table." Containers are named
+   `<item>-version-a|b-<service>` (old vs new code) or `<item>-config-a|b-<service>`
+   (same code, switch off vs on); a mock is `<item>-repro-mock-<service>` and is
+   never A/B evidence. Check the names in the report.
+5. **Real client (when the user's path goes through a client).** To FJPCOS:
    "Using the real <Codex / Claude Code>, perform <the user's steps> against
    A at <address> and against B at <address>; keep screenshots and the
    client's log; report what the user would have seen on each."
-4. **Logs (when the bug was seen in production).** Read-only on Tokyo: the
+6. **Logs (when the bug was seen in production).** Read-only on Tokyo: the
    gateway and production log lines for the same request shape, before and
    after, with where each line came from.
-5. **PR.** "Open the PR with the A/B evidence of the latest commit." If the
+7. **PR.** "Open the PR with the A/B evidence of the latest commit." If the
    last commit changed behaviour after the A/B, the A/B is re-run first.
 
 Wait with `fleet-async-dispatch`: the hub's watcher records the run's outcome
 once, and `fleet_inbox` (or the Feishu completion card) tells you it finished.
-Do not poll a session in a loop.
+Do not poll a session in a loop. A run whose `fleet_get_run` says
+`delivery: UNVERIFIED` reported completion without output: read it again with
+`wait`, or read the session, before you treat that phase as done.
 
 ## 4. Verify before you report
 

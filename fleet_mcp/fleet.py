@@ -220,6 +220,34 @@ class _AuthoredVerb:
     namespaced: str
 
 
+_FINISHED = frozenset({"completed", "complete", "succeeded", "success", "settled", "done"})
+_OUTPUT_FIELDS = ("lastAssistantMessage", "last_assistant_message", "output", "result")
+
+
+def _with_delivery(run: dict[str, Any], *, waited: bool) -> dict[str, Any]:
+    """Say whether a finished run's output was actually read.
+
+    Measured on two devices (serveros#531): an immediate read of a run that
+    reports `completed` can carry no assistant message and "This session has
+    no activity record.", while the same run read with `wait` shows the real
+    reply. `completed` alone is therefore not delivery. A finished run with
+    output is `OUTPUT_READ`; one without is `UNVERIFIED`, with how to check.
+    Runs that are not finished carry no verdict.
+    """
+    status = str(run.get("status") or run.get("state") or "").lower()
+    if status not in _FINISHED:
+        return run
+    output = next((run[f] for f in _OUTPUT_FIELDS if run.get(f)), None)
+    if output:
+        return {**run, "delivery": "OUTPUT_READ"}
+    hint = ("no assistant output was returned for this finished run; read it again with "
+            "wait=true, or read the session with fleet_read_session, before treating it as done")
+    if waited:
+        hint = ("no assistant output was returned even after waiting; read the session with "
+                "fleet_read_session before treating it as done")
+    return {**run, "delivery": "UNVERIFIED", "delivery_hint": hint}
+
+
 class FleetService:
     def __init__(self, config: FleetConfig, *, registry=None, providers=None,
                  core_lite_source=None, attempts=None, inbox=None, work=None) -> None:
@@ -2372,7 +2400,7 @@ class FleetService:
         self.audit.record(
             "fleet.get_run", principal=principal.name, session_ref=key.ref, run_id=run_id
         )
-        return {**payload, **key.as_dict(), "run_id": run_id}
+        return _with_delivery({**payload, **key.as_dict(), "run_id": run_id}, waited=wait)
 
     # -- status ------------------------------------------------------------
 

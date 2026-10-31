@@ -489,7 +489,10 @@ TOOLS: tuple[Tool, ...] = (
             "returned.\n\n"
             "A run that has not reached a terminal state within the wait comes "
             "back as RUN_UNSETTLED, which means 'still working', not 'failed'. "
-            "Set `wait` to block briefly for a result."
+            "Set `wait` to block briefly for a result.\n\n"
+            "A finished run carries `delivery`: `OUTPUT_READ` when its output was "
+            "read, `UNVERIFIED` when it reports completion with no output — that "
+            "is not delivery; read again with `wait`, or read the session."
         ),
         input_schema={
             "type": "object",
