@@ -62,7 +62,7 @@ V1 = 在 **Tokyo（vince）、Dell（fjd）、FJPCOS Windows（work-fj）** 三�
 ### ④ 指挥侧 Skill：一次
 
 - [ ] 插件以固定 Plugin ID 安装；`tools/list` 读回
-- [ ] 11 个 Skill 全部可被加载（A 发现 · B 派发执行 · C 验收 · D 能力与规范 · E 自身维护）
+- [ ] 13 个 Skill 全部可被加载（A 发现 · B 派发执行 · C 验收 · D 能力与规范 · E 自身维护）
 - [ ] 按 Skill 完成一次端到端：派发 → ACK → 立即返回 → 下一轮读回 → `fleet-evidence-review` 验收
 
 ### 自迭代：一次，覆盖三台

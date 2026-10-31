@@ -1,0 +1,78 @@
+# card-spec.yaml — what the Fleet cards say and when they go out.
+#
+# Owned by the `fleet-broadcast` skill (skill/fleet-broadcast/SKILL.md). Edit the
+# wording, headings, advice, the workday window, the 日报 time or its sections,
+# then prove it:
+#
+#     python -m fleet_hub_watch --check-spec integrations/fleet-hub-watch/card-spec.yaml
+#
+# The running watcher reloads this file when it changes. A spec that fails the
+# check is refused by name and the previous one stays in use.
+#
+# Placeholders: resource_card.title {icon} {word}; subtitle {date} {weekday} {time};
+# summary {devices} {alert} {warn} {ok} {unknown}; reading_time {time};
+# completion_card.title {icon} {count}; more {count};
+# daily_report.title {date} {weekday}; subtitle {time}.
+# daily_report.sections: any order of runs, problems, resources, open_now.
+# Levels, colours and the facts on a card are not here: they are code.
+schema: serveros/fleet-broadcast-spec.v1
+schedule:
+  workdays:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  window: 08:00-20:00
+  slot_minutes: 30
+  completion_batch_seconds: 300
+  daily_report_at: '18:00'
+resource_card:
+  title: '{icon} Fleet 资源播报 · {word}'
+  subtitle: '{date} 周{weekday} · {time} 更新（北京时间）'
+  summary: '**{devices} 台设备** · 🚨 报警 {alert} · ⚠️ 注意 {warn} · ✅ 正常 {ok} · ⚪ 无法确认 {unknown}'
+  attention_heading: 需要关注
+  reading_time: 读数时间 {time}
+  footer: 只读 · 未自动停止、重启或清理任何东西 · 工作日 08:00–20:00 每 30 分钟原位更新，出现报警立即更新
+alert_card:
+  phenomenon: 现象
+  impact: 影响
+  impact_default: 待确认
+  advice: 建议
+  recovered: 恢复
+  escalated_line: 已升级为报警，后续请看新的报警卡
+  details_title: 技术详情
+  footer: 只读 · 未自动停止、重启或清理任何东西
+  suggestions:
+    fs: 看该盘最近增长的目录，清理或扩容；确认没有任务在持续写日志
+    memory: 看占用最高的进程与会话；确认是否有任务泄漏或并发过多
+    swap: Swap 是水位：结合「内存压力」判断是否真的在换页
+    psi: 内存压力在升高：减少并发任务，或查看占用最高的会话
+    svc: 查看该服务的 systemd 日志；确认是否需要人工重启
+    reach: 确认设备在线、Tailscale/隧道连通、Fleet 节点连接器在运行
+    run.failed: 用 fleet_read_session 查看该会话最后几轮，决定重试或修复
+    run.unknown: 结果没能确认：读会话和产物判断是否完成，不要盲目重发
+    run.stalled: 确认任务是否仍在推进；长时间无进展可考虑中断
+    default: 查看详情中的证据，确认是否需要处理
+completion_card:
+  title: '{icon} 任务完成 · {count} 个'
+  max_rows: 20
+  more: 另有 {count} 个，见 fleet_inbox
+  basis: 判定依据：读到了 agent 的实际输出 · 详细结果用 fleet_read_session 查看
+daily_report:
+  enabled: true
+  title: 📋 Fleet 日报 · {date} 周{weekday}
+  subtitle: '{time} 生成（北京时间） · 统计当天 00:00 起'
+  sections:
+  - runs
+  - problems
+  - resources
+  - open_now
+  headings:
+    runs: 今日任务
+    problems: 需要看一眼的任务
+    resources: 今日资源报警
+    open_now: 到现在仍未结束
+  empty: 无
+  max_rows: 15
+  footer: 数字由程序统计 · 只读，未自动处理任何事项
