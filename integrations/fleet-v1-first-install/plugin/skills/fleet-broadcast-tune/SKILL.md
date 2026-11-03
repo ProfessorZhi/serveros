@@ -18,6 +18,17 @@ checkout of `ProfessorZhi/serveros`, has the hub agent prove it with
 and `runtime/attribution-contract.yaml`, a different kind of change); send a real
 Feishu message to preview; edit the file on the hub without a pull request.
 
+## Not a spec change: quiet, pause, send now
+
+Muting a device or an episode, pausing all broadcasts for a while, sending
+today's 日报 now, or making the monitor re-read the spec after a merge are
+commands, not edits. Use `fleet_monitor_control` (needs `fleet:control`):
+`mute` / `unmute` with `subject` (a device ref or an episode), `minutes` and a
+`reason`; `pause_broadcast` / `resume_broadcast`; `send_daily_now`;
+`reload_spec`. Read the result and the monitor's state with
+`fleet_monitor_status`. A mute or pause stops messages only; the monitor keeps
+observing and counting, and the 日报 still lists what happened.
+
 ## Steps
 
 1. Read the request back in one line: which card, what changes, how the owner

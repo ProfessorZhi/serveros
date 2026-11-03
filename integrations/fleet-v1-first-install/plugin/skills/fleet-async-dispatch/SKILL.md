@@ -121,9 +121,20 @@ A new session resumes from the **existing execution reference**:
 1. read the Work/checkpoint record;
 2. verify the `device_ref`, `runtime` and `session_ref` still address the same
    session — a reference is an address, not a hostname;
-3. if the record has a `run_id`, inspect that run; if it has only an ACK, read
-   the session for the delivery;
-4. continue the same task, or report the exact missing coordinate.
+3. if the record has a `run_id`, inspect that run with `fleet_get_run` and
+   `wait: true`; a finished run with `delivery: UNVERIFIED` has not shown its
+   output yet — read the session before calling it done. If it has only an ACK,
+   read the session for the delivery;
+4. if you are not sure the send itself went through, send it again with the
+   **same** `idempotency_key` and the same message: the surface returns the
+   first receipt instead of sending twice. With `idempotency_durability:
+   AGENT_CONTROL_STORE` this holds across a restart of the surface; with
+   `PROCESS_LOCAL` it does not, and you must read the session instead;
+5. to wake a session whose host stopped, use `fleet_cloudcli_session_start`
+   (resume). If the device's CloudCLI does not offer it,
+   `fleet_cloudcli_native_capability` says so: report resume as UNSUPPORTED on
+   that device rather than creating a new session;
+6. continue the same task, or report the exact missing coordinate.
 
 Do not recreate the task because your session restarted, and do not silently
 retarget a reference to a different device or runtime. If the original address

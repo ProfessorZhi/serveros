@@ -224,6 +224,15 @@ def _work_candidate_add(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any
         source=args.get("source"), reason=args.get("reason"))
 
 
+def _monitor_status(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.monitor_status(ctx.principal)
+
+
+def _monitor_control(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    extra = {k: v for k, v in args.items() if k != "verb"}
+    return ctx.service.monitor_control(ctx.principal, args.get("verb"), extra)
+
+
 def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     project = args.get("project")
     if not isinstance(project, str) or not project.strip():
@@ -895,6 +904,51 @@ TOOLS: tuple[Tool, ...] = (
         annotations={"readOnlyHint": False, "destructiveHint": False,
                      "idempotentHint": True, "openWorldHint": False},
         handler=_work_candidate_add,
+    ),
+    Tool(
+        name="fleet_monitor_status",
+        title="Read the resident monitor",
+        description=(
+            "The hub's resident monitor (serverosd side): whether it is running "
+            "(heartbeat age), each device's level, the card spec in use, alert "
+            "episodes still open, mutes in force, whether broadcasting is paused, "
+            "and the last commands with their results. `monitor: NOT_CONFIGURED` "
+            "means this surface has no monitor, not that all is quiet."
+        ),
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        annotations=_read_only(),
+        handler=_monitor_status,
+    ),
+    Tool(
+        name="fleet_monitor_control",
+        title="Control the resident monitor",
+        description=(
+            "Queue one command for the hub's resident monitor; it is applied on "
+            "the next tick (read the result with fleet_monitor_status). Verbs: "
+            "`mute` (subject = a device ref or an episode, minutes 1-1440, reason) "
+            "and `unmute` (subject); `pause_broadcast` (minutes, reason) and "
+            "`resume_broadcast`; `send_daily_now` (today's 日报, once a day); "
+            "`reload_spec` (re-read card-spec.yaml). A mute or pause stops "
+            "messages, never observation or counting. Nothing here acts on a "
+            "device. Needs fleet:control."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "verb": {"type": "string",
+                         "enum": ["mute", "unmute", "pause_broadcast", "resume_broadcast",
+                                  "send_daily_now", "reload_spec"],
+                         "description": "What to ask of the monitor."},
+                "subject": _string("For mute/unmute: a device ref (device:...) or an episode."),
+                "minutes": _integer("For mute/pause_broadcast: how long.", minimum=1, maximum=1440),
+                "reason": _string("For mute/pause_broadcast: why the owner is not to be told."),
+            },
+            "required": ["verb"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": False,
+                     "idempotentHint": False, "openWorldHint": False},
+        handler=_monitor_control,
     ),
 )
 

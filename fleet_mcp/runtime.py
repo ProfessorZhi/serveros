@@ -57,11 +57,35 @@ def owner_principal(config: FleetConfig | None = None) -> Principal:
                      credential_kind="pat")
 
 
+def durable_attempts(config: FleetConfig):
+    """The durable delivery-claim owner named by `dispatch.store_path`, or None.
+
+    It is the existing Agent Control store (`runtime/agent_control_store.py`),
+    loaded by path the way its own tests load it, so there is one
+    implementation of claim / complete and not a second one here.
+    """
+    if config.dispatch is None:
+        return None
+    import importlib.util
+    import sys
+
+    name = "serveros_runtime_agent_control_store"
+    module = sys.modules.get(name)
+    if module is None:
+        source = Path(__file__).resolve().parents[1] / "runtime" / "agent_control_store.py"
+        spec = importlib.util.spec_from_file_location(name, source)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    config.dispatch.store_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return module.AgentControlStore(config.dispatch.store_path)
+
+
 def build_service(config: FleetConfig) -> FleetService:
     if config.policy.owner_max:
         raise refuse(DISPATCH_STATE_UNAVAILABLE,
                      "owner-max uses bin/serveros-fleet-owned and the existing ServerOS ledger")
-    return FleetService(config)
+    return FleetService(config, attempts=durable_attempts(config))
 
 
 def default_store_root(config: FleetConfig) -> Path:

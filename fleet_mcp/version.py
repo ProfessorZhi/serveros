@@ -35,7 +35,10 @@ SERVER_VERSION = "0.2.0"
 # `fleet-mcp-9`: the hub's requirement board — `fleet_work_board`,
 # `fleet_project_understanding` (reads) and `fleet_work_candidate_add` (a
 # proposal with its source; only the owner accepts). Fifteen authored, 48 total.
-TOOL_SURFACE_REVISION = "fleet-mcp-9"
+# `fleet-mcp-10`: the resident monitor's control surface — `fleet_monitor_status`
+# (read) and `fleet_monitor_control` (fleet:control; mute, pause, send the 日报
+# now, reload the card spec). Seventeen authored, 50 total.
+TOOL_SURFACE_REVISION = "fleet-mcp-10"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

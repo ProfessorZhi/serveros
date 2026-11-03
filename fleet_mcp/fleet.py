@@ -38,8 +38,9 @@ from .audit import AuditLog, RateLimiter
 from .dispatch import DispatchGuard, delivery_receipt
 from .discovery import DiscoveryPool
 from .inbox import EventInbox, InboxError
+from .monitor_control import ControlError, MonitorControl
 from .workboard import WorkBoard, WorkBoardError
-from . import cloudcli_native, core_lite_source, runtime_identity
+from . import cloudcli_native, core_lite_local, core_lite_source, runtime_identity
 from .config import (CreateGrant, FleetConfig, OPERATOR_GRANT_VERBS,
                      provider_key)
 from .runtime_identity import BASE_RUNTIME
@@ -588,6 +589,46 @@ class FleetService:
             raise refuse(BAD_REQUEST, f"the Work Engine refused the proposal: {exc}") from None
         return result | {"board": "OK"}
 
+    # -- the hub monitor (fleet-hub-watch) -------------------------------------
+
+    def _monitor(self) -> MonitorControl | None:
+        """The watcher's control store: it lives beside the hub inbox."""
+        if self.config.inbox is None:
+            return None
+        return MonitorControl(self.config.inbox.path.parent)
+
+    _NO_MONITOR = {"monitor": "NOT_CONFIGURED",
+                   "detail": "this Fleet surface has no hub inbox, so no resident monitor "
+                             "reports here; an empty status would read as 'all quiet'"}
+
+    def monitor_status(self, principal: Principal) -> dict[str, Any]:
+        """The resident monitor: heartbeat, open alerts, mutes, pause, recent commands."""
+        principal.require(SCOPE_READ)
+        self.admit(principal)
+        monitor = self._monitor()
+        if monitor is None:
+            return dict(self._NO_MONITOR)
+        return monitor.status() | {"monitor": "OK"}
+
+    def monitor_control(self, principal: Principal, verb: Any,
+                        args: dict[str, Any] | None) -> dict[str, Any]:
+        """Queue one command for the monitor. It changes what the monitor says
+        or when — never what it observes, and nothing on any device."""
+        principal.require(SCOPE_CONTROL)
+        self.admit(principal)
+        monitor = self._monitor()
+        if monitor is None:
+            return dict(self._NO_MONITOR)
+        try:
+            command = monitor.queue(verb, args or {}, by=principal.name)
+        except ControlError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+        self.audit.record("fleet.monitor_control", principal=principal.name,
+                          session_ref=None, run_id=None)
+        return {"monitor": "OK", "command": command,
+                "detail": "queued; the monitor applies it on its next tick — read "
+                          "fleet_monitor_status for the result"}
+
     def admit(self, principal: Principal) -> None:
         if self.limiter is not None:
             allowed, retry_after = self.limiter.check(principal.name)
@@ -1130,6 +1171,12 @@ class FleetService:
         getter = getattr(provider, "core_lite_source", None) if provider is not None else None
         if callable(getter):
             source = getter()
+        local_file = None
+        if (source is None and self.config.core_lite is not None
+                and device_ref == self.config.local_device_ref):
+            local_file = core_lite_local.LocalFileCoreLiteSource(
+                self.config.core_lite.snapshot_path, self.config.local_device_ref)
+            source = local_file
         if source is None:
             source = self.core_lite_source
         summary = core_lite_source.admit_core_lite(
@@ -1150,6 +1197,7 @@ class FleetService:
         summary["account"] = account
         summary["source"] = ("node-core-route" if provider is not None
                              and callable(getattr(provider, "core_lite_source", None))
+                             else "local-file" if local_file is not None
                              else "injected" if source is not None else None)
         return summary
 

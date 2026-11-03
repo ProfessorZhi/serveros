@@ -1,0 +1,14 @@
+# Template: render @BIN@, @PROFILE@ and @OUT@, install to ~/.config/systemd/user/.
+# Observe only. Enabling it (with the timer) is the owner's decision.
+[Unit]
+Description=ServerOS Core-Lite status publish (observe only)
+
+[Service]
+Type=oneshot
+ExecStart=@BIN@/publish-status.sh --bin @BIN@ --profile @PROFILE@ --out @OUT@
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=128M
+CPUQuota=20%
+NoNewPrivileges=yes
+PrivateTmp=yes

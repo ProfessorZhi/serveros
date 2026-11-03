@@ -74,6 +74,27 @@ change is made. `python -m fleet_hub_watch --check-spec card-spec.yaml` proves a
 spec; the running watcher reloads the file when it changes, refuses a bad one by
 name, keeps the last good one, and records `card_spec` in its heartbeat.
 
+## Control from Fleet
+
+The monitor answers to the Fleet command centre through two tools (`fleet-mcp-10`):
+
+- `fleet_monitor_status` (fleet:read): heartbeat age and state, device levels, the
+  card spec in use, open alert episodes, mutes, broadcast pause, recent commands.
+- `fleet_monitor_control` (fleet:control): `mute` / `unmute` a device or an
+  episode, `pause_broadcast` / `resume_broadcast`, `send_daily_now`,
+  `reload_spec`. Commands are queued in `monitor-control.sqlite` beside the inbox
+  (0600) and applied on the next tick; the result is recorded and shown by
+  `fleet_monitor_status`. A mute or pause stops messages, never observation or
+  counting; nothing acts on a device.
+
+## Resource readings
+
+For the hub's own device, bind `core_lite: {snapshot_path: ...}` in the Fleet
+binding; for a node-connector device, set the connector's `core_snapshot_path`.
+Both read the owner-only file that
+`native/node-core/core-lite/deploy/publish-status.sh` writes every 30 s. Until a
+file is published the readings are `NOT_CONFIGURED`, never zero.
+
 ## 日报
 
 One card per workday at the spec's report time, built from what the notifier
