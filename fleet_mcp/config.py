@@ -441,6 +441,14 @@ class AuditBinding:
 
 
 @dataclass(frozen=True)
+class CoreLiteBinding:
+    #: The owner-only status file `publish-status.sh` writes for THIS device
+    #: (`native/node-core/core-lite/deploy`). Read for the surface's own
+    #: device only; another device's Core arrives over its node channel.
+    snapshot_path: Path
+
+
+@dataclass(frozen=True)
 class InboxBinding:
     #: The hub's event inbox (ARCHITECTURE §24: SQLite local to its owner).
     path: Path
@@ -461,6 +469,8 @@ class FleetConfig:
     #: The hub's Work Engine and records. Absent means this surface has no
     #: board: the work tools say so rather than showing an empty board.
     work: "WorkBinding | None" = None
+    #: This device's own Core-Lite status file, or None.
+    core_lite: CoreLiteBinding | None = None
     registry_path: Path | None = None
     #: Which OS account on this device is the device's OWN — the one the bare
     #: runtime tag belongs to. It is authored by the operator, never inferred:
@@ -1336,6 +1346,14 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             records_root=(Path(_expand(work_raw["records_root"]))
                           if work_raw.get("records_root") else None))
 
+    core_lite_raw = raw.get("core_lite") or {}
+    core_lite = None
+    if core_lite_raw.get("snapshot_path"):
+        snapshot = Path(_expand(core_lite_raw["snapshot_path"]))
+        if not snapshot.is_absolute():
+            raise refuse(BAD_REQUEST, "core_lite.snapshot_path must be absolute")
+        core_lite = CoreLiteBinding(snapshot_path=snapshot)
+
     registry_raw = raw.get("registry_path")
     registry_path = Path(_expand(registry_raw)) if registry_raw else None
 
@@ -1350,6 +1368,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             audit=audit,
             inbox=inbox,
             work=work,
+            core_lite=core_lite,
             registry_path=registry_path,
             device_default_account=device_default_account,
         )

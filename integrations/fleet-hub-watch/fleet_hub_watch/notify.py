@@ -164,8 +164,11 @@ class Notifier:
     def __init__(self, inbox: Any, ledger_path: str | Path, transport: Transport, *,
                  device_names: dict[str, str] | None = None,
                  sleep: Callable[[float], None] = time.sleep,
-                 spec: dict | None = None) -> None:
+                 spec: dict | None = None, control: Any = None) -> None:
         self.spec = spec or broadcast_spec.load(None)
+        #: `fleet_mcp.monitor_control.MonitorControl`, or None: mutes and pauses
+        #: that Fleet queued. A pause or a mute stops messages, never counting.
+        self.control = control
         self.inbox = inbox
         self.path = private_file(ledger_path)
         self.transport = transport
@@ -186,8 +189,15 @@ class Notifier:
 
     # -- transport with pacing ----------------------------------------------
 
+    def _paused(self, now: datetime) -> bool:
+        return self.control is not None and self.control.broadcast_state(now)["state"] == "PAUSED"
+
+    def _muted(self, body: dict, now: datetime) -> bool:
+        return self.control is not None and self.control.muted(
+            [body.get("device_ref"), body.get("episode")], now)
+
     def _send(self, card_key: str, card: dict, now: datetime, *, slot: str | None = None) -> bool:
-        if self._sent_this_tick >= MAX_SENDS_PER_TICK:
+        if self._sent_this_tick >= MAX_SENDS_PER_TICK or self._paused(now):
             return False
         if self._sent_this_tick:
             self.sleep(SPACING_SECONDS)
@@ -208,6 +218,8 @@ class Notifier:
             return False
         if row["version"] == _version(card):
             return True
+        if self._paused(now):
+            return False
         if self._sent_this_tick:
             self.sleep(SPACING_SECONDS)
         ok = self.transport.patch(row["message_id"], card, sent_at=row["sent_at"])
@@ -276,6 +288,8 @@ class Notifier:
 
     def _open(self, body: dict, now: datetime) -> None:
         """Open, raise, lower or refresh an episode."""
+        if self._muted(body, now):
+            return
         episode = body["episode"]
         current = self._episode(episode)
         if current is None or current["state"] != "OPEN":
@@ -307,6 +321,8 @@ class Notifier:
     def _close(self, episode: str, now: datetime, *, text: str | None = None) -> None:
         current = self._episode(episode)
         if current is None or current["state"] != "OPEN":
+            return
+        if self._muted(current["body"], now):
             return
         body = {**current["body"], "state": "RECOVERED", "recovered_at": _iso(now)}
         if text:
@@ -442,15 +458,20 @@ class Notifier:
                 "resources": [{**r, "recovered": ep in recovered} for ep, r in resources.items()],
                 "open_now": open_now}
 
-    def daily(self, now: datetime) -> str:
-        """Send today's 日报 once, at or after the spec's report time on a workday."""
+    def daily(self, now: datetime, *, force: bool = False) -> str:
+        """Send today's 日报 once, at or after the spec's report time on a workday.
+
+        `force` (Fleet's `send_daily_now`) skips the time and workday checks but
+        not the once-a-day rule.
+        """
         report = self.spec["daily_report"]
-        if not report["enabled"]:
+        if not report["enabled"] and not force:
             return "DISABLED"
-        if not self.workday(now):
+        if not self.workday(now) and not force:
             return "NOT_A_WORKDAY"
         local = now.astimezone(cards.CN)
-        if local.hour * 60 + local.minute < broadcast_spec.minutes(self.spec["schedule"]["daily_report_at"]):
+        if not force and local.hour * 60 + local.minute < broadcast_spec.minutes(
+                self.spec["schedule"]["daily_report_at"]):
             return "NOT_YET"
         card_key = f"daily:{local:%Y-%m-%d}"
         if self._card(card_key) is not None:

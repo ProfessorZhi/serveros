@@ -244,7 +244,8 @@ class TheToolIsOnTheSurfaceAndSaysWhatItIs(unittest.TestCase):
         self.assertEqual(names[8:], ["fleet_interrupt_session", "fleet_create_project",
                                      "fleet_delete_project", "fleet_inbox",
                                      "fleet_work_board", "fleet_project_understanding",
-                                     "fleet_work_candidate_add"])
+                                     "fleet_work_candidate_add", "fleet_monitor_status",
+                                     "fleet_monitor_control"])
         # The eight that came before are still there, still in their order.
         self.assertEqual(names[:8], [
             "fleet_list_devices", "fleet_list_sessions", "fleet_get_session",

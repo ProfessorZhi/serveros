@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-9
+tool_surface_revision: fleet-mcp-10
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -425,6 +425,28 @@ tools:
       fleet:send. It only proposes: accepting, prioritising, numbering and
       closing stay with the owner, and no verb on this surface does any of them.
 
+  fleet_monitor_status:
+    verb: read
+    answers: >-
+      the resident monitor's heartbeat, device levels, card spec state, open
+      alert episodes, mutes, broadcast pause and recent commands
+    answered_by: >-
+      the monitor's own files beside the hub inbox (heartbeat, notify ledger,
+      monitor-control store)
+    authorization: >-
+      fleet:read. `monitor: NOT_CONFIGURED` when this surface has no inbox.
+
+  fleet_monitor_control:
+    verb: write
+    answers: >-
+      the queued command; the monitor applies it on its next tick and records
+      the result, which fleet_monitor_status returns
+    answered_by: the monitor-control store beside the hub inbox
+    authorization: >-
+      fleet:control. A closed set of verbs (mute, unmute, pause_broadcast,
+      resume_broadcast, send_daily_now, reload_spec) that change what the monitor
+      says or when, never what it observes, and nothing on any device.
+
 
 # ---------------------------------------------------------------------------
 # Addressability
@@ -718,7 +740,7 @@ native_mirror:
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 48
+  served_total: 50
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.

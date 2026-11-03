@@ -39,6 +39,7 @@ from pathlib import Path
 from fleet_mcp.config import load_config
 from fleet_mcp.fleet import FleetService, Principal
 from fleet_mcp.inbox import EventInbox
+from fleet_mcp.monitor_control import MonitorControl
 
 from datetime import datetime, timezone
 
@@ -90,6 +91,25 @@ def _heartbeat(path: Path, document: dict) -> None:
     os.replace(temporary, path)
 
 
+def apply_commands(control: MonitorControl, notifier, specs: SpecWatcher) -> int:
+    """Apply what Fleet queued (fleet_monitor_control) since the last tick."""
+    def daily() -> str:
+        if notifier is None:
+            return "NOTIFY_OFF"
+        return notifier.daily(datetime.now(timezone.utc), force=True)
+
+    def reload_spec() -> str:
+        specs.mtime = None
+        if specs.refresh() and notifier is not None:
+            notifier.spec = specs.spec
+        return specs.state
+
+    commands = control.pending()
+    for command in commands:
+        control.apply(command, daily=daily, reload_spec=reload_spec)
+    return len(commands)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fleet_hub_watch", description=__doc__)
     parser.add_argument("--interval", type=float, default=30.0, help="seconds between ticks")
@@ -137,16 +157,17 @@ def main(argv: list[str] | None = None) -> int:
     thresholds = resources.load_thresholds(args.contract)
     levels = resources.LevelStore(directory / "resources.sqlite")
     specs = SpecWatcher(Path(args.card_spec) if args.card_spec else None)
+    control = MonitorControl(directory)
     names = {e.device_ref.ref: (e.display_name or e.device_ref.ref) for e in service.registry.all()}
     notifier = None
     if args.notify == "journal":
         notifier = Notifier(watcher.inbox, directory / "notify.sqlite",
                             JournalTransport(directory / "notify.journal.jsonl"), device_names=names,
-                            spec=specs.spec)
+                            spec=specs.spec, control=control)
     elif args.notify.startswith("lark:"):
         notifier = Notifier(watcher.inbox, directory / "notify.sqlite",
                             LarkTransport(args.notify[len("lark:"):]), device_names=names,
-                            spec=specs.spec)
+                            spec=specs.spec, control=control)
     elif args.notify != "off":
         print(f"unknown --notify {args.notify!r}", file=sys.stderr)
         return EXIT_NO_INBOX
@@ -154,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     while True:
         started = time.time()
         try:
+            applied = apply_commands(control, notifier, specs)
             if specs.refresh() and notifier is not None:
                 notifier.spec = specs.spec
             result = watcher.tick()
@@ -166,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
                               "recorded": result["observe"]["recorded"],
                               "unreachable": result["discover"]["unreachable"],
                               "devices": {v["device_ref"]: v["level"] for v in views},
-                              "notify": sent, "card_spec": specs.state})
+                              "notify": sent, "card_spec": specs.state,
+                              "commands_applied": applied})
         except Exception as exc:  # noqa: BLE001 - one bad tick must not end the watch
             _heartbeat(beat, {"last_tick_at": started, "ok": False,
                               "error": type(exc).__name__})
