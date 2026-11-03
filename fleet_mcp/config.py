@@ -290,6 +290,11 @@ class ServerBinding:
     # put behind one without editing code.
     mcp_path: str = "/mcp"
     max_body_bytes: int = 1_000_000
+    #: Where this surface's OAuth issuer keeps its keys and tokens. Unset means
+    #: next to the PAT anchor. A second surface run side by side (the V1
+    #: candidate beside the one in service) sets its own, so the two issuers
+    #: never share a key file.
+    oauth_store_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -1219,6 +1224,8 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         public_base_url=server_raw.get("public_base_url"),
         mcp_path=str(server_raw.get("mcp_path", "/mcp")),
         max_body_bytes=int(server_raw.get("max_body_bytes", 1_000_000)),
+        oauth_store_root=(Path(_expand(server_raw["oauth_store_root"]))
+                          if server_raw.get("oauth_store_root") else None),
     )
 
     policy_raw = raw.get("policy") or {}

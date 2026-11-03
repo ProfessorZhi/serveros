@@ -72,6 +72,8 @@ def default_store_root(config: FleetConfig) -> Path:
     rest, and `fleet/node-root-contract.yaml` puts credentials on the
     `never_in_this_root` list outright.
     """
+    if config.server.oauth_store_root is not None:
+        return config.server.oauth_store_root
     fallback = state_root() / "oauth"
     return store_root_for(config.auth.pat_anchor, fallback)
 

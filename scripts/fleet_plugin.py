@@ -19,6 +19,15 @@ test that calls it) refuses a commit where the two disagree.
 earlier copy of the plugin (including the old `@fleet-local` one, unless
 `--keep-legacy`), and installs `serveros-fleet-ingress@serveros`. The first
 Fleet tool call then opens the server's sign-in page.
+
+    python3 scripts/fleet_plugin.py install-side --next-mcp-url URL
+
+`install-side` installs the same plugin a SECOND time, side by side, without
+touching the one in service: plugin `serveros-fleet-v1@serveros-v1`, MCP server
+`serveros-fleet-v1`, generated into `~/.cache/serveros/fleet-plugin-side/`. Point
+it at the V1 candidate surface (a second Fleet instance on its own port). Both
+plugins load together; their tools carry different server names. Remove it with
+`claude plugin uninstall serveros-fleet-v1@serveros-v1`.
 """
 from __future__ import annotations
 
@@ -40,6 +49,12 @@ MARKETPLACE_NAME = "serveros"
 PLUGIN_DIR = ROOT / "plugins" / PLUGIN_NAME
 MARKETPLACE_FILE = ROOT / ".claude-plugin" / "marketplace.json"
 LEGACY_IDS = (f"{PLUGIN_NAME}@fleet-local",)
+#: The side-by-side channel: a second, separately named copy of the plugin.
+SIDE_PLUGIN_NAME = "serveros-fleet-v1"
+SIDE_MARKETPLACE_NAME = "serveros-v1"
+SIDE_SERVER_NAME = "serveros-fleet-v1"
+SIDE_DISPLAY_NAME = "ServerOS Fleet V1 (candidate)"
+SIDE_ROOT = Path.home() / ".cache" / "serveros" / "fleet-plugin-side"
 
 #: The Fleet Next ingress the committed plugin points at. Override with
 #: `--next-mcp-url` or `SERVEROS_FLEET_MCP_URL` when building for another one.
@@ -165,9 +180,69 @@ def install(url: str, keep_legacy: bool) -> int:
     return 0
 
 
+def generate_side(out_root: Path, url: str) -> Path:
+    """The plugin under a second name, for running beside the one in service.
+
+    Same skills and assets; only the identities change — plugin name, display
+    name, MCP server key and marketplace — so neither copy shadows the other.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        plugin, _ = generate(Path(tmp), url)
+        if out_root.exists():
+            shutil.rmtree(out_root)
+        target = out_root / "plugins" / SIDE_PLUGIN_NAME
+        shutil.copytree(plugin, target)
+    manifest_path = target / ".claude-plugin" / "plugin.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = SIDE_PLUGIN_NAME
+    manifest["displayName"] = SIDE_DISPLAY_NAME
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+                             encoding="utf-8")
+    mcp_path = target / ".mcp.json"
+    servers = json.loads(mcp_path.read_text(encoding="utf-8"))["mcpServers"]
+    (only,) = servers.values()
+    if isinstance(only.get("oauth"), dict) and isinstance(only["oauth"].get("callbackPort"), int):
+        # Its own OAuth callback port, so signing in to one never lands on the other.
+        only["oauth"]["callbackPort"] += 1
+    mcp_path.write_text(json.dumps({"mcpServers": {SIDE_SERVER_NAME: only}}, indent=2,
+                                   ensure_ascii=False) + "\n", encoding="utf-8")
+    market = marketplace(manifest)
+    market["name"] = SIDE_MARKETPLACE_NAME
+    market["plugins"][0]["source"] = f"./plugins/{SIDE_PLUGIN_NAME}"
+    market["description"] = "ServerOS Fleet V1 candidate, installed beside the plugin in service."
+    market_path = out_root / ".claude-plugin" / "marketplace.json"
+    market_path.parent.mkdir(parents=True, exist_ok=True)
+    market_path.write_text(json.dumps(market, indent=2, ensure_ascii=False) + "\n",
+                           encoding="utf-8")
+    return target
+
+
+def install_side(url: str, out_root: Path = SIDE_ROOT) -> int:
+    if shutil.which("claude") is None:
+        print("the `claude` command is not on PATH; install Claude Code first", file=sys.stderr)
+        return 2
+    generate_side(out_root, url)
+    plugin_id = f"{SIDE_PLUGIN_NAME}@{SIDE_MARKETPLACE_NAME}"
+    _claude("uninstall", plugin_id, check_ok=False)
+    known = _claude("marketplace", "list", "--json")
+    try:
+        names = {m.get("name") for m in json.loads(known.stdout or "[]")}
+    except json.JSONDecodeError:
+        names = set()
+    if SIDE_MARKETPLACE_NAME in names:
+        _claude("marketplace", "remove", SIDE_MARKETPLACE_NAME)
+    _claude("marketplace", "add", str(out_root))
+    _claude("install", plugin_id)
+    print(f"installed {plugin_id} beside {PLUGIN_NAME}@{MARKETPLACE_NAME} (untouched), "
+          f"pointing at {url}")
+    print("restart Claude Code; tools appear under the server name "
+          f"`{SIDE_SERVER_NAME}`")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("build", "check", "install"))
+    parser.add_argument("command", choices=("build", "check", "install", "install-side"))
     parser.add_argument("--next-mcp-url",
                         default=os.environ.get("SERVEROS_FLEET_MCP_URL", DEFAULT_NEXT_MCP_URL))
     parser.add_argument("--keep-legacy", action="store_true",
@@ -177,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
         return build(args.next_mcp_url)
     if args.command == "check":
         return check(args.next_mcp_url)
+    if args.command == "install-side":
+        return install_side(args.next_mcp_url)
     return install(args.next_mcp_url, args.keep_legacy)
 
 
