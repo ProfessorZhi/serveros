@@ -449,16 +449,6 @@ class CoreLiteBinding:
 
 
 @dataclass(frozen=True)
-class DispatchBinding:
-    #: The durable delivery-claim store (runtime/agent_control_store.py). With
-    #: it, a repeated send under the same idempotency key returns the first
-    #: receipt even after this surface restarts — which is what lets a
-    #: commander that lost its connection pick the run up again without
-    #: sending twice. Without it, claims live in this process only.
-    store_path: Path
-
-
-@dataclass(frozen=True)
 class InboxBinding:
     #: The hub's event inbox (ARCHITECTURE §24: SQLite local to its owner).
     path: Path
@@ -481,8 +471,6 @@ class FleetConfig:
     work: "WorkBinding | None" = None
     #: This device's own Core-Lite status file, or None.
     core_lite: CoreLiteBinding | None = None
-    #: Durable delivery claims, or None (process-local).
-    dispatch: DispatchBinding | None = None
     registry_path: Path | None = None
     #: Which OS account on this device is the device's OWN — the one the bare
     #: runtime tag belongs to. It is authored by the operator, never inferred:
@@ -1366,14 +1354,6 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             raise refuse(BAD_REQUEST, "core_lite.snapshot_path must be absolute")
         core_lite = CoreLiteBinding(snapshot_path=snapshot)
 
-    dispatch_raw = raw.get("dispatch") or {}
-    dispatch = None
-    if dispatch_raw.get("store_path"):
-        store = Path(_expand(dispatch_raw["store_path"]))
-        if not store.is_absolute():
-            raise refuse(BAD_REQUEST, "dispatch.store_path must be absolute")
-        dispatch = DispatchBinding(store_path=store)
-
     registry_raw = raw.get("registry_path")
     registry_path = Path(_expand(registry_raw)) if registry_raw else None
 
@@ -1389,7 +1369,6 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             inbox=inbox,
             work=work,
             core_lite=core_lite,
-            dispatch=dispatch,
             registry_path=registry_path,
             device_default_account=device_default_account,
         )

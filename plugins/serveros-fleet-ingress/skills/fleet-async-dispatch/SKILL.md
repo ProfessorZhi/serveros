@@ -128,7 +128,8 @@ A new session resumes from the **existing execution reference**:
 4. if you are not sure the send itself went through, send it again with the
    **same** `idempotency_key` and the same message: the surface returns the
    first receipt instead of sending twice. With `idempotency_durability:
-   AGENT_CONTROL_STORE` this holds across a restart of the surface; with
+   AGENT_CONTROL_STORE` (the surface runs over the ServerOS owner ledger,
+   `bin/serveros-fleet-owned`) this holds across a restart of the surface; with
    `PROCESS_LOCAL` it does not, and you must read the session instead;
 5. to wake a session whose host stopped, use `fleet_cloudcli_session_start`
    (resume). If the device's CloudCLI does not offer it,
