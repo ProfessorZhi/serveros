@@ -180,8 +180,14 @@ class Watcher:
             if getattr(entry, "ownership", None) != "company":
                 continue
             try:
+                # Every runtime this device is bound for, not only the one it
+                # serves its own account on. A machine whose second OS account
+                # runs the sessions is exactly the machine this loop is for, and
+                # asking for the default runtime answered it with a named gap
+                # ("this runtime holds no route to it") that read like an outage.
                 listing = self.service.list_sessions(self.principal, device=device,
-                                                     limit=self.session_limit)
+                                                     limit=self.session_limit,
+                                                     runtime="all")
             except FleetRefusal as exc:
                 unreachable.append({"device_ref": device, "code": exc.code})
                 continue

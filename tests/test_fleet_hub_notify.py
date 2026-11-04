@@ -41,9 +41,12 @@ def summary(*, memory=50.0, disk=40.0, psi_some=0.0, psi_full=0.0, swap=None,
         "memory": {"state": "PRESENT", "value": {"used_percent": memory, "total_bytes": 64 * GiB}},
         "psi.memory": {"state": "PRESENT", "value": {"some": {"avg60": psi_some},
                                                      "full": {"avg60": psi_full}}},
-        "storage.readonly": {"state": "PRESENT", "value": {"filesystems": [
+        # `{"filesystems": {"roles": [...]}}` is the contract's shape
+        # (core-lite-status.v1.md); a bare list here would be a second spelling
+        # of the same fact, and the one the reader would then be written against.
+        "storage.readonly": {"state": "PRESENT", "value": {"filesystems": {"roles": [
             {"role": "DATA", "total_bytes": 1000 * GiB,
-             "available_bytes": (1000 - 10 * disk) * GiB, "used_bytes": 10 * disk * GiB}]}},
+             "available_bytes": (1000 - 10 * disk) * GiB, "used_bytes": 10 * disk * GiB}]}}},
     }
     if no_disk:
         observations["storage.readonly"] = {"state": "UNAVAILABLE", "reason": "NO_SOURCE"}
@@ -122,7 +125,10 @@ class StubService:
             for ref, own, name in ((TOKYO, "company", "Tokyo"), (DELL, "company", "Dell A6000"),
                                    ("device:personal-dell", "personal", "personal"))])
 
-    def core_lite_status(self, principal, device):
+    def bound_runtimes(self, device):
+        return ("claude",)
+
+    def core_lite_status(self, principal, device, *, runtime="claude"):
         if device == "device:personal-dell":
             raise AssertionError("a personal device is never read")
         return self.summaries.get(device)
