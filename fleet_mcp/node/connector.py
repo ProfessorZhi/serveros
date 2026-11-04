@@ -778,6 +778,13 @@ class Connector:
                 kind="cloudcli-mcp-http",
                 endpoint=config.cloudcli_endpoint,
                 credential_anchor=config.cloudcli_credential_anchor,
+                # This connector IS one runtime of this machine: the account it
+                # runs as, the CloudCLI it was pointed at. Its sessions must be
+                # addressed under that runtime, not under the default one — a
+                # listing that named them `|claude|` on a `claude-fjd` connector
+                # is refused by the host as another runtime's session, which is
+                # exactly what it would be.
+                runtime=config.runtime,
                 connect_timeout=config.connect_timeout,
                 read_timeout=config.read_timeout,
                 # Inert here — nothing above this line reads it — but carried
@@ -804,7 +811,9 @@ class Connector:
         return secret
 
     def _key(self, native: str) -> SessionKey:
-        return SessionKey.compose(self.config.device_ref, "claude", native)
+        # The connector's own runtime, not the default: see the ProviderBinding
+        # above for the same reason.
+        return SessionKey.compose(self.config.device_ref, self.config.runtime, native)
 
     @staticmethod
     def _upstream_code(exc: FleetRefusal) -> tuple[int, str]:

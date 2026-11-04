@@ -152,7 +152,15 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
                 worst([some_level, full_level]))
 
     storage = _present(summary, "storage.readonly")
-    for row in (storage or {}).get("filesystems") or []:
+    # The contract carries each storage block as `{"roles": [...]}` — a mapping
+    # holding a role list, never a bare list (core-lite-status.v1.md, and the
+    # readback validator that admits the document). Reading `filesystems` as if
+    # it were the list iterated the mapping's own keys, so the first device that
+    # reported storage at all took the whole sweep down with
+    # `'str' object has no attribute 'get'` — a latent shape mismatch that no
+    # test could see while the only CONNECTED device reported no storage.
+    filesystems = ((storage or {}).get("filesystems") or {}).get("roles") or []
+    for row in filesystems:
         total, avail = row.get("total_bytes"), row.get("available_bytes")
         if not isinstance(total, (int, float)) or total <= 0 or not isinstance(avail, (int, float)):
             continue
@@ -257,6 +265,48 @@ def transitions(view: dict[str, Any], previous: dict[str, str]) -> list[dict[str
     return changes
 
 
+def _read_device(service: Any, principal: Any, device: str) -> dict[str, Any] | None:
+    """The reading the card shows for one machine, or None if no runtime answered.
+
+    A card is one machine, but a machine can hold several runtime bindings — one
+    per OS account — and `core_lite_status` asks exactly one of them. Asking
+    only the base runtime made a device whose sole binding is a second account
+    read as "not connected" while its Core was answering the whole time; the
+    card said "no reading" about a machine that had one, just not under the name
+    that was asked.
+
+    So the runtimes are asked in the order the host holds them (base first,
+    which is what every device with a single runtime gets, unchanged) and the
+    first CONNECTED answer is the machine's reading. If none is CONNECTED the
+    FIRST summary is kept rather than the last: it names the reason for the
+    runtime a caller would have asked for by default, and a reason is more use
+    than whichever runtime happened to be sorted last.
+    """
+    runtimes = service.bound_runtimes(device)
+    if not runtimes:
+        # No binding at all. Ask the default so the row still carries a named
+        # gap (NOT_CONFIGURED) instead of silence.
+        try:
+            return service.core_lite_status(principal, device)
+        except Exception:  # noqa: BLE001 - one device's failure is that device's row
+            return None
+    first: dict[str, Any] | None = None
+    for runtime in runtimes:
+        try:
+            summary = service.core_lite_status(principal, device, runtime=runtime)
+        except Exception:  # noqa: BLE001 - one runtime's failure is that runtime's
+            continue
+        if summary is None:
+            # A source that answered with nothing is not a reading; it is the
+            # absence of one and must not outrank a runtime that did answer.
+            continue
+        if first is None:
+            first = summary
+        if summary.get("connected") == "CONNECTED":
+            return summary
+    return first
+
+
 def sweep(service: Any, principal: Any, inbox: Any, store: LevelStore,
           thresholds: dict[str, float], *, now_iso: str) -> list[dict[str, Any]]:
     """Read every company device, record level changes, return the views."""
@@ -265,10 +315,7 @@ def sweep(service: Any, principal: Any, inbox: Any, store: LevelStore,
         if getattr(entry, "ownership", None) != "company":
             continue
         device = entry.device_ref.ref
-        try:
-            summary = service.core_lite_status(principal, device)
-        except Exception:  # noqa: BLE001 - one device's failure is that device's row
-            summary = None
+        summary = _read_device(service, principal, device)
         previous = store.previous(device)
         view = device_view(device, getattr(entry, "display_name", None) or device, summary,
                            thresholds, previous, seen_before=bool(previous))

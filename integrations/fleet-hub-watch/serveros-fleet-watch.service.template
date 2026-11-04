@@ -18,7 +18,12 @@ ExecStart=@HUB_PYTHON@ -m fleet_hub_watch --config @HUB_BINDING@ --interval 30
 Restart=on-failure
 RestartSec=30
 MemoryMax=256M
-TasksMax=32
+# The watcher shells out to `lark-cli`, whose Go runtime starts one OS
+# thread per core plus its own spares: a ceiling that fits the Python
+# process alone kills the CLI with `failed to create new OS thread
+# (errno=11)` before it sends anything. Sized for the host it runs on
+# (128 cores), not for what the watcher itself needs.
+TasksMax=512
 Nice=10
 NoNewPrivileges=yes
 PrivateTmp=yes
