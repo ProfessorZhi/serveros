@@ -11,6 +11,8 @@ __pycache__/
 # so that this repository stays the single plugin canonical source.
 plugin/build/
 .agents/
+# The committed Codex distribution is a local marketplace and needs its .agents/.
+!distribution/codex/.agents/
 
 # secrets — never commit
 .env

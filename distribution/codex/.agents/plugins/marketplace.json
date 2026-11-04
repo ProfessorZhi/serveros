@@ -1,0 +1,21 @@
+{
+  "name": "serveros-v1",
+  "description": "ServerOS Fleet V1 for Codex, generated from the shared source.",
+  "interface": {
+    "displayName": "ServerOS Fleet V1"
+  },
+  "plugins": [
+    {
+      "name": "serveros-fleet-v1",
+      "source": {
+        "source": "local",
+        "path": "./plugins/serveros-fleet-v1"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
