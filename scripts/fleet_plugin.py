@@ -53,7 +53,7 @@ LEGACY_IDS = (f"{PLUGIN_NAME}@fleet-local",)
 SIDE_PLUGIN_NAME = "serveros-fleet-v1"
 SIDE_MARKETPLACE_NAME = "serveros-v1"
 SIDE_SERVER_NAME = "serveros-fleet-v1"
-SIDE_DISPLAY_NAME = "ServerOS Fleet V1 (candidate)"
+SIDE_DISPLAY_NAME = "ServerOS Fleet V1"
 SIDE_ROOT = Path.home() / ".cache" / "serveros" / "fleet-plugin-side"
 
 #: The Fleet Next ingress the committed plugin points at. Override with
@@ -209,7 +209,7 @@ def generate_side(out_root: Path, url: str) -> Path:
     market = marketplace(manifest)
     market["name"] = SIDE_MARKETPLACE_NAME
     market["plugins"][0]["source"] = f"./plugins/{SIDE_PLUGIN_NAME}"
-    market["description"] = "ServerOS Fleet V1 candidate, installed beside the plugin in service."
+    market["description"] = "ServerOS Fleet V1, installed beside any other Fleet plugin."
     market_path = out_root / ".claude-plugin" / "marketplace.json"
     market_path.parent.mkdir(parents=True, exist_ok=True)
     market_path.write_text(json.dumps(market, indent=2, ensure_ascii=False) + "\n",

@@ -1,5 +1,11 @@
 # Fleet V1 · 新旧并存部署（Tokyo）
 
+> **2026-11-04 现状（以此为准）：** Fleet V1 在 Tokyo **3412** 端口运行，公网入口
+> `https://fleet-v1.professorzhi.fun/mcp`（Cloudflare Tunnel）；Legacy 0.1.0（3401）继续服务 ChatGPT Legacy；
+> Next 0.2.0（3411）已退役，其 Tailscale Funnel 已撤。Claude Code 只保留 `serveros-fleet-v1@serveros-v1`。
+> 客户端插件的安装、升级、卸载统一见 [`distribution/README.md`](../../distribution/README.md)。下文 3411 / Tailscale
+> 的写法是部署前的方案，保留作记录。
+
 > 状态：运行手册，2026-11-03。目的：V1（main `f29ba7e` 之后）在 Tokyo 上线试用，**现在在用的旧版完全不动**：
 > GPT 继续用旧连接器，Claude Code 的旧插件继续可用，Legacy 0.1.0 与 Next 0.2.0 两个服务不停、不重启。
 > 新版作为**第二套**并排运行，验收通过后再决定是否切换。

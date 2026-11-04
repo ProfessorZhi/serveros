@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "serveros-fleet-v1": {
+      "type": "http",
+      "url": "https://fleet-v1.professorzhi.fun/mcp",
+      "oauth": {
+        "scopes": "fleet:read fleet:send fleet:control fleet:create fleet:approve fleet:navigate",
+        "callbackPort": 64649
+      }
+    }
+  }
+}
