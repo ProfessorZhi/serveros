@@ -1,0 +1,52 @@
+# The one release manifest for ServerOS Fleet client plugins.
+#
+# One Fleet Core (fleet_mcp/, served at `mcp_url`), one shared source (Skills,
+# brand assets, the portable manifest), and one adapter per client. Nothing
+# here is business logic: every client gets the same Skills byte for byte and
+# the same MCP server; only the packaging differs.
+#
+#   python3 distribution/build.py build   # regenerate every client tree below
+#   python3 distribution/build.py check   # fail if any committed tree is stale
+#   python3 distribution/build.py zip --client openai --out dist/
+#   python3 distribution/build.py install --client claude-code
+#
+# The version is not written here: it is the shared manifest's `version`, so a
+# release is one edit in one place and every client moves with it.
+schema: serveros/fleet-distribution.v1
+
+version_from: integrations/fleet-v1-first-install/plugin/plugin.json
+
+server:
+  mcp_url: https://fleet-v1.professorzhi.fun/mcp
+  health_url: https://fleet-v1.professorzhi.fun/health
+  # What runs behind it (owner-run, not built here): Fleet V1 on Tokyo port
+  # 3412 behind Cloudflare Tunnel. Legacy 0.1.0 (3401) keeps running for the
+  # ChatGPT Legacy plugin; Next 0.2.0 (3411) is retired.
+
+shared:
+  skills: integrations/fleet-v1-first-install/plugin/skills
+  assets: integrations/fleet-v1-first-install/plugin/assets
+  brand_lock: integrations/fleet-v1-first-install/brand-assets.lock.json
+  readme: integrations/fleet-v1-first-install/plugin/README.md
+  privacy: integrations/fleet-v1-first-install/plugin/PRIVACY.md
+
+identity:
+  plugin: serveros-fleet-v1
+  marketplace: serveros-v1
+  mcp_server: serveros-fleet-v1
+  display_name: ServerOS Fleet V1
+
+clients:
+  claude-code:
+    tree: distribution/claude-code
+    install_id: serveros-fleet-v1@serveros-v1
+  codex:
+    tree: distribution/codex
+    install_id: serveros-fleet-v1@serveros-v1
+  openai:
+    tree: distribution/openai
+    # Uploaded to ChatGPT as a NEW plugin beside "ServerOS Fleet Legacy 1.0.0",
+    # which is never replaced, uninstalled or edited from here. The plugin id is
+    # assigned by Plugin Creator on first upload; record it here once known.
+    plugin_id: null
+    coexists_with: ServerOS Fleet Legacy 1.0.0
