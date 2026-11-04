@@ -1,0 +1,87 @@
+# ServerOS device kits: what each device runs, from one declaration.
+#
+# Every device gets the same four layers, chosen per device here and nowhere
+# else. `python3 distribution/device_kit.py build` turns this file into
+# `distribution/devices/<device>/` (DEVICE.json + README.md); CI checks that the
+# committed kits match it. `device_kit.py plan|install --device X` runs the
+# steps on the device itself.
+#
+#   1 core      the serveros core plugin (Claude Code + Codex), built from a
+#               composition in plugin/profiles/ — the same payload is also the
+#               node runtime, so promoting it installs serverosd
+#   2 family    the device's ability family: an ability-management profile,
+#               rolled out at ONE pinned revision and read back
+#   3 monitor   basic: serverosd (python daemon, comes with the core runtime)
+#               native: core-lite (C++ collector + status file, every 30 s)
+#               link: node connector (devices other than the hub report to it)
+#               hub: the agent monitor (fleet-hub-watch) — finds Fleet runs,
+#                    records outcomes once, sends the completion / alert /
+#                    daily cards to Feishu
+#   4 commander the commander plugin (distribution/claude-code) — hub only
+#
+# Nothing here is a secret. Credentials are named by anchor in each device's
+# own local binding; the installer never reads, prints or copies one.
+schema: serveros/fleet-device-distribution.v1
+
+ability_management:
+  repo: ProfessorZhi/ability-management
+  # The profiles named below live in ability-management's abilities-manifest.yaml.
+  # The revision is passed at install time (--ability-rev) and is the SAME for
+  # the core plugin build and the family rollout, so a device never mixes two.
+
+hub:
+  device: tokyo
+  binding: ~/.config/serveros/fleet-v1.yaml
+  mcp_url: https://fleet-v1.professorzhi.fun/mcp
+
+devices:
+  tokyo:
+    device_ref: device:tokyo-shared-dev-01
+    principal: vince
+    os: linux
+    role: hub + company development (intake → board → item → design → implement → test → report)
+    core:
+      composition: plugin/profiles/linux-work.yaml
+      agents: [claude-code, codex]
+    family:
+      profile: tokyo-development-primary
+    monitor:
+      serverosd: true
+      core_lite: native/node-core/core-lite/profiles/tokyo-vince.profile.json
+      node_connector: false          # the hub reads its own core-lite file
+      hub_watch: true
+    commander: true
+
+  dell:
+    device_ref: device:llm-lab-dell
+    principal: fjd
+    os: linux
+    role: company GPU compute and model deployment first; owner's personal projects when idle
+    core:
+      composition: plugin/profiles/linux-work.yaml
+      agents: [claude-code, codex]
+    family:
+      profile: dell-gpu-compute
+    monitor:
+      serverosd: true
+      core_lite: native/node-core/core-lite/profiles/dell-fjd.profile.json
+      node_connector: true
+      hub_watch: false
+    commander: false
+
+  work-fj:
+    device_ref: device:work-fj
+    principal: work-fj
+    os: windows
+    role: company Windows — real-client E2E, browser, office documents
+    core:
+      composition: null              # the Linux plugin does not run on Windows;
+      agents: [claude-code, codex]   # the core comes as standalone skills (family)
+    family:
+      profile: work-fj-windows
+    monitor:
+      serverosd: false
+      core_lite: windows-core        # native/node-core/windows-core (SCM + named pipe)
+      node_connector: true
+      hub_watch: false
+    commander: false
