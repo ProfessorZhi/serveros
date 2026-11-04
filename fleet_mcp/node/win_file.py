@@ -8,7 +8,7 @@ each promise with the Windows mechanism that actually provides it:
 |---|---|---|
 | no link anywhere in the path | `resolve() == path` + `O_NOFOLLOW` | `resolve() == path`, and the final component is not a reparse point |
 | it is a regular file | `S_ISREG` on the descriptor | `lstat` says file, the open handle's index matches `lstat`'s |
-| it is this account's | `st_uid == geteuid()` | the file's owner SID equals this process token's user SID |
+| it is this account's | `st_uid == geteuid()` | the file's owner SID is this token's user SID or its default owner SID (what this token stamps on files it creates; elevated administrators stamp BUILTIN\\Administrators) |
 | bounded | read at most `cap + 1` | the same |
 
 What it does NOT check, said rather than implied: the file's DACL. A POSIX mode
@@ -41,6 +41,7 @@ def _owner_matches_token(path: Path) -> bool:
     OWNER_SECURITY_INFORMATION = 0x00000001
     TOKEN_QUERY = 0x0008
     TOKEN_USER_CLASS = 1
+    TOKEN_OWNER_CLASS = 4
 
     owner = ctypes.c_void_p()
     descriptor = ctypes.c_void_p()
@@ -61,18 +62,26 @@ def _owner_matches_token(path: Path) -> bool:
                                          ctypes.byref(token)):
             raise WindowsReadRefused("this process's token could not be read")
         try:
-            size = wintypes.DWORD()
             advapi32.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
                                                      wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
-            advapi32.GetTokenInformation(token, TOKEN_USER_CLASS, None, 0, ctypes.byref(size))
-            buffer = ctypes.create_string_buffer(size.value)
-            if not advapi32.GetTokenInformation(token, TOKEN_USER_CLASS, buffer, size,
-                                                ctypes.byref(size)):
-                raise WindowsReadRefused("this process's user could not be read from its token")
-            # TOKEN_USER begins with SID_AND_ATTRIBUTES, whose first field is the PSID.
-            me = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+
+            def first_sid(which: int):
+                size = wintypes.DWORD()
+                advapi32.GetTokenInformation(token, which, None, 0, ctypes.byref(size))
+                buffer = ctypes.create_string_buffer(size.value)
+                if not advapi32.GetTokenInformation(token, which, buffer, size, ctypes.byref(size)):
+                    raise WindowsReadRefused("this process's token could not be read")
+                # TOKEN_USER and TOKEN_OWNER both begin with the PSID.
+                return buffer, ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+
+            # Either SID the token itself stamps on what it creates: the user, or
+            # the default owner (an elevated administrator's token makes
+            # BUILTIN\Administrators the owner of new files).
+            user_buf, me = first_sid(TOKEN_USER_CLASS)
+            owner_buf, my_default_owner = first_sid(TOKEN_OWNER_CLASS)
             advapi32.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-            return bool(owner.value) and bool(advapi32.EqualSid(owner, me))
+            return bool(owner.value) and (bool(advapi32.EqualSid(owner, me))
+                                          or bool(advapi32.EqualSid(owner, my_default_owner)))
         finally:
             kernel32.CloseHandle(token)
     finally:

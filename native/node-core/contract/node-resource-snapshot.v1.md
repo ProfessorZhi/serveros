@@ -52,6 +52,7 @@ walking the document.
 | `cpu.counters.*` | `guest` and `guest_nice` are excluded from every sum: the kernel already counts them inside `user` and `nice`. |
 | `memory.scope` | Always `host-wide`. These are the machine's figures and are never divided by account. |
 | `swap.state` | `PRESENT` when **either** half was readable. The two halves come from two files and are reported independently; one being unreadable does not blank the other. |
+| `memory.source` | `/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows (the Windows collector, `core-lite/windows`). On Windows `available_bytes` and `free_bytes` are both the OS's available-physical figure, because Windows does not separate MemFree from MemAvailable. Additive in v1. |
 | `swap.total_bytes` / `free_bytes` / `used_bytes` | From `/proc/meminfo`'s `SwapTotal`/`SwapFree`, in bytes. `used_bytes` is `total - free`, derived the same way `memory`'s used figure is. A machine with no swap reports `0`/`0` — that is a measurement, not an absence. |
 | `swap.used_percent` | `used / total`, refused when `SwapTotal` is 0. **This is a STOCK, not a signal.** It falls when a process exits and says nothing about whether the machine is paging. |
 | `swap.pages_in` / `pages_out` | The `pswpin`/`pswpout` delta over the window, from `/proc/vmstat`. Refused when either sample is unreadable, when the interval is not measurable, or when either counter went backwards. |

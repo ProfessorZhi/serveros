@@ -143,16 +143,17 @@ std::wstring widen(const std::string& text) {
     return out;
 }
 
-//: This process's user SID, from its own token, never from the environment.
-bool token_user_sid(std::vector<unsigned char>& buffer) {
+//: One token field, read from this process's own token, never from the
+//: environment.
+bool token_field(TOKEN_INFORMATION_CLASS which, std::vector<unsigned char>& buffer) {
     HANDLE token = nullptr;
     if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &token)) {
         return false;
     }
     DWORD size = 0;
-    ::GetTokenInformation(token, TokenUser, nullptr, 0, &size);
+    ::GetTokenInformation(token, which, nullptr, 0, &size);
     buffer.assign(size, 0);
-    const BOOL ok = size > 0 && ::GetTokenInformation(token, TokenUser, buffer.data(), size, &size);
+    const BOOL ok = size > 0 && ::GetTokenInformation(token, which, buffer.data(), size, &size);
     ::CloseHandle(token);
     return ok == TRUE;
 }
@@ -163,12 +164,18 @@ bool token_user_sid(std::vector<unsigned char>& buffer) {
 //: file, and each is OWNED by this process's account.
 bool walk_owned_path_win(const std::string& home, const std::vector<std::string>& parts,
                          std::string& path_out, std::string& error) {
-    std::vector<unsigned char> sid_buffer;
-    if (!token_user_sid(sid_buffer)) {
+    // "This account's" is either SID the token itself would stamp on a new
+    // object: the user, or the token's default owner. An elevated
+    // administrator's token makes BUILTIN\Administrators the owner of what it
+    // creates, so a file this same token wrote carries that SID instead.
+    std::vector<unsigned char> user_buffer;
+    std::vector<unsigned char> owner_buffer;
+    if (!token_field(TokenUser, user_buffer) || !token_field(TokenOwner, owner_buffer)) {
         error = "this process's token could not be read, so ownership cannot be checked";
         return false;
     }
-    const PSID me = reinterpret_cast<TOKEN_USER*>(sid_buffer.data())->User.Sid;
+    const PSID me = reinterpret_cast<TOKEN_USER*>(user_buffer.data())->User.Sid;
+    const PSID my_default_owner = reinterpret_cast<TOKEN_OWNER*>(owner_buffer.data())->Owner;
 
     std::string path = home;
     for (std::size_t index = 0; index < parts.size(); ++index) {
@@ -204,7 +211,8 @@ bool walk_owned_path_win(const std::string& home, const std::vector<std::string>
             error = "the owner of \"" + parts[index] + "\" could not be read";
             return false;
         }
-        const bool mine = owner != nullptr && ::EqualSid(owner, me);
+        const bool mine =
+            owner != nullptr && (::EqualSid(owner, me) || ::EqualSid(owner, my_default_owner));
         ::LocalFree(descriptor);
         if (!mine) {
             error = "\"" + parts[index] + "\" is owned by another account";
