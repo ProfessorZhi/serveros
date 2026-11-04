@@ -1,0 +1,31 @@
+{
+  "schema": "serveros/core-lite-profile.v1",
+  "node": "device:work-fj",
+  "principal": "vince.huang",
+  "platform": "windows",
+  "observe_only": true,
+  "generation": 1,
+  "observations": [
+    {
+      "name": "cpu",
+      "authorized": true
+    },
+    {
+      "name": "memory",
+      "authorized": true
+    },
+    {
+      "name": "swap",
+      "authorized": true
+    },
+    {
+      "name": "psi.memory",
+      "authorized": true
+    },
+    {
+      "name": "storage.readonly",
+      "authorized": true
+    }
+  ],
+  "services": []
+}

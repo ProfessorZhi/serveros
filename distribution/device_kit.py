@@ -48,6 +48,8 @@ UNIT_TEMPLATES = {
     "node_connector": "fleet_mcp/node/systemd/user/serveros-fleet-node-connector.service.in",
     "hub_watch": "integrations/fleet-hub-watch/serveros-fleet-watch.service.template",
     "node_connector_windows": "fleet_mcp/node/install.ps1",
+    "core_lite_publish_windows": "native/node-core/core-lite/windows/deploy/publish-status.ps1",
+    "core_lite_task_windows": "native/node-core/core-lite/windows/deploy/register-publish-task.ps1",
 }
 
 
@@ -132,6 +134,18 @@ def kit(doc: dict, name: str) -> dict:
         prof = _profile_node(mon["core_lite"])
         if prof["node"] != dev["device_ref"]:
             raise KitError(f"{name}: core-lite profile is for {prof['node']}, not {dev['device_ref']}")
+        if prof.get("platform") != dev["os"]:
+            raise KitError(f"{name}: core-lite profile is for {prof.get('platform')}, not {dev['os']}")
+    if mon["core_lite"] and dev["os"] == "windows":
+        monitor["core_lite"] = {
+            "what": "native: C++ Windows collector (Win32) → status.json every minute, observe only",
+            "profile": _pin(mon["core_lite"]),
+            "build": "native/node-core/core-lite/windows (MSVC, static)",
+            "task": "\\ServerOS\\ServerOS Core-Lite publish (scheduled task, this user)",
+            "templates": [_pin(UNIT_TEMPLATES[k]) for k in ("core_lite_publish_windows",
+                                                             "core_lite_task_windows")],
+            "status_file": "%LOCALAPPDATA%\\ServerOS\\state\\core-lite\\status.json"}
+    elif mon["core_lite"]:
         monitor["core_lite"] = {
             "what": "native: C++ collector → status.json (0600) every 30 s, observe only",
             "profile": _pin(mon["core_lite"]),
@@ -330,13 +344,29 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
 
 def windows_plan(k: dict, rev: str) -> list[str]:
     fam = k["layers"]["family"]
+    core = k["layers"]["monitor"].get("core_lite", {})
+    native = [
+        "# native monitor: build the Windows collector (needs Visual Studio Build Tools + CMake)",
+        "cmake -S native\\node-core\\core-lite\\windows -B $env:LOCALAPPDATA\\ServerOS\\build\\core-lite -A x64",
+        "cmake --build $env:LOCALAPPDATA\\ServerOS\\build\\core-lite --config Release",
+        "$bin = \"$env:LOCALAPPDATA\\ServerOS\\build\\core-lite\\Release\"",
+        f"$prof = (Resolve-Path {core['profile']['path'].replace('/', chr(92))}).Path",
+        "# the device declaration core-lite-status reads (one line, this account's own file)",
+        "New-Item -ItemType Directory -Force \"$env:USERPROFILE\\.config\\serveros\" | Out-Null",
+        f"Set-Content -NoNewline \"$env:USERPROFILE\\.config\\serveros\\node-identity\" '{k['device_ref']}'",
+        "powershell -ExecutionPolicy Bypass -File native\\node-core\\core-lite\\windows\\deploy\\publish-status.ps1 -Bin $bin -ProfilePath $prof",
+        "powershell -ExecutionPolicy Bypass -File native\\node-core\\core-lite\\windows\\deploy\\register-publish-task.ps1 -Bin $bin -ProfilePath $prof",
+        "# then set core_snapshot_path in the connector binding to %LOCALAPPDATA%\\ServerOS\\state\\core-lite\\status.json",
+    ] if "profile" in core else [
+        "# resource readings: none yet — no collector configured for this device",
+    ]
     return [
         "# run in PowerShell on the device, from a checkout of serveros and ability-management",
         f"python ..\\ability-management\\skills\\ability-management\\payload\\control_plane.py rollout "
         f"--profile {fam['profile']} --rev {rev} --agent all --apply",
         f"python ..\\ability-management\\skills\\ability-management\\payload\\control_plane.py readback "
         f"--profile {fam['profile']} --agent all",
-        "# resource readings: none yet — no Windows collector exists (core-lite/windows/README.md §4)",
+        *native,
         f"powershell -ExecutionPolicy Bypass -File fleet_mcp\\node\\install.ps1 -DeviceRef {k['device_ref']} "
         "-CloudCliCredential <anchor>",
     ]

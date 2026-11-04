@@ -6,7 +6,9 @@
 // for writing. The Python core remains the authority for every question this
 // document answers: this program supplies measurements, and a measurement is not
 // a policy.
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -19,6 +21,7 @@
 #include "nodecore/file_source.hpp"
 #include "nodecore/sample.hpp"
 #include "nodecore/snapshot.hpp"
+#include "nodecore/windows_sample.hpp"
 
 namespace {
 
@@ -39,7 +42,7 @@ void print_usage(std::FILE* out) {
                  "                         Zero is accepted and produces a snapshot whose every\n"
                  "                         delta is UNAVAILABLE, because no interval was measured.\n"
                  "  --filesystem ROLE=PATH add a filesystem role (repeatable). Defaults:\n"
-                 "                         ROOT_FS=/ DATA_FS=/data\n"
+                 "                         ROOT_FS=/ DATA_FS=/data (Windows: ROOT_FS=C:\\)\n"
                  "  --interface NAME       sample only this interface (repeatable).\n"
                  "                         Default: every interface /sys/class/net lists.\n"
                  "  --compact              emit the canonical single-line form instead of the\n"
@@ -114,7 +117,11 @@ int main(int argc, char** argv) {
 
     nodecore::SampleRequest request;
     if (filesystem_args.empty()) {
+#ifdef _WIN32
+        request.filesystems = nodecore::default_windows_filesystems();
+#else
         request.filesystems = {{"ROOT_FS", "/"}, {"DATA_FS", "/data"}};
+#endif
     } else {
         for (const std::string& spec : filesystem_args) {
             const std::size_t equals = spec.find('=');
@@ -126,6 +133,23 @@ int main(int argc, char** argv) {
         }
     }
     request.interfaces = interface_args;
+
+    nodecore::SnapshotOptions options;
+    options.collector_version = kVersion;
+#ifdef _WIN32
+    // The Windows door: Win32 queries instead of /proc. --interface is accepted
+    // and ignored, because this version reads no interface counters there.
+    const auto sample_now = [&request]() {
+        return nodecore::sample_from_windows_facts(
+            nodecore::read_windows_facts(request.filesystems), std::chrono::system_clock::now());
+    };
+    const nodecore::Sample before = sample_now();
+    if (interval_ms > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+    }
+    const nodecore::Sample after = sample_now();
+    options.live = true;
+#else
     request.self_uid = static_cast<long>(::getuid());
 
     nodecore::SystemFileSource files;
@@ -136,10 +160,8 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
     }
     const nodecore::Sample after = nodecore::take_sample(files, clock, request);
-
-    nodecore::SnapshotOptions options;
-    options.collector_version = kVersion;
     options.live = files.is_live();
+#endif
 
     const nodecore::Json document = nodecore::build_snapshot(before, after, options);
     const std::string text = compact ? document.dump_compact() : document.dump();

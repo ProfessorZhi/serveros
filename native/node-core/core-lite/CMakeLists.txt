@@ -85,7 +85,8 @@ add_test(NAME core_lite_profile COMMAND test_core_lite_profile)
 add_test(NAME core_lite_shipped_profiles
          COMMAND test_core_lite_profile
                  "${CMAKE_CURRENT_SOURCE_DIR}/profiles/tokyo-vince.profile.json"
-                 "${CMAKE_CURRENT_SOURCE_DIR}/profiles/dell-fjd.profile.json")
+                 "${CMAKE_CURRENT_SOURCE_DIR}/profiles/dell-fjd.profile.json"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/profiles/work-fj.profile.json")
 
 # The status contract and the runtime identity readback.
 add_executable(test_core_lite_status tests/test_status.cpp)

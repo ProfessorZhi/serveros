@@ -1,6 +1,6 @@
 # Windows — a DIFFERENT adapter, not a port
 
-**Nothing here is installed, running or verified on Windows.** `systemd_user.cpp`
+**The resource collector below is built and run on a hosted Windows runner; it is not yet verified on the fleet's own Windows device.** `systemd_user.cpp`
 is Linux-only, and no Windows equivalent exists in this tree. This document is a
 **contract**: it states what a Windows adapter must satisfy, and what is
 UNKNOWN about it. It is not evidence that anything works there.
@@ -57,7 +57,9 @@ design decision with a security consequence, not a translation.
 | claim | status |
 |---|---|
 | the profile schema is platform-tagged and parses for `"platform": "windows"` | **VERIFIED** — a unit check in `tests/test_profile.cpp` |
-| a Windows adapter exists | **NO — does not exist** |
+| a Windows resource collector exists | **YES** — `windows/CMakeLists.txt`: `src/windows_system.cpp` (Win32 reads) + `src/windows_sample.cpp` (pure conversion, unit-tested on Linux) into the shared `node-resource-snapshot.v1`; `core-lite-status` builds for Windows with a token-based identity reader |
+| it runs on a Windows host | **HOSTED_WINDOWS** — `.github/workflows/serveros-core-lite-windows.yml` builds with MSVC, runs both programs, validates both documents against their schemas and reads the published file back through the connector's Windows reader. Not yet REAL_DEVICE |
+| Windows service-state readings (SCM) | **NOT IN THIS COLLECTOR** — `services` answers UNSUPPORTED_PLATFORM; `windows-core` is the SCM adapter |
 | SCM / Task Scheduler identity behaviour on a real Windows host | **UNKNOWN — not measured; no Windows host was touched** |
 | Core health reporting on Windows | **NOT IMPLEMENTED** |
 

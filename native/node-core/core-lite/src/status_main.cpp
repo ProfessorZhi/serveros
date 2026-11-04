@@ -39,9 +39,13 @@
 #include "corelite/service_readings.hpp"
 #include "corelite/status.hpp"
 #include "nodecore/clock.hpp"
+#ifndef _WIN32
+// systemd and the bounded argv runner are POSIX. On Windows `services` and
+// `gpu.readonly` are answered UNSUPPORTED_PLATFORM below, so neither is linked.
 #include "proc.hpp"
 #include "supervisor/provider.hpp"
 #include "supervisor/systemd_user.hpp"
+#endif
 
 namespace {
 
@@ -49,6 +53,7 @@ namespace {
 //: same default the supervisor uses, and overridable for the same reason.
 constexpr const char* kDefaultSystemctl = "/usr/bin/systemctl";
 
+#ifndef _WIN32
 //: Wraps the supervisor's unit adapter and exposes ONE method.
 //:
 //: `SystemdUserProvider` also has `start`, `restart` and `stop`, and this class
@@ -106,6 +111,15 @@ public:
         return answer;
     }
 };
+
+#else
+//: Windows has no nvidia-smi path this program may run; `gpu_reading` returns
+//: UNSUPPORTED_PLATFORM for a windows profile before it would ever call this.
+class NoGpuQuery final : public nodecore::corelite::NvidiaQuery {
+public:
+    nodecore::corelite::NvidiaAnswer sample() override { return {}; }
+};
+#endif  // _WIN32
 
 void print_usage(std::FILE* out) {
     std::fprintf(out,
@@ -206,7 +220,8 @@ int main(int argc, char** argv) {
     // UNSUPPORTED_PLATFORM. Getting that backwards would blame the host for a
     // missing program.
     input.platform_supports_psi = (profile.platform == "linux");
-    input.platform_has_collector = (profile.platform == "linux");
+    // Both platforms have a collector writing the shared snapshot contract.
+    input.platform_has_collector = (profile.platform == "linux" || profile.platform == "windows");
 
     // ---- the runtime identity readback ---------------------------------
     const auto os_identity = nodecore::corelite::current_user();
@@ -255,6 +270,7 @@ int main(int argc, char** argv) {
             grants_services = true;
         }
     }
+#ifndef _WIN32
     if (grants_services) {
         std::vector<std::string> units;
         for (const auto& service : profile.services) {
@@ -279,13 +295,30 @@ int main(int argc, char** argv) {
         }
         input.readings.push_back(services);
     }
+#else
+    if (grants_services) {
+        // The Service Control Manager is a different facility, not a
+        // translation of systemd (core-lite/windows/README.md §1); this program
+        // does not ask it.
+        nodecore::corelite::Reading services;
+        services.name = "services";
+        services.state = nodecore::corelite::ReadingState::Unavailable;
+        services.reason = "UNSUPPORTED_PLATFORM";
+        services.source = "platform";
+        input.readings.push_back(services);
+    }
+#endif
 
     // ---- the gpu.readonly observation ------------------------------------
     // The sampler is constructed unconditionally and RUNS nothing unless the
     // owner granted the observation and this is a Linux profile: `gpu_reading`
     // checks both before it calls `sample()`, so an ungranted observation costs
     // no process at all.
+#ifndef _WIN32
     NvidiaSmi gpu_sampler;
+#else
+    NoGpuQuery gpu_sampler;
+#endif
     input.readings.push_back(nodecore::corelite::gpu_reading(
         profile, os_identity, gpu_sampler,
         nodecore::iso8601_utc(std::chrono::system_clock::now())));

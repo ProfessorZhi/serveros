@@ -1,11 +1,13 @@
 #include "supervisor/probe.hpp"
 
+#ifndef _WIN32  // the socket transport is POSIX; the probe POLICY below is portable
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/types.h>
 #include <unistd.h>
+#endif
 
 #include <cerrno>
 #include <cstring>
@@ -21,6 +23,7 @@ namespace {
 //: applies to the Core's own socket.
 constexpr std::size_t kMaxUnixPath = 107;
 
+#ifndef _WIN32
 std::string strerror_text(int err) {
     return std::string(std::strerror(err));
 }
@@ -87,6 +90,8 @@ ProbeOutcome connect_bounded(int fd, const sockaddr* addr, socklen_t addrlen, in
     return out;
 }
 
+#endif  // _WIN32
+
 }  // namespace
 
 ProbeSpec probe_spec_of(const HealthPolicy& health) {
@@ -151,6 +156,7 @@ std::string validate_probe(const ProbeSpec& spec) {
            "\"unix-socket-connect\" and \"tcp-connect\"";
 }
 
+#ifndef _WIN32
 ProbeOutcome SocketProbeTransport::connect_unix(const std::string& path, int timeout_ms) {
     ProbeOutcome out;
     const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
@@ -205,6 +211,7 @@ ProbeOutcome SocketProbeTransport::connect_tcp(const std::string& host, int port
     ::close(fd);
     return result;
 }
+#endif  // _WIN32
 
 ProbeOutcome run_probe(const ProbeSpec& spec, ProbeTransport& transport) {
     const std::string invalid = validate_probe(spec);

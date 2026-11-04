@@ -1,0 +1,102 @@
+# The Windows resource collector and status builder, built with MSVC and RUN on
+# a hosted Windows runner: the snapshot and the status are validated against
+# their contract schemas, the publisher writes the status file, and the
+# connector's Windows reader reads it back with the real owner-SID check.
+# Green means HOSTED_WINDOWS only, never REAL_DEVICE.
+name: serveros-core-lite-windows
+
+on:
+  pull_request:
+    paths:
+      - "native/node-core/src/**"
+      - "native/node-core/include/**"
+      - "native/node-core/core-lite/**"
+      - "native/node-core/supervisor/src/probe.cpp"
+      - "native/node-core/supervisor/src/manifest.cpp"
+      - "native/node-core/contract/**"
+      - "fleet_mcp/node/win_file.py"
+      - "fleet_mcp/node/connector.py"
+      - "tests/test_fleet_node_win_file.py"
+      - ".github/workflows/serveros-core-lite-windows.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: serveros-core-lite-windows-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  windows-collector:
+    name: Windows collector, status builder and connector reader
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install the checkers
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check 'jsonschema==4.26.0' 'PyYAML==6.0.2' 'pytest==9.1.1'
+          if ($LASTEXITCODE -ne 0) { throw "pip failed" }
+
+      - name: Configure and build with MSVC
+        shell: pwsh
+        run: |
+          cmake -S native/node-core/core-lite/windows -B build-cl -A x64
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+          cmake --build build-cl --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+
+      - name: Unit tests
+        shell: pwsh
+        run: |
+          ctest --test-dir build-cl -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "ctest failed" }
+
+      - name: Run the collector on this host and check the snapshot
+        shell: pwsh
+        run: |
+          $bin = 'build-cl/Release'
+          & "$bin/serveros-node-resource-snapshot.exe" --compact | Set-Content -LiteralPath snapshot.json
+          if ($LASTEXITCODE -ne 0) { throw "collector failed" }
+          python native/node-core/core-lite/windows/ci_check.py snapshot snapshot.json
+          if ($LASTEXITCODE -ne 0) { throw "snapshot check failed" }
+
+      - name: Run the status builder with a profile for this runner
+        shell: pwsh
+        run: |
+          # The device declaration the status builder reads from the profile
+          # folder the OS records, owned by this account.
+          $decl = Join-Path $env:USERPROFILE '.config\serveros'
+          New-Item -ItemType Directory -Force -Path $decl | Out-Null
+          Set-Content -LiteralPath (Join-Path $decl 'node-identity') -Value 'device:hosted-ci' -NoNewline
+          $profileDoc = Get-Content native/node-core/core-lite/profiles/work-fj.profile.json -Raw | ConvertFrom-Json
+          $profileDoc.node = 'device:hosted-ci'
+          $profileDoc.principal = $env:USERNAME
+          $profileDoc | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath ci.profile.json
+          & build-cl/Release/core-lite-status.exe --profile ci.profile.json --snapshot snapshot.json | Set-Content -LiteralPath status.json
+          if ($LASTEXITCODE -ne 0) { throw "status builder failed" }
+          python native/node-core/core-lite/windows/ci_check.py status status.json
+          if ($LASTEXITCODE -ne 0) { throw "status check failed" }
+
+      - name: Publish through the deploy script and read it back as the connector does
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:LOCALAPPDATA 'ServerOS\state\core-lite\status.json'
+          ./native/node-core/core-lite/windows/deploy/publish-status.ps1 -Bin build-cl/Release -ProfilePath ci.profile.json -Out $out
+          python -c "import sys; from pathlib import Path; from fleet_mcp.node.win_file import read_owned_bounded; raw = read_owned_bounded(Path(sys.argv[1]).resolve(), 262144); assert b'core-lite-status.v1' in raw; print('connector reader ok', len(raw), 'bytes')" $out
+          if ($LASTEXITCODE -ne 0) { throw "the connector reader refused the published file" }
+
+      - name: Connector reader tests with the real owner check
+        shell: pwsh
+        run: |
+          python -m pytest -q -p no:cacheprovider tests/test_fleet_node_win_file.py
+          if ($LASTEXITCODE -ne 0) { throw "pytest failed" }

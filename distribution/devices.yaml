@@ -81,12 +81,9 @@ devices:
       profile: work-fj-windows
     monitor:
       serverosd: false
-      # No Windows resource collector exists yet: the collector is Linux-only
-      # (native/node-core/src/linux_readers.cpp) and
-      # native/node-core/core-lite/windows/README.md §4 says the Windows adapter
-      # does not exist. windows-core reports service state, not resources. The
-      # hub shows this device's cards as 未接入资源读数 until one is built.
-      core_lite: null
+      # The Windows collector (native/node-core/core-lite/windows): Win32 reads
+      # into the same snapshot contract, a scheduled task publishes every minute.
+      core_lite: native/node-core/core-lite/profiles/work-fj.profile.json
       node_connector: true
       hub_watch: false
     commander: false

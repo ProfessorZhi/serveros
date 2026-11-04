@@ -154,11 +154,24 @@ def _read_bounded_no_follow(path: Path, cap: int) -> bytes:
     point of an owner-fixed path is that the operator chose it.
     """
     o_nofollow = getattr(os, "O_NOFOLLOW", None)
+    if o_nofollow is None and os.name == "nt":
+        # Windows has no O_NOFOLLOW or st_uid. The same promises are kept with
+        # the Windows mechanisms (reparse-point attribute, file index, owner
+        # SID against the process token) in `win_file`; see its table.
+        from .win_file import WindowsReadRefused, read_owned_bounded
+
+        try:
+            return read_owned_bounded(path, cap)
+        except WindowsReadRefused as exc:
+            raise FleetRefusal("BAD_REQUEST", str(exc)) from None
+        except OSError as exc:
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                f"the Core snapshot could not be opened ({type(exc).__name__})") from None
     if o_nofollow is None:
-        # Windows has no O_NOFOLLOW, and this route is reached from Windows
-        # connectors. On such a platform this cannot be done safely, so it is
-        # refused BY NAME rather than done without the protection: a silent
-        # weakening is exactly the failure this function exists to prevent.
+        # A platform with neither O_NOFOLLOW nor the Windows mechanisms: this
+        # cannot be done safely, so it is refused BY NAME rather than done
+        # without the protection.
         raise FleetRefusal(
             "UNSUPPORTED",
             f"this platform has no O_NOFOLLOW, so the Core snapshot cannot be "
