@@ -1,0 +1,44 @@
+{
+  "schema": "serveros/fleet-device-kit.v1",
+  "device": "work-fj",
+  "device_ref": "device:work-fj",
+  "principal": "work-fj",
+  "os": "windows",
+  "role": "company Windows — real-client E2E, browser, office documents",
+  "hub": "tokyo",
+  "layers": {
+    "core": {
+      "composition": null,
+      "agents": [
+        "claude-code",
+        "codex"
+      ],
+      "note": "core skills arrive as standalone skills through the family profile"
+    },
+    "family": {
+      "repo": "ProfessorZhi/ability-management",
+      "profile": "work-fj-windows",
+      "agents": [
+        "claude-code",
+        "codex"
+      ],
+      "revision": "pinned at install (--ability-rev)"
+    },
+    "monitor": {
+      "core_lite": {
+        "what": "native: Windows Core status over a named pipe (SCM)",
+        "source": {
+          "path": "native/node-core/windows-core/README.md",
+          "digest": "sha256:4af7d5f42bfc6393f61f6b83e11e910d95a59cff8d5bd31e0b53a4ff983761cc"
+        }
+      },
+      "node_connector": {
+        "what": "link: reports this device to the hub (tokyo)",
+        "template": {
+          "path": "fleet_mcp/node/install.ps1",
+          "digest": "sha256:3b19400790188488ec617cbd996a0ebfe656e77a39b98e8255c9d5a55b2afa39"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "schema": "serveros/fleet-device-kit.v1",
+  "device": "tokyo",
+  "device_ref": "device:tokyo-shared-dev-01",
+  "principal": "vince",
+  "os": "linux",
+  "role": "hub + company development (intake → board → item → design → implement → test → report)",
+  "hub": "tokyo",
+  "layers": {
+    "core": {
+      "source": "plugin/profiles/linux-work.yaml",
+      "composition": "serveros-linux-work",
+      "name": "hwz-server-os-linux-work",
+      "display_name": "HWZ ServerOS (Linux Work)",
+      "version": "3.1.0+srv0005.20261014a",
+      "skills": [
+        "serveros",
+        "runtime-management",
+        "ability-management",
+        "workspace-management",
+        "test-management"
+      ],
+      "claude_code": "hwz-server-os-linux-work@hwz-server-os-linux-work",
+      "codex": "hwz-server-os-linux-work@hwz-server-os-linux-work-local",
+      "agents": [
+        "claude-code",
+        "codex"
+      ],
+      "node_runtime": "serverosd + serverosctl (same payload, promoted as node-runtime)"
+    },
+    "family": {
+      "repo": "ProfessorZhi/ability-management",
+      "profile": "tokyo-development-primary",
+      "agents": [
+        "claude-code",
+        "codex"
+      ],
+      "revision": "pinned at install (--ability-rev)"
+    },
+    "monitor": {
+      "serverosd": {
+        "what": "basic: resources, anomalies, runtime status (python daemon)",
+        "unit": "serverosd.service",
+        "template": {
+          "path": "runtime/serverosd.service",
+          "digest": "sha256:b026513ac1000122950bfee62be2ba915224225afc6a6800083a63610b949e23"
+        }
+      },
+      "core_lite": {
+        "what": "native: C++ collector → status.json (0600) every 30 s, observe only",
+        "profile": {
+          "path": "native/node-core/core-lite/profiles/tokyo-vince.profile.json",
+          "digest": "sha256:1eeb7b7bbc4c83502565c342eb4e0bde4a009ae4e5ffe6374e161d9ce0012474"
+        },
+        "units": [
+          "serveros-core-lite-publish.service",
+          "serveros-core-lite-publish.timer"
+        ],
+        "templates": [
+          {
+            "path": "native/node-core/core-lite/deploy/serveros-core-lite-publish.service",
+            "digest": "sha256:1f97075d0314a14ebc1a30bb30e963295b6d970b2f3f85313f9991d3972f42bb"
+          },
+          {
+            "path": "native/node-core/core-lite/deploy/serveros-core-lite-publish.timer",
+            "digest": "sha256:249ade5c4efe841e0e07725c15a94bbcb3a4657f59dc7730485f0d933482de9f"
+          },
+          {
+            "path": "native/node-core/core-lite/deploy/publish-status.sh",
+            "digest": "sha256:d3d63e0a718158639036eb5d6d42aa1b0a0444cc74e133474140fead3260cd62"
+          }
+        ],
+        "status_file": "~/.local/state/serveros/core-lite/status.json"
+      },
+      "hub_watch": {
+        "what": "hub: agent monitor — finds Fleet runs, records outcomes once, Feishu completion / alert / daily cards",
+        "unit": "serveros-fleet-watch.service",
+        "template": {
+          "path": "integrations/fleet-hub-watch/serveros-fleet-watch.service.template",
+          "digest": "sha256:44ae11c93636f085d417862567a0a81127ed1ac84f453d722591c1db472acb2c"
+        },
+        "binding": "~/.config/serveros/fleet-v1.yaml",
+        "card_spec": {
+          "path": "integrations/fleet-hub-watch/card-spec.yaml",
+          "digest": "sha256:5d914b238222070754b71795b340b7c446dcaa411547ff549adfd73436ee8a3c"
+        },
+        "binding_needs": "core_lite.snapshot_path: ~/.local/state/serveros/core-lite/status.json",
+        "notify_default": "journal (switch to lark:user:<open_id> after checking the cards)"
+      }
+    },
+    "commander": {
+      "client": "claude-code",
+      "install_id": "serveros-fleet-v1@serveros-v1",
+      "tree": "distribution/claude-code",
+      "mcp_url": "https://fleet-v1.professorzhi.fun/mcp"
+    }
+  }
+}
