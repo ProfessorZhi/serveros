@@ -67,3 +67,41 @@ registration — no client id, no secret), Skills, assets, README, PRIVACY.
 
 MCP tool changes ship with the server (Tokyo Fleet V1), not with these packages;
 a client sees them after its next tool refresh.
+
+# Device kits — one per device
+
+The commander plugin above is only the hub's fourth layer. Every device gets
+the same four layers, declared once in `distribution/devices.yaml` and generated
+into `distribution/devices/<device>/` (`DEVICE.json` + `README.md`, committed,
+checked in CI by `device_kit.py check`):
+
+| layer | what | tokyo | dell | work-fj (Windows) |
+|---|---|---|---|---|
+| 1 core plugin | serveros core (`plugin/profiles/linux-work.yaml` → `hwz-server-os-linux-work`) for Claude Code + Codex; the same payload is the node runtime (serverosd) | ✓ | ✓ | standalone skills via the family |
+| 2 ability family | ability-management profile, rolled out at one pinned revision and read back (discovery of the rest: `control_plane.py catalog search/install`) | `tokyo-development-primary` | `dell-gpu-compute` | `work-fj-windows` |
+| 3 monitor · basic | serverosd | ✓ | ✓ | — |
+| 3 monitor · native | core-lite C++ collector → status file every 30 s (Windows: Windows Core) | ✓ | ✓ | Windows Core |
+| 3 monitor · link | node connector → hub | — | ✓ | ✓ |
+| 3 monitor · hub | agent monitor (`fleet-hub-watch`): Fleet run outcomes, completion / alert / daily cards to Feishu | ✓ | — | — |
+| 4 commander | `serveros-fleet-v1@serveros-v1` | ✓ | — | — |
+
+```bash
+REV=$(git -C ../ability-management rev-parse origin/main)
+python3 distribution/device_kit.py plan    --device dell --ability-rev $REV --data-root $DATA_ROOT
+python3 distribution/device_kit.py install --device dell --ability-rev $REV --data-root $DATA_ROOT --apply
+python3 distribution/device_kit.py install --device dell --ability-rev $REV --data-root $DATA_ROOT --apply --enable
+```
+
+`install` without `--apply` only prints; with `--apply` it runs the steps in
+order and stops at the first failure, writing a receipt to
+`~/.local/state/serveros/device-kit/<device>.receipt.json`. Unit files are
+written but nothing is enabled or started without `--enable`. The node
+connector step is a preflight: its real install needs the device's own
+credential anchor and tunnel key, which only the owner supplies. On the hub,
+`--notify lark:user:<open_id>` switches the agent monitor from the local
+journal to Feishu. A Windows kit is plan-only here; its README holds the
+PowerShell to run on the device.
+
+Add a device: one entry in `devices.yaml` (and a core-lite profile in
+`native/node-core/core-lite/profiles/` whose `node` is its device ref), then
+`device_kit.py build` and commit.
