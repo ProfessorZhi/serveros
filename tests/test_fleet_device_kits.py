@@ -145,3 +145,8 @@ def test_apply_stops_at_the_first_failure(tmp_path, monkeypatch):
     assert code == 1
     receipt = json.loads((home / ".local/state/serveros/device-kit/dell.receipt.json").read_text())
     assert receipt["steps"][-1]["result"] == "FAILED" and len(receipt["steps"]) == 1
+
+
+def test_a_device_without_a_resource_collector_says_so_instead_of_claiming_one():
+    k = dk.kit(dk.declaration(), "work-fj")
+    assert k["layers"]["monitor"]["core_lite"]["what"].startswith("GAP:")

@@ -80,7 +80,7 @@ checked in CI by `device_kit.py check`):
 | 1 core plugin | serveros core (`plugin/profiles/linux-work.yaml` → `hwz-server-os-linux-work`) for Claude Code + Codex; the same payload is the node runtime (serverosd) | ✓ | ✓ | standalone skills via the family |
 | 2 ability family | ability-management profile, rolled out at one pinned revision and read back (discovery of the rest: `control_plane.py catalog search/install`) | `tokyo-development-primary` | `dell-gpu-compute` | `work-fj-windows` |
 | 3 monitor · basic | serverosd | ✓ | ✓ | — |
-| 3 monitor · native | core-lite C++ collector → status file every 30 s (Windows: Windows Core) | ✓ | ✓ | Windows Core |
+| 3 monitor · native | core-lite C++ collector → status file every 30 s | ✓ | ✓ | **not yet** — no Windows collector exists; the hub shows 未接入资源读数 |
 | 3 monitor · link | node connector → hub | — | ✓ | ✓ |
 | 3 monitor · hub | agent monitor (`fleet-hub-watch`): Fleet run outcomes, completion / alert / daily cards to Feishu | ✓ | — | — |
 | 4 commander | `serveros-fleet-v1@serveros-v1` | ✓ | — | — |

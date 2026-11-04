@@ -26,10 +26,10 @@
     },
     "monitor": {
       "core_lite": {
-        "what": "native: Windows Core status over a named pipe (SCM)",
-        "source": {
-          "path": "native/node-core/windows-core/README.md",
-          "digest": "sha256:4af7d5f42bfc6393f61f6b83e11e910d95a59cff8d5bd31e0b53a4ff983761cc"
+        "what": "GAP: no resource collector for this OS yet — the hub shows 未接入资源读数",
+        "evidence": {
+          "path": "native/node-core/core-lite/windows/README.md",
+          "digest": "sha256:1c47e80e6aad05274812a40a84d03685b31e88c5bcd37ab2706cfd8b5ac8b706"
         }
       },
       "node_connector": {

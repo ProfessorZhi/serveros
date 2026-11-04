@@ -47,7 +47,6 @@ UNIT_TEMPLATES = {
     "core_lite_publish": "native/node-core/core-lite/deploy/publish-status.sh",
     "node_connector": "fleet_mcp/node/systemd/user/serveros-fleet-node-connector.service.in",
     "hub_watch": "integrations/fleet-hub-watch/serveros-fleet-watch.service.template",
-    "windows_core": "native/node-core/windows-core/README.md",
     "node_connector_windows": "fleet_mcp/node/install.ps1",
 }
 
@@ -125,10 +124,11 @@ def kit(doc: dict, name: str) -> dict:
     if mon["serverosd"]:
         monitor["serverosd"] = {"what": "basic: resources, anomalies, runtime status (python daemon)",
                                 "unit": "serverosd.service", "template": _pin(UNIT_TEMPLATES["serverosd"])}
-    if mon["core_lite"] == "windows-core":
-        monitor["core_lite"] = {"what": "native: Windows Core status over a named pipe (SCM)",
-                                "source": _pin(UNIT_TEMPLATES["windows_core"])}
-    elif mon["core_lite"]:
+    if not mon["core_lite"]:
+        monitor["core_lite"] = {
+            "what": "GAP: no resource collector for this OS yet — the hub shows 未接入资源读数",
+            "evidence": _pin("native/node-core/core-lite/windows/README.md")}
+    else:
         prof = _profile_node(mon["core_lite"])
         if prof["node"] != dev["device_ref"]:
             raise KitError(f"{name}: core-lite profile is for {prof['node']}, not {dev['device_ref']}")
@@ -336,7 +336,7 @@ def windows_plan(k: dict, rev: str) -> list[str]:
         f"--profile {fam['profile']} --rev {rev} --agent all --apply",
         f"python ..\\ability-management\\skills\\ability-management\\payload\\control_plane.py readback "
         f"--profile {fam['profile']} --agent all",
-        "# native monitor: build and register Windows Core per native/node-core/windows-core/HOSTED-WINDOWS-BUILD.md",
+        "# resource readings: none yet — no Windows collector exists (core-lite/windows/README.md §4)",
         f"powershell -ExecutionPolicy Bypass -File fleet_mcp\\node\\install.ps1 -DeviceRef {k['device_ref']} "
         "-CloudCliCredential <anchor>",
     ]
