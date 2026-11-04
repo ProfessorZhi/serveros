@@ -10,7 +10,7 @@
 |---|---|
 | 1 core plugin | core skills arrive as standalone skills through the family profile |
 | 2 ability family | `work-fj-windows` from ProfessorZhi/ability-management, one pinned revision, read back after rollout |
-| 3 monitor · core_lite | native: Windows Core status over a named pipe (SCM) |
+| 3 monitor · core_lite | GAP: no resource collector for this OS yet — the hub shows 未接入资源读数 |
 | 3 monitor · node_connector | link: reports this device to the hub (tokyo) |
 
 ## Install
@@ -19,7 +19,7 @@
 # run in PowerShell on the device, from a checkout of serveros and ability-management
 python ..\ability-management\skills\ability-management\payload\control_plane.py rollout --profile work-fj-windows --rev <ability-management rev> --agent all --apply
 python ..\ability-management\skills\ability-management\payload\control_plane.py readback --profile work-fj-windows --agent all
-# native monitor: build and register Windows Core per native/node-core/windows-core/HOSTED-WINDOWS-BUILD.md
+# resource readings: none yet — no Windows collector exists (core-lite/windows/README.md §4)
 powershell -ExecutionPolicy Bypass -File fleet_mcp\node\install.ps1 -DeviceRef device:work-fj -CloudCliCredential <anchor>
 ```
 
