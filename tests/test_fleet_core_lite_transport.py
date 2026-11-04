@@ -229,7 +229,11 @@ class TheRealConnectorAnswersAndTheAnswerIsSigned(unittest.TestCase):
             # WHICH account's Core this is, carried rather than assumed.
             self.assertEqual(summary["runtime"], BASE_RUNTIME)
             self.assertEqual(summary["account"], ACCOUNT)
-            self.assertEqual(summary["source"], "node-core-route")
+            self.assertEqual(summary["source_kind"], "node-core-route")
+            # The provenance record survives beside the label: the reader
+            # that shows a reading time reads received_at from it.
+            self.assertTrue(summary["source"]["verified_route"])
+            self.assertIn("received_at", summary["source"])
 
             listed = service.list_devices(principal())["devices"][0]
             # The SAME shape as `fleet_status`: a list, one entry per bound
@@ -697,7 +701,8 @@ class TheCoreProjectionIsNotAnAbilityRegistry(unittest.TestCase):
     ALLOWED_SUMMARY_KEYS = frozenset({
         "schema", "device_ref", "device", "principal", "connected", "freshness",
         "integrity", "live", "observations", "observations_unavailable",
-        "refusals", "route", "source", "runtime", "account",
+        "refusals", "route", "source", "source_kind", "runtime",
+        "account",
     })
 
     #: Anything shaped like a Device Ability answer. None of these may appear in

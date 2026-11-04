@@ -1107,7 +1107,8 @@ class FleetService:
         return True, health.reachable, health.authorized, health
 
     def core_lite_status(self, principal: Principal, device_ref: str,
-                         *, received_at=None) -> dict[str, Any]:
+                         *, received_at=None,
+                         runtime: str = BASE_RUNTIME) -> dict[str, Any]:
         """This device's Core-Lite reading, or why there is not one to show.
 
         **Not an MCP tool.** Nothing in `tools.py` names it, `list_devices` and
@@ -1128,12 +1129,20 @@ class FleetService:
         from the source. `ProviderHealth` contributes nothing here, on purpose:
         a provider whose transport answers is not thereby a device whose Core
         answered.
+
+        `runtime` names which of the device's runtimes is asked, defaulting to
+        the device's own. That default is why this stayed a one-runtime call for
+        as long as it did: every caller written before a machine could serve two
+        OS accounts asked the base runtime and meant it. A caller that knows the
+        machine serves a second account has to say so — this argument is that
+        sentence, and `bound_runtimes` is how it learns which names exist.
         """
         principal.require(SCOPE_READ)
         # ONE implementation, shared with the two tools that embed this. Two
         # would be two answers to "whose reading is this", and the one that is
         # asked least often is the one that drifts.
-        summary = self._core_lite_summary(device_ref, received_at=received_at)
+        summary = self._core_lite_summary(device_ref, runtime,
+                                          received_at=received_at)
         # `device_ref` and `decision` are the names the disclosure table already
         # carries a kind for (REF and CODE). A fresh pair of names here would
         # have been silently WITHHELD from the audit record — which is what
@@ -1141,7 +1150,13 @@ class FleetService:
         # would be a disclosure-policy change smuggled in under a wiring commit.
         self.audit.record("fleet.core_lite_status", principal=principal.name,
                           device_ref=device_ref,
-                          decision=summary.get("route", {}).get("state"))
+                          # The route states are upper-case enums; the audit
+                          # `decision` field is a lower-case code, like every
+                          # other caller of `record` here. Passed through as it
+                          # was, the projector dropped the value and counted it
+                          # as withheld on every Core read.
+                          decision=(str((summary.get("route") or {}).get("state")
+                                        or "").lower() or None))
         return summary
 
     def _core_lite_summary(self, device_ref: str, runtime: str = BASE_RUNTIME,
@@ -1195,10 +1210,17 @@ class FleetService:
         # identity, and neither is inferred from the other.
         summary["runtime"] = runtime
         summary["account"] = account
-        summary["source"] = ("node-core-route" if provider is not None
-                             and callable(getattr(provider, "core_lite_source", None))
-                             else "local-file" if local_file is not None
-                             else "injected" if source is not None else None)
+        # `source` is the readback's provenance record - the schema it
+        # matched, whether the route was verified, the instant the reading
+        # arrived - and is left exactly as the readback wrote it. WHICH
+        # mechanism answered is a different fact and gets its own key:
+        # while the two shared one, the first device to actually reach
+        # CONNECTED crashed the reader that asked that record for
+        # `received_at` and found a string there instead.
+        summary["source_kind"] = ("node-core-route" if provider is not None
+                                  and callable(getattr(provider, "core_lite_source", None))
+                                  else "local-file" if local_file is not None
+                                  else "injected" if source is not None else None)
         return summary
 
     def list_devices(self, principal: Principal, *, include_inactive: bool = True) -> dict[str, Any]:
@@ -1310,6 +1332,15 @@ class FleetService:
         if any(b.runtime == BASE_RUNTIME for b in owned):
             return (BASE_RUNTIME, *others)
         return tuple(others)
+
+    def bound_runtimes(self, device_ref: str) -> tuple[str, ...]:
+        """`_bound_runtimes` under the name callers outside this module use.
+
+        The hub's resource sweep asks each runtime in turn and takes the one
+        that answers; spelling that with the private name from another package
+        would let the two drift apart without either module noticing.
+        """
+        return self._bound_runtimes(device_ref)
 
     def _runtimes_for(self, device_ref: str, runtime: str | None) -> tuple[str, ...]:
         """Which runtimes one device is queried for, given a selector.
