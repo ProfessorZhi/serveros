@@ -140,7 +140,7 @@ Json memory_block(const Sample& after, Unknowns& sink) {
         return block;
     }
     block.set("state", Json::string("PRESENT"));
-    block.set("source", Json::string("/proc/meminfo"));
+    block.set("source", Json::string(after.memory.source));
     // These are the machine's figures. On this shared host they are not the
     // collector account's share, and nothing here divides them up by account,
     // because no readable fact on this host would support that division.
@@ -698,8 +698,7 @@ Json build_snapshot(const Sample& before, const Sample& after, const SnapshotOpt
              interval.has_value() ? Json::number(static_cast<double>(*interval) / 1e9, 6)
                                   : unavailable_field(unknowns, "sample_seconds", interval_reason));
     root.set("boot_id", after.boot_id.empty() ? unavailable_field(unknowns, "boot_id",
-                                                                  "/proc/sys/kernel/random/boot_id "
-                                                                  "was not readable")
+                                                                  after.boot_id_reason)
                                                : Json::string(after.boot_id));
 
     Json host = Json::object();

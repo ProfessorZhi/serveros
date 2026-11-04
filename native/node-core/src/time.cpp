@@ -18,7 +18,11 @@ std::string iso8601_utc(std::chrono::system_clock::time_point when) {
     }
     const std::time_t as_time = system_clock::to_time_t(system_clock::time_point(seconds_part));
     struct tm broken {};
+#ifdef _WIN32
+    ::gmtime_s(&broken, &as_time);  // MSVC's argument order is the reverse of POSIX's
+#else
     ::gmtime_r(&as_time, &broken);
+#endif
     char buffer[64];
     std::snprintf(buffer, sizeof(buffer), "%04d-%02d-%02dT%02d:%02d:%02d.%06ld+00:00",
                   broken.tm_year + 1900, broken.tm_mon + 1, broken.tm_mday,

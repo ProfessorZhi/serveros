@@ -284,14 +284,32 @@ void test_an_ungranted_observation_is_never_read() {
     expect(find(answer.readings, "cpu") != nullptr, "the granted one is there");
 }
 
-void test_the_linux_adapter_refuses_a_windows_profile() {
-    std::cout << "the Linux adapter will not describe a Windows host\n";
-    const Profile profile = profile_granting({"cpu"}, "windows");
+void test_a_windows_profile_is_projected_from_the_same_contract() {
+    std::cout << "a windows profile reads the shared snapshot contract, swap from the document\n";
+    // Both collectors write `node-resource-snapshot.v1`, so a Windows host's
+    // document goes through the SAME projection. What Windows cannot measure
+    // the Windows collector marks UNAVAILABLE in the document itself.
+    const Profile profile = profile_granting({"cpu", "memory", "swap"}, "windows");
+    const std::string document =
+        "{\"schema\":\"serveros/node-resource-snapshot.v1\","
+        "\"observed_at\":\"2026-01-01T00:00:00.000000+00:00\","
+        "\"cpu\":{\"state\":\"PRESENT\",\"used_percent\":12.5},"
+        "\"memory\":{\"state\":\"PRESENT\",\"source\":\"GlobalMemoryStatusEx\","
+        "\"scope\":\"host-wide\",\"total_bytes\":100,\"available_bytes\":40,\"free_bytes\":40,"
+        "\"used_percent\":60.0},"
+        "\"swap\":{\"state\":\"UNAVAILABLE\",\"reason\":\"windows: the page file is not read\"}}";
     std::string error;
-    const auto answer = nodecore::corelite::readings_from_snapshot(profile, fixture_text(), error);
-    expect(answer.readings.empty(), "no readings are produced");
-    expect(contains(error, "Linux adapter"), "the refusal names the adapter (was \"" + error + "\")");
-    expect(contains(error, "windows"), "and quotes the platform it refused");
+    const auto answer = nodecore::corelite::readings_from_snapshot(profile, document, error);
+    expect(error.empty(), "no refusal for a windows profile (was \"" + error + "\")");
+    expect(answer.readings.size() == 3, "one reading per granted name");
+    for (const auto& reading : answer.readings) {
+        if (reading.name == "swap") {
+            expect(reading.state == ReadingState::Unavailable && reading.reason == "NO_SOURCE",
+                   "swap the collector could not read is NO_SOURCE, never zero");
+        } else if (reading.name == "memory") {
+            expect(reading.state == ReadingState::Present, "memory is projected");
+        }
+    }
 }
 
 void test_a_document_that_is_not_a_snapshot_is_refused() {
@@ -735,7 +753,7 @@ int main(int argc, char** argv) {
     test_a_psi_row_the_kernel_omits_is_per_field_unavailable();
     test_the_new_blocks_can_be_forged_like_the_old_ones();
     test_an_ungranted_observation_is_never_read();
-    test_the_linux_adapter_refuses_a_windows_profile();
+    test_a_windows_profile_is_projected_from_the_same_contract();
     test_a_document_that_is_not_a_snapshot_is_refused();
     test_a_block_the_collector_could_not_measure_is_no_source();
     test_storage_is_projected_to_roles_and_numbers_only();

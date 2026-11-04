@@ -26,11 +26,24 @@
     },
     "monitor": {
       "core_lite": {
-        "what": "GAP: no resource collector for this OS yet — the hub shows 未接入资源读数",
-        "evidence": {
-          "path": "native/node-core/core-lite/windows/README.md",
-          "digest": "sha256:1c47e80e6aad05274812a40a84d03685b31e88c5bcd37ab2706cfd8b5ac8b706"
-        }
+        "what": "native: C++ Windows collector (Win32) → status.json every minute, observe only",
+        "profile": {
+          "path": "native/node-core/core-lite/profiles/work-fj.profile.json",
+          "digest": "sha256:df74ad376f1a120d86ff7817c8245485f899e51b9d75f292936bea0ac7130a40"
+        },
+        "build": "native/node-core/core-lite/windows (MSVC, static)",
+        "task": "\\ServerOS\\ServerOS Core-Lite publish (scheduled task, this user)",
+        "templates": [
+          {
+            "path": "native/node-core/core-lite/windows/deploy/publish-status.ps1",
+            "digest": "sha256:2b3943c6adf097263db93c430d60034b3e4b51ee64d3b6bafe12e9c37211f0b5"
+          },
+          {
+            "path": "native/node-core/core-lite/windows/deploy/register-publish-task.ps1",
+            "digest": "sha256:2bf271c8f60e9d0a46e773d1dfcdab2b64db75cf59da8e72ca2c4212d36f420f"
+          }
+        ],
+        "status_file": "%LOCALAPPDATA%\\ServerOS\\state\\core-lite\\status.json"
       },
       "node_connector": {
         "what": "link: reports this device to the hub (tokyo)",

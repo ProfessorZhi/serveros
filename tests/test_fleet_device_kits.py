@@ -147,6 +147,19 @@ def test_apply_stops_at_the_first_failure(tmp_path, monkeypatch):
     assert receipt["steps"][-1]["result"] == "FAILED" and len(receipt["steps"]) == 1
 
 
-def test_a_device_without_a_resource_collector_says_so_instead_of_claiming_one():
+def test_the_windows_device_gets_the_windows_collector_with_its_own_profile():
     k = dk.kit(dk.declaration(), "work-fj")
-    assert k["layers"]["monitor"]["core_lite"]["what"].startswith("GAP:")
+    core = k["layers"]["monitor"]["core_lite"]
+    assert "Windows collector" in core["what"]
+    profile = json.loads((ROOT / core["profile"]["path"]).read_text())
+    assert profile["platform"] == "windows" and profile["node"] == "device:work-fj"
+    plan = dk.windows_plan(k, "abc1234")
+    assert any("register-publish-task.ps1" in line for line in plan)
+
+
+def test_a_profile_for_another_platform_is_refused():
+    doc = dk.declaration()
+    doc["devices"]["work-fj"]["monitor"]["core_lite"] = "native/node-core/core-lite/profiles/dell-fjd.profile.json"
+    doc["devices"]["work-fj"]["device_ref"] = "device:llm-lab-dell"
+    with pytest.raises(dk.KitError, match="not windows"):
+        dk.kit(doc, "work-fj")

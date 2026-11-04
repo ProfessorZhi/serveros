@@ -48,6 +48,9 @@ struct CpuTimes {
 struct MemoryFacts {
     bool present = false;
     std::string reason;
+    //: Where the figures came from, as the snapshot names it. The Linux reader
+    //: leaves the default; the Windows reader names its API.
+    std::string source = "/proc/meminfo";
     std::uint64_t total_bytes = 0;
     std::uint64_t available_bytes = 0;
     std::uint64_t free_bytes = 0;
@@ -182,6 +185,9 @@ struct Sample {
     std::optional<double> monotonic_seconds;
     std::string monotonic_reason;
     std::string boot_id;
+    //: Why `boot_id` is empty, when it is. Linux leaves the default; a platform
+    //: with no boot identifier says so in its own words.
+    std::string boot_id_reason = "/proc/sys/kernel/random/boot_id was not readable";
     CpuTimes cpu;
     MemoryFacts memory;
     // Optional in the schema's sense: a document produced by an older build has

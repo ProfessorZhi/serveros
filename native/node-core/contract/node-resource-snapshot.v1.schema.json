@@ -325,7 +325,8 @@
               "const": "PRESENT"
             },
             "source": {
-              "const": "/proc/meminfo"
+              "enum": ["/proc/meminfo", "GlobalMemoryStatusEx"],
+              "description": "Where the figures came from: /proc/meminfo on Linux, GlobalMemoryStatusEx on Windows. Additive in v1."
             },
             "scope": {
               "const": "host-wide"

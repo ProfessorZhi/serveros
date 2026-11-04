@@ -27,6 +27,9 @@ add_library(nodecore STATIC
   src/linux_readers.cpp
   src/sample.cpp
   src/snapshot.cpp
+  # The pure half of the Windows collector, built everywhere so it is tested
+  # everywhere; its Win32 half (windows_system.cpp) is in the Windows build only.
+  src/windows_sample.cpp
 )
 target_include_directories(nodecore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 

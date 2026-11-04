@@ -461,9 +461,13 @@ SnapshotReadings readings_from_snapshot(const Profile& profile, const std::strin
     // The platform gate comes FIRST, before the document is even looked at: a
     // Linux adapter handed a Windows profile must refuse for that reason, not
     // for whatever the document happened to be missing.
-    if (profile.platform != "linux") {
-        error = "this is the Linux adapter and the profile declares platform \"" + profile.platform +
-                "\"; a Windows Core's readings come from the Windows adapter";
+    // Both collectors write the same `node-resource-snapshot.v1` contract, so
+    // the projection is shared. What differs is answered by the document: a
+    // Windows snapshot marks swap and psi UNAVAILABLE, and the status builder
+    // reports psi as UNSUPPORTED_PLATFORM from the profile's platform.
+    if (profile.platform != "linux" && profile.platform != "windows") {
+        error = "this adapter projects linux and windows snapshots; the profile declares platform \"" +
+                profile.platform + "\"";
         return answer;
     }
 

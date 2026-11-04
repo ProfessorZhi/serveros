@@ -10,7 +10,7 @@
 |---|---|
 | 1 core plugin | core skills arrive as standalone skills through the family profile |
 | 2 ability family | `work-fj-windows` from ProfessorZhi/ability-management, one pinned revision, read back after rollout |
-| 3 monitor · core_lite | GAP: no resource collector for this OS yet — the hub shows 未接入资源读数 |
+| 3 monitor · core_lite | native: C++ Windows collector (Win32) → status.json every minute, observe only |
 | 3 monitor · node_connector | link: reports this device to the hub (tokyo) |
 
 ## Install
@@ -19,7 +19,17 @@
 # run in PowerShell on the device, from a checkout of serveros and ability-management
 python ..\ability-management\skills\ability-management\payload\control_plane.py rollout --profile work-fj-windows --rev <ability-management rev> --agent all --apply
 python ..\ability-management\skills\ability-management\payload\control_plane.py readback --profile work-fj-windows --agent all
-# resource readings: none yet — no Windows collector exists (core-lite/windows/README.md §4)
+# native monitor: build the Windows collector (needs Visual Studio Build Tools + CMake)
+cmake -S native\node-core\core-lite\windows -B $env:LOCALAPPDATA\ServerOS\build\core-lite -A x64
+cmake --build $env:LOCALAPPDATA\ServerOS\build\core-lite --config Release
+$bin = "$env:LOCALAPPDATA\ServerOS\build\core-lite\Release"
+$prof = (Resolve-Path native\node-core\core-lite\profiles\work-fj.profile.json).Path
+# the device declaration core-lite-status reads (one line, this account's own file)
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.config\serveros" | Out-Null
+Set-Content -NoNewline "$env:USERPROFILE\.config\serveros\node-identity" 'device:work-fj'
+powershell -ExecutionPolicy Bypass -File native\node-core\core-lite\windows\deploy\publish-status.ps1 -Bin $bin -ProfilePath $prof
+powershell -ExecutionPolicy Bypass -File native\node-core\core-lite\windows\deploy\register-publish-task.ps1 -Bin $bin -ProfilePath $prof
+# then set core_snapshot_path in the connector binding to %LOCALAPPDATA%\ServerOS\state\core-lite\status.json
 powershell -ExecutionPolicy Bypass -File fleet_mcp\node\install.ps1 -DeviceRef device:work-fj -CloudCliCredential <anchor>
 ```
 
