@@ -373,6 +373,48 @@ void test_storage_is_projected_to_roles_and_numbers_only() {
     }
 }
 
+void test_a_block_with_no_rows_is_omitted_not_published_empty() {
+    std::cout << "a role block with no rows is omitted, not published as an empty list\n";
+    // The Windows collector can attribute a device counter only to a kernel
+    // block device, and a drive-letter mount is not one, so its `disk_io` block
+    // has no rows at all. Published as `{"roles": []}` it is malformed to a
+    // reader, which refuses the whole `storage.readonly` reading and takes the
+    // filesystems down with it; omitted, the blocks that DO have rows speak.
+    const Profile profile = profile_granting({"storage.readonly"});
+    const std::string document =
+        "{\"schema\":\"serveros/node-resource-snapshot.v1\","
+        "\"filesystems\":{\"roles\":[{\"role\":\"ROOT_FS\",\"state\":\"PRESENT\","
+        "\"total_bytes\":100,\"available_bytes\":40,\"used_bytes\":60}]},"
+        "\"disk_io\":{\"roles\":[]}}";
+    std::string error;
+    const auto answer = nodecore::corelite::readings_from_snapshot(profile, document, error);
+    expect(error.empty(), "the document is well formed");
+    const Reading* storage = find(answer.readings, "storage.readonly");
+    expect(storage != nullptr, "storage.readonly was answered");
+    if (storage != nullptr) {
+        expect(storage->state == ReadingState::Present, "it is PRESENT");
+        expect(storage->has_value, "and it carries a value");
+        if (storage->has_value) {
+            expect(has_key(*storage, "filesystems"), "the block with rows is there");
+            expect(!has_key(*storage, "disk_io"), "the empty block is not published");
+        }
+    }
+    // With no rows in EITHER block there is no reading, which is the one answer
+    // that is honestly NO_SOURCE rather than a value of zero.
+    const std::string none_text =
+        "{\"schema\":\"serveros/node-resource-snapshot.v1\","
+        "\"filesystems\":{\"roles\":[]},\"disk_io\":{\"roles\":[]}}";
+    std::string none_error;
+    const auto none = nodecore::corelite::readings_from_snapshot(profile, none_text, none_error);
+    const Reading* absent = find(none.readings, "storage.readonly");
+    expect(absent != nullptr, "the observation is still answered");
+    if (absent != nullptr) {
+        expect(absent->state == ReadingState::Unavailable,
+               "two empty blocks leave it with no source");
+        expect(absent->reason == "NO_SOURCE", "with NO_SOURCE");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Swap and PSI projections
 // ---------------------------------------------------------------------------
@@ -757,6 +799,7 @@ int main(int argc, char** argv) {
     test_a_document_that_is_not_a_snapshot_is_refused();
     test_a_block_the_collector_could_not_measure_is_no_source();
     test_storage_is_projected_to_roles_and_numbers_only();
+    test_a_block_with_no_rows_is_omitted_not_published_empty();
     test_a_forged_snapshot_cannot_smuggle_a_key_into_the_status();
     test_a_snapshot_that_forwards_paths_does_not_forward_them();
     test_an_out_of_range_or_malformed_value_is_unavailable_not_published();
