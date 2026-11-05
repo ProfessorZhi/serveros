@@ -248,7 +248,10 @@ def install(client: str) -> int:
     if client != "claude-code":
         raise DistributionError(
             f"`install` runs only for claude-code; see distribution/README.md for {client}")
-    if shutil.which("claude") is None:
+    # The resolved path, not the bare name: on Windows the npm-installed CLI is
+    # `claude.cmd`, which a bare-name subprocess launch does not find.
+    claude = shutil.which("claude")
+    if claude is None:
         print("the `claude` command is not on PATH", file=sys.stderr)
         return 2
     if stale(client):
@@ -258,7 +261,7 @@ def install(client: str) -> int:
     plugin_id = doc["clients"][client]["install_id"]
 
     def run(*args: str, ok: bool = True) -> subprocess.CompletedProcess:
-        proc = subprocess.run(["claude", "plugin", *args], text=True,
+        proc = subprocess.run([claude, "plugin", *args], text=True,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if ok and proc.returncode != 0:
             raise DistributionError(f"`claude plugin {' '.join(args)}` failed:\n{proc.stdout}")

@@ -115,7 +115,7 @@ jobs:
             echo
             echo "| file | for |"
             echo "|---|---|"
-            echo "| \`serveros-fleet-openai-v${version}.zip\` | ChatGPT: upload as the plugin (beside any other) |"
+            echo "| \`serveros-fleet-openai-v${version}.zip\` | ChatGPT: upload as the plugin |"
             echo "| \`serveros-fleet-codex-v${version}.zip\` | Codex: unzip, then \`codex plugin marketplace add <dir>\` |"
             echo "| \`serveros-fleet-claude-code-v${version}.zip\` | Claude Code (or \`python3 distribution/build.py install --client claude-code\`) |"
             echo "| \`serveros-core-lite-windows-x64.zip\` | Windows devices: \`distribution/windows/update.ps1 -FromRelease -Apply\` |"
