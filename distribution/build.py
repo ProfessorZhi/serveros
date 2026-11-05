@@ -144,46 +144,50 @@ def generate_codex(doc: dict, out: Path) -> None:
 
 
 def generate_openai(doc: dict, out: Path) -> None:
-    """ChatGPT (web) and Codex (desktop): skills + icons bound to a REGISTERED App.
+    """ChatGPT (web) and Codex (desktop): a plugin bound to the REGISTERED App.
 
-    ChatGPT runs a plugin on the web only when its tools come from an App the
-    account already registered; a package that declares its own MCP server is
-    treated as desktop-only. So this package declares no server at all: it
-    names the App (`.app.json`) that holds the Fleet connection and OAuth, and
-    carries the shared Skills, icons and the version. The plugin `name` and the
-    App id are the ones ChatGPT assigned on first upload (`channels.yaml`), so a
-    new upload replaces that plugin instead of adding a second one.
+    Two rules ChatGPT enforces, both learned from a refused upload:
+
+    * the tools come from an App the account registered (`.app.json`), never
+      from an MCP server the package declares — otherwise the plugin is
+      desktop-only;
+    * an App-backed plugin update must keep the App's own fields exactly as
+      they are: author, description, category, developer name, display name,
+      descriptions, icons. Those belong to the App and change through the
+      App's settings, not through a plugin upload.
+
+    So the package is the App's fields copied verbatim from
+    `distribution/openai-app.json`, plus what the plugin itself owns: the name
+    and App id ChatGPT assigned (`channels.yaml`), the version and the Skills.
+    The layout and key order are those of the plugin as it stands in the
+    account.
     """
-    ident = doc["identity"]
     target = doc["clients"]["openai"]
     name, app_id = target["plugin_name"], target["app_id"]
-    shared = doc["shared_manifest"]
-    interface = _interface(doc)
-    manifest = {
-        "$schema": shared["$schema"],
+    app = json.loads((HERE / "openai-app.json").read_text(encoding="utf-8"))
+    _write_json(out / "plugin.json", {
+        "$schema": doc["shared_manifest"]["$schema"],
+        "author": app["author"],
+        "description": app["description"],
+        "extensions": {"com.openai": {"apps": "./.app.json", "interface": app["interface"]}},
         "name": name,
         "version": doc["version"],
-        "description": shared["description"],
-        "author": shared.get("author", {"name": "ProfessorZhi"}),
-        "license": shared.get("license", "MIT"),
-        "homepage": shared.get("homepage"),
-        "repository": shared.get("repository"),
-        "extensions": {"com.openai": {"apps": "./.app.json", "interface": interface}},
-    }
-    _write_json(out / "plugin.json", manifest)
+    })
     _write_json(out / ".codex-plugin" / "plugin.json", {
+        "apps": "./.app.json",
+        "interface": app["interface"],
         "name": name,
         "version": doc["version"],
-        "description": shared["description"],
-        "author": shared.get("author", {"name": "ProfessorZhi"}),
-        "keywords": shared.get("keywords", []),
+        "description": app["description"],
+        "author": app["author"],
+        "keywords": app["keywords"],
         "skills": "./skills",
-        "apps": "./.app.json",
-        "interface": interface,
     })
     _write_json(out / ".app.json", {"apps": {name: {"id": app_id}}})
-    _copy_shared(doc, out, docs=True)
-    del ident
+    for skill, body in _skills(doc):
+        dest = out / "skills" / skill / "SKILL.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(body)
 
 
 def generate_mcp(doc: dict, out: Path) -> None:

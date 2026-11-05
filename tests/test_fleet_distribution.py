@@ -80,6 +80,8 @@ class Distribution(unittest.TestCase):
         lock = json.loads((ROOT / self.doc["shared"]["brand_lock"]).read_text())
         for slot in lock["slots"]:
             for client, plugin in self.plugin_dirs.items():
+                if client == "openai":
+                    continue  # the registered App owns ChatGPT's icon; the package carries none
                 with self.subTest(client=client, slot=slot["slot"]):
                     self.assertEqual(sha(plugin / slot["shipped_path"]), slot["expected_sha256"])
 
@@ -102,14 +104,19 @@ class Distribution(unittest.TestCase):
         self.assertFalse((tree / "mcp.json").exists())
         app = json.loads((tree / ".app.json").read_text())
         self.assertEqual(app, {"apps": {target["plugin_name"]: {"id": target["app_id"]}}})
-        for manifest in (json.loads((tree / "plugin.json").read_text())["extensions"]["com.openai"],
-                         json.loads((tree / ".codex-plugin/plugin.json").read_text())):
+        app_fields = json.loads((ROOT / "distribution/openai-app.json").read_text())
+        root = json.loads((tree / "plugin.json").read_text())
+        codex = json.loads((tree / ".codex-plugin/plugin.json").read_text())
+        for manifest in (root["extensions"]["com.openai"], codex):
             self.assertEqual(manifest["apps"], "./.app.json")
-            interface = manifest["interface"]
-            self.assertEqual(interface["displayName"], "ServerOS Fleet")
-            for slot in ("composerIcon", "logo"):
-                self.assertTrue((tree / interface[slot]).is_file(), slot)
+            # The App owns these; an upload that changes them is refused.
+            self.assertEqual(manifest["interface"], app_fields["interface"])
+        for manifest in (root, codex):
+            self.assertEqual(manifest["author"], app_fields["author"])
+            self.assertEqual(manifest["description"], app_fields["description"])
+        self.assertEqual(list(root), ["$schema", "author", "description", "extensions", "name", "version"])
         self.assertNotIn("mcpServers", (tree / "plugin.json").read_text())
+        self.assertFalse((tree / "assets").exists())
 
     def test_install_removes_the_identity_it_replaces(self):
         replaced = [r["install_id"] for r in self.doc["identity"]["replaces"]]
