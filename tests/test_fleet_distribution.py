@@ -36,7 +36,8 @@ class Distribution(unittest.TestCase):
         plugin = cls.doc["identity"]["plugin"]
         cls.plugin_dirs = {"claude-code": cls.trees["claude-code"] / "plugins" / plugin,
                            "codex": cls.trees["codex"] / "plugins" / plugin,
-                           "openai": cls.trees["openai"]}
+                           "openai": cls.trees["openai"],
+                           "mcp": cls.trees["mcp"]}
 
     def test_every_committed_tree_matches_the_shared_source(self):
         self.assertEqual(self.b.stale(), [])
@@ -47,6 +48,7 @@ class Distribution(unittest.TestCase):
             "claude-code": self.plugin_dirs["claude-code"] / ".claude-plugin/plugin.json",
             "codex": self.plugin_dirs["codex"] / ".codex-plugin/plugin.json",
             "openai": self.plugin_dirs["openai"] / "plugin.json",
+            "openai-codex": self.plugin_dirs["openai"] / ".codex-plugin/plugin.json",
         }
         for client, path in manifests.items():
             with self.subTest(client=client):
@@ -58,7 +60,7 @@ class Distribution(unittest.TestCase):
         bindings = {
             "claude-code": self.plugin_dirs["claude-code"] / ".mcp.json",
             "codex": self.plugin_dirs["codex"] / ".codex-mcp.json",
-            "openai": self.plugin_dirs["openai"] / "mcp.json",
+            "mcp": self.plugin_dirs["mcp"] / "mcp.json",
         }
         for client, path in bindings.items():
             with self.subTest(client=client):
@@ -85,12 +87,29 @@ class Distribution(unittest.TestCase):
         legacy = json.loads((ROOT / "plugins/serveros-fleet-ingress/.claude-plugin/plugin.json").read_text())
         self.assertNotEqual(self.doc["identity"]["plugin"], legacy["name"])
         openai = json.loads((self.plugin_dirs["openai"] / "plugin.json").read_text())
-        self.assertEqual(openai["name"], "serveros-fleet")
+        self.assertEqual(openai["name"], self.doc["clients"]["openai"]["plugin_name"])
         self.assertEqual(openai["extensions"]["com.openai"]["interface"]["displayName"],
                          "ServerOS Fleet")
         self.assertEqual(openai["version"], self.doc["version"])
         for key in ("plugin", "marketplace", "mcp_server", "display_name"):
             self.assertNotRegex(self.doc["identity"][key].lower(), r"v\d", key)
+
+    def test_the_chatgpt_package_is_bound_to_the_registered_app(self):
+        """ChatGPT runs a plugin on the web only when its tools come from a
+        registered App; a package declaring its own MCP server is desktop-only."""
+        target = self.doc["clients"]["openai"]
+        tree = self.plugin_dirs["openai"]
+        self.assertFalse((tree / "mcp.json").exists())
+        app = json.loads((tree / ".app.json").read_text())
+        self.assertEqual(app, {"apps": {target["plugin_name"]: {"id": target["app_id"]}}})
+        for manifest in (json.loads((tree / "plugin.json").read_text())["extensions"]["com.openai"],
+                         json.loads((tree / ".codex-plugin/plugin.json").read_text())):
+            self.assertEqual(manifest["apps"], "./.app.json")
+            interface = manifest["interface"]
+            self.assertEqual(interface["displayName"], "ServerOS Fleet")
+            for slot in ("composerIcon", "logo"):
+                self.assertTrue((tree / interface[slot]).is_file(), slot)
+        self.assertNotIn("mcpServers", (tree / "plugin.json").read_text())
 
     def test_install_removes_the_identity_it_replaces(self):
         replaced = [r["install_id"] for r in self.doc["identity"]["replaces"]]
@@ -134,3 +153,21 @@ class Distribution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheInstallersAreOneCommand(unittest.TestCase):
+    def test_install_sh_parses_and_plans_from_a_checkout(self):
+        import subprocess
+        script = ROOT / "distribution/install/install.sh"
+        self.assertEqual(subprocess.run(["bash", "-n", str(script)]).returncode, 0)
+        out = subprocess.run(["bash", str(script), "--dry-run"], text=True,
+                             capture_output=True, env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("from checkout", out.stdout)
+        self.assertIn("plugin_asdk_app_6aec2811173881918325a3dc82742d8d", out.stdout)
+
+    def test_no_installer_handles_a_credential(self):
+        for name in ("install.sh", "install.ps1"):
+            text = (ROOT / "distribution/install" / name).read_text().lower()
+            for word in ("password=", "token=", "totp=", "client_secret"):
+                self.assertNotIn(word, text, name)
