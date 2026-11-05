@@ -41,6 +41,17 @@ identity:
   replaces:
     - install_id: serveros-fleet-v1@serveros-v1
       marketplace: serveros-v1
+    - install_id: serveros-fleet-ingress@serveros
+      marketplace: serveros
+
+# Where Claude Code and Codex CLI install and update from. The repository root
+# is the `serveros-fleet` marketplace for both (`.claude-plugin/marketplace.json`
+# and `.agents/plugins/marketplace.json`, written by `build.py build`), so
+# `marketplace add ProfessorZhi/serveros` installs and `marketplace update` /
+# `upgrade` follows main. A release tag (`fleet-v<version>`) pins a version.
+github:
+  repo: ProfessorZhi/serveros
+  ref: main
 
 clients:
   claude-code:

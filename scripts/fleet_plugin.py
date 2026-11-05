@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Build, check and install the ServerOS Fleet Claude Code plugin from this repo.
 
-The repository root is a Claude Code marketplace (`.claude-plugin/marketplace.json`)
-whose one plugin lives, already generated, in `plugins/serveros-fleet-ingress/`.
+RETIRED. The repository root is now the `serveros-fleet` marketplace, written by
+`distribution/build.py`; this script only keeps the old `plugins/serveros-fleet-ingress/`
+tree reproducible, and its `install` points at `distribution/install/`.
+The old plugin lives, already generated, in `plugins/serveros-fleet-ingress/`.
 That tree is produced by `integrations/fleet-cc-dev-plugin/build_release_adapter.py`
 from the shared Skill source in `integrations/fleet-v1-first-install/plugin/`, and
 it is committed so that a clone — or `claude plugin marketplace add
@@ -88,7 +90,11 @@ def marketplace(record: dict) -> dict:
 
 
 def generate(out_root: Path, url: str) -> tuple[Path, Path]:
-    """Write the plugin tree and marketplace file under `out_root`."""
+    """Write the plugin tree, and a marketplace file for it, under `out_root`.
+
+    The marketplace file is for a local install of this retired plugin only:
+    the repository root's `.claude-plugin/marketplace.json` now belongs to
+    `distribution/build.py` and lists `serveros-fleet`."""
     plugin = out_root / "plugins" / PLUGIN_NAME
     plugin.parent.mkdir(parents=True)
     record = _adapter().generate(out=plugin, next_mcp_url=url)
@@ -108,8 +114,6 @@ def differences(url: str) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         plugin, market = generate(Path(tmp), url)
         found = []
-        if not MARKETPLACE_FILE.is_file() or not filecmp.cmp(market, MARKETPLACE_FILE, shallow=False):
-            found.append(str(MARKETPLACE_FILE.relative_to(ROOT)))
         fresh, committed = _tree(plugin), _tree(PLUGIN_DIR) if PLUGIN_DIR.is_dir() else []
         for rel in sorted(set(fresh) | set(committed)):
             a, b = plugin / rel, PLUGIN_DIR / rel
@@ -124,9 +128,7 @@ def build(url: str) -> int:
         if PLUGIN_DIR.exists():
             shutil.rmtree(PLUGIN_DIR)
         shutil.copytree(plugin, PLUGIN_DIR)
-        MARKETPLACE_FILE.parent.mkdir(exist_ok=True)
-        shutil.copyfile(market, MARKETPLACE_FILE)
-    print(f"wrote {PLUGIN_DIR.relative_to(ROOT)} and {MARKETPLACE_FILE.relative_to(ROOT)}")
+    print(f"wrote {PLUGIN_DIR.relative_to(ROOT)}")
     return 0
 
 
@@ -152,6 +154,14 @@ def _claude(*args: str, check_ok: bool = True) -> subprocess.CompletedProcess:
 
 
 def install(url: str, keep_legacy: bool) -> int:
+    print("serveros-fleet-ingress is retired: the repository root is now the "
+          "`serveros-fleet` marketplace. Install or update ServerOS Fleet with\n"
+          "  bash distribution/install/install.sh   (or install.ps1 on Windows)",
+          file=sys.stderr)
+    return 2
+
+
+def _retired_install(url: str, keep_legacy: bool) -> int:
     if shutil.which("claude") is None:
         print("the `claude` command is not on PATH; install Claude Code first", file=sys.stderr)
         return 2
