@@ -769,14 +769,14 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
             "fleet:approve": ("批准工具调用", "Approve the tool calls the operator has been asked to answer"),
             "fleet:navigate": ("打开界面", "Open a session in a connected browser UI"),
         }.get(scope, (scope, scope))
-        kind = ('<span class="chip read">只读</span>' if scope == "fleet:read"
-                else '<span class="chip write">可写</span>')
-        note = "" if requested else '<span class="chip off">客户端未请求</span>'
+        kind = ('<span class="tag">只读</span>' if scope == "fleet:read"
+                else '<span class="tag write">可写</span>')
+        note = "" if requested else '<span class="tag dim">未请求</span>'
         rows.append(
-            f'<label class="scope"><span class="scope-body"><span class="scope-head"><b>{html.escape(title)}</b>'
-            f'{kind}{note}</span><span class="scope-desc">{html.escape(label)}</span>'
-            f'<code>{html.escape(scope)}</code></span>'
-            f'<input type="checkbox" name="scope" value="{html.escape(scope)}" {checked}></label>'
+            f'<label class="scope"><input type="checkbox" name="scope" value="{html.escape(scope)}" '
+            f'{checked}><span class="scope-body"><span class="scope-head"><b>{html.escape(title)}</b>'
+            f'<code>{html.escape(scope)}</code>{kind}{note}</span>'
+            f'<span class="scope-desc">{html.escape(label)}</span></span></label>'
         )
     # The requested scope is carried in its own field, `requested_scope`, and
     # never under the name `scope`. That separation is the whole of the fix for
@@ -838,8 +838,8 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
                 f'<span>Signed in as <b>{html.escape(login_user)}</b><br>'
                 f'<span class="muted">已登录，可直接批准 · '
                 f'<a href="{html.escape(authorize_path)}/logout">退出登录</a></span></span></div>'
-                f'<label class="check"><span>Continue as <b>{html.escape(login_user)}</b></span>'
-                f'<input type="checkbox" name="continue" value="yes" checked></label>'
+                f'<label class="check"><input type="checkbox" name="continue" value="yes" checked>'
+                f'<span>Continue as <b>{html.escape(login_user)}</b></span></label>'
             )
         else:
             totp_html = ""
@@ -870,12 +870,12 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
         form_html = (
             f'<form method="post" action="{html.escape(authorize_path)}">\n'
             f' {hidden}\n'
-            f' <h2>授予的权限 · Permissions</h2>\n'
+            f' <h2>权限 <span>Permissions</span></h2>\n'
             f' <div class="scopes">{"".join(rows)}</div>\n'
-            f' <h2>确认身份 · Sign in</h2>\n'
+            f' <h2>登录 <span>Sign in</span></h2>\n'
             f' {credentials_html}\n'
-            f' <button type="submit">批准授权 · Approve</button>\n'
-            f' <p class="fine">只授予打开的权限 · Only the boxes you tick are granted.</p>\n'
+            f' <button type="submit">批准 · Approve</button>\n'
+            f' <p class="fine">只授予勾选的权限 · Only the boxes you tick are granted.</p>\n'
             f'</form>'
         )
     else:
@@ -893,136 +893,101 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
 <html lang="zh-CN"><head><meta charset="utf-8">
 <title>Authorize {html.escape(client.client_name)} · ServerOS Fleet</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="light dark">
 <style>
- :root{{--ink:#eef1f8;--muted:#9aa4b8;--faint:#6b7488;--line:rgba(255,255,255,.09);--glass:rgba(17,21,33,.72);
-   --a:#7c5cff;--b:#22d3ee;--c:#38bdf8;--ok:#34d399;--warn:#fbbf24;--err:#fb7185}}
+ :root{{--bg:#f6f2eb;--paper:#fcfaf6;--ink:#1d2433;--sub:#5d5a54;--dim:#968f84;--line:#e2dacd;--hair:#d7ccb9;
+   --accent:#9c7a4b;--deep:#1d2433;--deep-ink:#f6f2eb;--warn:#8a5a2b;--err:#8e2c2c;
+   --serif:"Noto Serif SC","Source Han Serif SC","Songti SC","STSong","SimSun","New York",Georgia,"Times New Roman",serif;
+   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}}
+ @media (prefers-color-scheme:dark){{:root{{--bg:#14120f;--paper:#1a1814;--ink:#efe8dc;--sub:#b3aa9c;--dim:#7d766b;
+   --line:#2e2a24;--hair:#3a342b;--accent:#c4a172;--deep:#efe8dc;--deep-ink:#14120f;--warn:#d4a46a;--err:#e08c7e}}}}
  *{{box-sizing:border-box}}
- html,body{{min-height:100%}}
- body{{margin:0;color:var(--ink);background:#070910;
-   font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-   -webkit-font-smoothing:antialiased;overflow-x:hidden}}
- .sky{{position:fixed;inset:0;z-index:-1;overflow:hidden;
-   background:radial-gradient(1200px 600px at 50% -10%,#151b33 0%,#070910 60%)}}
- .sky::before{{content:"";position:absolute;inset:0;opacity:.35;
-   background-image:linear-gradient(rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px);
-   background-size:44px 44px;mask-image:radial-gradient(ellipse at 50% 30%,#000 30%,transparent 75%)}}
- .orb{{position:absolute;border-radius:50%;filter:blur(70px);opacity:.55;animation:drift 18s ease-in-out infinite alternate}}
- .o1{{width:520px;height:520px;left:-140px;top:-120px;background:radial-gradient(circle,var(--a),transparent 65%)}}
- .o2{{width:460px;height:460px;right:-120px;top:120px;background:radial-gradient(circle,var(--b),transparent 65%);animation-duration:22s}}
- .o3{{width:420px;height:420px;left:30%;bottom:-200px;background:radial-gradient(circle,#ec4899,transparent 65%);opacity:.32;animation-duration:26s}}
- @keyframes drift{{from{{transform:translate(0,0) scale(1)}}to{{transform:translate(60px,40px) scale(1.12)}}}}
- main{{max-width:35rem;margin:3rem auto 2rem;padding:0 1rem;animation:rise .6s cubic-bezier(.2,.8,.2,1) both}}
- @keyframes rise{{from{{opacity:0;transform:translateY(14px)}}to{{opacity:1;transform:none}}}}
- .card{{position:relative;border-radius:22px;padding:1.9rem 1.8rem 1.6rem;background:var(--glass);
-   backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);
-   box-shadow:0 30px 80px -20px rgba(0,0,0,.65),inset 0 1px 0 rgba(255,255,255,.06)}}
- .card::before{{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;
-   background:linear-gradient(140deg,rgba(124,92,255,.75),rgba(34,211,238,.25) 40%,rgba(255,255,255,.04) 70%,rgba(236,72,153,.45));
-   -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}}
- .link{{display:flex;align-items:center;justify-content:center;gap:.4rem;margin:.2rem 0 1.4rem}}
- .node{{display:grid;justify-items:center;gap:.4rem;font-size:.75rem;color:var(--muted);width:6.5rem;text-align:center}}
- .badge{{width:56px;height:56px;border-radius:16px;display:grid;place-items:center;font-weight:800;font-size:1.3rem;color:#fff;
-   background:linear-gradient(145deg,#2a3150,#161b2e);border:1px solid var(--line);box-shadow:0 10px 30px -8px rgba(0,0,0,.6)}}
- .badge.fleet{{background:linear-gradient(145deg,var(--a),var(--b));border:0;box-shadow:0 0 0 1px rgba(255,255,255,.12),0 12px 40px -6px rgba(124,92,255,.65)}}
- .wire{{width:110px;height:24px}}
- .wire .flow{{stroke-dasharray:4 7;animation:flow 1.1s linear infinite}}
- @keyframes flow{{to{{stroke-dashoffset:-22}}}}
- .eyebrow{{text-align:center;font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;color:var(--c);font-weight:700;margin:0 0 .35rem}}
- h1{{text-align:center;font-size:1.5rem;line-height:1.3;margin:0 0 .5rem;letter-spacing:-.01em}}
- h1 .grad{{background:linear-gradient(90deg,#c4b5fd,#67e8f9);-webkit-background-clip:text;background-clip:text;color:transparent}}
- .lead{{text-align:center;color:var(--muted);margin:0 auto 1.3rem;max-width:28rem;font-size:.9rem}}
- .muted{{color:var(--muted);font-weight:400}}
- .client{{display:grid;grid-template-columns:auto 1fr;gap:.35rem 1rem;margin:0;padding:.85rem 1rem;border-radius:14px;
-   background:rgba(255,255,255,.035);border:1px solid var(--line);font-size:.84rem}}
- .client dt{{color:var(--faint)}} .client dd{{margin:0;word-break:break-all;color:#d7dcea}}
- .host{{display:inline-block;margin-left:.35rem;padding:0 .45rem;border-radius:6px;background:rgba(56,189,248,.12);color:var(--c);font-size:.75rem}}
- h2{{display:flex;align-items:center;gap:.5rem;font-size:.78rem;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:1.6rem 0 .7rem}}
- h2::after{{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}}
- .scopes{{display:grid;gap:.55rem}}
- .scope{{display:flex;gap:1rem;align-items:center;justify-content:space-between;padding:.85rem 1rem;border-radius:14px;cursor:pointer;
-   background:rgba(255,255,255,.03);border:1px solid var(--line);transition:border-color .2s,background .2s,transform .15s}}
- .scope:hover{{transform:translateY(-1px);border-color:rgba(255,255,255,.18)}}
- .scope:has(input:checked){{background:linear-gradient(135deg,rgba(124,92,255,.14),rgba(34,211,238,.06));border-color:rgba(124,92,255,.55)}}
+ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.7 var(--sans);-webkit-font-smoothing:antialiased;letter-spacing:.01em}}
+ main{{max-width:32rem;margin:0 auto;padding:4.5rem 1.25rem 3rem}}
+ .top{{display:flex;flex-direction:column;align-items:center;gap:.9rem;margin:0 0 2.5rem}}
+ .mark{{width:34px;height:34px;border:1px solid var(--accent);border-radius:50%;display:grid;place-items:center;color:var(--accent)}}
+ .mark svg path{{stroke:currentColor}}
+ .wordmark{{font:500 .74rem/1 var(--sans);letter-spacing:.42em;text-transform:uppercase;color:var(--ink);padding-left:.42em}}
+ .card{{background:var(--paper);border:1px solid var(--line);padding:2.6rem 2.4rem 2.2rem}}
+ .pair{{display:flex;align-items:center;justify-content:center;gap:1rem;margin:0 0 1.6rem;
+   font:500 .66rem/1 var(--sans);letter-spacing:.24em;text-transform:uppercase;color:var(--dim)}}
+ .who{{display:flex;align-items:center;gap:.5rem}} .av{{display:none}}
+ .arrow{{width:2.5rem;height:1px;background:var(--hair)}}
+ h1{{font:400 1.7rem/1.35 var(--serif);letter-spacing:.02em;text-align:center;margin:0 0 .9rem}}
+ .lead{{text-align:center;color:var(--sub);font-size:.84rem;line-height:1.75;margin:0 auto 2rem;max-width:25rem}}
+ .lead b{{font-weight:500;color:var(--ink)}}
+ .client{{margin:0;border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);padding:1rem 0;
+   display:grid;grid-template-columns:5rem 1fr;gap:.45rem 1rem;font-size:.8rem}}
+ .client dt{{font-size:.66rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);padding-top:.15rem}}
+ .client dd{{margin:0;word-break:break-all;color:var(--sub)}}
+ h2{{font:500 .66rem/1 var(--sans);letter-spacing:.3em;text-transform:uppercase;color:var(--accent);
+   margin:2.2rem 0 1rem;display:flex;align-items:center;gap:.9rem}}
+ h2::after{{content:"";flex:1;height:1px;background:var(--line)}}
+ h2 span{{display:none}}
+ .scopes{{border-top:1px solid var(--line)}}
+ .scope{{display:flex;gap:1rem;align-items:flex-start;padding:1rem .15rem;border-bottom:1px solid var(--line);cursor:pointer;transition:background .2s}}
+ .scope:hover{{background:color-mix(in srgb,var(--accent) 5%,transparent)}}
+ .scope input,.check input{{appearance:none;-webkit-appearance:none;margin:.2rem 0 0;width:15px;height:15px;flex:none;cursor:pointer;
+   border:1px solid var(--dim);background:transparent;display:grid;place-items:center;transition:background .15s,border-color .15s}}
+ .scope input:checked,.check input:checked{{background:var(--deep);border-color:var(--deep)}}
+ .scope input:checked::after,.check input:checked::after{{content:"";width:4px;height:8px;margin-top:-2px;
+   border:solid var(--deep-ink);border-width:0 1.5px 1.5px 0;transform:rotate(45deg)}}
  .scope-body{{display:grid;gap:.2rem;min-width:0}}
- .scope-head{{display:flex;flex-wrap:wrap;align-items:center;gap:.45rem}}
- .scope-head b{{font-size:.98rem}}
- .scope-desc{{color:var(--muted);font-size:.83rem}}
- .scope code{{font:500 .72rem ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--faint)}}
- .chip{{display:inline-flex;align-items:center;gap:.3rem;font-size:.7rem;font-weight:700;border-radius:999px;padding:.08rem .5rem}}
- .chip::before{{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}}
- .chip.read{{color:var(--ok);background:rgba(52,211,153,.1)}} .chip.write{{color:var(--warn);background:rgba(251,191,36,.1)}}
- .chip.off{{color:var(--faint);background:rgba(255,255,255,.05)}} .chip.off::before{{box-shadow:none}}
- .scope input,.check input{{appearance:none;-webkit-appearance:none;flex:none;margin:0;width:44px;height:26px;border-radius:999px;cursor:pointer;
-   position:relative;background:#2a3043;border:1px solid rgba(255,255,255,.12);transition:background .25s,box-shadow .25s}}
- .scope input::after,.check input::after{{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;
-   background:#cfd6e6;box-shadow:0 2px 6px rgba(0,0,0,.4);transition:transform .25s cubic-bezier(.3,1.4,.5,1),background .25s}}
- .scope input:checked,.check input:checked{{background:linear-gradient(90deg,var(--a),var(--b));border-color:transparent;box-shadow:0 0 18px -2px rgba(124,92,255,.7)}}
- .scope input:checked::after,.check input:checked::after{{transform:translateX(18px);background:#fff}}
- .scope input:focus-visible,.check input:focus-visible{{outline:2px solid var(--c);outline-offset:3px}}
- .field{{display:grid;gap:.4rem;margin:.8rem 0}}
- .field label{{font-weight:600;font-size:.85rem;color:#d7dcea}}
- .hint{{color:var(--faint);font-size:.78rem}}
- input[type=password],input[type=text]{{width:100%;padding:.75rem .9rem;border-radius:12px;font:inherit;color:var(--ink);
-   background:rgba(0,0,0,.35);border:1px solid var(--line);transition:border-color .2s,box-shadow .2s}}
- input[type=password]:focus,input[type=text]:focus{{outline:none;border-color:rgba(124,92,255,.8);box-shadow:0 0 0 4px rgba(124,92,255,.18)}}
- input::placeholder{{color:var(--faint)}}
- #totp{{letter-spacing:.5em;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:1.1rem;text-align:center}}
- #totp::placeholder{{letter-spacing:normal;font-family:ui-sans-serif,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;font-size:.9rem}}
- .signed{{display:flex;gap:.85rem;align-items:center;padding:.85rem 1rem;border-radius:14px;background:rgba(52,211,153,.06);border:1px solid rgba(52,211,153,.25)}}
- .avatar{{width:2.4rem;height:2.4rem;border-radius:50%;display:grid;place-items:center;font-weight:800;color:#fff;
-   background:linear-gradient(145deg,var(--a),var(--b));box-shadow:0 0 0 3px rgba(52,211,153,.25)}}
- .check{{display:flex;gap:.75rem;align-items:center;justify-content:space-between;margin:.8rem 0;padding:.2rem .1rem;cursor:pointer}}
- button{{position:relative;overflow:hidden;width:100%;margin-top:1.3rem;padding:.95rem 1rem;border:0;border-radius:14px;cursor:pointer;
-   font:inherit;font-weight:800;letter-spacing:.02em;color:#fff;background:linear-gradient(90deg,var(--a),#5b7cff 50%,var(--b));
-   box-shadow:0 14px 40px -12px rgba(124,92,255,.8),inset 0 1px 0 rgba(255,255,255,.25);transition:transform .15s,box-shadow .2s}}
- button::after{{content:"";position:absolute;top:0;left:-60%;width:40%;height:100%;transform:skewX(-20deg);
-   background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);transition:left .6s}}
- button:hover{{transform:translateY(-1px);box-shadow:0 18px 48px -12px rgba(124,92,255,.95),inset 0 1px 0 rgba(255,255,255,.25)}}
- button:hover::after{{left:120%}}
- button:active{{transform:translateY(0)}}
- .fine{{display:flex;justify-content:center;align-items:center;gap:.4rem;color:var(--faint);font-size:.78rem;margin:.75rem 0 0}}
- .error{{color:#ffe4e9;background:rgba(251,113,133,.12);border:1px solid rgba(251,113,133,.4);border-radius:12px;padding:.7rem .9rem;font-weight:600;margin:0 0 1rem}}
- a{{color:var(--c);text-decoration:none;border-bottom:1px dashed rgba(56,189,248,.5)}}
- footer{{display:flex;gap:.6rem;align-items:flex-start;color:var(--faint);font-size:.76rem;margin:1.1rem .4rem;line-height:1.6}}
- footer code{{font-size:.72rem;color:var(--muted)}}
- @media (max-width:480px){{.card{{padding:1.5rem 1.15rem}} .wire{{width:70px}} h1{{font-size:1.3rem}}}}
- @media (prefers-reduced-motion:reduce){{*,*::before,*::after{{animation:none!important;transition:none!important}}}}
-</style></head><body>
-<div class="sky" aria-hidden="true"><span class="orb o1"></span><span class="orb o2"></span><span class="orb o3"></span></div>
-<main>
+ .scope-head{{display:flex;flex-wrap:wrap;align-items:baseline;gap:.6rem}}
+ .scope-head b{{font:400 1.02rem/1.4 var(--serif);letter-spacing:.03em}}
+ .scope-head code{{font:.68rem ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--dim);letter-spacing:0}}
+ .scope-desc{{color:var(--sub);font-size:.8rem;line-height:1.6}}
+ .tag{{font:500 .6rem/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:var(--dim)}}
+ .tag.write{{color:var(--warn)}} .tag.dim{{font-style:italic;letter-spacing:.08em}}
+ .field{{display:grid;gap:.45rem;margin:1.1rem 0}}
+ .field label{{font:500 .66rem/1 var(--sans);letter-spacing:.22em;text-transform:uppercase;color:var(--sub)}}
+ .field label .muted{{display:none}}
+ .muted{{color:var(--dim);font-weight:400}}
+ .hint{{color:var(--dim);font-size:.74rem}}
+ input[type=password],input[type=text]{{width:100%;padding:.55rem 0 .6rem;border:0;border-bottom:1px solid var(--hair);border-radius:0;
+   background:transparent;color:var(--ink);font:1rem var(--sans);transition:border-color .2s}}
+ input[type=password]:focus,input[type=text]:focus{{outline:none;border-bottom-color:var(--ink)}}
+ input::placeholder{{color:var(--dim);font-size:.85rem}}
+ #totp{{font:1.15rem ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.55em}}
+ #totp::placeholder{{letter-spacing:.05em;font:.85rem var(--sans)}}
+ .signed{{display:flex;gap:.9rem;align-items:center;padding:1rem 0;border-bottom:1px solid var(--line);font-size:.86rem;color:var(--sub)}}
+ .signed b{{color:var(--ink);font-weight:500}}
+ .avatar{{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font:400 1rem var(--serif);
+   border:1px solid var(--accent);color:var(--accent);flex:none}}
+ .check{{display:flex;gap:.8rem;align-items:flex-start;margin:1.1rem 0;font-size:.86rem;cursor:pointer}}
+ button{{width:100%;margin-top:2rem;padding:1.05rem 1rem;border:1px solid var(--deep);border-radius:0;background:var(--deep);color:var(--deep-ink);
+   font:500 .72rem/1 var(--sans);letter-spacing:.32em;text-transform:uppercase;cursor:pointer;transition:background .25s,color .25s}}
+ button:hover{{background:transparent;color:var(--deep)}}
+ button:focus-visible,.scope input:focus-visible,.check input:focus-visible{{outline:1px solid var(--accent);outline-offset:3px}}
+ .fine{{text-align:center;color:var(--dim);font-size:.72rem;letter-spacing:.04em;margin:1rem 0 0}}
+ .error{{color:var(--err);border-left:2px solid var(--err);padding:.3rem 0 .3rem .9rem;font-size:.84rem;margin:0 0 1.4rem}}
+ a{{color:var(--ink);text-decoration:underline;text-decoration-color:var(--accent);text-underline-offset:3px}}
+ footer{{text-align:center;color:var(--dim);font-size:.7rem;line-height:1.8;margin:1.6rem 1rem 0}}
+ footer code{{font-size:.68rem}}
+ @media (max-width:480px){{main{{padding-top:2.5rem}} .card{{padding:1.8rem 1.3rem}} h1{{font-size:1.45rem}}}}
+</style></head><body><main>
+<div class="top"><span class="mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+<path d="M5 6h14M5 6l7 13M19 6l-7 13" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+<span class="wordmark">ServerOS Fleet</span></div>
 <div class="card">
-<div class="link" aria-hidden="true">
- <div class="node"><span class="badge">{initial}</span>{html.escape(client.client_name)}</div>
- <svg class="wire" viewBox="0 0 110 24" fill="none">
-  <defs><linearGradient id="w" x1="0" x2="1"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
-  <path d="M4 12H106" stroke="rgba(255,255,255,.12)" stroke-width="2" stroke-linecap="round"/>
-  <path class="flow" d="M4 12H106" stroke="url(#w)" stroke-width="2.4" stroke-linecap="round"/>
-  <circle cx="55" cy="12" r="9" fill="#0d1120" stroke="rgba(255,255,255,.15)"/>
-  <path d="M51.5 12.2l2.4 2.3 4.6-4.8" stroke="#34d399" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
- </svg>
- <div class="node"><span class="badge fleet"><svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-  <path d="M6 7h12M6 7l6 11M18 7l-6 11" stroke="#fff" stroke-width="1.5" opacity=".75"/>
-  <circle cx="6" cy="7" r="2.6" fill="#fff"/><circle cx="18" cy="7" r="2.6" fill="#fff"/><circle cx="12" cy="18" r="2.6" fill="#fff"/></svg></span>ServerOS Fleet</div>
-</div>
-<p class="eyebrow">Connection request · 连接请求</p>
-<h1>授权 <span class="grad">{html.escape(client.client_name)}</span> 接入你的 Fleet</h1>
+<div class="pair" aria-hidden="true"><span class="who"><span class="av">{initial}</span>{html.escape(client.client_name)}</span>
+<span class="arrow"></span><span class="who"><span class="av fleet"><svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+<path d="M5 6h14M5 6l7 13M19 6l-7 13" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>ServerOS Fleet</span></div>
+<h1>{html.escape(client.client_name)} 请求访问<br>你的 Fleet</h1>
 <p class="lead">Authorize {html.escape(client.client_name)} to use {html.escape(SERVER_NAME)} — the Claude Code / Codex
 sessions enrolled in this fleet. Tokens are issued to <b>this client</b> only.</p>
 {error_html}
 <dl class="client">
  <dt>客户端</dt><dd>{html.escape(client.client_name)}</dd>
- <dt>回调地址</dt><dd>{html.escape(', '.join(client.redirect_uris))}{f'<span class="host">{html.escape(host)}</span>' if host else ''}</dd>
- <dt>请求权限</dt><dd>{html.escape(requested_note)}</dd>
+ <dt>回调地址</dt><dd>{html.escape(', '.join(client.redirect_uris))}</dd>
+ <dt>请求</dt><dd>{html.escape(requested_note)}</dd>
 </dl>
 {feishu_html}
 {form_html}
 </div>
-<footer><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="flex:none;margin-top:.15rem">
-<rect x="5" y="11" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 11V8a4 4 0 0 1 8 0v3" stroke="currentColor" stroke-width="1.8"/></svg>
-<span>可随时撤销 · Revoke any time: <code>serveros-fleet-mcp --list-clients</code> then
-<code>--revoke-client &lt;id&gt;</code>, or POST a token to <code>/oauth/revoke</code>. Revoking stops the
-client's existing tokens immediately. 密码与验证码只在本页输入，不会交给 {html.escape(client.client_name)}。</span></footer>
+<footer>密码和验证码只在本页输入，不会交给 {html.escape(client.client_name)}。可随时撤销：
+<code>serveros-fleet-mcp --list-clients</code> then <code>--revoke-client &lt;id&gt;</code>, or POST a token to
+<code>/oauth/revoke</code>. Revoking stops the client's existing tokens immediately.</footer>
 </main></body></html>
 """
 

@@ -847,7 +847,10 @@ def _login_error(reason: str) -> str:
 def _html(status: int, markup: str, form_action: str | None = None,
           extra_headers: dict[str, str] | None = None):
     raw = markup.encode("utf-8")
-    csp = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'"
+    # `frame-ancestors 'none'`: the consent page is never shown inside another
+    # site's frame, so a page elsewhere cannot overlay it and borrow the clicks
+    # or the credentials typed into it.
+    csp = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; form-action 'self'"
     if form_action:
         csp += " " + form_action
     return status, {
@@ -856,6 +859,7 @@ def _html(status: int, markup: str, form_action: str | None = None,
         "Content-Length": str(len(raw)),
         "Cache-Control": "no-store",
         "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
         "Referrer-Policy": "no-referrer",
         # The consent form carries an owner token. Nothing on the page may load
         # from, or post to, anywhere but here -- plus the single callback origin
@@ -1008,6 +1012,16 @@ def build_oauth(config, *, base_url: str, store_root,
                 f"does not exist. The consent step proves the human approving a client "
                 f"is the owner by asking for a password and a one-time code; with no "
                 f"credential file there is nothing to prove it with.",
+            )
+        totp = config.auth.totp_anchor
+        if (totp is None or not totp.exists()) and not config.auth.allow_password_without_totp:
+            raise FleetRefusal(
+                "BAD_REQUEST",
+                "auth.password_anchor is set but auth.totp_anchor is not a readable file, "
+                "so the consent step would accept a password alone. This surface signs in "
+                "with an account, a password AND a one-time code; set auth.totp_anchor "
+                "(python -m fleet_mcp.human_auth writes both files), or set "
+                "auth.allow_password_without_totp: true to accept the weaker door on purpose.",
             )
     elif config.auth.pat_anchor is None or not config.auth.pat_anchor.exists():
         raise FleetRefusal(

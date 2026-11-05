@@ -235,9 +235,14 @@ class AuthBinding:
     #: clients in one sitting asks for the password once; short enough that a
     #: borrowed laptop does not stay authorized overnight.
     session_ttl: int = 8 * 3600
-    #: The TOTP secret anchor. Absent means password-only login; present means
-    #: the consent form also asks for the six-digit code.
+    #: The TOTP secret anchor. Present means the consent form also asks for the
+    #: six-digit code. Absent is refused at startup when a password login is
+    #: configured, unless `allow_password_without_totp` says otherwise.
     totp_anchor: Path | None = None
+    #: Password-only login is a weaker door than the one this surface promises
+    #: (account + password + one-time code). Off by default; a deployment that
+    #: really wants it must say so in its binding.
+    allow_password_without_totp: bool = False
     oauth_enabled: bool = True
     access_token_ttl: int = 3600
     refresh_token_ttl: int = 30 * 24 * 3600
@@ -1214,6 +1219,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
         pat_enabled=bool(auth_raw.get("pat_enabled", True)),
         session_ttl=int(auth_raw.get("session_ttl", 8 * 3600)),
         totp_anchor=(Path(_expand(auth_raw["totp_anchor"])) if auth_raw.get("totp_anchor") else None),
+        allow_password_without_totp=bool(auth_raw.get("allow_password_without_totp", False)),
         oauth_enabled=bool(auth_raw.get("oauth_enabled", True)),
         access_token_ttl=int(auth_raw.get("access_token_ttl", 3600)),
         refresh_token_ttl=int(auth_raw.get("refresh_token_ttl", 30 * 24 * 3600)),
