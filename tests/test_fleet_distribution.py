@@ -115,6 +115,22 @@ class Distribution(unittest.TestCase):
         with self.assertRaises(self.b.DistributionError):
             self.b.install("codex")
 
+    def test_install_launches_the_resolved_cli_so_a_windows_cmd_shim_works(self):
+        from unittest import mock
+        calls = []
+
+        def fake_run(argv, **_kw):
+            calls.append(argv)
+            return mock.Mock(returncode=0, stdout="")
+
+        shim = r"C:\Users\someone\AppData\Roaming\npm\claude.cmd"
+        with mock.patch.object(self.b.shutil, "which", return_value=shim), \
+                mock.patch.object(self.b.subprocess, "run", side_effect=fake_run):
+            self.assertEqual(self.b.install("claude-code"), 0)
+        self.assertTrue(calls)
+        self.assertTrue(all(argv[0] == shim for argv in calls), calls)
+        self.assertIn([shim, "plugin", "uninstall", "serveros-fleet-v1@serveros-v1"], calls)
+
 
 if __name__ == "__main__":
     unittest.main()
