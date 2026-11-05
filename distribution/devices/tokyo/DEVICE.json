@@ -90,7 +90,7 @@
     },
     "commander": {
       "client": "claude-code",
-      "install_id": "serveros-fleet-v1@serveros-v1",
+      "install_id": "serveros-fleet@serveros-fleet",
       "tree": "distribution/claude-code",
       "mcp_url": "https://fleet-v1.professorzhi.fun/mcp"
     }

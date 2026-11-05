@@ -1,9 +1,9 @@
 # The downloadable ServerOS Fleet release: one rolling `fleet-latest` GitHub
 # Release, rebuilt from main on every merge that touches what it carries.
 #
-#   serveros-fleet-v1-openai-v<ver>.zip       ChatGPT: upload this file as the plugin
-#   serveros-fleet-v1-codex-v<ver>.zip        Codex: unzip, then `codex plugin marketplace add <dir>`
-#   serveros-fleet-v1-claude-code-v<ver>.zip  Claude Code (or `distribution/build.py install`)
+#   serveros-fleet-openai-v<ver>.zip       ChatGPT: upload this file as the plugin
+#   serveros-fleet-codex-v<ver>.zip        Codex: unzip, then `codex plugin marketplace add <dir>`
+#   serveros-fleet-claude-code-v<ver>.zip  Claude Code (or `distribution/build.py install`)
 #   serveros-core-lite-windows-x64.zip        the Windows collector + status builder (MSVC, static)
 #
 # On a pull request the same assets are built and kept as workflow artifacts,
@@ -115,9 +115,9 @@ jobs:
             echo
             echo "| file | for |"
             echo "|---|---|"
-            echo "| \`serveros-fleet-v1-openai-v${version}.zip\` | ChatGPT: upload as the plugin (beside any other) |"
-            echo "| \`serveros-fleet-v1-codex-v${version}.zip\` | Codex: unzip, then \`codex plugin marketplace add <dir>\` |"
-            echo "| \`serveros-fleet-v1-claude-code-v${version}.zip\` | Claude Code (or \`python3 distribution/build.py install --client claude-code\`) |"
+            echo "| \`serveros-fleet-openai-v${version}.zip\` | ChatGPT: upload as the plugin (beside any other) |"
+            echo "| \`serveros-fleet-codex-v${version}.zip\` | Codex: unzip, then \`codex plugin marketplace add <dir>\` |"
+            echo "| \`serveros-fleet-claude-code-v${version}.zip\` | Claude Code (or \`python3 distribution/build.py install --client claude-code\`) |"
             echo "| \`serveros-core-lite-windows-x64.zip\` | Windows devices: \`distribution/windows/update.ps1 -FromRelease -Apply\` |"
             echo
             echo "MCP server: https://fleet-v1.professorzhi.fun/mcp. SHA-256:"

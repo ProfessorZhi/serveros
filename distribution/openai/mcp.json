@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
   "mcpServers": {
-    "serveros-fleet-v1": {
+    "serveros-fleet": {
       "type": "streamable-http",
       "url": "https://fleet-v1.professorzhi.fun/mcp",
       "extensions": {

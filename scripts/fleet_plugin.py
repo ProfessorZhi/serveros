@@ -23,11 +23,11 @@ Fleet tool call then opens the server's sign-in page.
     python3 scripts/fleet_plugin.py install-side --next-mcp-url URL
 
 `install-side` installs the same plugin a SECOND time, side by side, without
-touching the one in service: plugin `serveros-fleet-v1@serveros-v1`, MCP server
-`serveros-fleet-v1`, generated into `~/.cache/serveros/fleet-plugin-side/`. Point
+touching the one in service: plugin `serveros-fleet@serveros-fleet`, MCP server
+`serveros-fleet`, generated into `~/.cache/serveros/fleet-plugin-side/`. Point
 it at the V1 candidate surface (a second Fleet instance on its own port). Both
 plugins load together; their tools carry different server names. Remove it with
-`claude plugin uninstall serveros-fleet-v1@serveros-v1`.
+`claude plugin uninstall serveros-fleet@serveros-fleet`.
 """
 from __future__ import annotations
 
@@ -50,10 +50,10 @@ PLUGIN_DIR = ROOT / "plugins" / PLUGIN_NAME
 MARKETPLACE_FILE = ROOT / ".claude-plugin" / "marketplace.json"
 LEGACY_IDS = (f"{PLUGIN_NAME}@fleet-local",)
 #: The side-by-side channel: a second, separately named copy of the plugin.
-SIDE_PLUGIN_NAME = "serveros-fleet-v1"
-SIDE_MARKETPLACE_NAME = "serveros-v1"
-SIDE_SERVER_NAME = "serveros-fleet-v1"
-SIDE_DISPLAY_NAME = "ServerOS Fleet V1"
+SIDE_PLUGIN_NAME = "serveros-fleet"
+SIDE_MARKETPLACE_NAME = "serveros-fleet"
+SIDE_SERVER_NAME = "serveros-fleet"
+SIDE_DISPLAY_NAME = "ServerOS Fleet"
 SIDE_ROOT = Path.home() / ".cache" / "serveros" / "fleet-plugin-side"
 
 #: The Fleet Next ingress the committed plugin points at. Override with
@@ -209,7 +209,7 @@ def generate_side(out_root: Path, url: str) -> Path:
     market = marketplace(manifest)
     market["name"] = SIDE_MARKETPLACE_NAME
     market["plugins"][0]["source"] = f"./plugins/{SIDE_PLUGIN_NAME}"
-    market["description"] = "ServerOS Fleet V1, installed beside any other Fleet plugin."
+    market["description"] = "ServerOS Fleet, the commander plugin for the Fleet hub."
     market_path = out_root / ".claude-plugin" / "marketplace.json"
     market_path.parent.mkdir(parents=True, exist_ok=True)
     market_path.write_text(json.dumps(market, indent=2, ensure_ascii=False) + "\n",

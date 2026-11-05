@@ -13,7 +13,7 @@
 | 3 monitor · serverosd | basic: resources, anomalies, runtime status (python daemon) |
 | 3 monitor · core_lite | native: C++ collector → status.json (0600) every 30 s, observe only |
 | 3 monitor · hub_watch | hub: agent monitor — finds Fleet runs, records outcomes once, Feishu completion / alert / daily cards |
-| 4 commander | `serveros-fleet-v1@serveros-v1` → https://fleet-v1.professorzhi.fun/mcp |
+| 4 commander | `serveros-fleet@serveros-fleet` → https://fleet-v1.professorzhi.fun/mcp |
 
 ## Configuration outside this repository
 
