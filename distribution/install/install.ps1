@@ -1,24 +1,28 @@
 <#
-ServerOS Fleet — one-command install / update of the commander plugin (Windows).
+ServerOS Fleet - one-command install / update of the commander plugin (Windows).
 
-  powershell -ExecutionPolicy Bypass -File install.ps1            install or update
+  powershell -ExecutionPolicy Bypass -File install.ps1            install or update (from GitHub main)
   powershell -ExecutionPolicy Bypass -File install.ps1 -DryRun    print, change nothing
-  powershell -ExecutionPolicy Bypass -File install.ps1 -Version 1.3.1
+  powershell -ExecutionPolicy Bypass -File install.ps1 -Version 1.3.2   pin a release (tag fleet-v1.3.2)
+  powershell -ExecutionPolicy Bypass -File install.ps1 -Local     from this checkout
 
-Claude Code and Codex CLI are installed or updated in place; ChatGPT, Claude
-web/desktop and other agents are printed as one-time manual steps. Packages come
-from the GitHub Release (`gh` signed in) or from this checkout. No credential is
-downloaded, written or asked for.
+Claude Code and Codex CLI install from GitHub: the repository root is the
+`serveros-fleet` marketplace for both, so later updates are
+  claude plugin marketplace update serveros-fleet; claude plugin update serveros-fleet@serveros-fleet
+  codex plugin marketplace upgrade serveros-fleet; codex plugin add serveros-fleet@serveros-fleet
+ChatGPT, Claude web/desktop and other agents are printed as one-time manual
+steps. The repository is public; no credential is downloaded, written or asked for.
 #>
-param([switch]$DryRun, [string]$Version)
+param([switch]$DryRun, [string]$Version, [switch]$Local)
 $ErrorActionPreference = 'Stop'
 $repo = 'ProfessorZhi/serveros'
-$tag = if ($Version) { "fleet-v$Version" } else { 'fleet-latest' }
-$home_dir = Join-Path $env:LOCALAPPDATA 'ServerOS\fleet-plugins'
-$work = Join-Path $env:TEMP ("serveros-fleet-" + [guid]::NewGuid().ToString('N'))
-$checkout = $null
-$channels = Join-Path $PSScriptRoot '..\channels.yaml'
-if (Test-Path -LiteralPath $channels) { $checkout = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
+$ref = if ($Version) { "fleet-v$Version" } else { 'main' }
+$source = $repo
+if ($Local) {
+    $channels = Join-Path $PSScriptRoot '..\channels.yaml'
+    if (-not (Test-Path -LiteralPath $channels)) { throw '-Local needs this script inside a serveros checkout' }
+    $source = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+}
 
 # A native command's exit code decides, never its stderr. Under
 # $ErrorActionPreference = 'Stop', Windows PowerShell 5 turns redirected stderr
@@ -42,54 +46,52 @@ function Run([string]$exe, [string[]]$argv, [switch]$Tolerate) {
     }
 }
 
-function Fetch([string]$client) {
-    if ($checkout) { return (Join-Path $checkout "distribution\$client") }
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'gh is required to download from the private release (gh auth login)' }
-    $dest = Join-Path $home_dir $client
-    if ($DryRun) { return $dest }
-    New-Item -ItemType Directory -Force -Path $work | Out-Null
-    $result = Invoke-Native 'gh' @('release', 'download', $tag, '--repo', $repo,
-        '--pattern', "serveros-fleet-$client-v*.zip", '--dir', $work, '--clobber')
-    if ($result.code -ne 0) { throw "gh release download failed ($($result.code)):`n$($result.output)" }
-    if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
-    $zip = Get-ChildItem -LiteralPath $work -Filter "serveros-fleet-$client-v*.zip" | Select-Object -First 1
-    Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dest -Force
-    return $dest
-}
-
-Write-Host "ServerOS Fleet commander plugin - $tag$(if ($checkout) { " (from checkout $checkout)" })"
+Write-Host "ServerOS Fleet commander plugin - $source$(if (-not $Local) { " @ $ref" })"
 $found = $false
-try {
-    if (Get-Command claude -ErrorAction SilentlyContinue) {
-        $found = $true; Write-Host "`n== Claude Code"
-        $tree = Fetch 'claude-code'
-        Run claude @('plugin', 'uninstall', 'serveros-fleet-v1@serveros-v1') -Tolerate
-        Run claude @('plugin', 'marketplace', 'remove', 'serveros-v1') -Tolerate
-        Run claude @('plugin', 'uninstall', 'serveros-fleet@serveros-fleet') -Tolerate
-        Run claude @('plugin', 'marketplace', 'remove', 'serveros-fleet') -Tolerate
-        Run claude @('plugin', 'marketplace', 'add', $tree)
-        Run claude @('plugin', 'install', 'serveros-fleet@serveros-fleet')
+if (Get-Command claude -ErrorAction SilentlyContinue) {
+    $found = $true; Write-Host "`n== Claude Code"
+    Run claude @('plugin', 'uninstall', 'serveros-fleet-v1@serveros-v1') -Tolerate
+    Run claude @('plugin', 'marketplace', 'remove', 'serveros-v1') -Tolerate
+    Run claude @('plugin', 'uninstall', 'serveros-fleet-ingress@serveros') -Tolerate
+    Run claude @('plugin', 'marketplace', 'remove', 'serveros') -Tolerate
+    Run claude @('plugin', 'uninstall', 'serveros-fleet@serveros-fleet') -Tolerate
+    Run claude @('plugin', 'marketplace', 'remove', 'serveros-fleet') -Tolerate
+    if ($Local) {
+        Run claude @('plugin', 'marketplace', 'add', $source)
+    } else {
+        Run claude @('plugin', 'marketplace', 'add', "https://github.com/$source.git#$ref",
+            '--sparse', '.claude-plugin', 'distribution/claude-code')
     }
-    if (Get-Command codex -ErrorAction SilentlyContinue) {
-        $found = $true; Write-Host "`n== Codex CLI"
-        $tree = Fetch 'codex'
-        Run codex @('plugin', 'marketplace', 'add', $tree) -Tolerate
-        Run codex @('plugin', 'add', 'serveros-fleet@serveros-fleet')
+    Run claude @('plugin', 'install', 'serveros-fleet@serveros-fleet')
+}
+if (Get-Command codex -ErrorAction SilentlyContinue) {
+    $found = $true; Write-Host "`n== Codex CLI"
+    Run codex @('plugin', 'remove', 'serveros-fleet@serveros-fleet') -Tolerate
+    Run codex @('plugin', 'marketplace', 'remove', 'serveros-fleet') -Tolerate
+    if ($Local) {
+        Run codex @('plugin', 'marketplace', 'add', $source)
+    } else {
+        Run codex @('plugin', 'marketplace', 'add', $source, '--ref', $ref,
+            '--sparse', '.agents', '--sparse', 'distribution/codex')
     }
-} finally {
-    if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+    Run codex @('plugin', 'add', 'serveros-fleet@serveros-fleet')
 }
 if (-not $found) { Write-Host 'No Claude Code or Codex CLI on this machine.' }
 Write-Host @'
 
-== Clients installed by hand (once; later versions replace the same entry)
-  ChatGPT (web) + Codex (desktop):
-    upload serveros-fleet-openai-v<version>.zip from the release on
-    https://chatgpt.com/plugins/plugin_asdk_app_6aec2811173881918325a3dc82742d8d
+== Update later (or run this script again)
+  claude plugin marketplace update serveros-fleet; claude plugin update serveros-fleet@serveros-fleet
+  codex plugin marketplace upgrade serveros-fleet; codex plugin add serveros-fleet@serveros-fleet
+
+== Clients installed by hand (once; a later upload replaces the same entry)
+  ChatGPT (web) + Codex (desktop): upload
+    https://github.com/ProfessorZhi/serveros/releases/download/fleet-latest/serveros-fleet-openai.zip
+    on https://chatgpt.com/plugins/plugin_asdk_app_6aec2811173881918325a3dc82742d8d
   Claude (web / desktop / Cowork):
     Settings -> Connectors -> add custom connector  https://fleet-v1.professorzhi.fun/mcp
   Any other MCP agent (DeepSeek Harness, ...):
-    serveros-fleet-mcp-v<version>.zip - mcp.json + skills/, see its README
+    https://github.com/ProfessorZhi/serveros/releases/download/fleet-latest/serveros-fleet-mcp.zip
+    - mcp.json + skills/, see its README
 
 Each client signs in once on the Fleet consent page: account, password, one-time code.
 '@

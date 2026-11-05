@@ -111,6 +111,15 @@ jobs:
           ./distribution/windows/update.ps1 -Device work-fj
           if (-not $?) { throw "update.ps1 dry run failed" }
 
+      - name: install.ps1 plans a GitHub install under Windows PowerShell 5
+        shell: powershell
+        run: |
+          $out = powershell -NoProfile -ExecutionPolicy Bypass -File distribution/install/install.ps1 -DryRun | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { throw "install.ps1 -DryRun failed ($LASTEXITCODE)" }
+          if ($out -notmatch 'ProfessorZhi/serveros @ main') { throw "install.ps1 does not install from GitHub main" }
+          if ($out -notmatch 'fleet-latest/serveros-fleet-openai.zip') { throw "install.ps1 lost the ChatGPT link" }
+
       - name: Connector reader tests with the real owner check
         shell: pwsh
         run: |

@@ -45,7 +45,7 @@ if [ "$LOCAL" = 1 ]; then
   SOURCE="$(cd "$SCRIPT_DIR/../.." && pwd)"
 fi
 
-echo "ServerOS Fleet commander plugin — $SOURCE${LOCAL:+}$([ "$LOCAL" = 1 ] || echo " @ $REF")"
+echo "ServerOS Fleet commander plugin — $SOURCE$([ "$LOCAL" = 1 ] || echo " @ $REF")"
 found=0
 if command -v claude >/dev/null; then
   found=1; echo; echo "== Claude Code"
