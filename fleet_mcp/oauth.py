@@ -761,18 +761,22 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
         requested = scope in (params.get("scope") or "").split()
         ticked = scope in granted if granted is not None else requested
         checked = "checked" if ticked else ""
-        label = {
-            "fleet:read": "Read this fleet — list devices and sessions, and read session history",
-            "fleet:send": "Send messages to sessions the operator has already authorized",
-            "fleet:control": "Stop the run currently in flight in sessions the operator has already authorized",
-            "fleet:create": "Create new sessions on devices the operator has authorized for creation",
-            "fleet:approve": "Approve the tool calls the operator has been asked to answer",
-            "fleet:navigate": "Open a session in a connected browser UI",
-        }.get(scope, scope)
-        note = "" if requested else ' <span class="muted">(not requested by this client)</span>'
+        title, label = {
+            "fleet:read": ("查看", "Read this fleet — list devices and sessions, and read session history"),
+            "fleet:send": ("发送消息", "Send messages to sessions the operator has already authorized"),
+            "fleet:control": ("中断运行", "Stop the run currently in flight in sessions the operator has already authorized"),
+            "fleet:create": ("新建会话", "Create new sessions on devices the operator has authorized for creation"),
+            "fleet:approve": ("批准工具调用", "Approve the tool calls the operator has been asked to answer"),
+            "fleet:navigate": ("打开界面", "Open a session in a connected browser UI"),
+        }.get(scope, (scope, scope))
+        kind = ('<span class="tag">只读</span>' if scope == "fleet:read"
+                else '<span class="tag write">可写</span>')
+        note = "" if requested else '<span class="tag dim">未请求</span>'
         rows.append(
             f'<label class="scope"><input type="checkbox" name="scope" value="{html.escape(scope)}" '
-            f'{checked}> <b>{html.escape(scope)}</b><br><span>{html.escape(label)}</span>{note}</label>'
+            f'{checked}><span class="scope-body"><span class="scope-head"><b>{html.escape(title)}</b>'
+            f'<code>{html.escape(scope)}</code>{kind}{note}</span>'
+            f'<span class="scope-desc">{html.escape(label)}</span></span></label>'
         )
     # The requested scope is carried in its own field, `requested_scope`, and
     # never under the name `scope`. That separation is the whole of the fix for
@@ -830,45 +834,48 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
             # would be the friction this design exists to remove: three clients
             # authorize in a row, and only the first one types anything.
             credentials_html = (
-                f'<p class="muted">Signed in as <b>{html.escape(login_user)}</b>. '
-                f'Continue to approve this client, or '
-                f'<a href="{html.escape(authorize_path)}/logout">sign out</a>.</p>'
-                f'<p><label class="scope"><input type="checkbox" name="continue" value="yes" checked> '
-                f'<b>Continue as {html.escape(login_user)}</b></label></p>'
+                f'<div class="signed"><span class="avatar">{html.escape(login_user[:1].upper())}</span>'
+                f'<span>Signed in as <b>{html.escape(login_user)}</b><br>'
+                f'<span class="muted">已登录，可直接批准 · '
+                f'<a href="{html.escape(authorize_path)}/logout">退出登录</a></span></span></div>'
+                f'<label class="check"><input type="checkbox" name="continue" value="yes" checked>'
+                f'<span>Continue as <b>{html.escape(login_user)}</b></span></label>'
             )
         else:
             totp_html = ""
             if totp_required:
                 totp_html = (
-                    '<p><label for="totp"><b>One-time code</b></label><br>'
-                    '<span class="muted">The six digits from your authenticator app.</span></p>'
+                    '<div class="field"><label for="totp">一次性验证码 <span class="muted">One-time code</span></label>'
                     '<input type="text" id="totp" name="totp" inputmode="numeric" '
-                    'autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>'
+                    'autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" '
+                    'placeholder="验证器里的 6 位数字" required></div>'
                 )
             credentials_html = (
-                '<p><label for="username"><b>Username</b></label></p>'
-                '<input type="text" id="username" name="username" autocomplete="username" required>'
-                '<p><label for="password"><b>Password</b></label></p>'
+                '<div class="field"><label for="username">用户名 <span class="muted">Username</span></label>'
+                '<input type="text" id="username" name="username" autocomplete="username" required></div>'
+                '<div class="field"><label for="password">密码 <span class="muted">Password</span></label>'
                 '<input type="password" id="password" name="password" '
-                'autocomplete="current-password" required>'
+                'autocomplete="current-password" required></div>'
                 + totp_html
             )
     else:
         credentials_html = (
-            '<p><label for="pat"><b>Owner access token</b></label><br>'
-            '<span class="muted">Required. This is the token at the configured '
-            '<code>pat_anchor</code> on the machine running this server. It is checked '
-            'here and never stored, logged or forwarded.</span></p>'
+            '<div class="field"><label for="pat">管理员令牌 <span class="muted">Owner access token</span></label>'
             '<input type="password" id="pat" name="owner_token" autocomplete="off" required>'
+            '<span class="hint">The token at the configured <code>pat_anchor</code> on the machine '
+            'running this server. Checked here; never stored, logged or forwarded.</span></div>'
         )
 
     if interactive:
         form_html = (
             f'<form method="post" action="{html.escape(authorize_path)}">\n'
             f' {hidden}\n'
-            f' {"".join(rows)}\n'
+            f' <h2>权限 <span>Permissions</span></h2>\n'
+            f' <div class="scopes">{"".join(rows)}</div>\n'
+            f' <h2>登录 <span>Sign in</span></h2>\n'
             f' {credentials_html}\n'
-            f' <button type="submit">Approve</button>\n'
+            f' <button type="submit">批准 · Approve</button>\n'
+            f' <p class="fine">只授予勾选的权限 · Only the boxes you tick are granted.</p>\n'
             f'</form>'
         )
     else:
@@ -880,34 +887,108 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
             'least one scope. Start the sign-in from the client and it will open '
             'this page with those values.</p>'
         )
+    host = urlparse(client.redirect_uris[0]).netloc if client.redirect_uris else ""
+    initial = html.escape((client.client_name or "?")[:1].upper())
     return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<title>Authorize {html.escape(client.client_name)} · {html.escape(SERVER_NAME)}</title>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>Authorize {html.escape(client.client_name)} · ServerOS Fleet</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <style>
- body{{font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1.25rem;color:#1b1b1f}}
- h1{{font-size:1.25rem}} .muted{{color:#5b5b66}} .error{{color:#a3232b;font-weight:600}}
- .scope{{display:block;border:1px solid #d8d8de;border-radius:8px;padding:.75rem 1rem;margin:.5rem 0}}
- input[type=password],input[type=text]{{width:100%;padding:.6rem;border:1px solid #c8c8d0;border-radius:6px;font:inherit}}
- button{{margin-top:1.25rem;padding:.7rem 1.4rem;border:0;border-radius:8px;background:#1b1b1f;color:#fff;font:inherit;cursor:pointer}}
- dl{{display:grid;grid-template-columns:auto 1fr;gap:.25rem 1rem;font-size:.9rem}}
- dt{{color:#5b5b66}} dd{{margin:0;word-break:break-all}}
-</style></head><body>
-<h1>Authorize <b>{html.escape(client.client_name)}</b> to use {html.escape(SERVER_NAME)}</h1>
+ :root{{--bg:#f6f2eb;--paper:#fcfaf6;--ink:#1d2433;--sub:#5d5a54;--dim:#968f84;--line:#e2dacd;--hair:#d7ccb9;
+   --accent:#9c7a4b;--deep:#1d2433;--deep-ink:#f6f2eb;--warn:#8a5a2b;--err:#8e2c2c;
+   --serif:"Noto Serif SC","Source Han Serif SC","Songti SC","STSong","SimSun","New York",Georgia,"Times New Roman",serif;
+   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif}}
+ @media (prefers-color-scheme:dark){{:root{{--bg:#14120f;--paper:#1a1814;--ink:#efe8dc;--sub:#b3aa9c;--dim:#7d766b;
+   --line:#2e2a24;--hair:#3a342b;--accent:#c4a172;--deep:#efe8dc;--deep-ink:#14120f;--warn:#d4a46a;--err:#e08c7e}}}}
+ *{{box-sizing:border-box}}
+ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.7 var(--sans);-webkit-font-smoothing:antialiased;letter-spacing:.01em}}
+ main{{max-width:32rem;margin:0 auto;padding:4.5rem 1.25rem 3rem}}
+ .top{{display:flex;flex-direction:column;align-items:center;gap:.9rem;margin:0 0 2.5rem}}
+ .mark{{width:34px;height:34px;border:1px solid var(--accent);border-radius:50%;display:grid;place-items:center;color:var(--accent)}}
+ .mark svg path{{stroke:currentColor}}
+ .wordmark{{font:500 .74rem/1 var(--sans);letter-spacing:.42em;text-transform:uppercase;color:var(--ink);padding-left:.42em}}
+ .card{{background:var(--paper);border:1px solid var(--line);padding:2.6rem 2.4rem 2.2rem}}
+ .pair{{display:flex;align-items:center;justify-content:center;gap:1rem;margin:0 0 1.6rem;
+   font:500 .66rem/1 var(--sans);letter-spacing:.24em;text-transform:uppercase;color:var(--dim)}}
+ .who{{display:flex;align-items:center;gap:.5rem}} .av{{display:none}}
+ .arrow{{width:2.5rem;height:1px;background:var(--hair)}}
+ h1{{font:400 1.7rem/1.35 var(--serif);letter-spacing:.02em;text-align:center;margin:0 0 .9rem}}
+ .lead{{text-align:center;color:var(--sub);font-size:.84rem;line-height:1.75;margin:0 auto 2rem;max-width:25rem}}
+ .lead b{{font-weight:500;color:var(--ink)}}
+ .client{{margin:0;border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);padding:1rem 0;
+   display:grid;grid-template-columns:5rem 1fr;gap:.45rem 1rem;font-size:.8rem}}
+ .client dt{{font-size:.66rem;letter-spacing:.2em;text-transform:uppercase;color:var(--dim);padding-top:.15rem}}
+ .client dd{{margin:0;word-break:break-all;color:var(--sub)}}
+ h2{{font:500 .66rem/1 var(--sans);letter-spacing:.3em;text-transform:uppercase;color:var(--accent);
+   margin:2.2rem 0 1rem;display:flex;align-items:center;gap:.9rem}}
+ h2::after{{content:"";flex:1;height:1px;background:var(--line)}}
+ h2 span{{display:none}}
+ .scopes{{border-top:1px solid var(--line)}}
+ .scope{{display:flex;gap:1rem;align-items:flex-start;padding:1rem .15rem;border-bottom:1px solid var(--line);cursor:pointer;transition:background .2s}}
+ .scope:hover{{background:color-mix(in srgb,var(--accent) 5%,transparent)}}
+ .scope input,.check input{{appearance:none;-webkit-appearance:none;margin:.2rem 0 0;width:15px;height:15px;flex:none;cursor:pointer;
+   border:1px solid var(--dim);background:transparent;display:grid;place-items:center;transition:background .15s,border-color .15s}}
+ .scope input:checked,.check input:checked{{background:var(--deep);border-color:var(--deep)}}
+ .scope input:checked::after,.check input:checked::after{{content:"";width:4px;height:8px;margin-top:-2px;
+   border:solid var(--deep-ink);border-width:0 1.5px 1.5px 0;transform:rotate(45deg)}}
+ .scope-body{{display:grid;gap:.2rem;min-width:0}}
+ .scope-head{{display:flex;flex-wrap:wrap;align-items:baseline;gap:.6rem}}
+ .scope-head b{{font:400 1.02rem/1.4 var(--serif);letter-spacing:.03em}}
+ .scope-head code{{font:.68rem ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--dim);letter-spacing:0}}
+ .scope-desc{{color:var(--sub);font-size:.8rem;line-height:1.6}}
+ .tag{{font:500 .6rem/1 var(--sans);letter-spacing:.18em;text-transform:uppercase;color:var(--dim)}}
+ .tag.write{{color:var(--warn)}} .tag.dim{{font-style:italic;letter-spacing:.08em}}
+ .field{{display:grid;gap:.45rem;margin:1.1rem 0}}
+ .field label{{font:500 .66rem/1 var(--sans);letter-spacing:.22em;text-transform:uppercase;color:var(--sub)}}
+ .field label .muted{{display:none}}
+ .muted{{color:var(--dim);font-weight:400}}
+ .hint{{color:var(--dim);font-size:.74rem}}
+ input[type=password],input[type=text]{{width:100%;padding:.55rem 0 .6rem;border:0;border-bottom:1px solid var(--hair);border-radius:0;
+   background:transparent;color:var(--ink);font:1rem var(--sans);transition:border-color .2s}}
+ input[type=password]:focus,input[type=text]:focus{{outline:none;border-bottom-color:var(--ink)}}
+ input::placeholder{{color:var(--dim);font-size:.85rem}}
+ #totp{{font:1.15rem ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;letter-spacing:.55em}}
+ #totp::placeholder{{letter-spacing:.05em;font:.85rem var(--sans)}}
+ .signed{{display:flex;gap:.9rem;align-items:center;padding:1rem 0;border-bottom:1px solid var(--line);font-size:.86rem;color:var(--sub)}}
+ .signed b{{color:var(--ink);font-weight:500}}
+ .avatar{{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font:400 1rem var(--serif);
+   border:1px solid var(--accent);color:var(--accent);flex:none}}
+ .check{{display:flex;gap:.8rem;align-items:flex-start;margin:1.1rem 0;font-size:.86rem;cursor:pointer}}
+ button{{width:100%;margin-top:2rem;padding:1.05rem 1rem;border:1px solid var(--deep);border-radius:0;background:var(--deep);color:var(--deep-ink);
+   font:500 .72rem/1 var(--sans);letter-spacing:.32em;text-transform:uppercase;cursor:pointer;transition:background .25s,color .25s}}
+ button:hover{{background:transparent;color:var(--deep)}}
+ button:focus-visible,.scope input:focus-visible,.check input:focus-visible{{outline:1px solid var(--accent);outline-offset:3px}}
+ .fine{{text-align:center;color:var(--dim);font-size:.72rem;letter-spacing:.04em;margin:1rem 0 0}}
+ .error{{color:var(--err);border-left:2px solid var(--err);padding:.3rem 0 .3rem .9rem;font-size:.84rem;margin:0 0 1.4rem}}
+ a{{color:var(--ink);text-decoration:underline;text-decoration-color:var(--accent);text-underline-offset:3px}}
+ footer{{text-align:center;color:var(--dim);font-size:.7rem;line-height:1.8;margin:1.6rem 1rem 0}}
+ footer code{{font-size:.68rem}}
+ @media (max-width:480px){{main{{padding-top:2.5rem}} .card{{padding:1.8rem 1.3rem}} h1{{font-size:1.45rem}}}}
+</style></head><body><main>
+<div class="top"><span class="mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+<path d="M5 6h14M5 6l7 13M19 6l-7 13" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+<span class="wordmark">ServerOS Fleet</span></div>
+<div class="card">
+<div class="pair" aria-hidden="true"><span class="who"><span class="av">{initial}</span>{html.escape(client.client_name)}</span>
+<span class="arrow"></span><span class="who"><span class="av fleet"><svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+<path d="M5 6h14M5 6l7 13M19 6l-7 13" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>ServerOS Fleet</span></div>
+<h1>{html.escape(client.client_name)} 请求访问<br>你的 Fleet</h1>
+<p class="lead">Authorize {html.escape(client.client_name)} to use {html.escape(SERVER_NAME)} — the Claude Code / Codex
+sessions enrolled in this fleet. Tokens are issued to <b>this client</b> only.</p>
 {error_html}
-<p class="muted">This client is asking for access to the Claude Code / Codex sessions
-enrolled in this ServerOS fleet. Approving issues tokens to <b>this client</b>.
-Only the boxes you tick below are granted. You can revoke this client later at any
-time: <code>serveros-fleet-mcp --list-clients</code> then
-<code>--revoke-client &lt;id&gt;</code>, or POST a token to <code>/oauth/revoke</code>.
-Revoking makes the client's existing access tokens stop working immediately.</p>
-<dl>
- <dt>Requested</dt><dd>{html.escape(requested_note)}</dd>
- <dt>Redirects to</dt><dd>{html.escape(', '.join(client.redirect_uris))}</dd>
+<dl class="client">
+ <dt>客户端</dt><dd>{html.escape(client.client_name)}</dd>
+ <dt>回调地址</dt><dd>{html.escape(', '.join(client.redirect_uris))}</dd>
+ <dt>请求</dt><dd>{html.escape(requested_note)}</dd>
 </dl>
 {feishu_html}
 {form_html}
-</body></html>
+</div>
+<footer>密码和验证码只在本页输入，不会交给 {html.escape(client.client_name)}。可随时撤销：
+<code>serveros-fleet-mcp --list-clients</code> then <code>--revoke-client &lt;id&gt;</code>, or POST a token to
+<code>/oauth/revoke</code>. Revoking stops the client's existing tokens immediately.</footer>
+</main></body></html>
 """
 
 

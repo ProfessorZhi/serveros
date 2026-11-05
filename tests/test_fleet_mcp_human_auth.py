@@ -326,6 +326,13 @@ class PasswordConsentFlow(unittest.TestCase):
         self.assertNotIn('name="owner_token"', text)
         self.assertNotIn("owner access token", text.lower())
 
+    def test_the_page_cannot_be_framed_by_another_site(self):
+        status, headers, _ = self._get()
+        self.assertEqual(status, 200)
+        headers = {k.lower(): v for k, v in dict(headers).items()}
+        self.assertIn("frame-ancestors 'none'", headers["content-security-policy"])
+        self.assertEqual(headers["x-frame-options"], "DENY")
+
     def test_a_signed_in_page_asks_to_continue_and_carries_a_csrf_token(self):
         _, headers, _ = self._login()
         status, _, body = self._get(self._cookie_from(headers))
@@ -479,3 +486,43 @@ class PasswordConsentFlow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PasswordWithoutASecondFactorIsRefused(unittest.TestCase):
+    """The promise is account + password + one-time code; a password alone is
+    refused at startup unless the binding opts into the weaker door."""
+
+    def _config(self, tmp: Path, *, totp: bool, allow: bool = False) -> FleetConfig:
+        pass_anchor = tmp / "owner.pass"
+        _write_private(pass_anchor, human_auth._hash_line(USERNAME, PASSWORD) + "\n")
+        totp_anchor = None
+        if totp:
+            totp_anchor = tmp / "owner.totp"
+            _write_private(totp_anchor, f"{USERNAME}:{human_auth.encode_base32(SECRET)}\n")
+        return FleetConfig(
+            source=None, local_device_ref="windows-shared-dev-01", providers={},
+            auth=AuthBinding(pat_anchor=None, password_anchor=pass_anchor, totp_anchor=totp_anchor,
+                             pat_enabled=False, allow_password_without_totp=allow),
+            server=ServerBinding(bind="127.0.0.1", port=0, public_base_url="http://127.0.0.1:1"),
+            policy=PolicyBinding(),
+            audit=AuditBinding(path=tmp / "audit.jsonl", rate_limit_per_minute=10_000))
+
+    def test_password_alone_is_refused(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            with self.assertRaises(Exception) as caught:
+                build_oauth(self._config(tmp, totp=False), base_url="http://127.0.0.1:1",
+                            store_root=tmp / "oauth")
+            self.assertIn("totp_anchor", str(caught.exception))
+
+    def test_password_alone_is_allowed_only_when_the_binding_says_so(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            build_oauth(self._config(tmp, totp=False, allow=True), base_url="http://127.0.0.1:1",
+                        store_root=tmp / "oauth")
+
+    def test_password_and_code_start(self):
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            build_oauth(self._config(tmp, totp=True), base_url="http://127.0.0.1:1",
+                        store_root=tmp / "oauth")
