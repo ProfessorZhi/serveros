@@ -3,7 +3,7 @@
 #
 #   curl -fsSL <this file> | bash          (or)   bash distribution/install/install.sh
 #   bash install.sh --dry-run               print what would happen, change nothing
-#   bash install.sh --version 1.3.0         a fixed release instead of fleet-latest
+#   bash install.sh --version 1.3.1         a fixed release instead of fleet-latest
 #
 # What it does, per client found on this machine:
 #   Claude Code   install / update `serveros-fleet@serveros-fleet` (removes the

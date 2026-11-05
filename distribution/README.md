@@ -46,18 +46,22 @@ Codex discovers OAuth from the server; the binding carries only the URL.
 
 ChatGPT runs a plugin on the web only when its tools come from an **App
 registered in the account**; a package that declares its own MCP server is
-treated as desktop-only. So this package declares no server. It carries:
+treated as desktop-only. And an update of an App-backed plugin must leave the
+**App's own fields** exactly as they are (author, description, category,
+developer name, display name, descriptions, icons): ChatGPT refuses an upload
+that changes them (1.3.0 was refused for this).
 
-- `plugin.json` and `.codex-plugin/plugin.json`: name, version, the
-  **ServerOS Fleet** display name and both icons (`assets/composerIcon.png`,
-  `assets/logo.png`);
-- `.app.json`: which registered App provides the tools. That App holds the
-  Fleet URL and its OAuth;
-- the 13 Skills.
+So the package is:
 
-The plugin `name`, plugin id and App id are the ones ChatGPT assigned on the
-first upload, recorded in `channels.yaml` under `clients.openai`. Uploading a
-new version therefore **replaces** that plugin instead of adding a second one.
+- the App's fields, copied verbatim from `distribution/openai-app.json` (a
+  snapshot of the plugin as it stands in the account);
+- what the plugin owns: the plugin name and App id from `channels.yaml`
+  (`.app.json`), the version, and the 13 Skills.
+
+To change the name, description or **icon** that ChatGPT shows, edit the App
+in ChatGPT's App settings, then update `openai-app.json` to match. Never
+change them through the package. Uploading a new version replaces the same
+plugin.
 
 | | |
 |---|---|
@@ -157,6 +161,20 @@ are built as workflow artifacts, so a broken package fails before release.
 | `serveros-core-lite-windows-x64.zip` | Windows devices: the collector + status builder, no build tools needed |
 
 The release notes carry the source commit and each file's SHA-256.
+
+# Deploying the hub (Tokyo)
+
+Installing a client plugin does not update the Fleet server. The hub runs from
+its own checkout and is updated separately:
+
+```bash
+cd ~/src/serveros-v1 && git fetch origin && git checkout --detach <release commit>
+git rev-parse HEAD                                   # must equal the release's commit
+systemctl --user restart serveros-fleet-v1 serveros-fleet-watch
+curl -fsS https://fleet-v1.professorzhi.fun/health   # ok
+```
+
+The release notes name the commit each version was built from.
 
 # Updating a device in place
 

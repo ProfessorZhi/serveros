@@ -3,7 +3,7 @@ ServerOS Fleet — one-command install / update of the commander plugin (Windows
 
   powershell -ExecutionPolicy Bypass -File install.ps1            install or update
   powershell -ExecutionPolicy Bypass -File install.ps1 -DryRun    print, change nothing
-  powershell -ExecutionPolicy Bypass -File install.ps1 -Version 1.3.0
+  powershell -ExecutionPolicy Bypass -File install.ps1 -Version 1.3.1
 
 Claude Code and Codex CLI are installed or updated in place; ChatGPT, Claude
 web/desktop and other agents are printed as one-time manual steps. Packages come
@@ -20,11 +20,26 @@ $checkout = $null
 $channels = Join-Path $PSScriptRoot '..\channels.yaml'
 if (Test-Path -LiteralPath $channels) { $checkout = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path }
 
+# A native command's exit code decides, never its stderr. Under
+# $ErrorActionPreference = 'Stop', Windows PowerShell 5 turns redirected stderr
+# into a terminating NativeCommandError, so a step that is allowed to fail
+# ("uninstall the old plugin, if it is there") would end the script. Each call
+# therefore runs with 'Continue' in its own scope and is judged by $LASTEXITCODE.
+function Invoke-Native([string]$exe, [string[]]$argv) {
+    $ErrorActionPreference = 'Continue'
+    $global:LASTEXITCODE = 0
+    $output = & $exe @argv 2>&1 | Out-String
+    return @{ code = $LASTEXITCODE; output = $output }
+}
+
 function Run([string]$exe, [string[]]$argv, [switch]$Tolerate) {
     Write-Host ("+ $exe " + ($argv -join ' ') + $(if ($Tolerate) { '  (may already be done)' } else { '' }))
     if ($DryRun) { return }
-    & $exe @argv *> $null
-    if (-not $Tolerate -and $LASTEXITCODE -ne 0) { throw "$exe $($argv -join ' ') failed ($LASTEXITCODE)" }
+    $result = Invoke-Native $exe $argv
+    if ($result.code -ne 0) {
+        if ($Tolerate) { Write-Host "  (skipped: exit $($result.code))"; return }
+        throw "$exe $($argv -join ' ') failed ($($result.code)):`n$($result.output)"
+    }
 }
 
 function Fetch([string]$client) {
@@ -33,7 +48,9 @@ function Fetch([string]$client) {
     $dest = Join-Path $home_dir $client
     if ($DryRun) { return $dest }
     New-Item -ItemType Directory -Force -Path $work | Out-Null
-    gh release download $tag --repo $repo --pattern "serveros-fleet-$client-v*.zip" --dir $work --clobber | Out-Null
+    $result = Invoke-Native 'gh' @('release', 'download', $tag, '--repo', $repo,
+        '--pattern', "serveros-fleet-$client-v*.zip", '--dir', $work, '--clobber')
+    if ($result.code -ne 0) { throw "gh release download failed ($($result.code)):`n$($result.output)" }
     if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
     $zip = Get-ChildItem -LiteralPath $work -Filter "serveros-fleet-$client-v*.zip" | Select-Object -First 1
     Expand-Archive -LiteralPath $zip.FullName -DestinationPath $dest -Force

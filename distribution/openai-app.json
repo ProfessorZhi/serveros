@@ -1,0 +1,17 @@
+{
+  "_comment": "Fields the registered ChatGPT App owns, copied verbatim from the plugin as it stands in the account (1.2.2). ChatGPT refuses an App-backed plugin update that changes them; change them through the App's own settings, then update this file to match.",
+  "author": {
+    "name": "App developer"
+  },
+  "description": "统一设备与会话控制，含 13 项 Fleet 技能。",
+  "interface": {
+    "capabilities": [],
+    "category": "Other",
+    "defaultPrompt": null,
+    "developerName": "App developer",
+    "displayName": "ServerOS Fleet",
+    "longDescription": "统一设备与会话控制，含 13 项 Fleet 技能。",
+    "shortDescription": "统一设备与会话控制，含 13 项 Fleet 技能。"
+  },
+  "keywords": []
+}
