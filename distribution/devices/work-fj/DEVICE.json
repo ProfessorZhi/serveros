@@ -2,7 +2,7 @@
   "schema": "serveros/fleet-device-kit.v1",
   "device": "work-fj",
   "device_ref": "device:work-fj",
-  "principal": "work-fj",
+  "principal": "Vince.Huang",
   "os": "windows",
   "role": "company Windows — real-client E2E, browser, office documents",
   "hub": "tokyo",
@@ -53,5 +53,9 @@
         }
       }
     }
+  },
+  "wiring": {
+    "hub_binding": "device:work-fj|claude-vince.huang  with  account: Vince.Huang",
+    "connector_binding": "runtime: claude-vince.huang  and  core_snapshot_path: <Resolve-Path of %LOCALAPPDATA%\\ServerOS\\state\\core-lite\\status.json>"
   }
 }

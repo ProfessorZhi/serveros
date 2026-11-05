@@ -172,9 +172,14 @@ def kit(doc: dict, name: str) -> dict:
                                "install_id": channels["clients"]["claude-code"]["install_id"],
                                "tree": channels["clients"]["claude-code"]["tree"],
                                "mcp_url": hub["mcp_url"]}
-    return {"schema": KIT_SCHEMA, "device": name, "device_ref": dev["device_ref"],
-            "principal": dev["principal"], "os": dev["os"], "role": dev["role"],
-            "hub": hub["device"], "layers": layers}
+    out = {"schema": KIT_SCHEMA, "device": name, "device_ref": dev["device_ref"],
+           "principal": dev["principal"], "os": dev["os"], "role": dev["role"],
+           "hub": hub["device"], "layers": layers}
+    if dev.get("wiring"):
+        out["wiring"] = dict(dev["wiring"])
+    if name == hub["device"] and hub.get("binding_settings"):
+        out["hub_binding_settings"] = [dict(item) for item in hub["binding_settings"]]
+    return out
 
 
 def _pin(rel: str) -> dict:
@@ -400,6 +405,16 @@ def readme(k: dict) -> str:
         lines.append(f"| 3 monitor · {key} | {item['what']} |")
     if "commander" in L:
         lines.append(f"| 4 commander | `{L['commander']['install_id']}` → {L['commander']['mcp_url']} |")
+    if k.get("wiring") or k.get("hub_binding_settings"):
+        lines += ["", "## Configuration outside this repository", "",
+                  "These live in local binding files, not in git. Re-apply them after a reinstall.", ""]
+        for item in k.get("hub_binding_settings", []):
+            lines.append(f"- hub binding (`{k['hub']}`): `{item['setting']}` — {item['why']}")
+        wiring = k.get("wiring", {})
+        if "hub_binding" in wiring:
+            lines.append(f"- hub binding (`{k['hub']}`): `{wiring['hub_binding']}`")
+        if "connector_binding" in wiring:
+            lines.append(f"- this device's connector binding: `{wiring['connector_binding']}`")
     lines += ["", "## Install", ""]
     if k["os"] == "linux":
         lines += [

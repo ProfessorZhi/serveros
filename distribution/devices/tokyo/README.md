@@ -15,6 +15,12 @@
 | 3 monitor · hub_watch | hub: agent monitor — finds Fleet runs, records outcomes once, Feishu completion / alert / daily cards |
 | 4 commander | `serveros-fleet-v1@serveros-v1` → https://fleet-v1.professorzhi.fun/mcp |
 
+## Configuration outside this repository
+
+These live in local binding files, not in git. Re-apply them after a reinstall.
+
+- hub binding (`tokyo`): `policy: {discovery_timeout_seconds: 15}` — work-fj's CloudCLI lists its sessions in more than the default 5 s; at 5 s the heartbeat records it as unreachable (resource readings are unaffected)
+
 ## Install
 
 ```bash

@@ -33,6 +33,12 @@ hub:
   device: tokyo
   binding: ~/.config/serveros/fleet-v1.yaml
   mcp_url: https://fleet-v1.professorzhi.fun/mcp
+  # Settings in the hub binding that the kits depend on. The binding is local
+  # to the hub and not in this repository; these lines are its record.
+  binding_settings:
+    - setting: "policy: {discovery_timeout_seconds: 15}"
+      why: work-fj's CloudCLI lists its sessions in more than the default 5 s; at 5 s
+        the heartbeat records it as unreachable (resource readings are unaffected)
 
 devices:
   tokyo:
@@ -67,11 +73,17 @@ devices:
       core_lite: native/node-core/core-lite/profiles/dell-fjd.profile.json
       node_connector: true
       hub_watch: false
+    # Configuration outside this repository that this device needs. A device
+    # whose CloudCLI runs under another account than the hub's default is
+    # addressed by its own runtime tag, and both sides must spell it the same.
+    wiring:
+      hub_binding: "device:llm-lab-dell|claude-fjd  with  account: fjd"
+      connector_binding: "runtime: claude-fjd"
     commander: false
 
   work-fj:
     device_ref: device:work-fj
-    principal: work-fj
+    principal: Vince.Huang          # as GetUserNameW reports it; the match is exact
     os: windows
     role: company Windows — real-client E2E, browser, office documents
     core:
@@ -86,4 +98,7 @@ devices:
       core_lite: native/node-core/core-lite/profiles/work-fj.profile.json
       node_connector: true
       hub_watch: false
+    wiring:
+      hub_binding: "device:work-fj|claude-vince.huang  with  account: Vince.Huang"
+      connector_binding: "runtime: claude-vince.huang  and  core_snapshot_path: <Resolve-Path of %LOCALAPPDATA%\\ServerOS\\state\\core-lite\\status.json>"
     commander: false
