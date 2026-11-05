@@ -105,3 +105,34 @@ PowerShell to run on the device.
 Add a device: one entry in `devices.yaml` (and a core-lite profile in
 `native/node-core/core-lite/profiles/` whose `node` is its device ref), then
 `device_kit.py build` and commit.
+
+# Downloads: the `fleet-latest` Release
+
+Every merge to main that touches the plugins, the device kits or the native
+collector rebuilds one rolling GitHub Release, **`fleet-latest`**
+(`.github/workflows/fleet-release.yml`). On a pull request the same packages
+are built as workflow artifacts, so a broken package fails before release.
+
+| asset | use |
+|---|---|
+| `serveros-fleet-v1-openai-v<ver>.zip` | ChatGPT: upload this file as the plugin |
+| `serveros-fleet-v1-codex-v<ver>.zip` | Codex: unzip, `codex plugin marketplace add <dir>` |
+| `serveros-fleet-v1-claude-code-v<ver>.zip` | Claude Code (or `build.py install --client claude-code`) |
+| `serveros-core-lite-windows-x64.zip` | Windows devices: the collector + status builder, no build tools needed |
+
+The release notes carry the source commit and each file's SHA-256.
+
+# Updating a device in place
+
+| device | command (run on the device, from its serveros checkout) |
+|---|---|
+| Linux (tokyo, dell) | `python3 distribution/device_kit.py update --device <name> --data-root $DATA_ROOT --apply` |
+| Windows (work-fj) | `powershell -ExecutionPolicy Bypass -File distribution\windows\update.ps1 -Device work-fj -FromRelease -Apply` |
+
+Both pull main, re-apply every layer the device declares (core plugin and node
+runtime, ability family at one pinned revision, the collector, the publish
+timer or task), restart only what was already running, and write what the device
+now runs to `device-versions.json` (`~/.local/state/serveros/` or
+`%LOCALAPPDATA%\ServerOS\state\`). Without `--apply` / `-Apply` both only print.
+They are meant to be run by whoever can reach the device, a person or an agent
+session on it; the hub never pushes an install.

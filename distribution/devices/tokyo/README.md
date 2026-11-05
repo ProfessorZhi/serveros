@@ -31,4 +31,12 @@ python3 distribution/device_kit.py install --device tokyo --ability-rev $REV --a
 python3 distribution/device_kit.py install --device tokyo --ability-rev $REV --apply --enable   # also enables the units
 ```
 
+## Update in place
+
+```bash
+python3 distribution/device_kit.py update   --device tokyo --data-root $DATA_ROOT            # dry run
+python3 distribution/device_kit.py update   --device tokyo --data-root $DATA_ROOT --apply
+python3 distribution/device_kit.py versions --device tokyo
+```
+
 Rollback: rerun `install` with the previous `--ability-rev`; `scripts/release.py rollback` for the node runtime; `systemctl --user disable --now <unit>` for a monitor unit.

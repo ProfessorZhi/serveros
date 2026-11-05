@@ -17,6 +17,8 @@ on:
       - "fleet_mcp/node/win_file.py"
       - "fleet_mcp/node/connector.py"
       - "tests/test_fleet_node_win_file.py"
+      - "distribution/windows/**"
+      - "distribution/devices/**"
       - ".github/workflows/serveros-core-lite-windows.yml"
 
 permissions:
@@ -94,6 +96,19 @@ jobs:
           ./native/node-core/core-lite/windows/deploy/publish-status.ps1 -Bin build-cl/Release -ProfilePath ci.profile.json -Out $out
           python -c "import sys; from pathlib import Path; from fleet_mcp.node.win_file import read_owned_bounded; raw = read_owned_bounded(Path(sys.argv[1]).resolve(), 262144); assert b'core-lite-status.v1' in raw; print('connector reader ok', len(raw), 'bytes')" $out
           if ($LASTEXITCODE -ne 0) { throw "the connector reader refused the published file" }
+
+      - name: Every PowerShell script parses, and update.ps1 plans for work-fj
+        shell: pwsh
+        run: |
+          $scripts = @(Get-ChildItem -Recurse -Filter *.ps1 -Path native/node-core/core-lite/windows, distribution/windows, fleet_mcp/node)
+          foreach ($script in $scripts) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { throw "$($script.FullName): $($errors[0].Message)" }
+            Write-Host "parses: $($script.Name)"
+          }
+          ./distribution/windows/update.ps1 -Device work-fj
+          if (-not $?) { throw "update.ps1 dry run failed" }
 
       - name: Connector reader tests with the real owner check
         shell: pwsh

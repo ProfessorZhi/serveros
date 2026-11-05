@@ -172,3 +172,53 @@ def test_configuration_outside_the_repository_is_written_into_the_install_notes(
     tokyo = (ROOT / "distribution/devices/tokyo/README.md").read_text()
     assert "discovery_timeout_seconds: 15" in tokyo
     assert dk.kit(doc, "work-fj")["principal"] == "Vince.Huang"
+
+
+def test_update_without_apply_changes_nothing(tmp_path, capsys):
+    code = dk.main(["update", "--device", "dell", "--home", str(tmp_path)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "pull --ff-only origin main" in out and "dry run" in out
+    assert not (tmp_path / ".local/state/serveros/device-versions.json").exists()
+
+
+def test_a_windows_device_is_sent_to_update_ps1():
+    assert dk.main(["update", "--device", "work-fj"]) == 2
+
+
+def test_update_apply_reinstalls_with_new_code_and_records_versions(tmp_path, monkeypatch):
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    log = tmp_path / "calls.log"
+    for tool, body in (("python3", f'echo "python3 $*" >> {log}'),
+                       ("systemctl", f'echo "systemctl $*" >> {log}; exit 3')):
+        exe = fakebin / tool
+        exe.write_text(f"#!/bin/sh\n{body}\n")
+        exe.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fakebin}{os.pathsep}{os.environ['PATH']}")
+    home = tmp_path / "home"
+    code = dk.main(["update", "--device", "dell", "--no-pull", "--ability-rev", "fd0e98f0123456",
+                    "--home", str(home), "--python", str(fakebin / "python3"), "--apply"])
+    assert code == 0
+    calls = log.read_text()
+    assert "device_kit.py install --device dell --ability-rev fd0e98f0123456" in calls
+    # Nothing was running, so nothing was restarted.
+    assert "systemctl --user restart" not in calls
+    record = json.loads((home / ".local/state/serveros/device-versions.json").read_text())
+    assert record["schema"] == "serveros/device-versions.v1"
+    assert record["ability_family"] == {"profile": "dell-gpu-compute", "revision": "fd0e98f0123456"}
+    assert record["core_plugin"]["name"] == "hwz-server-os-linux-work"
+    assert dk.main(["versions", "--device", "dell", "--home", str(home)]) == 0
+
+
+def test_a_failed_install_records_no_versions(tmp_path, monkeypatch):
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    exe = fakebin / "python3"
+    exe.write_text("#!/bin/sh\nexit 1\n")
+    exe.chmod(0o755)
+    home = tmp_path / "home"
+    code = dk.main(["update", "--device", "dell", "--no-pull", "--ability-rev", "fd0e98f0123456",
+                    "--home", str(home), "--python", str(exe), "--apply"])
+    assert code == 1
+    assert not (home / ".local/state/serveros/device-versions.json").exists()

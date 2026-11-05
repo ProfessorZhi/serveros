@@ -8,6 +8,14 @@ every device: core plugin → ability family → monitoring → (hub) commander.
     python3 distribution/device_kit.py check              # CI: committed == regenerated
     python3 distribution/device_kit.py plan    --device tokyo --ability-rev SHA
     python3 distribution/device_kit.py install --device tokyo --ability-rev SHA [--apply] [--enable]
+    python3 distribution/device_kit.py update  --device tokyo [--ability-rev main] [--apply] [--enable]
+    python3 distribution/device_kit.py versions --device tokyo
+
+`update` is the in-place upgrade of all four layers on a Linux device: it pulls
+this checkout to origin/main, re-runs `install` with the NEW code, restarts the
+units that are already running, and records what is installed in
+`~/.local/state/serveros/device-versions.json`. A Windows device runs
+`distribution/windows/update.ps1` instead.
 
 `plan` and `install` without `--apply` only print. `install --apply` runs the
 steps in order on THIS machine and stops at the first failure; it writes unit
@@ -27,6 +35,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -426,9 +435,25 @@ def readme(k: dict) -> str:
             f"python3 distribution/device_kit.py install --device {k['device']} --ability-rev $REV --apply --enable"
             "   # also enables the units",
             "```",
+            "",
+            "## Update in place",
+            "",
+            "```bash",
+            f"python3 distribution/device_kit.py update   --device {k['device']} --data-root $DATA_ROOT            # dry run",
+            f"python3 distribution/device_kit.py update   --device {k['device']} --data-root $DATA_ROOT --apply",
+            f"python3 distribution/device_kit.py versions --device {k['device']}",
+            "```",
         ]
     else:
-        lines += ["```powershell", *windows_plan(k, "<ability-management rev>"), "```"]
+        lines += ["```powershell", *windows_plan(k, "<ability-management rev>"), "```",
+                  "", "## Update in place", "",
+                  "```powershell",
+                  f"powershell -ExecutionPolicy Bypass -File distribution\\windows\\update.ps1 -Device {k['device']}"
+                  "                       # dry run",
+                  f"powershell -ExecutionPolicy Bypass -File distribution\\windows\\update.ps1 -Device {k['device']}"
+                  " -FromRelease -Apply  # collector from the fleet-latest Release (needs gh)",
+                  "Get-Content \"$env:LOCALAPPDATA\\ServerOS\\state\\device-versions.json\"",
+                  "```"]
     lines += ["", "Rollback: rerun `install` with the previous `--ability-rev`; "
               "`scripts/release.py rollback` for the node runtime; "
               "`systemctl --user disable --now <unit>` for a monitor unit.", ""]
@@ -552,9 +577,119 @@ def install(args) -> int:
     return code
 
 
+# -- update / versions --------------------------------------------------------------
+
+#: Units an update restarts IF they are already running here; it never starts one.
+RESTART_IF_RUNNING = ("serverosd.service", "serveros-fleet-node-connector.service",
+                      "serveros-fleet-watch.service", "serveros-fleet-v1.service")
+
+
+def _git(*args: str, cwd: Path) -> str:
+    return subprocess.run(["git", *args], cwd=cwd, text=True, check=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT).stdout.strip()
+
+
+def _versions_path(home: Path) -> Path:
+    return home / ".local/state/serveros/device-versions.json"
+
+
+def resolve_ability_rev(repo: Path, rev: str | None) -> str:
+    """`main` (or nothing) means ability-management's origin/main, fetched now."""
+    if rev and rev != "main":
+        return rev
+    _git("fetch", "-q", "origin", "main", cwd=repo)
+    return _git("rev-parse", "origin/main", cwd=repo)
+
+
+def device_versions(k: dict, *, home: Path, ability_rev: str) -> dict:
+    """What this device now runs, layer by layer, as this checkout can state it."""
+    core = k["layers"]["core"]
+    collector = home / ".local/lib/serveros-core-lite/serveros-node-resource-snapshot"
+    collector_version = None
+    if collector.is_file():
+        run = subprocess.run([str(collector), "--version"], text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        collector_version = run.stdout.strip() or None
+    try:
+        serveros = _git("rev-parse", "HEAD", cwd=ROOT)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        serveros = None
+    return {
+        "schema": "serveros/device-versions.v1",
+        "device": k["device"], "device_ref": k["device_ref"],
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "serveros_commit": serveros,
+        "core_plugin": ({"name": core["name"], "version": core["version"]}
+                        if core.get("composition") else None),
+        "ability_family": {"profile": k["layers"]["family"]["profile"], "revision": ability_rev},
+        "core_lite_collector": collector_version,
+        "commander": (k["layers"]["commander"]["install_id"] if "commander" in k["layers"] else None),
+    }
+
+
+def update(args) -> int:
+    doc = declaration()
+    if args.device not in doc["devices"]:
+        raise KitError(f"unknown device {args.device}; known: {sorted(doc['devices'])}")
+    k = kit(doc, args.device)
+    if k["os"] == "windows":
+        raise KitError("a Windows device updates with distribution/windows/update.ps1 on the device")
+    home = Path(args.home).expanduser()
+    repo = Path(args.ability_repo).expanduser().resolve()
+    steps = [f"git -C {ROOT} pull --ff-only origin main",
+             f"ability-management: {args.ability_rev or 'main'} → a pinned commit (git fetch)",
+             f"device_kit.py install --device {k['device']} --apply"
+             + (" --enable" if args.enable else "") + "   (the pulled code)",
+             "systemctl --user restart, only for those already running: " + ", ".join(RESTART_IF_RUNNING),
+             f"write {_versions_path(home)}"]
+    print(f"# update {k['device']} ({k['device_ref']})")
+    for i, line in enumerate(steps, 1):
+        print(f"{i:2}. {line}")
+    if not args.apply:
+        print("\n(dry run — add --apply to run these steps)")
+        return 0
+
+    if not args.no_pull:
+        print(_git("pull", "--ff-only", "origin", "main", cwd=ROOT))
+    rev = resolve_ability_rev(repo, args.ability_rev)
+    print(f"ability-management at {rev}")
+    install_argv = [args.python, str(HERE / "device_kit.py"), "install", "--device", k["device"],
+                    "--ability-rev", rev, "--ability-repo", str(repo), "--home", str(home),
+                    "--python", args.python, "--notify", args.notify, "--apply"]
+    if args.data_root:
+        install_argv += ["--data-root", args.data_root]
+    if args.enable:
+        install_argv.append("--enable")
+    # A fresh process, so the steps come from the code the pull just brought.
+    if subprocess.run(install_argv).returncode != 0:
+        print("install failed; units were not restarted and versions were not recorded",
+              file=sys.stderr)
+        return 1
+    for unit in RESTART_IF_RUNNING:
+        active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit]).returncode == 0
+        if active:
+            code = subprocess.run(["systemctl", "--user", "restart", unit]).returncode
+            print(f"[{'OK' if code == 0 else 'FAILED'}] restart {unit}")
+    record = device_versions(kit(declaration(), k["device"]), home=home, ability_rev=rev)
+    path = _versions_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+    print(f"versions: {path}")
+    return 0
+
+
+def versions(args) -> int:
+    path = _versions_path(Path(args.home).expanduser())
+    if not path.is_file():
+        print(f"no versions recorded at {path}; run `update --apply` once", file=sys.stderr)
+        return 1
+    print(path.read_text(encoding="utf-8"), end="")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("build", "check", "plan", "install"))
+    parser.add_argument("command", choices=("build", "check", "plan", "install", "update", "versions"))
     parser.add_argument("--device")
     parser.add_argument("--ability-rev")
     parser.add_argument("--ability-repo", default=str(ROOT.parent / "ability-management"))
@@ -565,6 +700,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="hub only: journal, or lark:user:<open_id> for Feishu")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--enable", action="store_true", help="also enable and start the units")
+    parser.add_argument("--no-pull", action="store_true", help="update: use this checkout as it is")
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
@@ -573,6 +709,10 @@ def main(argv: list[str] | None = None) -> int:
             return check()
         if not args.device:
             raise KitError("--device is required")
+        if args.command == "update":
+            return update(args)
+        if args.command == "versions":
+            return versions(args)
         if args.command == "plan":
             k, steps = plan(args)
             print_plan(k, steps, args.enable)
