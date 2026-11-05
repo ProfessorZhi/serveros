@@ -601,6 +601,60 @@ class FleetService:
                    "detail": "this Fleet surface has no hub inbox, so no resident monitor "
                              "reports here; an empty status would read as 'all quiet'"}
 
+    def device_versions(self, principal: Principal) -> dict[str, Any]:
+        """What each device runs, layer by layer, as its last update recorded it.
+
+        The hub's own device is read from this account's record; a device on
+        the node channel answers over `GET /v1/device/versions` (signed, and
+        projected on the device); any other route has no such record. Every
+        device gets a row, so a device that never reported is visible as such.
+        """
+        from . import device_versions
+
+        principal.require(SCOPE_READ)
+        self.admit(principal)
+        rows: list[dict[str, Any]] = []
+        for entry in self.registry.all():
+            ref = entry.device_ref.ref
+            row: dict[str, Any] = {"device_ref": ref,
+                                   "display_name": getattr(entry, "display_name", None) or ref}
+            if ref == self.config.local_device_ref:
+                path = self.config.device_versions_path or device_versions.default_path()
+                row.update(device_versions.read(path, ref))
+                row["route"] = "local"
+            else:
+                runtime = self._own_runtime(ref)
+                provider = self._provider(ref, runtime)
+                if provider is None:
+                    row.update({"state": "NO_ROUTE",
+                                "reason": "this hub holds no binding for the device's own runtime"})
+                elif not hasattr(provider, "device_versions"):
+                    row.update({"state": "NOT_SUPPORTED",
+                                "reason": f"a {getattr(provider, 'kind', 'provider')} route "
+                                          f"does not carry a versions record"})
+                else:
+                    try:
+                        answer = provider.device_versions()
+                    except FleetRefusal as exc:
+                        row.update({"state": "UNREACHABLE", "code": exc.code})
+                    else:
+                        row.update(answer if isinstance(answer, dict)
+                                   else {"state": "UNREADABLE", "reason": "not an object"})
+                row["route"] = provider_key(ref, runtime)
+            rows.append(row)
+        commits = sorted({r["versions"]["serveros_commit"] for r in rows
+                          if r.get("state") == "RECORDED" and r["versions"].get("serveros_commit")})
+        self.audit.record("fleet.device_versions", principal=principal.name, devices=len(rows))
+        return {
+            "schema": "serveros/fleet-device-versions.v1",
+            "devices": rows,
+            "total": len(rows),
+            # Different commits are the signal that an update is due somewhere.
+            "distinct_serveros_commits": commits,
+            "note": "Each row is what that device's last in-place update recorded; "
+                    "NOT_RECORDED means no update has run there yet.",
+        }
+
     def monitor_status(self, principal: Principal) -> dict[str, Any]:
         """The resident monitor: heartbeat, open alerts, mutes, pause, recent commands."""
         principal.require(SCOPE_READ)

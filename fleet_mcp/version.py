@@ -38,7 +38,10 @@ SERVER_VERSION = "0.2.0"
 # `fleet-mcp-10`: the resident monitor's control surface — `fleet_monitor_status`
 # (read) and `fleet_monitor_control` (fleet:control; mute, pause, send the 日报
 # now, reload the card spec). Seventeen authored, 50 total.
-TOOL_SURFACE_REVISION = "fleet-mcp-10"
+# `fleet-mcp-11`: `fleet_device_versions` (read) — what each device's last
+# in-place update recorded, over the signed `GET /v1/device/versions` node
+# route or this hub's own record. Eighteen authored, 51 total.
+TOOL_SURFACE_REVISION = "fleet-mcp-11"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

@@ -76,7 +76,7 @@ name, keeps the last good one, and records `card_spec` in its heartbeat.
 
 ## Control from Fleet
 
-The monitor answers to the Fleet command centre through two tools (`fleet-mcp-10`):
+The monitor answers to the Fleet command centre through two tools (introduced in `fleet-mcp-10`):
 
 - `fleet_monitor_status` (fleet:read): heartbeat age and state, device levels, the
   card spec in use, open alert episodes, mutes, broadcast pause, recent commands.

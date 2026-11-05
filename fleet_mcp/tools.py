@@ -224,6 +224,10 @@ def _work_candidate_add(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any
         source=args.get("source"), reason=args.get("reason"))
 
 
+def _device_versions(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.device_versions(ctx.principal)
+
+
 def _monitor_status(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.monitor_status(ctx.principal)
 
@@ -909,6 +913,22 @@ TOOLS: tuple[Tool, ...] = (
         annotations={"readOnlyHint": False, "destructiveHint": False,
                      "idempotentHint": True, "openWorldHint": False},
         handler=_work_candidate_add,
+    ),
+    Tool(
+        name="fleet_device_versions",
+        title="Read what each device runs",
+        description=(
+            "Per device, what its last in-place update recorded: the serveros "
+            "commit, the core plugin and version, the ability family profile and "
+            "revision, the Core-Lite collector version, and the commander plugin "
+            "(hub only). `distinct_serveros_commits` with more than one entry "
+            "means a device is behind. `NOT_RECORDED` means no update has run on "
+            "that device yet; `UNREACHABLE` / `NO_ROUTE` / `NOT_SUPPORTED` say why "
+            "a device could not answer. Read-only."
+        ),
+        input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        annotations=_read_only(),
+        handler=_device_versions,
     ),
     Tool(
         name="fleet_monitor_status",

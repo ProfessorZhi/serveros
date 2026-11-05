@@ -163,7 +163,8 @@ class ToolSurface(unittest.TestCase):
                 "fleet_status", "fleet_create_session", "fleet_interrupt_session",
                 "fleet_create_project", "fleet_delete_project", "fleet_inbox",
                 "fleet_work_board", "fleet_project_understanding",
-                "fleet_work_candidate_add", "fleet_monitor_status", "fleet_monitor_control",
+                "fleet_work_candidate_add", "fleet_device_versions",
+                "fleet_monitor_status", "fleet_monitor_control",
             ]),
         )
 
@@ -185,7 +186,8 @@ class ToolSurface(unittest.TestCase):
                          ["fleet_interrupt_session", "fleet_create_project",
                           "fleet_delete_project", "fleet_inbox", "fleet_work_board",
                           "fleet_project_understanding", "fleet_work_candidate_add",
-                          "fleet_monitor_status", "fleet_monitor_control"])
+                          "fleet_device_versions", "fleet_monitor_status",
+                          "fleet_monitor_control"])
 
     def test_exactly_five_tools_are_not_read_only(self):
         writes = [t.name for t in fleet_tools.TOOLS if not t.annotations["readOnlyHint"]]

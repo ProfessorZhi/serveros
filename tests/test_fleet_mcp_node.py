@@ -268,6 +268,7 @@ class RouteClosure(_Base):
             ("POST", "/v1/projects/delete", {"project_id": "p-1", "force": False}),
             ("POST", "/v1/native/call", {"tool": "overview", "arguments": {}}),
             ("GET", "/v1/core/status", None),
+            ("GET", "/v1/device/versions", None),
         ]
         self.assertEqual(len(cases), len(np.ROUTES))
         for method, path, body in cases:

@@ -256,6 +256,37 @@ class FleetNodeProvider(DeviceProvider):
                 f"parses is not evidence that the device sent it.")
         return document
 
+    def device_versions(self) -> dict[str, Any]:
+        """What this device runs, as its last update recorded it — verified.
+
+        Same route discipline and the same response check as `core_status`: the
+        connector signs its answer over THIS call's nonce, so neither a stranger
+        on the URL nor a replayed earlier answer can stand in for the device.
+        """
+        import secrets
+
+        from ..device_versions import MAX_BYTES
+
+        nonce = secrets.token_hex(16)
+        capture: dict[str, Any] = {}
+        document = self._request("GET", "/v1/device/versions", max_bytes=MAX_BYTES + 4096,
+                                 nonce=nonce, capture=capture)
+        secret = self.binding.credential()
+        if not secret:
+            raise refuse(PROVIDER_UNAUTHORIZED, "no node secret is configured")
+        if not verify_core_response(
+                secret,
+                device_ref=self.device_ref,
+                runtime=getattr(self.binding, "runtime", BASE_RUNTIME),
+                request_nonce=nonce,
+                body=capture.get("body") or b"",
+                signature=capture.get("headers", {}).get(CORE_SIGNATURE_HEADER.lower())):
+            raise refuse(
+                PROVIDER_UNAUTHORIZED,
+                f"the versions answer from {self.binding.endpoint} carries no valid "
+                f"response signature bound to this request's nonce.")
+        return document
+
     def core_lite_source(self) -> "NodeCoreLiteSource | None":
         """This device as a `CoreLiteStatusSource`, or `None` when it cannot be.
 
