@@ -8,7 +8,8 @@ node connector runs from (the script finds the checkout from its own path).
   3 collector    -FromRelease: download serveros-core-lite-windows-x64.zip from the
                  `fleet-latest` GitHub Release (needs `gh` logged in); otherwise build with CMake/MSVC
   4 publish      publish once (must produce a core-lite-status.v1), re-register the 1-minute task
-  5 connector    restart the ServerOS-FleetNode-Connector scheduled task, if it exists
+  5 connector    print the restart of the ServerOS-FleetNode-Connector task (run it to
+                 pick up the new code; the update itself stops nothing)
   6 versions     write %LOCALAPPDATA%\ServerOS\state\device-versions.json
 
 Without -Apply it prints the steps and changes nothing. It never reads, prints or
@@ -50,7 +51,7 @@ if ($coreLite.profile) {
 } else {
     Write-Host " 3-4. no resource collector declared for this device"
 }
-Write-Host " 5. restart ServerOS-FleetNode-Connector (if registered)"
+Write-Host " 5. print the connector restart (if the task is registered)"
 Write-Host " 6. write $state\device-versions.json"
 if (-not $Apply) { Write-Host "`n(dry run - add -Apply to run these steps)"; return }
 
@@ -102,14 +103,7 @@ try {
         $collectorVersion = (& (Join-Path $bin 'serveros-node-resource-snapshot.exe') --version | Out-String).Trim()
     }
 
-    $task = Get-ScheduledTask -TaskName 'ServerOS-FleetNode-Connector' -ErrorAction SilentlyContinue
-    if ($task) {
-        Write-Host '== restart connector'
-        Stop-ScheduledTask -TaskName 'ServerOS-FleetNode-Connector'
-        Start-ScheduledTask -TaskName 'ServerOS-FleetNode-Connector'
-    } else {
-        Write-Host '== no ServerOS-FleetNode-Connector task here; skipped'
-    }
+    $connectorTask = Get-ScheduledTask -TaskName 'ServerOS-FleetNode-Connector' -ErrorAction SilentlyContinue
 
     $record = [ordered]@{
         schema              = 'serveros/device-versions.v1'
@@ -126,6 +120,10 @@ try {
     $out = Join-Path $state 'device-versions.json'
     [System.IO.File]::WriteAllText($out, ($record | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
     Write-Host "versions: $out"
+    if ($connectorTask) {
+        Write-Host "`nthe connector runs the new code after a restart:"
+        Write-Host "  Stop-ScheduledTask -TaskName 'ServerOS-FleetNode-Connector'; Start-ScheduledTask -TaskName 'ServerOS-FleetNode-Connector'"
+    }
 } finally {
     Pop-Location
 }

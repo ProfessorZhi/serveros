@@ -202,8 +202,9 @@ def test_update_apply_reinstalls_with_new_code_and_records_versions(tmp_path, mo
     assert code == 0
     calls = log.read_text()
     assert "device_kit.py install --device dell --ability-rev fd0e98f0123456" in calls
-    # Nothing was running, so nothing was restarted.
+    # The update restarts nothing itself; it only asks what is running.
     assert "systemctl --user restart" not in calls
+    assert "systemctl --user is-active" in calls
     record = json.loads((home / ".local/state/serveros/device-versions.json").read_text())
     assert record["schema"] == "serveros/device-versions.v1"
     assert record["ability_family"] == {"profile": "dell-gpu-compute", "revision": "fd0e98f0123456"}

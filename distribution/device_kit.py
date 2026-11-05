@@ -12,8 +12,10 @@ every device: core plugin → ability family → monitoring → (hub) commander.
     python3 distribution/device_kit.py versions --device tokyo
 
 `update` is the in-place upgrade of all four layers on a Linux device: it pulls
-this checkout to origin/main, re-runs `install` with the NEW code, restarts the
-units that are already running, and records what is installed in
+this checkout to origin/main, re-runs `install` with the NEW code, prints the
+restart command for each unit that is already running (it restarts nothing
+itself: product code runs no stopping verb, see tests/test_mutation_guard.py),
+and records what is installed in
 `~/.local/state/serveros/device-versions.json`. A Windows device runs
 `distribution/windows/update.ps1` instead.
 
@@ -579,7 +581,10 @@ def install(args) -> int:
 
 # -- update / versions --------------------------------------------------------------
 
-#: Units an update restarts IF they are already running here; it never starts one.
+#: Units whose restart an update PRINTS when they are already running here. The
+#: update runs no stopping verb itself (the mutation guard's rule, the same one
+#: that keeps `release.py promote` to a daemon-reload); the person or agent
+#: running the update runs the printed line.
 RESTART_IF_RUNNING = ("serverosd.service", "serveros-fleet-node-connector.service",
                       "serveros-fleet-watch.service", "serveros-fleet-v1.service")
 
@@ -640,7 +645,7 @@ def update(args) -> int:
              f"ability-management: {args.ability_rev or 'main'} → a pinned commit (git fetch)",
              f"device_kit.py install --device {k['device']} --apply"
              + (" --enable" if args.enable else "") + "   (the pulled code)",
-             "systemctl --user restart, only for those already running: " + ", ".join(RESTART_IF_RUNNING),
+             "print the restart command for those already running: " + ", ".join(RESTART_IF_RUNNING),
              f"write {_versions_path(home)}"]
     print(f"# update {k['device']} ({k['device_ref']})")
     for i, line in enumerate(steps, 1):
@@ -662,19 +667,18 @@ def update(args) -> int:
         install_argv.append("--enable")
     # A fresh process, so the steps come from the code the pull just brought.
     if subprocess.run(install_argv).returncode != 0:
-        print("install failed; units were not restarted and versions were not recorded",
-              file=sys.stderr)
+        print("install failed; versions were not recorded", file=sys.stderr)
         return 1
-    for unit in RESTART_IF_RUNNING:
-        active = subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit]).returncode == 0
-        if active:
-            code = subprocess.run(["systemctl", "--user", "restart", unit]).returncode
-            print(f"[{'OK' if code == 0 else 'FAILED'}] restart {unit}")
+    running = [unit for unit in RESTART_IF_RUNNING
+               if subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit]).returncode == 0]
     record = device_versions(kit(declaration(), k["device"]), home=home, ability_rev=rev)
     path = _versions_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     print(f"versions: {path}")
+    if running:
+        print("\nthe new code takes effect after a restart of what is running here:")
+        print("  systemctl --user restart " + " ".join(running))
     return 0
 
 
