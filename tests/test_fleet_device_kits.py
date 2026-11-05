@@ -163,3 +163,12 @@ def test_a_profile_for_another_platform_is_refused():
     doc["devices"]["work-fj"]["device_ref"] = "device:llm-lab-dell"
     with pytest.raises(dk.KitError, match="not windows"):
         dk.kit(doc, "work-fj")
+
+
+def test_configuration_outside_the_repository_is_written_into_the_install_notes():
+    doc = dk.declaration()
+    work_fj = (ROOT / "distribution/devices/work-fj/README.md").read_text()
+    assert "claude-vince.huang" in work_fj and "core_snapshot_path" in work_fj
+    tokyo = (ROOT / "distribution/devices/tokyo/README.md").read_text()
+    assert "discovery_timeout_seconds: 15" in tokyo
+    assert dk.kit(doc, "work-fj")["principal"] == "Vince.Huang"

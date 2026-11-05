@@ -80,5 +80,9 @@
         }
       }
     }
+  },
+  "wiring": {
+    "hub_binding": "device:llm-lab-dell|claude-fjd  with  account: fjd",
+    "connector_binding": "runtime: claude-fjd"
   }
 }

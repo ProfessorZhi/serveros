@@ -94,5 +94,11 @@
       "tree": "distribution/claude-code",
       "mcp_url": "https://fleet-v1.professorzhi.fun/mcp"
     }
-  }
+  },
+  "hub_binding_settings": [
+    {
+      "setting": "policy: {discovery_timeout_seconds: 15}",
+      "why": "work-fj's CloudCLI lists its sessions in more than the default 5 s; at 5 s the heartbeat records it as unreachable (resource readings are unaffected)"
+    }
+  ]
 }

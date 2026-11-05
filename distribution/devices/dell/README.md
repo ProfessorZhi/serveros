@@ -14,6 +14,13 @@
 | 3 monitor · core_lite | native: C++ collector → status.json (0600) every 30 s, observe only |
 | 3 monitor · node_connector | link: reports this device to the hub (tokyo) |
 
+## Configuration outside this repository
+
+These live in local binding files, not in git. Re-apply them after a reinstall.
+
+- hub binding (`tokyo`): `device:llm-lab-dell|claude-fjd  with  account: fjd`
+- this device's connector binding: `runtime: claude-fjd`
+
 ## Install
 
 ```bash
