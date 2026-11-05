@@ -2,6 +2,27 @@
 
 **One Fleet Core, one shared source, one adapter per client, one version.**
 
+## How each client installs and updates
+
+| client | install once | update |
+|---|---|---|
+| Claude Code | `install.sh` / `install.ps1` (or `claude plugin marketplace add ProfessorZhi/serveros` + `claude plugin install serveros-fleet@serveros-fleet`) | `claude plugin marketplace update serveros-fleet && claude plugin update serveros-fleet@serveros-fleet`; or turn on auto-update for the marketplace in `/plugin` |
+| Codex CLI | `install.sh` / `install.ps1` (or `codex plugin marketplace add ProfessorZhi/serveros` + `codex plugin add serveros-fleet@serveros-fleet`) | `codex plugin marketplace upgrade serveros-fleet && codex plugin add serveros-fleet@serveros-fleet` |
+| ChatGPT web + Codex desktop (one zip) | upload [`serveros-fleet-openai.zip`](https://github.com/ProfessorZhi/serveros/releases/download/fleet-latest/serveros-fleet-openai.zip) on the plugin page | upload the same link again; it always holds the newest version |
+| Claude web / desktop / Cowork | Settings → Connectors → custom connector `https://fleet-v1.professorzhi.fun/mcp` | nothing to update: tools come from the server |
+| any other MCP agent | [`serveros-fleet-mcp.zip`](https://github.com/ProfessorZhi/serveros/releases/download/fleet-latest/serveros-fleet-mcp.zip): `mcp.json` + `skills/` | download again for new Skills |
+
+The repository root **is** the `serveros-fleet` marketplace for both CLIs
+(`.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`, written
+by `build.py build` and pointing into `distribution/claude-code/` and
+`distribution/codex/`), so merging to main is what releases to them. The
+installers add it with a sparse checkout of just those directories. A release
+tag pins a version: `install.sh --version 1.3.2` (`#fleet-v1.3.2`).
+
+Fleet *tools* live on the hub: deploying the hub changes them for every client
+at once, with no plugin update. A plugin update is only needed for Skills and
+manifest text.
+
 | | where |
 |---|---|
 | Fleet Core (the MCP server) | `fleet_mcp/`, served at `https://fleet-v1.professorzhi.fun/mcp` (Tokyo :3412, Cloudflare Tunnel) |
@@ -24,7 +45,7 @@ a version. It replaces the earlier `serveros-fleet@serveros-fleet` in place:
 
 | | |
 |---|---|
-| install / upgrade | `python3 distribution/build.py install --client claude-code` (replaces only `serveros-fleet@serveros-fleet`) |
+| install / upgrade | `install.sh` / `install.ps1` from GitHub (above); from a checkout, `install.sh --local` or `python3 distribution/build.py install --client claude-code` |
 | verify | `claude plugin list` shows `serveros-fleet@serveros-fleet` at the version above; a new session lists the `serveros-fleet` tools and 13 Skills |
 | uninstall | `claude plugin uninstall serveros-fleet@serveros-fleet && claude plugin marketplace remove serveros-fleet` |
 | rollback | `git checkout <previous tag> -- distribution/claude-code && python3 distribution/build.py install --client claude-code` |
@@ -36,7 +57,7 @@ one plugin (`.codex-plugin/plugin.json`, `.codex-mcp.json`, Skills, assets).
 
 | | |
 |---|---|
-| install / upgrade | `codex plugin marketplace add <repo>/distribution/codex`, then add `serveros-fleet` from the `serveros-fleet` marketplace |
+| install / upgrade | `install.sh` / `install.ps1` from GitHub (above); from a checkout, `install.sh --local` |
 | verify | the plugin is listed at the version above; `/mcp` shows `serveros-fleet`; OAuth sign-in opens on first use |
 | uninstall | remove the plugin, then the `serveros-fleet` marketplace |
 
@@ -84,13 +105,15 @@ Fleet consent page like every other client.
 `distribution/install/install.sh` (Linux, macOS) and `install.ps1` (Windows)
 install or update every client they find:
 
-- Claude Code: `serveros-fleet@serveros-fleet`, with the older
-  `serveros-fleet-v1@serveros-v1` removed first;
-- Codex CLI: the `serveros-fleet` marketplace and plugin.
+- Claude Code: `serveros-fleet@serveros-fleet` from the GitHub marketplace, with
+  the older `serveros-fleet-v1@serveros-v1` and `serveros-fleet-ingress@serveros`
+  removed first;
+- Codex CLI: the `serveros-fleet` marketplace from GitHub and its plugin.
 
-They read the packages from this checkout, or from the release through `gh`,
-and print the one-time steps for ChatGPT, Claude web and other agents.
-`--dry-run` / `-DryRun` prints the steps and changes nothing.
+The repository is public, so nothing needs signing in to download. They print
+the one-time steps for ChatGPT, Claude web and other agents, and the update
+commands. `--dry-run` / `-DryRun` prints the steps and changes nothing;
+`--version` / `-Version` pins a release tag; `--local` / `-Local` uses this checkout.
 
 ## Releasing a new version
 
@@ -99,8 +122,9 @@ and print the one-time steps for ChatGPT, Claude web and other agents.
 2. `python3 distribution/build.py build`; also `python3 scripts/fleet_plugin.py build`
    (the Legacy-named Claude Code tree under `plugins/`).
 3. Commit; CI checks every tree. Merge: the release workflow publishes `fleet-v<version>` and `fleet-latest`.
-4. Claude Code: `install`. Codex: re-add the marketplace. ChatGPT: upload the new zip
-   to the same plugin id.
+4. Claude Code / Codex CLI pick it up on their next `marketplace update` /
+   `upgrade` (commands above). ChatGPT: upload `serveros-fleet-openai.zip` from
+   `fleet-latest` to the same plugin id.
 
 MCP tool changes ship with the server (Tokyo Fleet V1), not with these packages;
 a client sees them after its next tool refresh.
@@ -153,10 +177,10 @@ are built as workflow artifacts, so a broken package fails before release.
 
 | asset | use |
 |---|---|
-| `serveros-fleet-openai-v<ver>.zip` | ChatGPT web + Codex desktop: upload on the plugin page (replaces it) |
-| `serveros-fleet-claude-code-v<ver>.zip` | Claude Code (`install.sh` / `install.ps1` does this) |
-| `serveros-fleet-codex-v<ver>.zip` | Codex CLI (`install.sh` / `install.ps1` does this) |
-| `serveros-fleet-mcp-v<ver>.zip` | any other MCP agent: `mcp.json` + `skills/` |
+| `serveros-fleet-openai-v<ver>.zip` | ChatGPT web + Codex desktop: upload on the plugin page (replaces it); on `fleet-latest` also as `serveros-fleet-openai.zip`, a link that never changes |
+| `serveros-fleet-claude-code-v<ver>.zip` | Claude Code offline copy (installs normally come from GitHub) |
+| `serveros-fleet-codex-v<ver>.zip` | Codex CLI offline copy (installs normally come from GitHub) |
+| `serveros-fleet-mcp-v<ver>.zip` | any other MCP agent: `mcp.json` + `skills/`; on `fleet-latest` also as `serveros-fleet-mcp.zip` |
 | `install.sh` / `install.ps1` | one-command install / update on a machine |
 | `serveros-core-lite-windows-x64.zip` | Windows devices: the collector + status builder, no build tools needed |
 

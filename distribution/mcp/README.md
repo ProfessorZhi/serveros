@@ -1,4 +1,4 @@
-# ServerOS Fleet 1.3.1 — for any MCP agent
+# ServerOS Fleet 1.3.2 — for any MCP agent
 
 1. Add the server in `mcp.json` to your agent's MCP configuration: streamable HTTP at `https://fleet-v1.professorzhi.fun/mcp`.
 2. On first use the agent opens the Fleet consent page; sign in with your account, password and one-time code, and tick only the permissions it needs.

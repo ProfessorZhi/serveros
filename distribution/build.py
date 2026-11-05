@@ -222,6 +222,40 @@ GENERATORS = {"claude-code": generate_claude_code, "codex": generate_codex,
 
 # -- build / check ---------------------------------------------------------------
 
+# -- the repository root as a marketplace -------------------------------------------
+#
+# `claude plugin marketplace add ProfessorZhi/serveros` reads the root's
+# `.claude-plugin/marketplace.json`; `codex plugin marketplace add
+# ProfessorZhi/serveros` reads the root's `.agents/plugins/marketplace.json`.
+# Both are the client trees' own marketplace files with the plugin path made
+# relative to the root, so an install from GitHub and an install from the
+# client tree are the same plugin, and `marketplace update` / `upgrade` follows
+# main. Sparse checkouts keep the clone to the two directories each needs.
+
+ROOT_MARKETPLACES = {
+    "claude-code": Path(".claude-plugin/marketplace.json"),
+    "codex": Path(".agents/plugins/marketplace.json"),
+}
+SPARSE = {
+    "claude-code": (".claude-plugin", "distribution/claude-code"),
+    "codex": (".agents", "distribution/codex"),
+}
+
+
+def root_marketplace(doc: dict, client: str, tree: Path) -> bytes:
+    """The root copy of one client tree's marketplace file."""
+    rel = ROOT_MARKETPLACES[client]
+    market = json.loads((tree / rel).read_text(encoding="utf-8"))
+    prefix = doc["clients"][client]["tree"]
+    for entry in market["plugins"]:
+        source = entry["source"]
+        if isinstance(source, str):
+            entry["source"] = f"./{prefix}/{source.removeprefix('./')}"
+        else:
+            source["path"] = f"./{prefix}/{source['path'].removeprefix('./')}"
+    return (json.dumps(market, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 def _files(root: Path) -> dict[str, bytes]:
     return {p.relative_to(root).as_posix(): p.read_bytes()
             for p in sorted(root.rglob("*")) if p.is_file()}
@@ -246,6 +280,10 @@ def build(client: str = "all") -> int:
             if target.exists():
                 shutil.rmtree(target)
             shutil.copytree(fresh, target)
+            if name in ROOT_MARKETPLACES:
+                rel = ROOT_MARKETPLACES[name]
+                (ROOT / rel).parent.mkdir(parents=True, exist_ok=True)
+                (ROOT / rel).write_bytes(root_marketplace(doc, name, fresh))
         print(f"wrote {target.relative_to(ROOT)} ({doc['version']})")
     return 0
 
@@ -256,7 +294,13 @@ def stale(client: str = "all") -> list[str]:
     for name in _selected(client):
         target = ROOT / doc["clients"][name]["tree"]
         with tempfile.TemporaryDirectory() as tmp:
-            fresh = _files(_fresh(doc, name, Path(tmp)))
+            tree = _fresh(doc, name, Path(tmp))
+            fresh = _files(tree)
+            if name in ROOT_MARKETPLACES:
+                rel = ROOT_MARKETPLACES[name]
+                on_disk = ROOT / rel
+                if not on_disk.is_file() or on_disk.read_bytes() != root_marketplace(doc, name, tree):
+                    found.append(rel.as_posix())
         committed = _files(target) if target.is_dir() else {}
         for rel in sorted(set(fresh) | set(committed)):
             if fresh.get(rel) != committed.get(rel):

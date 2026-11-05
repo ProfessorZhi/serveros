@@ -13,6 +13,13 @@ plugin/build/
 .agents/
 # The committed Codex distribution is a local marketplace and needs its .agents/.
 !distribution/codex/.agents/
+# The repository root is the Codex `serveros-fleet` marketplace: its one file
+# (written by distribution/build.py) is committed, nothing else under .agents/.
+!/.agents/
+/.agents/*
+!/.agents/plugins/
+/.agents/plugins/*
+!/.agents/plugins/marketplace.json
 
 # secrets — never commit
 .env

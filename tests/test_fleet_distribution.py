@@ -118,9 +118,33 @@ class Distribution(unittest.TestCase):
         self.assertNotIn("mcpServers", (tree / "plugin.json").read_text())
         self.assertFalse((tree / "assets").exists())
 
+    def test_the_repository_root_is_the_marketplace_for_both_clis(self):
+        """`marketplace add ProfessorZhi/serveros` resolves to the committed plugins."""
+        for client, rel in self.b.ROOT_MARKETPLACES.items():
+            with self.subTest(client=client):
+                market = json.loads((ROOT / rel).read_text())
+                self.assertEqual(market["name"], self.doc["identity"]["marketplace"])
+                (entry,) = market["plugins"]
+                self.assertEqual(entry["name"], self.doc["identity"]["plugin"])
+                source = entry["source"] if isinstance(entry["source"], str) else entry["source"]["path"]
+                self.assertEqual((ROOT / source).resolve(), self.plugin_dirs[client].resolve())
+                # A sparse checkout of these paths is enough to install.
+                self.assertTrue(all(s.split("/")[0] in (rel.parts[0], "distribution")
+                                    for s in self.b.SPARSE[client]))
+                self.assertTrue(source.removeprefix("./").startswith(self.b.SPARSE[client][1]))
+
+    def test_the_root_codex_marketplace_file_is_committed_not_ignored(self):
+        import subprocess
+        out = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "-q",
+                              ".agents/plugins/marketplace.json"])
+        self.assertEqual(out.returncode, 1, "the root Codex marketplace file is gitignored")
+        stray = subprocess.run(["git", "-C", str(ROOT), "check-ignore", "-q", ".agents/skills/x"])
+        self.assertEqual(stray.returncode, 0, "anything else under the root .agents/ must stay ignored")
+
     def test_install_removes_the_identity_it_replaces(self):
         replaced = [r["install_id"] for r in self.doc["identity"]["replaces"]]
         self.assertIn("serveros-fleet-v1@serveros-v1", replaced)
+        self.assertIn("serveros-fleet-ingress@serveros", replaced)
 
     def test_no_secret_or_client_id_in_any_binding(self):
         for client, plugin in self.plugin_dirs.items():
@@ -163,15 +187,36 @@ if __name__ == "__main__":
 
 
 class TheInstallersAreOneCommand(unittest.TestCase):
-    def test_install_sh_parses_and_plans_from_a_checkout(self):
+    def _dry_run(self, *args, clis=("claude", "codex")):
         import subprocess
+        bindir = Path(tempfile.mkdtemp())
+        for cli in clis:  # stand-ins that must never run on a dry run
+            exe = bindir / cli
+            exe.write_text("#!/bin/sh\nexit 99\n")
+            exe.chmod(0o755)
         script = ROOT / "distribution/install/install.sh"
         self.assertEqual(subprocess.run(["bash", "-n", str(script)]).returncode, 0)
-        out = subprocess.run(["bash", str(script), "--dry-run"], text=True,
-                             capture_output=True, env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"})
+        out = subprocess.run(["bash", str(script), "--dry-run", *args], text=True, capture_output=True,
+                             env={"PATH": f"{bindir}:/usr/bin:/bin", "HOME": "/tmp"})
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertIn("from checkout", out.stdout)
-        self.assertIn("plugin_asdk_app_6aec2811173881918325a3dc82742d8d", out.stdout)
+        return out.stdout
+
+    def test_install_sh_installs_both_clis_from_github_main(self):
+        out = self._dry_run()
+        self.assertIn("+ claude plugin marketplace add https://github.com/ProfessorZhi/serveros.git#main "
+                      "--sparse .claude-plugin distribution/claude-code", out)
+        self.assertIn("+ codex plugin marketplace add ProfessorZhi/serveros --ref main "
+                      "--sparse .agents --sparse distribution/codex", out)
+        for retired in ("serveros-fleet-v1@serveros-v1", "serveros-fleet-ingress@serveros"):
+            self.assertIn(f"+ claude plugin uninstall {retired}", out)
+        self.assertIn("fleet-latest/serveros-fleet-openai.zip", out)
+        self.assertIn("plugin_asdk_app_6aec2811173881918325a3dc82742d8d", out)
+
+    def test_install_sh_pins_a_release_tag_or_uses_this_checkout(self):
+        self.assertIn("serveros.git#fleet-v1.3.2", self._dry_run("--version", "1.3.2"))
+        local = self._dry_run("--local")
+        self.assertIn(f"+ claude plugin marketplace add {ROOT}\n", local)
+        self.assertIn(f"+ codex plugin marketplace add {ROOT}\n", local)
 
     def test_no_installer_handles_a_credential(self):
         for name in ("install.sh", "install.ps1"):

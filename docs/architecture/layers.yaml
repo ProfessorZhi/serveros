@@ -51,7 +51,8 @@ directories:
   plugin: L3         # 设备侧插件组合：bundle.yaml + profiles/<profile>.yaml
   skills: L3         # 设备侧 serveros skill 源
   plugins: L4        # 生成好的可安装插件，见下方 `plugins`
-  .claude-plugin: L4 # 仓库根 marketplace 清单
+  .claude-plugin: L4 # 仓库根 = Claude Code 的 serveros-fleet marketplace（distribution/build.py 生成）
+  .agents: L4        # 仓库根 = Codex 的 serveros-fleet marketplace（只提交 plugins/marketplace.json）
   distribution: L4   # 指挥侧插件的多客户端分发：channels.yaml + claude-code/ codex/ openai/（由共享源生成）
   context: product
   intake: product

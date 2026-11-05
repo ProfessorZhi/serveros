@@ -9,7 +9,10 @@
 #   serveros-core-lite-windows-x64.zip     the Windows collector + status builder (MSVC, static)
 #
 # Two releases: `fleet-v<ver>` is created once per version and never replaced;
-# `fleet-latest` is replaced on every run.
+# `fleet-latest` is replaced on every run and also carries unversioned
+# `serveros-fleet-openai.zip` / `serveros-fleet-mcp.zip`, whose links never change.
+# Claude Code and Codex CLI do not need these zips: they install and update from
+# the repository root, which is the `serveros-fleet` marketplace.
 #
 # On a pull request the same assets are built and kept as workflow artifacts,
 # so a broken package is caught before it can be released. Only a push to main
@@ -122,7 +125,9 @@ jobs:
           {
             echo "ServerOS Fleet ${version}, built from \`${GITHUB_SHA}\` (main)."
             echo
-            echo "**Install or update on a machine** (Claude Code, Codex CLI): \`bash install.sh\` or \`install.ps1\` — needs \`gh\` signed in."
+            echo "**Claude Code / Codex CLI** install and update from GitHub (the repository root is the \`serveros-fleet\` marketplace): run \`install.sh\` / \`install.ps1\` once; later \`claude plugin marketplace update serveros-fleet && claude plugin update serveros-fleet@serveros-fleet\`, \`codex plugin marketplace upgrade serveros-fleet && codex plugin add serveros-fleet@serveros-fleet\`."
+            echo
+            echo "**ChatGPT web + Codex desktop**: upload the openai zip on the plugin page. Always-current link: https://github.com/ProfessorZhi/serveros/releases/download/fleet-latest/serveros-fleet-openai.zip"
             echo
             echo "| file | for |"
             echo "|---|---|"
@@ -143,6 +148,12 @@ jobs:
             gh release create "fleet-v${version}" dist/* --target "$GITHUB_SHA" \
               --title "ServerOS Fleet ${version}" --notes-file notes.md --latest=false
           fi
+          # fleet-latest also carries unversioned copies, so the download link
+          # for the hand-uploaded packages never changes between releases.
+          mkdir latest
+          cp dist/* latest/
+          cp "dist/serveros-fleet-openai-v${version}.zip" latest/serveros-fleet-openai.zip
+          cp "dist/serveros-fleet-mcp-v${version}.zip" latest/serveros-fleet-mcp.zip
           gh release delete fleet-latest --cleanup-tag --yes || true
-          gh release create fleet-latest dist/* --target "$GITHUB_SHA" \
+          gh release create fleet-latest latest/* --target "$GITHUB_SHA" \
             --title "ServerOS Fleet ${version} (latest main)" --notes-file notes.md --latest
