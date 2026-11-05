@@ -476,6 +476,9 @@ class FleetConfig:
     work: "WorkBinding | None" = None
     #: This device's own Core-Lite status file, or None.
     core_lite: CoreLiteBinding | None = None
+    #: This device's own versions record (`fleet_mcp/device_versions.py`).
+    #: None means the place the update tools write for this account.
+    device_versions_path: Path | None = None
     registry_path: Path | None = None
     #: Which OS account on this device is the device's OWN — the one the bare
     #: runtime tag belongs to. It is authored by the operator, never inferred:
@@ -1366,6 +1369,10 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
 
     registry_raw = raw.get("registry_path")
     registry_path = Path(_expand(registry_raw)) if registry_raw else None
+    versions_raw = raw.get("device_versions_path")
+    device_versions_path = Path(_expand(versions_raw)) if versions_raw else None
+    if device_versions_path is not None and not device_versions_path.is_absolute():
+        raise refuse(BAD_REQUEST, "device_versions_path must be absolute")
 
     try:
         return FleetConfig(
@@ -1379,6 +1386,7 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
             inbox=inbox,
             work=work,
             core_lite=core_lite,
+            device_versions_path=device_versions_path,
             registry_path=registry_path,
             device_default_account=device_default_account,
         )

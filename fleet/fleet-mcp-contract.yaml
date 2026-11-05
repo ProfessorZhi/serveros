@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-10
+tool_surface_revision: fleet-mcp-11
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -425,6 +425,18 @@ tools:
       fleet:send. It only proposes: accepting, prioritising, numbering and
       closing stay with the owner, and no verb on this surface does any of them.
 
+  fleet_device_versions:
+    verb: read
+    answers: >-
+      per device, what its last in-place update recorded: serveros commit, core
+      plugin and version, ability family profile and revision, Core-Lite
+      collector version, commander plugin (hub only)
+    answered_by: >-
+      the device itself over the signed `GET /v1/device/versions` node route, or
+      this hub's own record for its own device; projected to those fields only
+    authorization: >-
+      fleet:read. `NOT_RECORDED` when no update has run on a device yet.
+
   fleet_monitor_status:
     verb: read
     answers: >-
@@ -740,7 +752,7 @@ native_mirror:
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 50
+  served_total: 51
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.
@@ -810,6 +822,9 @@ node_transport:
     # its OWN configuration, never from the request. A caller that could name
     # a path or a command could make a monitoring surface read the machine.
     - 'GET /v1/core/status'
+    # What the device runs, as its last update recorded it. Named and
+    # parameterless like the Core route, and signed over the caller's nonce.
+    - 'GET /v1/device/versions'
   route_set: closed
   declared_in: fleet_mcp/node_protocol.py#ROUTES
   rule: >-

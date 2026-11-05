@@ -108,6 +108,10 @@ ROUTES = (
     # the output" forward: a caller that could name a path or a command would be
     # able to make a monitoring surface read the machine for it.
     "GET /v1/core/status",
+    # What this device runs, as its last in-place update recorded it. Named and
+    # parameterless for the same reason as the Core route above, and signed the
+    # same way: the connector reads its own owner-fixed record and projects it.
+    "GET /v1/device/versions",
 )
 
 

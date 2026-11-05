@@ -196,6 +196,7 @@ class NodeSignature(unittest.TestCase):
             "GET /v1/runs/{run_id}",
             "POST /v1/native/call",
             "GET /v1/core/status",
+            "GET /v1/device/versions",
         ))
 
 
@@ -376,7 +377,7 @@ class HttpTransport(_HttpHarness):
         tools_out = payload["result"]["tools"]
         # The served surface is the hand-written Fleet tools PLUS the 31
         # inherited CloudCLI verbs — one MCP surface, discoverable whole.
-        self.assertEqual(len(tools_out), 50)
+        self.assertEqual(len(tools_out), 51)
         names = {tool["name"] for tool in tools_out}
         self.assertIn("fleet_list_devices", names)
         writes = [t["name"] for t in tools_out if not t["annotations"]["readOnlyHint"]]
@@ -640,7 +641,7 @@ class OAuthFlow(_HttpHarness):
             token=payload["access_token"],
         )
         self.assertEqual(status, 200)
-        self.assertEqual(len(body["result"]["tools"]), 50)  # 17 + 31 + manifest + capability
+        self.assertEqual(len(body["result"]["tools"]), 51)  # 18 + 31 + manifest + capability
 
     def test_a_code_is_single_use(self):
         status, headers, _ = self._approve()

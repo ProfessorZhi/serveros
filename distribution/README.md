@@ -138,3 +138,9 @@ now runs to `device-versions.json` (`~/.local/state/serveros/` or
 `%LOCALAPPDATA%\ServerOS\state\`). Without `--apply` / `-Apply` both only print.
 They are meant to be run by whoever can reach the device, a person or an agent
 session on it; the hub never pushes an install.
+
+The hub reads every device's record with the `fleet_device_versions` tool: a
+device on the node channel answers the signed `GET /v1/device/versions` route,
+the hub's own device is read locally. More than one entry in
+`distinct_serveros_commits` means a device is behind; `NOT_RECORDED` means no
+update has run there yet.

@@ -260,6 +260,10 @@ class NodeConfig:
     # named constant with no parameters rather than a "run this and return the
     # output" forward.
     core_snapshot_path: Path | None = None
+    # Where the update tools record what this device runs
+    # (`fleet_mcp/device_versions.py`). Owner-fixed like the Core path; unset
+    # means the place those tools write for this account.
+    device_versions_path: Path | None = None
     connect_timeout: float = 5.0
     read_timeout: float = 45.0
     # Native session ids or full `device:<id>|<provider>|<id>` refs. Empty is
@@ -653,6 +657,19 @@ def _core_snapshot_path(value: Any) -> Path | None:
     return expanded
 
 
+def _owner_fixed_path(value: Any, field: str) -> Path | None:
+    """An absolute, owner-chosen path from this file, or `None` when unset."""
+    if value is None or not str(value).strip():
+        return None
+    expanded = Path(str(value).strip()).expanduser()
+    if not expanded.is_absolute():
+        raise FleetRefusal(
+            "BAD_REQUEST",
+            f"{field} must be absolute; a relative path resolves against the "
+            f"connector's working directory, which the operator did not choose.")
+    return expanded
+
+
 def _runtime_tag(value: Any) -> str:
     """The runtime this connector serves, validated by the addressing authority.
 
@@ -774,6 +791,8 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         # the connector happened to be started in, which is a path the operator
         # did not choose and cannot read off their own file.
         core_snapshot_path=_core_snapshot_path(raw.get("core_snapshot_path")),
+        device_versions_path=_owner_fixed_path(raw.get("device_versions_path"),
+                                               "device_versions_path"),
         notes=str(raw.get("notes") or ""),
         allow_all_sessions_for_owner=_owner_floors(raw.get("allow_all_sessions_for_owner")),
     )
@@ -943,9 +962,24 @@ class Connector:
             return 200, self._run(parts[2], args)
         if parts == ["v1", "core", "status"]:
             return 200, self._core_status()
+        if parts == ["v1", "device", "versions"]:
+            return 200, self._device_versions()
         if parts == ["v1", "native", "call"]:
             return 200, self._native_call(payload)
         return 404, error_payload("UNKNOWN_ROUTE", f"{method} {path} is not routed")
+
+    def _device_versions(self) -> dict[str, Any]:
+        """What this device runs, as its last update recorded it.
+
+        Named and parameterless like `/v1/core/status`: the path comes from
+        this connector's own configuration (or the update tools' default for
+        this account), never from the request, and only the reviewed fields of
+        the record leave this machine.
+        """
+        from .. import device_versions
+
+        path = self.config.device_versions_path or device_versions.default_path()
+        return device_versions.read(path, self.config.device_ref)
 
     def _core_status(self) -> dict[str, Any]:
         """This machine's Core-Lite status, read from the owner's own file.
@@ -1554,7 +1588,10 @@ class _Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
             status, payload = 500, error_payload("INTERNAL", f"{type(exc).__name__}: {exc}")
-        is_core = split_path_and_query(self.path or "")[0] == "/v1/core/status"
+        # Both read-only answers that describe this machine are signed over the
+        # caller's nonce, so neither can be supplied by something else on the URL.
+        is_core = split_path_and_query(self.path or "")[0] in ("/v1/core/status",
+                                                                "/v1/device/versions")
         self._respond(status, payload, sign_core=is_core)
 
     do_GET = do_POST = _handle

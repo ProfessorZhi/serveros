@@ -299,10 +299,10 @@ class FleetSurfaceIsUnchangedTest(unittest.TestCase):
         # Core-lite remains an optional output block, without a new tool.
         # V6 adds the project-create and project-delete tools; V8 adds
         # `fleet_inbox`: 17 + 31 + 2 (fleet-mcp-10).
-        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-10")
-        self.assertEqual(len(fleet_tools.TOOLS), 17)
+        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-11")
+        self.assertEqual(len(fleet_tools.TOOLS), 18)
         self.assertEqual(len(fleet_tools.NATIVE_MIRROR_TOOLS), 31)
-        self.assertEqual(len(fleet_tools.SERVED_TOOLS), 50)
+        self.assertEqual(len(fleet_tools.SERVED_TOOLS), 51)
         self.assertNotIn("core_lite_status", [t.name for t in fleet_tools.SERVED_TOOLS])
 
     def test_the_new_reader_is_not_reachable_as_a_tool(self):
