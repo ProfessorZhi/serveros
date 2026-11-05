@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "serveros-fleet-v1": {
+    "serveros-fleet": {
       "type": "http",
       "url": "https://fleet-v1.professorzhi.fun/mcp",
       "oauth": {

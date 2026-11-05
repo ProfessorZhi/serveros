@@ -1,0 +1,131 @@
+# The downloadable ServerOS Fleet release: one rolling `fleet-latest` GitHub
+# Release, rebuilt from main on every merge that touches what it carries.
+#
+#   serveros-fleet-openai-v<ver>.zip       ChatGPT: upload this file as the plugin
+#   serveros-fleet-codex-v<ver>.zip        Codex: unzip, then `codex plugin marketplace add <dir>`
+#   serveros-fleet-claude-code-v<ver>.zip  Claude Code (or `distribution/build.py install`)
+#   serveros-core-lite-windows-x64.zip        the Windows collector + status builder (MSVC, static)
+#
+# On a pull request the same assets are built and kept as workflow artifacts,
+# so a broken package is caught before it can be released. Only a push to main
+# (or a manual run) replaces the release.
+name: fleet-release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "distribution/**"
+      - "integrations/fleet-v1-first-install/plugin/**"
+      - "native/node-core/**"
+      - ".github/workflows/fleet-release.yml"
+  pull_request:
+    paths:
+      - "distribution/**"
+      - "integrations/fleet-v1-first-install/plugin/**"
+      - "native/node-core/**"
+      - ".github/workflows/fleet-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fleet-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugins:
+    name: Client plugin packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python3 -m pip install --disable-pip-version-check 'PyYAML==6.0.2'
+      - name: Every client tree matches the shared source
+        run: python3 distribution/build.py check
+      - name: Package the three clients
+        run: |
+          for client in openai codex claude-code; do
+            python3 distribution/build.py zip --client "$client" --out dist
+          done
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugins
+          path: dist/*.zip
+          if-no-files-found: error
+
+  windows-collector:
+    name: Windows collector package
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with MSVC
+        shell: pwsh
+        run: |
+          cmake -S native/node-core/core-lite/windows -B build-cl -A x64
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+          cmake --build build-cl --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+      - name: Package and smoke-run what was packaged
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pkg, dist | Out-Null
+          Copy-Item build-cl/Release/serveros-node-resource-snapshot.exe, build-cl/Release/core-lite-status.exe pkg/
+          "commit $env:GITHUB_SHA" | Set-Content pkg/SOURCE.txt
+          Compress-Archive -Path pkg/* -DestinationPath dist/serveros-core-lite-windows-x64.zip
+          Expand-Archive dist/serveros-core-lite-windows-x64.zip -DestinationPath smoke
+          & smoke/serveros-node-resource-snapshot.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "the packaged collector does not run" }
+          & smoke/serveros-node-resource-snapshot.exe --compact | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "the packaged collector could not take a snapshot" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-collector
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish fleet-latest
+    if: github.event_name != 'pull_request'
+    needs: [plugins, windows-collector]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Replace the fleet-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(python3 -c "import json;print(json.load(open('integrations/fleet-v1-first-install/plugin/plugin.json'))['version'])")
+          {
+            echo "ServerOS Fleet, built from \`${GITHUB_SHA}\` (main)."
+            echo
+            echo "| file | for |"
+            echo "|---|---|"
+            echo "| \`serveros-fleet-openai-v${version}.zip\` | ChatGPT: upload as the plugin (beside any other) |"
+            echo "| \`serveros-fleet-codex-v${version}.zip\` | Codex: unzip, then \`codex plugin marketplace add <dir>\` |"
+            echo "| \`serveros-fleet-claude-code-v${version}.zip\` | Claude Code (or \`python3 distribution/build.py install --client claude-code\`) |"
+            echo "| \`serveros-core-lite-windows-x64.zip\` | Windows devices: \`distribution/windows/update.ps1 -FromRelease -Apply\` |"
+            echo
+            echo "MCP server: https://fleet-v1.professorzhi.fun/mcp. SHA-256:"
+            echo
+            echo '```'
+            (cd dist && sha256sum *.zip)
+            echo '```'
+          } > notes.md
+          gh release delete fleet-latest --cleanup-tag --yes || true
+          gh release create fleet-latest dist/*.zip --target "$GITHUB_SHA" \
+            --title "ServerOS Fleet ${version} (latest main)" --notes-file notes.md --latest

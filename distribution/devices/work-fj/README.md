@@ -40,4 +40,12 @@ powershell -ExecutionPolicy Bypass -File native\node-core\core-lite\windows\depl
 powershell -ExecutionPolicy Bypass -File fleet_mcp\node\install.ps1 -DeviceRef device:work-fj -CloudCliCredential <anchor>
 ```
 
+## Update in place
+
+```powershell
+powershell -ExecutionPolicy Bypass -File distribution\windows\update.ps1 -Device work-fj                       # dry run
+powershell -ExecutionPolicy Bypass -File distribution\windows\update.ps1 -Device work-fj -FromRelease -Apply  # collector from the fleet-latest Release (needs gh)
+Get-Content "$env:LOCALAPPDATA\ServerOS\state\device-versions.json"
+```
+
 Rollback: rerun `install` with the previous `--ability-rev`; `scripts/release.py rollback` for the node runtime; `systemctl --user disable --now <unit>` for a monitor unit.

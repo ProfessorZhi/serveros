@@ -81,13 +81,20 @@ class Distribution(unittest.TestCase):
                 with self.subTest(client=client, slot=slot["slot"]):
                     self.assertEqual(sha(plugin / slot["shipped_path"]), slot["expected_sha256"])
 
-    def test_the_v1_identity_never_reuses_the_legacy_one(self):
+    def test_the_identity_carries_no_version_and_never_reuses_the_legacy_plugin(self):
         legacy = json.loads((ROOT / "plugins/serveros-fleet-ingress/.claude-plugin/plugin.json").read_text())
         self.assertNotEqual(self.doc["identity"]["plugin"], legacy["name"])
         openai = json.loads((self.plugin_dirs["openai"] / "plugin.json").read_text())
-        self.assertEqual(openai["name"], "serveros-fleet-v1")
+        self.assertEqual(openai["name"], "serveros-fleet")
         self.assertEqual(openai["extensions"]["com.openai"]["interface"]["displayName"],
-                         "ServerOS Fleet V1")
+                         "ServerOS Fleet")
+        self.assertEqual(openai["version"], self.doc["version"])
+        for key in ("plugin", "marketplace", "mcp_server", "display_name"):
+            self.assertNotRegex(self.doc["identity"][key].lower(), r"v\d", key)
+
+    def test_install_removes_the_identity_it_replaces(self):
+        replaced = [r["install_id"] for r in self.doc["identity"]["replaces"]]
+        self.assertIn("serveros-fleet-v1@serveros-v1", replaced)
 
     def test_no_secret_or_client_id_in_any_binding(self):
         for client, plugin in self.plugin_dirs.items():

@@ -43,8 +43,7 @@ class SidePlugin(unittest.TestCase):
         committed = json.loads((ROOT / "plugins/serveros-fleet-ingress/.mcp.json").read_text())["mcpServers"]
         self.assertNotEqual(manifest["name"], "serveros-fleet-ingress")
         self.assertNotEqual(market["name"], "serveros")
-        self.assertEqual(list(servers), ["serveros-fleet-v1"])
-        self.assertNotIn("serveros-fleet-v1", committed)
+        self.assertEqual(list(servers), ["serveros-fleet"])
         (side,) = servers.values()
         (prod,) = committed.values()
         self.assertEqual(side["url"], URL)

@@ -13,7 +13,7 @@
 | 3 monitor · serverosd | basic: resources, anomalies, runtime status (python daemon) |
 | 3 monitor · core_lite | native: C++ collector → status.json (0600) every 30 s, observe only |
 | 3 monitor · hub_watch | hub: agent monitor — finds Fleet runs, records outcomes once, Feishu completion / alert / daily cards |
-| 4 commander | `serveros-fleet-v1@serveros-v1` → https://fleet-v1.professorzhi.fun/mcp |
+| 4 commander | `serveros-fleet@serveros-fleet` → https://fleet-v1.professorzhi.fun/mcp |
 
 ## Configuration outside this repository
 
@@ -29,6 +29,14 @@ REV=$(git -C ../ability-management rev-parse origin/main)
 python3 distribution/device_kit.py plan    --device tokyo --ability-rev $REV
 python3 distribution/device_kit.py install --device tokyo --ability-rev $REV --apply
 python3 distribution/device_kit.py install --device tokyo --ability-rev $REV --apply --enable   # also enables the units
+```
+
+## Update in place
+
+```bash
+python3 distribution/device_kit.py update   --device tokyo --data-root $DATA_ROOT            # dry run
+python3 distribution/device_kit.py update   --device tokyo --data-root $DATA_ROOT --apply
+python3 distribution/device_kit.py versions --device tokyo
 ```
 
 Rollback: rerun `install` with the previous `--ability-rev`; `scripts/release.py rollback` for the node runtime; `systemctl --user disable --now <unit>` for a monitor unit.

@@ -31,22 +31,27 @@ shared:
   privacy: integrations/fleet-v1-first-install/plugin/PRIVACY.md
 
 identity:
-  plugin: serveros-fleet-v1
-  marketplace: serveros-v1
-  mcp_server: serveros-fleet-v1
-  display_name: ServerOS Fleet V1
+  # The name a client shows. No version in it: the version is the manifest's
+  # own `version` field, which every client displays beside the name.
+  plugin: serveros-fleet
+  marketplace: serveros-fleet
+  mcp_server: serveros-fleet
+  display_name: ServerOS Fleet
+  # Identities this one replaces in place. `build.py install` removes each.
+  replaces:
+    - install_id: serveros-fleet-v1@serveros-v1
+      marketplace: serveros-v1
 
 clients:
   claude-code:
     tree: distribution/claude-code
-    install_id: serveros-fleet-v1@serveros-v1
+    install_id: serveros-fleet@serveros-fleet
   codex:
     tree: distribution/codex
-    install_id: serveros-fleet-v1@serveros-v1
+    install_id: serveros-fleet@serveros-fleet
   openai:
     tree: distribution/openai
-    # Uploaded to ChatGPT as a NEW plugin beside "ServerOS Fleet Legacy 1.0.0",
-    # which is never replaced, uninstalled or edited from here. The plugin id is
-    # assigned by Plugin Creator on first upload; record it here once known.
+    # Uploaded to ChatGPT as the plugin. The plugin id is assigned by Plugin
+    # Creator on first upload; record it here once known, so later uploads
+    # replace that plugin rather than adding a second one.
     plugin_id: null
-    coexists_with: ServerOS Fleet Legacy 1.0.0

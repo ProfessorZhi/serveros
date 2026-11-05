@@ -1,4 +1,4 @@
-# ServerOS Fleet V1 — client distribution
+# ServerOS Fleet — client distribution
 
 **One Fleet Core, one shared source, one adapter per client, one version.**
 
@@ -6,25 +6,27 @@
 |---|---|
 | Fleet Core (the MCP server) | `fleet_mcp/`, served at `https://fleet-v1.professorzhi.fun/mcp` (Tokyo :3412, Cloudflare Tunnel) |
 | Shared source | `integrations/fleet-v1-first-install/plugin/` — 13 Skills, `assets/composerIcon.png` + `assets/logo.png` (pinned in `brand-assets.lock.json`), the portable manifest (its `version` is the release version), README, PRIVACY |
-| Release manifest | `distribution/channels.yaml` — server URL, the V1 identity, one entry per client |
+| Release manifest | `distribution/channels.yaml` — server URL, the Fleet identity, one entry per client |
 | Client trees (generated, committed) | `claude-code/`, `codex/`, `openai/` |
 | Build / check / package / install | `python3 distribution/build.py build|check|zip|install` |
 
 No client tree is edited by hand. Change a Skill, an asset or the version in the
 shared source, run `build`, commit both. CI runs `check` and fails if any tree is
 stale. Every client gets the same Skills byte for byte, the same icons, the same
-MCP server (`serveros-fleet-v1` → the URL above) and the same version.
+MCP server (`serveros-fleet` → the URL above) and the same version.
 
-The V1 identity is `serveros-fleet-v1` everywhere. It never reuses the Legacy
-plugin's name, so V1 is always installed **beside** Legacy, never over it.
+The identity is `serveros-fleet` everywhere and the client shows it as
+**ServerOS Fleet**, with the version from the manifest beside it; no name carries
+a version. It replaces the earlier `serveros-fleet@serveros-fleet` in place:
+`build.py install` removes that one first.
 
 ## Claude Code
 
 | | |
 |---|---|
-| install / upgrade | `python3 distribution/build.py install --client claude-code` (replaces only `serveros-fleet-v1@serveros-v1`) |
-| verify | `claude plugin list` shows `serveros-fleet-v1@serveros-v1` at the version above; a new session lists the `serveros-fleet-v1` tools and 13 Skills |
-| uninstall | `claude plugin uninstall serveros-fleet-v1@serveros-v1 && claude plugin marketplace remove serveros-v1` |
+| install / upgrade | `python3 distribution/build.py install --client claude-code` (replaces only `serveros-fleet@serveros-fleet`) |
+| verify | `claude plugin list` shows `serveros-fleet@serveros-fleet` at the version above; a new session lists the `serveros-fleet` tools and 13 Skills |
+| uninstall | `claude plugin uninstall serveros-fleet@serveros-fleet && claude plugin marketplace remove serveros-fleet` |
 | rollback | `git checkout <previous tag> -- distribution/claude-code && python3 distribution/build.py install --client claude-code` |
 
 ## Codex
@@ -34,25 +36,25 @@ one plugin (`.codex-plugin/plugin.json`, `.codex-mcp.json`, Skills, assets).
 
 | | |
 |---|---|
-| install / upgrade | `codex plugin marketplace add <repo>/distribution/codex`, then add `serveros-fleet-v1` from the `serveros-v1` marketplace |
-| verify | the plugin is listed at the version above; `/mcp` shows `serveros-fleet-v1`; OAuth sign-in opens on first use |
-| uninstall | remove the plugin, then the `serveros-v1` marketplace |
+| install / upgrade | `codex plugin marketplace add <repo>/distribution/codex`, then add `serveros-fleet` from the `serveros-fleet` marketplace |
+| verify | the plugin is listed at the version above; `/mcp` shows `serveros-fleet`; OAuth sign-in opens on first use |
+| uninstall | remove the plugin, then the `serveros-fleet` marketplace |
 
 Codex discovers OAuth from the server; the binding carries only the URL.
 
 ## ChatGPT
 
 The tree is the package source for ChatGPT's plugin upload: `plugin.json`
-(agent-plugins schema, `com.openai.interface` with display name **ServerOS Fleet
-V1** and both icons), `mcp.json` (streamable-HTTP, OAuth with dynamic client
+(agent-plugins schema, `com.openai.interface` with display name **ServerOS Fleet**,
+the manifest version and both icons), `mcp.json` (streamable-HTTP, OAuth with dynamic client
 registration — no client id, no secret), Skills, assets, README, PRIVACY.
 
 | | |
 |---|---|
-| package | `python3 distribution/build.py zip --client openai --out dist/` → `serveros-fleet-v1-openai-v<version>.zip` (reproducible; the sha256 is printed) |
-| install | upload the zip as a **new** plugin. Do not replace, uninstall or edit **ServerOS Fleet Legacy 1.0.0**; it stays as it is |
+| package | `python3 distribution/build.py zip --client openai --out dist/` → `serveros-fleet-openai-v<version>.zip` (reproducible; the sha256 is printed) |
+| install | upload the zip as the plugin; once Plugin Creator assigns an id, record it as `clients.openai.plugin_id` so later uploads replace it. The retired **ServerOS Fleet Legacy 1.0.0** plugin can be removed after this one signs in |
 | after first upload | record the plugin id Plugin Creator assigns in `channels.yaml` → `clients.openai.plugin_id`; later versions update that same id |
-| verify | the connector signs in to the URL above and lists the Fleet V1 tools; Legacy still works |
+| verify | the plugin shows as **ServerOS Fleet** with its icon and version; it signs in to the URL above and lists the Fleet tools |
 | rollback | upload the previous version's zip to the same plugin id |
 
 ## Releasing a new version
@@ -83,7 +85,7 @@ checked in CI by `device_kit.py check`):
 | 3 monitor · native | core-lite C++ collector → status file (Linux: systemd timer, 30 s; Windows: scheduled task, 1 min) | ✓ | ✓ | ✓ Windows collector (Win32) |
 | 3 monitor · link | node connector → hub | — | ✓ | ✓ |
 | 3 monitor · hub | agent monitor (`fleet-hub-watch`): Fleet run outcomes, completion / alert / daily cards to Feishu | ✓ | — | — |
-| 4 commander | `serveros-fleet-v1@serveros-v1` | ✓ | — | — |
+| 4 commander | `serveros-fleet@serveros-fleet` | ✓ | — | — |
 
 ```bash
 REV=$(git -C ../ability-management rev-parse origin/main)
@@ -105,3 +107,34 @@ PowerShell to run on the device.
 Add a device: one entry in `devices.yaml` (and a core-lite profile in
 `native/node-core/core-lite/profiles/` whose `node` is its device ref), then
 `device_kit.py build` and commit.
+
+# Downloads: the `fleet-latest` Release
+
+Every merge to main that touches the plugins, the device kits or the native
+collector rebuilds one rolling GitHub Release, **`fleet-latest`**
+(`.github/workflows/fleet-release.yml`). On a pull request the same packages
+are built as workflow artifacts, so a broken package fails before release.
+
+| asset | use |
+|---|---|
+| `serveros-fleet-openai-v<ver>.zip` | ChatGPT: upload this file as the plugin |
+| `serveros-fleet-codex-v<ver>.zip` | Codex: unzip, `codex plugin marketplace add <dir>` |
+| `serveros-fleet-claude-code-v<ver>.zip` | Claude Code (or `build.py install --client claude-code`) |
+| `serveros-core-lite-windows-x64.zip` | Windows devices: the collector + status builder, no build tools needed |
+
+The release notes carry the source commit and each file's SHA-256.
+
+# Updating a device in place
+
+| device | command (run on the device, from its serveros checkout) |
+|---|---|
+| Linux (tokyo, dell) | `python3 distribution/device_kit.py update --device <name> --data-root $DATA_ROOT --apply` |
+| Windows (work-fj) | `powershell -ExecutionPolicy Bypass -File distribution\windows\update.ps1 -Device work-fj -FromRelease -Apply` |
+
+Both pull main, re-apply every layer the device declares (core plugin and node
+runtime, ability family at one pinned revision, the collector, the publish
+timer or task), restart only what was already running, and write what the device
+now runs to `device-versions.json` (`~/.local/state/serveros/` or
+`%LOCALAPPDATA%\ServerOS\state\`). Without `--apply` / `-Apply` both only print.
+They are meant to be run by whoever can reach the device, a person or an agent
+session on it; the hub never pushes an install.

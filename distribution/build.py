@@ -100,7 +100,7 @@ def _interface(doc: dict) -> dict:
 # -- the three adapters ---------------------------------------------------------
 
 def generate_claude_code(doc: dict, out: Path) -> None:
-    """The Claude Code adapter: the existing release adapter, under the V1 identity."""
+    """The Claude Code adapter: the existing release adapter, under the Fleet identity."""
     fp = _load("fleet_distribution_fleet_plugin", ROOT / "scripts/fleet_plugin.py")
     if (fp.SIDE_PLUGIN_NAME, fp.SIDE_MARKETPLACE_NAME, fp.SIDE_SERVER_NAME) != (
             doc["identity"]["plugin"], doc["identity"]["marketplace"], doc["identity"]["mcp_server"]):
@@ -132,7 +132,7 @@ def generate_codex(doc: dict, out: Path) -> None:
     _copy_shared(doc, plugin, docs=True)
     _write_json(out / ".agents" / "plugins" / "marketplace.json", {
         "name": ident["marketplace"],
-        "description": "ServerOS Fleet V1 for Codex, generated from the shared source.",
+        "description": "ServerOS Fleet for Codex, generated from the shared source.",
         "interface": {"displayName": ident["display_name"]},
         "plugins": [{
             "name": ident["plugin"],
@@ -146,8 +146,8 @@ def generate_codex(doc: dict, out: Path) -> None:
 def generate_openai(doc: dict, out: Path) -> None:
     """The ChatGPT package source: portable manifest + MCP binding + Skills + assets.
 
-    The manifest is the shared one under the V1 name and display name, so it is
-    a new plugin beside ChatGPT's Legacy plugin, never an update of it.
+    The manifest is the shared one under the Fleet name and display name; the
+    version is the manifest's own, shown by the client beside the name.
     """
     ident = doc["identity"]
     manifest = json.loads(json.dumps(doc["shared_manifest"]))
@@ -264,6 +264,11 @@ def install(client: str) -> int:
             raise DistributionError(f"`claude plugin {' '.join(args)}` failed:\n{proc.stdout}")
         return proc
 
+    # The identities this one replaces go first, so an install is in place:
+    # one Fleet plugin before, one after.
+    for old in doc["identity"].get("replaces") or []:
+        run("uninstall", old["install_id"], ok=False)
+        run("marketplace", "remove", old["marketplace"], ok=False)
     run("uninstall", plugin_id, ok=False)
     run("marketplace", "remove", doc["identity"]["marketplace"], ok=False)
     run("marketplace", "add", str(tree))

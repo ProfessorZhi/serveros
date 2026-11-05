@@ -1,14 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "serveros-v1",
-  "description": "ServerOS Fleet V1, installed beside any other Fleet plugin.",
+  "name": "serveros-fleet",
+  "description": "ServerOS Fleet, the commander plugin for the Fleet hub.",
   "owner": {
     "name": "ProfessorZhi"
   },
   "plugins": [
     {
-      "name": "serveros-fleet-v1",
-      "source": "./plugins/serveros-fleet-v1",
+      "name": "serveros-fleet",
+      "source": "./plugins/serveros-fleet",
       "description": "Reach your ServerOS devices and their Claude Code / Codex sessions through the Fleet MCP server, with the operator Skills that teach how.",
       "version": "1.2.0",
       "category": "productivity"
