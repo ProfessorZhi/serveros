@@ -275,6 +275,7 @@ class CloudCliProvider(DeviceProvider):
         payload = self._call("sessions_list", arguments)
         rows = payload.get("sessions") or []
         summaries: list[SessionSummary] = []
+        other_family: list[str] = []
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -286,7 +287,17 @@ class CloudCliProvider(DeviceProvider):
             namespace = str(family or "claude")
             if self.binding.runtime != "claude":
                 if family is not None and family != self.binding.family:
-                    raise refuse(BAD_SESSION_REF, "listed native family contradicts its binding")
+                    # A gateway can serve more than one agent family and lists
+                    # them together. The binding addresses ONE runtime -- this
+                    # account's Claude -- so another family is not part of the
+                    # question and not this runtime's to hand back. Counting it
+                    # rather than raising on it is the difference between a
+                    # mixed workstation being readable and being unlistable:
+                    # raising on the first foreign row made every machine that
+                    # also runs Codex fail the whole listing the moment its
+                    # connector was given an account-qualified runtime tag.
+                    other_family.append(namespace)
+                    continue
                 namespace = self.binding.runtime
             elif self.binding.multiplex_native_families and namespace not in ("claude", "codex"):
                 raise refuse(BAD_SESSION_REF, "listed native family is not declared by this gateway")
@@ -304,6 +315,12 @@ class CloudCliProvider(DeviceProvider):
                     evidence=evidence,
                 )
             )
+        if other_family and not summaries:
+            # Rows were listed and not one belongs to this runtime's family:
+            # the gateway is answering for somebody else. That is the
+            # substitution this check exists to name, and silence would read as
+            # "this runtime has no sessions".
+            raise refuse(BAD_SESSION_REF, "listed native family contradicts its binding")
         return summaries
 
     def get_session(self, key: SessionKey) -> dict[str, Any]:

@@ -23,6 +23,7 @@ from pathlib import Path
 
 from fleet_mcp.config import ProviderBinding
 from fleet_mcp.errors import (
+    BAD_SESSION_REF,
     INTERNAL,
     PROVIDER_TIMEOUT,
     PROVIDER_UNAUTHORIZED,
@@ -321,3 +322,71 @@ class HealthReadsTheGatewaysOwnIdentification(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def account_provider(client: FakeClient, *, runtime: str = "claude-vince.huang",
+                     family: str = "claude") -> CloudCliProvider:
+    """The same gateway, addressed as ONE account's runtime rather than the base
+    tag. This is what a connector serving `claude-vince.huang` binds."""
+    binding = ProviderBinding(
+        device_ref=DEVICE,
+        kind="cloudcli-mcp-http",
+        endpoint="http://127.0.0.1:3001/mcp",
+        credential_anchor=Path("/nonexistent/pat"),
+        runtime=runtime,
+        account="Vince.Huang",
+        family=family,
+        allow_send=True,
+    )
+    p = CloudCliProvider(binding)
+    p._client = lambda: client  # type: ignore[method-assign]
+    return p
+
+
+CODEX_ROW = {
+    "id": "01a1a598-e790-7c33-9b0a-2c0e5d1f0d11",
+    "title": "codex work",
+    "provider": "codex",
+    "projectId": "44235a69-cba3-4f71-b16a-4052c7d3f241",
+    "lifecycleMode": "per-run",
+    "hostState": "busy",
+    "running": True,
+    "lastActivity": {"relative": "just now", "iso": "2026-10-09T18:02:05.834Z"},
+}
+
+
+class AMixedGatewayAnswersTheRuntimeThatAsked(unittest.TestCase):
+    """One CloudCLI serves Claude and Codex sessions side by side, and it lists
+    them together. A binding that addresses one account's Claude runtime is
+    asking about that runtime's sessions; the other family is not part of the
+    question.
+
+    The regression: the check raised on the FIRST foreign row, so a workstation
+    that also runs Codex became unlistable the moment its connector was given an
+    account-qualified runtime tag -- the very configuration that lets the host
+    tell this account's sessions from another's.
+    """
+
+    def test_another_family_is_not_this_runtimes_session(self):
+        client = FakeClient(responses={"sessions_list": {"sessions": [CODEX_ROW, LIST_ROW]}})
+        rows = account_provider(client).list_sessions(limit=10)
+        self.assertEqual([r.key.native_session_id for r in rows], [SESSION_ID])
+        self.assertEqual(rows[0].key.provider, "claude-vince.huang")
+
+    def test_a_listing_with_nothing_of_this_family_is_still_refused(self):
+        """The substitution the check exists to name: rows came back, and not
+        one of them is this runtime's. Reporting that as "no sessions" would
+        send an operator looking at the wrong machine."""
+        client = FakeClient(responses={"sessions_list": {"sessions": [CODEX_ROW]}})
+        with self.assertRaises(FleetRefusal) as caught:
+            account_provider(client).list_sessions(limit=10)
+        self.assertEqual(caught.exception.code, BAD_SESSION_REF)
+
+    def test_an_empty_gateway_is_empty_rather_than_a_refusal(self):
+        client = FakeClient(responses={"sessions_list": {"sessions": []}})
+        self.assertEqual(account_provider(client).list_sessions(limit=10), [])
+
+    def test_the_base_runtime_still_names_each_family_it_lists(self):
+        client = FakeClient(responses={"sessions_list": {"sessions": [LIST_ROW, CODEX_ROW]}})
+        rows = provider(client).list_sessions(limit=10)
+        self.assertEqual(sorted(r.key.provider for r in rows), ["claude", "codex"])
