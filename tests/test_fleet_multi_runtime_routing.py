@@ -640,11 +640,36 @@ class OneUnreachableRuntimeIsAGapNotAnAbsenceTest(unittest.TestCase):
         self.assertEqual([g["runtime"] for g in got["devices_unreachable"]], [SECOND])
         self.assertEqual(got["runtimes_queried"], [provider_key(DEVICE, SECOND)])
 
-    def test_the_default_does_not_fall_back_to_the_only_runtime_there_is(self):
-        """A machine whose only binding is the second runtime. The default asks
-        for the device's OWN runtime, finds no route, and says so — it does not
-        quietly answer with the runtime that does exist."""
+    def test_the_default_answers_from_the_only_runtime_the_device_has(self):
+        """A machine enrolled ONLY under an account-qualified runtime.
+
+        `The device's own runtime` is what the default asks for, and on this
+        machine that is the second runtime: there is no base-tag binding to
+        mean instead. Refusing to answer made the whole fleet read as offline
+        from every external client — an unasked-for gap on a device that was
+        answering all along.
+
+        What the old reading protected against is kept, one level down: the
+        rows are not the base account's, and every row SAYS whose it is. A
+        substitution would be a row labelled `claude` served by this binding.
+        """
         h = TwoRuntimes(self.tmp, first=False, second=True)
+        got = h.service.list_sessions(h.principal())
+        self.assertEqual(got["devices_unreachable"], [])
+        self.assertEqual(got["runtimes_queried"], [provider_key(DEVICE, SECOND)])
+        self.assertEqual([r["runtime"] for r in got["sessions"]], [SECOND])
+        self.assertEqual([r["binding_runtime"] for r in got["sessions"]], [SECOND])
+
+    def test_the_default_still_does_not_choose_between_named_runtimes(self):
+        """Two non-base bindings and no base one: there is no single own
+        runtime, and the caller has to say which. Guessing here would be the
+        substitution the axis exists to prevent."""
+        h = TwoRuntimes(self.tmp, first=False, second=True)
+        h.config.providers[provider_key(DEVICE, "claude-other")] = ProviderBinding(
+            device_ref=DEVICE, kind="fleet-node",
+            endpoint="http://127.0.0.1:7303",
+            credential_anchor=self.tmp / "other.node-secret",
+            runtime="claude-other", allow_send=True)
         got = h.service.list_sessions(h.principal())
         self.assertEqual(got["sessions"], [])
         self.assertEqual([g["runtime"] for g in got["devices_unreachable"]], ["claude"])

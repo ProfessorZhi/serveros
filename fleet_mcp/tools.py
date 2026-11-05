@@ -349,7 +349,12 @@ TOOLS: tuple[Tool, ...] = (
                 "runtime": _string(
                     "Which runtime on each device to list. Omit, or `base`, for the "
                     "device's own runtime — the behaviour this tool had before a "
-                    "device could serve two. `all` lists every runtime the host "
+                    "device could serve two. A device with exactly one binding "
+                    "answers from that binding, including when it is "
+                    "account-qualified (`claude-<account>`) and no base-tag one "
+                    "exists; a device with several to choose between says so "
+                    "instead of picking one, so name one or ask for `all`. `all` "
+                    "lists every runtime the host "
                     "holds a binding for, one entry under `runtimes_queried` each; "
                     "a specific tag (`claude-fjd`) lists that one. A legal tag with "
                     "no binding behind it is reported under `devices_unreachable` "

@@ -524,10 +524,13 @@ class FleetConfig:
 
     def provider_for(self, device_ref: str,
                      runtime: str = BASE_RUNTIME) -> ProviderBinding | None:
-        """The binding for one runtime on one device, or `None`.
+        """The binding for ONE runtime on one device, or `None`.
 
-        `runtime` defaults to the device's own, so every call site written
-        before a device could serve two means the same thing it meant then.
+        The default is the base tag, and it is a default rather than a
+        resolution: a device may hold only account-qualified bindings, in which
+        case the base tag names nothing. "The device's own runtime" is
+        `FleetService._own_runtime`'s question, and every runtime-implicit read
+        on the served surface asks it there rather than assuming this default.
         """
         return self.providers.get(provider_key(device_ref, runtime))
 

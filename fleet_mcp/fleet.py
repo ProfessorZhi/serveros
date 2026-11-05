@@ -42,7 +42,7 @@ from .monitor_control import ControlError, MonitorControl
 from .workboard import WorkBoard, WorkBoardError
 from . import cloudcli_native, core_lite_local, core_lite_source, runtime_identity
 from .config import (CreateGrant, FleetConfig, OPERATOR_GRANT_VERBS,
-                     provider_key)
+                     ProviderBinding, provider_key)
 from .runtime_identity import BASE_RUNTIME
 from .runtime_create_policy import PolicyError
 from .errors import (
@@ -1100,7 +1100,10 @@ class FleetService:
     # -- devices -----------------------------------------------------------
 
     def _probe(self, device_ref: str) -> tuple[bool, bool, bool, ProviderHealth | None]:
-        provider = self._provider(device_ref)
+        # The device's own runtime, resolved once for every runtime-implicit
+        # read -- see `_own_runtime` for why that is no longer the same as the
+        # base tag.
+        provider = self._provider(device_ref, self._own_runtime(device_ref))
         if provider is None:
             return False, False, False, None
         health = provider.health()
@@ -1238,6 +1241,7 @@ class FleetService:
                 authorized=authorized,
                 is_local=is_local,
             )
+            own_binding = self._binding_for_device(device.device_ref.ref)
             facts.update(
                 {
                     "availability": {
@@ -1271,10 +1275,13 @@ class FleetService:
                                                   or (BASE_RUNTIME,))],
                     "probe": probe,
                     "control": {
-                        "send_allowed_device": bool(
-                            self.config.provider_for(device.device_ref.ref)
-                            and self.config.provider_for(device.device_ref.ref).allow_send
-                        ),
+                        # The DEVICE-wide half of the grant, asked of the
+                        # binding that stands for the device when a caller
+                        # names no runtime -- the one `_probe` measures above.
+                        # Asked of the base tag, this read `false` on a machine
+                        # whose only binding is account-qualified: a grant the
+                        # owner never withdrew, reported as withdrawn.
+                        "send_allowed_device": bool(own_binding and own_binding.allow_send),
                         "send_allowed_sessions": [
                             ref for ref in self.config.policy.send_allow if ref.startswith(device.device_ref.ref + "|")
                         ],
@@ -1333,6 +1340,40 @@ class FleetService:
             return (BASE_RUNTIME, *others)
         return tuple(others)
 
+    def _own_runtime(self, device_ref: str) -> str:
+        """The runtime that stands for a device when a caller names none.
+
+        "The device's own runtime" used to need a definition: the base tag was
+        the only runtime a device could have, so every runtime-implicit read --
+        which runtime to list, which provider to probe, whose binding carries
+        the device-wide send grant -- meant `claude` by construction.
+
+        A machine can now serve several OS accounts and hold ONLY
+        account-qualified bindings (`device:<id>|claude-<account>`), and on
+        such a machine that reading names a binding which does not exist. The
+        result was a fleet that looked offline from every external client: the
+        probe reported `DEVICE_UNOBSERVED`, the send grant `false`, and a
+        session listing returned nothing while a `runtime=all` listing of the
+        same device answered in full.
+
+        The answer is not to guess. A device with exactly ONE binding has one
+        own runtime, and that is a fact about the device rather than a
+        preference about it. A device with several non-base bindings has no
+        single own runtime, so `claude` stays the answer and the gap is
+        reported as the gap it is: the caller has to name a runtime, or ask
+        for `all`.
+        """
+        bound = self._bound_runtimes(device_ref)
+        if not bound or BASE_RUNTIME in bound:
+            return BASE_RUNTIME
+        if len(bound) == 1:
+            return bound[0]
+        return BASE_RUNTIME
+
+    def _binding_for_device(self, device_ref: str) -> ProviderBinding | None:
+        """The binding `_own_runtime` names, built or not."""
+        return self.config.provider_for(device_ref, self._own_runtime(device_ref))
+
     def bound_runtimes(self, device_ref: str) -> tuple[str, ...]:
         """`_bound_runtimes` under the name callers outside this module use.
 
@@ -1350,12 +1391,18 @@ class FleetService:
         so the default is not a new behaviour with a compatibility story; it is
         the old behaviour with a name.
 
+        What that name MEANS is `_own_runtime`'s to decide, not this line's.
+        The two read differently exactly when a device holds one
+        account-qualified binding and no base one: then the device's own
+        runtime is that account's, and asking for the base tag would query a
+        binding nobody wrote.
+
         The selector cannot be a tag: `config.py` refuses a binding whose runtime
         is one, so `all` here is never a machine's second runtime that happens to
         be called `all`.
         """
         if runtime is None or runtime == runtime_identity.SELECTOR_BASE:
-            return (BASE_RUNTIME,)
+            return (self._own_runtime(device_ref),)
         if runtime in (runtime_identity.SELECTOR_ALL, runtime_identity.SELECTOR_ANY):
             return self._bound_runtimes(device_ref)
         return (runtime,)
