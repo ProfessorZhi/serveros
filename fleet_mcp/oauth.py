@@ -761,18 +761,22 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
         requested = scope in (params.get("scope") or "").split()
         ticked = scope in granted if granted is not None else requested
         checked = "checked" if ticked else ""
-        label = {
-            "fleet:read": "Read this fleet — list devices and sessions, and read session history",
-            "fleet:send": "Send messages to sessions the operator has already authorized",
-            "fleet:control": "Stop the run currently in flight in sessions the operator has already authorized",
-            "fleet:create": "Create new sessions on devices the operator has authorized for creation",
-            "fleet:approve": "Approve the tool calls the operator has been asked to answer",
-            "fleet:navigate": "Open a session in a connected browser UI",
-        }.get(scope, scope)
-        note = "" if requested else ' <span class="muted">(not requested by this client)</span>'
+        title, label = {
+            "fleet:read": ("查看", "Read this fleet — list devices and sessions, and read session history"),
+            "fleet:send": ("发送消息", "Send messages to sessions the operator has already authorized"),
+            "fleet:control": ("中断运行", "Stop the run currently in flight in sessions the operator has already authorized"),
+            "fleet:create": ("新建会话", "Create new sessions on devices the operator has authorized for creation"),
+            "fleet:approve": ("批准工具调用", "Approve the tool calls the operator has been asked to answer"),
+            "fleet:navigate": ("打开界面", "Open a session in a connected browser UI"),
+        }.get(scope, (scope, scope))
+        kind = ('<span class="chip read">只读</span>' if scope == "fleet:read"
+                else '<span class="chip write">可写</span>')
+        note = "" if requested else '<span class="chip off">客户端未请求</span>'
         rows.append(
             f'<label class="scope"><input type="checkbox" name="scope" value="{html.escape(scope)}" '
-            f'{checked}> <b>{html.escape(scope)}</b><br><span>{html.escape(label)}</span>{note}</label>'
+            f'{checked}><span class="scope-body"><span class="scope-head"><b>{html.escape(title)}</b>'
+            f'<code>{html.escape(scope)}</code>{kind}{note}</span>'
+            f'<span class="scope-desc">{html.escape(label)}</span></span></label>'
         )
     # The requested scope is carried in its own field, `requested_scope`, and
     # never under the name `scope`. That separation is the whole of the fix for
@@ -830,45 +834,48 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
             # would be the friction this design exists to remove: three clients
             # authorize in a row, and only the first one types anything.
             credentials_html = (
-                f'<p class="muted">Signed in as <b>{html.escape(login_user)}</b>. '
-                f'Continue to approve this client, or '
-                f'<a href="{html.escape(authorize_path)}/logout">sign out</a>.</p>'
-                f'<p><label class="scope"><input type="checkbox" name="continue" value="yes" checked> '
-                f'<b>Continue as {html.escape(login_user)}</b></label></p>'
+                f'<div class="signed"><span class="avatar">{html.escape(login_user[:1].upper())}</span>'
+                f'<span>Signed in as <b>{html.escape(login_user)}</b><br>'
+                f'<span class="muted">已登录，可直接批准 · '
+                f'<a href="{html.escape(authorize_path)}/logout">退出登录</a></span></span></div>'
+                f'<label class="check"><input type="checkbox" name="continue" value="yes" checked> '
+                f'<span>Continue as <b>{html.escape(login_user)}</b></span></label>'
             )
         else:
             totp_html = ""
             if totp_required:
                 totp_html = (
-                    '<p><label for="totp"><b>One-time code</b></label><br>'
-                    '<span class="muted">The six digits from your authenticator app.</span></p>'
+                    '<div class="field"><label for="totp">一次性验证码 <span class="muted">One-time code</span></label>'
                     '<input type="text" id="totp" name="totp" inputmode="numeric" '
-                    'autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>'
+                    'autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" '
+                    'placeholder="验证器里的 6 位数字" required></div>'
                 )
             credentials_html = (
-                '<p><label for="username"><b>Username</b></label></p>'
-                '<input type="text" id="username" name="username" autocomplete="username" required>'
-                '<p><label for="password"><b>Password</b></label></p>'
+                '<div class="field"><label for="username">用户名 <span class="muted">Username</span></label>'
+                '<input type="text" id="username" name="username" autocomplete="username" required></div>'
+                '<div class="field"><label for="password">密码 <span class="muted">Password</span></label>'
                 '<input type="password" id="password" name="password" '
-                'autocomplete="current-password" required>'
+                'autocomplete="current-password" required></div>'
                 + totp_html
             )
     else:
         credentials_html = (
-            '<p><label for="pat"><b>Owner access token</b></label><br>'
-            '<span class="muted">Required. This is the token at the configured '
-            '<code>pat_anchor</code> on the machine running this server. It is checked '
-            'here and never stored, logged or forwarded.</span></p>'
+            '<div class="field"><label for="pat">管理员令牌 <span class="muted">Owner access token</span></label>'
             '<input type="password" id="pat" name="owner_token" autocomplete="off" required>'
+            '<span class="hint">The token at the configured <code>pat_anchor</code> on the machine '
+            'running this server. Checked here; never stored, logged or forwarded.</span></div>'
         )
 
     if interactive:
         form_html = (
             f'<form method="post" action="{html.escape(authorize_path)}">\n'
             f' {hidden}\n'
-            f' {"".join(rows)}\n'
+            f' <h2>授予的权限 <span class="muted">Permissions</span></h2>\n'
+            f' <div class="scopes">{"".join(rows)}</div>\n'
+            f' <h2>确认身份 <span class="muted">Sign in</span></h2>\n'
             f' {credentials_html}\n'
-            f' <button type="submit">Approve</button>\n'
+            f' <button type="submit">批准授权 · Approve</button>\n'
+            f' <p class="fine">只授予勾选的权限 · Only the boxes you tick are granted.</p>\n'
             f'</form>'
         )
     else:
@@ -880,34 +887,74 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
             'least one scope. Start the sign-in from the client and it will open '
             'this page with those values.</p>'
         )
+    host = urlparse(client.redirect_uris[0]).netloc if client.redirect_uris else ""
     return f"""<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<title>Authorize {html.escape(client.client_name)} · {html.escape(SERVER_NAME)}</title>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>Authorize {html.escape(client.client_name)} · ServerOS Fleet</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <style>
- body{{font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;max-width:40rem;margin:3rem auto;padding:0 1.25rem;color:#1b1b1f}}
- h1{{font-size:1.25rem}} .muted{{color:#5b5b66}} .error{{color:#a3232b;font-weight:600}}
- .scope{{display:block;border:1px solid #d8d8de;border-radius:8px;padding:.75rem 1rem;margin:.5rem 0}}
- input[type=password],input[type=text]{{width:100%;padding:.6rem;border:1px solid #c8c8d0;border-radius:6px;font:inherit}}
- button{{margin-top:1.25rem;padding:.7rem 1.4rem;border:0;border-radius:8px;background:#1b1b1f;color:#fff;font:inherit;cursor:pointer}}
- dl{{display:grid;grid-template-columns:auto 1fr;gap:.25rem 1rem;font-size:.9rem}}
- dt{{color:#5b5b66}} dd{{margin:0;word-break:break-all}}
-</style></head><body>
-<h1>Authorize <b>{html.escape(client.client_name)}</b> to use {html.escape(SERVER_NAME)}</h1>
+ :root{{--bg:#f4f5f8;--card:#fff;--ink:#16181d;--muted:#667085;--line:#e4e7ec;--soft:#f8f9fb;
+   --brand:#315c92;--brand-ink:#fff;--ok:#067647;--ok-bg:#ecfdf3;--warn:#b54708;--warn-bg:#fffaeb;--err:#b42318;--err-bg:#fef3f2}}
+ @media (prefers-color-scheme:dark){{:root{{--bg:#0f1115;--card:#171a21;--ink:#e8eaf0;--muted:#98a2b3;--line:#2a2f3a;
+   --soft:#1d212a;--brand:#6c9ad6;--brand-ink:#0f1115;--ok:#47cd89;--ok-bg:#0b2a1c;--warn:#fdb022;--warn-bg:#2b2111;--err:#f97066;--err-bg:#2d1513}}}}
+ *{{box-sizing:border-box}}
+ body{{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}}
+ main{{max-width:34rem;margin:2.5rem auto;padding:0 1rem}}
+ .card{{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:0 1px 2px rgba(16,24,40,.04),0 8px 24px rgba(16,24,40,.06);padding:1.75rem}}
+ .brand{{display:flex;align-items:center;gap:.6rem;margin-bottom:1.25rem;color:var(--muted);font-size:.85rem;font-weight:600;letter-spacing:.02em}}
+ .mark{{width:32px;height:32px;border-radius:9px;background:var(--brand);display:grid;place-items:center}}
+ h1{{font-size:1.3rem;line-height:1.35;margin:0 0 .35rem}}
+ h2{{font-size:.95rem;margin:1.5rem 0 .6rem}}
+ .muted{{color:var(--muted);font-weight:400}}
+ .lead{{color:var(--muted);margin:0 0 1rem}}
+ .client{{display:grid;grid-template-columns:auto 1fr;gap:.3rem 1rem;background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:.8rem 1rem;font-size:.88rem}}
+ .client dt{{color:var(--muted)}} .client dd{{margin:0;word-break:break-all}}
+ .scopes{{display:grid;gap:.5rem}}
+ .scope{{display:flex;gap:.75rem;align-items:flex-start;border:1px solid var(--line);border-radius:12px;padding:.75rem .9rem;cursor:pointer;background:var(--card)}}
+ .scope:has(input:checked){{border-color:var(--brand);background:var(--soft)}}
+ .scope input,.check input{{margin-top:.25rem;width:1.05rem;height:1.05rem;accent-color:var(--brand);flex:none}}
+ .scope-body{{display:grid;gap:.15rem}} .scope-head{{display:flex;flex-wrap:wrap;align-items:center;gap:.4rem}}
+ .scope-head code{{font-size:.78rem;color:var(--muted)}}
+ .scope-desc{{color:var(--muted);font-size:.86rem}}
+ .chip{{font-size:.72rem;font-weight:600;border-radius:999px;padding:.05rem .5rem}}
+ .chip.read{{color:var(--ok);background:var(--ok-bg)}} .chip.write{{color:var(--warn);background:var(--warn-bg)}}
+ .chip.off{{color:var(--muted);background:var(--soft);border:1px solid var(--line)}}
+ .field{{display:grid;gap:.35rem;margin:.75rem 0}} .field label{{font-weight:600;font-size:.9rem}}
+ .hint{{color:var(--muted);font-size:.8rem}}
+ input[type=password],input[type=text]{{width:100%;padding:.65rem .8rem;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);font:inherit}}
+ input[type=password]:focus,input[type=text]:focus{{outline:2px solid var(--brand);outline-offset:1px;border-color:transparent}}
+ .signed{{display:flex;gap:.75rem;align-items:center;background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:.75rem .9rem}}
+ .avatar{{width:2rem;height:2rem;border-radius:50%;background:var(--brand);color:var(--brand-ink);display:grid;place-items:center;font-weight:700}}
+ .check{{display:flex;gap:.6rem;align-items:flex-start;margin:.75rem 0}}
+ button{{width:100%;margin-top:1.1rem;padding:.8rem 1rem;border:0;border-radius:12px;background:var(--brand);color:var(--brand-ink);font:inherit;font-weight:700;cursor:pointer}}
+ button:hover{{filter:brightness(1.07)}}
+ .fine{{text-align:center;color:var(--muted);font-size:.8rem;margin:.6rem 0 0}}
+ .error{{color:var(--err);background:var(--err-bg);border-radius:10px;padding:.65rem .85rem;font-weight:600}}
+ a{{color:var(--brand)}}
+ footer{{color:var(--muted);font-size:.78rem;margin:1rem .25rem;line-height:1.5}}
+ footer code{{font-size:.75rem}}
+</style></head><body><main>
+<div class="card">
+<div class="brand"><span class="mark"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+<circle cx="6" cy="7" r="2.5" fill="#fff"/><circle cx="18" cy="7" r="2.5" fill="#fff"/><circle cx="12" cy="18" r="2.5" fill="#fff"/>
+<path d="M6 7h12M6 7l6 11M18 7l-6 11" stroke="#fff" stroke-width="1.6" opacity=".8"/></svg></span>ServerOS Fleet</div>
+<h1>授权 <b>{html.escape(client.client_name)}</b> 使用 ServerOS Fleet</h1>
+<p class="lead">Authorize {html.escape(client.client_name)} to use {html.escape(SERVER_NAME)} — the Claude Code / Codex
+sessions enrolled in this fleet. Tokens are issued to <b>this client</b> only.</p>
 {error_html}
-<p class="muted">This client is asking for access to the Claude Code / Codex sessions
-enrolled in this ServerOS fleet. Approving issues tokens to <b>this client</b>.
-Only the boxes you tick below are granted. You can revoke this client later at any
-time: <code>serveros-fleet-mcp --list-clients</code> then
-<code>--revoke-client &lt;id&gt;</code>, or POST a token to <code>/oauth/revoke</code>.
-Revoking makes the client's existing access tokens stop working immediately.</p>
-<dl>
- <dt>Requested</dt><dd>{html.escape(requested_note)}</dd>
- <dt>Redirects to</dt><dd>{html.escape(', '.join(client.redirect_uris))}</dd>
+<dl class="client">
+ <dt>客户端</dt><dd>{html.escape(client.client_name)}</dd>
+ <dt>回调地址</dt><dd>{html.escape(', '.join(client.redirect_uris))}{f' <span class="muted">({html.escape(host)})</span>' if host else ''}</dd>
+ <dt>请求权限</dt><dd>{html.escape(requested_note)}</dd>
 </dl>
 {feishu_html}
 {form_html}
-</body></html>
+</div>
+<footer>可随时撤销 · Revoke any time: <code>serveros-fleet-mcp --list-clients</code> then
+<code>--revoke-client &lt;id&gt;</code>, or POST a token to <code>/oauth/revoke</code>. Revoking stops the
+client's existing tokens immediately.</footer>
+</main></body></html>
 """
 
 
