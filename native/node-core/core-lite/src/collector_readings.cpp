@@ -235,6 +235,16 @@ bool project_rows(const Parsed& block, const char* list_key, bool (*project_row)
         }
         rows.push(projected);
     }
+    if (rows.items().empty()) {
+        // A block with no rows is not a block: the contract has "absent" and
+        // "present with rows", and nothing between them. The Windows collector
+        // meets this on every host -- it can attribute a device counter only to
+        // a kernel block device, and a drive-letter mount is not one, so it
+        // publishes `disk_io` with no rows at all. A reader handed
+        // `{"roles": []}` refuses the whole `storage.readonly` reading as
+        // malformed; omitting the block leaves the filesystems it does have.
+        return false;
+    }
     out = Json::object();
     out.set(out_key, rows);
     return true;
