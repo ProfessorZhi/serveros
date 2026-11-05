@@ -50,8 +50,14 @@ clients:
     tree: distribution/codex
     install_id: serveros-fleet@serveros-fleet
   openai:
+    # ChatGPT (web) and Codex (desktop). Bound to the App registered in the
+    # owner's ChatGPT account, which holds the Fleet connection and its OAuth;
+    # the package declares no server. Uploading it replaces this plugin.
     tree: distribution/openai
-    # Uploaded to ChatGPT as the plugin. The plugin id is assigned by Plugin
-    # Creator on first upload; record it here once known, so later uploads
-    # replace that plugin rather than adding a second one.
-    plugin_id: null
+    plugin_name: dev-6aec2811173881918325a3dc82742d8d
+    plugin_id: plugin_asdk_app_6aec2811173881918325a3dc82742d8d
+    app_id: asdk_app_6aec2811173881918325a3dc82742d8d
+    page: https://chatgpt.com/plugins/plugin_asdk_app_6aec2811173881918325a3dc82742d8d
+  mcp:
+    # Any other MCP agent (DeepSeek Harness, custom agents): server + Skills.
+    tree: distribution/mcp

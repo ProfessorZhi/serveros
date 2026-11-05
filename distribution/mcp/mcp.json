@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "serveros-fleet": {
+      "type": "streamable-http",
+      "url": "https://fleet-v1.professorzhi.fun/mcp",
+      "auth": "oauth2.1 (dynamic client registration; sign in on the Fleet consent page)"
+    }
+  }
+}

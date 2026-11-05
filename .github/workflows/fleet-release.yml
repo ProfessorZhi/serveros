@@ -1,10 +1,15 @@
 # The downloadable ServerOS Fleet release: one rolling `fleet-latest` GitHub
 # Release, rebuilt from main on every merge that touches what it carries.
 #
-#   serveros-fleet-openai-v<ver>.zip       ChatGPT: upload this file as the plugin
-#   serveros-fleet-codex-v<ver>.zip        Codex: unzip, then `codex plugin marketplace add <dir>`
-#   serveros-fleet-claude-code-v<ver>.zip  Claude Code (or `distribution/build.py install`)
-#   serveros-core-lite-windows-x64.zip        the Windows collector + status builder (MSVC, static)
+#   serveros-fleet-openai-v<ver>.zip       ChatGPT web + Codex desktop (bound to the registered App)
+#   serveros-fleet-codex-v<ver>.zip        Codex CLI
+#   serveros-fleet-claude-code-v<ver>.zip  Claude Code
+#   serveros-fleet-mcp-v<ver>.zip          any other MCP agent (mcp.json + skills/)
+#   install.sh / install.ps1               one-command install / update on a machine
+#   serveros-core-lite-windows-x64.zip     the Windows collector + status builder (MSVC, static)
+#
+# Two releases: `fleet-v<ver>` is created once per version and never replaced;
+# `fleet-latest` is replaced on every run.
 #
 # On a pull request the same assets are built and kept as workflow artifacts,
 # so a broken package is caught before it can be released. Only a push to main
@@ -49,14 +54,18 @@ jobs:
         run: python3 distribution/build.py check
       - name: Package the three clients
         run: |
-          for client in openai codex claude-code; do
+          for client in openai codex claude-code mcp; do
             python3 distribution/build.py zip --client "$client" --out dist
           done
+          cp distribution/install/install.sh distribution/install/install.ps1 dist/
           ls -l dist
       - uses: actions/upload-artifact@v4
         with:
           name: plugins
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/install.sh
+            dist/install.ps1
           if-no-files-found: error
 
   windows-collector:
@@ -104,28 +113,36 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Replace the fleet-latest release
+      - name: Publish fleet-v<version> (once) and replace fleet-latest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version=$(python3 -c "import json;print(json.load(open('integrations/fleet-v1-first-install/plugin/plugin.json'))['version'])")
           {
-            echo "ServerOS Fleet, built from \`${GITHUB_SHA}\` (main)."
+            echo "ServerOS Fleet ${version}, built from \`${GITHUB_SHA}\` (main)."
+            echo
+            echo "**Install or update on a machine** (Claude Code, Codex CLI): \`bash install.sh\` or \`install.ps1\` — needs \`gh\` signed in."
             echo
             echo "| file | for |"
             echo "|---|---|"
-            echo "| \`serveros-fleet-openai-v${version}.zip\` | ChatGPT: upload as the plugin |"
-            echo "| \`serveros-fleet-codex-v${version}.zip\` | Codex: unzip, then \`codex plugin marketplace add <dir>\` |"
-            echo "| \`serveros-fleet-claude-code-v${version}.zip\` | Claude Code (or \`python3 distribution/build.py install --client claude-code\`) |"
+            echo "| \`serveros-fleet-openai-v${version}.zip\` | ChatGPT web + Codex desktop: upload on the ServerOS Fleet plugin page (replaces it) |"
+            echo "| \`serveros-fleet-claude-code-v${version}.zip\` | Claude Code (install.sh does this) |"
+            echo "| \`serveros-fleet-codex-v${version}.zip\` | Codex CLI (install.sh does this) |"
+            echo "| \`serveros-fleet-mcp-v${version}.zip\` | any other MCP agent: \`mcp.json\` + \`skills/\` |"
+            echo "| \`install.sh\` / \`install.ps1\` | one-command install / update |"
             echo "| \`serveros-core-lite-windows-x64.zip\` | Windows devices: \`distribution/windows/update.ps1 -FromRelease -Apply\` |"
             echo
-            echo "MCP server: https://fleet-v1.professorzhi.fun/mcp. SHA-256:"
+            echo "MCP server: https://fleet-v1.professorzhi.fun/mcp — sign in with account, password and one-time code. SHA-256:"
             echo
             echo '```'
-            (cd dist && sha256sum *.zip)
+            (cd dist && sha256sum *)
             echo '```'
           } > notes.md
+          if ! gh release view "fleet-v${version}" >/dev/null 2>&1; then
+            gh release create "fleet-v${version}" dist/* --target "$GITHUB_SHA" \
+              --title "ServerOS Fleet ${version}" --notes-file notes.md --latest=false
+          fi
           gh release delete fleet-latest --cleanup-tag --yes || true
-          gh release create fleet-latest dist/*.zip --target "$GITHUB_SHA" \
+          gh release create fleet-latest dist/* --target "$GITHUB_SHA" \
             --title "ServerOS Fleet ${version} (latest main)" --notes-file notes.md --latest

@@ -18,6 +18,7 @@ on:
       - "fleet_mcp/node/connector.py"
       - "tests/test_fleet_node_win_file.py"
       - "distribution/windows/**"
+      - "distribution/install/**"
       - "distribution/devices/**"
       - ".github/workflows/serveros-core-lite-windows.yml"
 
@@ -100,7 +101,7 @@ jobs:
       - name: Every PowerShell script parses, and update.ps1 plans for work-fj
         shell: pwsh
         run: |
-          $scripts = @(Get-ChildItem -Recurse -Filter *.ps1 -Path native/node-core/core-lite/windows, distribution/windows, fleet_mcp/node)
+          $scripts = @(Get-ChildItem -Recurse -Filter *.ps1 -Path native/node-core/core-lite/windows, distribution/windows, distribution/install, fleet_mcp/node)
           foreach ($script in $scripts) {
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$errors) | Out-Null

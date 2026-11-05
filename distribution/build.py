@@ -31,7 +31,7 @@ import yaml
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 CHANNELS = HERE / "channels.yaml"
-CLIENTS = ("claude-code", "codex", "openai")
+CLIENTS = ("claude-code", "codex", "openai", "mcp")
 ZIP_TIME = (2026, 1, 1, 0, 0, 0)          # fixed, so the archive is reproducible
 
 
@@ -144,28 +144,76 @@ def generate_codex(doc: dict, out: Path) -> None:
 
 
 def generate_openai(doc: dict, out: Path) -> None:
-    """The ChatGPT package source: portable manifest + MCP binding + Skills + assets.
+    """ChatGPT (web) and Codex (desktop): skills + icons bound to a REGISTERED App.
 
-    The manifest is the shared one under the Fleet name and display name; the
-    version is the manifest's own, shown by the client beside the name.
+    ChatGPT runs a plugin on the web only when its tools come from an App the
+    account already registered; a package that declares its own MCP server is
+    treated as desktop-only. So this package declares no server at all: it
+    names the App (`.app.json`) that holds the Fleet connection and OAuth, and
+    carries the shared Skills, icons and the version. The plugin `name` and the
+    App id are the ones ChatGPT assigned on first upload (`channels.yaml`), so a
+    new upload replaces that plugin instead of adding a second one.
     """
     ident = doc["identity"]
-    manifest = json.loads(json.dumps(doc["shared_manifest"]))
-    manifest["name"] = ident["plugin"]
-    manifest["extensions"]["com.openai"]["interface"]["displayName"] = ident["display_name"]
-    manifest["extensions"]["com.serveros.fleet-ingress"]["source"] = "distribution/openai"
+    target = doc["clients"]["openai"]
+    name, app_id = target["plugin_name"], target["app_id"]
+    shared = doc["shared_manifest"]
+    interface = _interface(doc)
+    manifest = {
+        "$schema": shared["$schema"],
+        "name": name,
+        "version": doc["version"],
+        "description": shared["description"],
+        "author": shared.get("author", {"name": "ProfessorZhi"}),
+        "license": shared.get("license", "MIT"),
+        "homepage": shared.get("homepage"),
+        "repository": shared.get("repository"),
+        "extensions": {"com.openai": {"apps": "./.app.json", "interface": interface}},
+    }
     _write_json(out / "plugin.json", manifest)
-    template = json.loads((ROOT / "integrations/fleet-v1-first-install/plugin/mcp.template.json")
-                          .read_text(encoding="utf-8"))
-    (server,) = template["mcpServers"].values()
-    server = {**server, "url": doc["server"]["mcp_url"]}
-    _write_json(out / "mcp.json", {"$schema": template["$schema"],
-                                   "mcpServers": {ident["mcp_server"]: server}})
+    _write_json(out / ".codex-plugin" / "plugin.json", {
+        "name": name,
+        "version": doc["version"],
+        "description": shared["description"],
+        "author": shared.get("author", {"name": "ProfessorZhi"}),
+        "keywords": shared.get("keywords", []),
+        "skills": "./skills",
+        "apps": "./.app.json",
+        "interface": interface,
+    })
+    _write_json(out / ".app.json", {"apps": {name: {"id": app_id}}})
     _copy_shared(doc, out, docs=True)
+    del ident
+
+
+def generate_mcp(doc: dict, out: Path) -> None:
+    """Any other agent (DeepSeek Harness, custom agents): the server and the Skills.
+
+    No client-specific manifest: a streamable-HTTP MCP entry with OAuth by
+    dynamic registration (the agent signs in on the Fleet consent page), the
+    same Skills as plain SKILL.md files, the icons and a README saying how to
+    wire them. Nothing in it is a credential.
+    """
+    ident = doc["identity"]
+    _write_json(out / "mcp.json", {"mcpServers": {ident["mcp_server"]: {
+        "type": "streamable-http",
+        "url": doc["server"]["mcp_url"],
+        "auth": "oauth2.1 (dynamic client registration; sign in on the Fleet consent page)",
+    }}})
+    _copy_shared(doc, out, docs=False)
+    (out / "README.md").write_text(
+        f"# {ident['display_name']} {doc['version']} — for any MCP agent\n\n"
+        f"1. Add the server in `mcp.json` to your agent's MCP configuration: "
+        f"streamable HTTP at `{doc['server']['mcp_url']}`.\n"
+        f"2. On first use the agent opens the Fleet consent page; sign in with your account, "
+        f"password and one-time code, and tick only the permissions it needs.\n"
+        f"3. Give the agent the Skills in `skills/` (each is one `SKILL.md`), in whatever form "
+        f"it loads instructions from.\n\n"
+        f"Health: {doc['server'].get('health_url', '')}\n", encoding="utf-8")
 
 
 GENERATORS = {"claude-code": generate_claude_code, "codex": generate_codex,
-              "openai": generate_openai}
+              "openai": generate_openai, "mcp": generate_mcp}
 
 
 # -- build / check ---------------------------------------------------------------
