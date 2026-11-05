@@ -29,7 +29,7 @@
         "what": "native: C++ Windows collector (Win32) → status.json every minute, observe only",
         "profile": {
           "path": "native/node-core/core-lite/profiles/work-fj.profile.json",
-          "digest": "sha256:df74ad376f1a120d86ff7817c8245485f899e51b9d75f292936bea0ac7130a40"
+          "digest": "sha256:9b338a8b5b5431f63af17f13e3d5aec9046d862ac3f829e09d98e20edcd90e47"
         },
         "build": "native/node-core/core-lite/windows (MSVC, static)",
         "task": "\\ServerOS\\ServerOS Core-Lite publish (scheduled task, this user)",

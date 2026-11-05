@@ -1,7 +1,7 @@
 {
   "schema": "serveros/core-lite-profile.v1",
   "node": "device:work-fj",
-  "principal": "vince.huang",
+  "principal": "Vince.Huang",
   "platform": "windows",
   "observe_only": true,
   "generation": 1,
