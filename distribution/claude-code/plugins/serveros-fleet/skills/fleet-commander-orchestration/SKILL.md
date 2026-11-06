@@ -156,10 +156,14 @@ an independent QA read are not the same job. Say which person or model owns
 each node and what would make the result unacceptable. Keep one writer per
 checkout and do not let two agents "help" the same worktree.
 
-Choosing the model is part of choosing the owner. Read
-`fleet_models_list` for the device: each entry says whether the device's
-runtime policy allows it and why. Pass an allowed entry's `model_id` as `model`
-when you create or send. If the right entry does not exist, create it with
+Never ask the owner which model, agent or device to use — choosing is your
+job, inside the owner's runtime policy. By default omit `model`: the device's
+policy `default_model` applies (the answer's `defaults.resolved.by` says
+"runtime policy default_model"), or the device's own default where the policy
+names none. Use Claude Code unless the task is a Codex one and the device's
+policy allows Codex. Name a model only when the task needs a different one:
+read `fleet_models_list` for the device — each entry says whether the policy
+allows it and why — and pass an allowed entry's `model_id` as `model`. If the right entry does not exist, create it with
 `fleet_model_upsert`: credentials go in as `envref` rows naming a variable the
 device's owner keeps (`{key: ANTHROPIC_AUTH_TOKEN, kind: envref, variable:
 GW0_TOKEN}`), never as values — you never see, ask for, or paste a key. Use

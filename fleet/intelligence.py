@@ -291,6 +291,50 @@ def runtime_policy() -> dict:
             "source": str(local_path)}
 
 
+def policy_rule(device_ref: str, runtime_kind: str) -> dict | None:
+    """The rule in force for one runtime kind on one device, or None (refused)."""
+    policy = runtime_policy()
+    rules = (policy.get("devices", {}).get(device_ref) or policy["default"])["runtimes"]
+    return rules.get(runtime_kind)
+
+
+def default_choice(device_ref: str, runtime_kind: str) -> dict:
+    """What a session on this device runs when the caller names no model.
+
+    `default_model` in the rule is the owner's choice for "nothing was asked
+    for". Without one the device's own default applies, which is only known to
+    be allowed when the rule does not constrain the model at all.
+    """
+    rule = policy_rule(device_ref, runtime_kind)
+    if rule is None:
+        return {"allowed": False, "model": None,
+                "reason": f"{runtime_kind} is not allowed on {device_ref}"}
+    if rule.get("default_model"):
+        return {"allowed": True, "model": rule["default_model"],
+                "reason": "the runtime policy's default_model for this device"}
+    constrained = bool(rule.get("model_patterns") or rule.get("gateways")
+                       or "official_subscription" not in rule.get("model_sources", []))
+    return {"allowed": True, "model": None,
+            "reason": ("the device's own default; the policy constrains models here "
+                       "but names no default_model, so what runs is unverified")
+                      if constrained else "the device's own default"}
+
+
+def model_name_allowed(device_ref: str, runtime_kind: str, model: str) -> tuple[bool, str]:
+    """May a session on this device be created on `model`, by name alone?
+
+    The source and gateway of a model entry are judged when the entry is
+    written (fleet_model_upsert); here only the name is known.
+    """
+    rule = policy_rule(device_ref, runtime_kind)
+    if rule is None:
+        return False, f"{runtime_kind} is not allowed on {device_ref}"
+    patterns = rule.get("model_patterns")
+    if patterns and not any(re.search(p, model) for p in patterns):
+        return False, f"model {model!r} is not allowed for {runtime_kind} on {device_ref}"
+    return True, "allowed"
+
+
 def policy_allows(profile_ref: str, *, model: str, source: str,
                   gateway: str | None = None) -> tuple[bool, str]:
     """May this profile run `model` from `source` (through `gateway`)?

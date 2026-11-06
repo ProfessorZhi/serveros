@@ -13,6 +13,10 @@
 # A rule names what is allowed; anything not named is refused. A device with no
 # entry of its own gets `default`. Rules are by device and runtime kind, and
 # constrain the model SOURCE and, optionally, the model name and the gateway.
+#
+# `default_model` (optional) is what a session runs when nobody names a model:
+# the commander omits `model` and the owner never has to choose. It names a
+# CloudCLI model entry id (see fleet_models_list) and must satisfy the rule.
 schema: serveros/fleet-runtime-policy.v1
 
 default:
@@ -26,9 +30,15 @@ default:
 devices:
   device:llm-lab-dell:
     # Owner, 2026-11-06: on the A6000 only Claude Code, and only through
-    # gateway 0's DeepSeek.
+    # gateway 0's DeepSeek. Codex is not named, so it is refused here.
     runtimes:
       claude-code:
         model_sources: [gateway]
         gateways: [target:gateway0]
-        model_patterns: ['^deepseek']
+        # No model-name pattern here: gateway 0 serves DeepSeek under names that
+        # change (e.g. v4.1flash-anthropic). Source and gateway are what the
+        # owner fixed; an entry is judged on both when it is written. Add
+        # `model_patterns` in ~/.serveros/runtime-policy.yaml to narrow further.
+        # The entry created with fleet_model_upsert (gateway 0, envref token);
+        # used only once the device's library holds it.
+        default_model: deepseek-gw0
