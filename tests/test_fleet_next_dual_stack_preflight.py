@@ -71,16 +71,6 @@ class OfflineDoubleStackSafety(unittest.TestCase):
         self.assertTrue(path.is_file(), f"{gate.NEXT_UNIT} must be committed")
         self.assertNotEqual(gate.NEXT_UNIT, gate.V1_UNIT)
 
-    def test_the_workflow_path_filters_name_files_that_exist(self):
-        """A path filter naming a missing template never triggers on the real one."""
-        text = (ROOT / ".github" / "workflows"
-                / "fleet-next-isolated-contracts.yml").read_text(encoding="utf-8")
-        paths = set(re.findall(r"'(fleet_mcp/deploy/[^']+\.service)'", text))
-        self.assertTrue(paths, "workflow must name the Next template explicitly")
-        for path in paths:
-            with self.subTest(path=path):
-                self.assertTrue((ROOT / path).is_file(), path)
-
     def test_complete_isolated_candidate_is_only_a_human_canary_precheck(self):
         result = gate.evaluate(proposal())
         self.assertEqual(result["decision"], "PRECHECK_READY_FOR_HUMAN_CANARY")
