@@ -1,0 +1,142 @@
+"""fleet/intelligence: the cases come from the 2026-11-06 three-device audit."""
+from __future__ import annotations
+
+import unittest
+from datetime import datetime, timedelta, timezone
+
+from fleet import intelligence as fi
+
+NOW = datetime(2026, 11, 6, 8, 0, tzinfo=timezone.utc)
+A6000 = "device:llm-lab-dell"
+TOKYO = "device:tokyo-shared-dev-01"
+A6000_PROFILE_GW = "profile:llm-lab-dell/main/claude-code/gateway0"
+A6000_PROFILE_SUB = "profile:llm-lab-dell/main/claude-code/subscription"
+
+
+def fact(subject, fact_type, value, status="OBSERVED", source="collector", age=0, **extra):
+    return {"subject_ref": subject, "fact_type": fact_type, "value": value, "status": status,
+            "source": source, "observed_at": (NOW - timedelta(seconds=age)).isoformat(), **extra}
+
+
+class TheEnvelope(unittest.TestCase):
+    def test_every_subject_kind_has_a_shape(self):
+        self.assertEqual(fi.subject_kind(A6000), "device")
+        self.assertEqual(fi.subject_kind("principal:llm-lab-dell/main"), "principal")
+        self.assertEqual(fi.subject_kind("runtime:llm-lab-dell/main/codex"), "runtime")
+        self.assertEqual(fi.subject_kind(A6000_PROFILE_GW), "profile")
+        self.assertEqual(fi.subject_kind("path:llm-lab-dell/main/workspace.src"), "path")
+        self.assertEqual(fi.device_of(A6000_PROFILE_GW), A6000)
+        with self.assertRaises(fi.IntelligenceError):
+            fi.subject_kind("llm-lab-dell")
+
+    def test_a_declaration_cannot_claim_to_have_been_observed(self):
+        with self.assertRaises(fi.IntelligenceError) as raised:
+            fi.validate_fact(fact(A6000, "capability.docker", True, source="declaration"))
+        self.assertIn("cannot claim OBSERVED", str(raised.exception))
+
+    def test_verified_needs_evidence(self):
+        with self.assertRaises(fi.IntelligenceError):
+            fi.validate_fact(fact(A6000, "network.reach", {"target": "target:gw0", "result": "ok"},
+                                  status="VERIFIED", source="verifier"))
+        fi.validate_fact(fact(A6000, "network.reach", {"target": "target:gw0", "result": "ok"},
+                              status="VERIFIED", source="verifier", evidence_ref="run:abc"))
+
+    def test_a_fact_is_about_the_subject_kind_its_type_names(self):
+        with self.assertRaises(fi.IntelligenceError) as raised:
+            fi.validate_fact(fact(A6000, "runtime.version", "2.1.302"))
+        self.assertIn("about a runtime", str(raised.exception))
+
+    def test_a_secret_named_key_is_refused_and_not_echoed(self):
+        with self.assertRaises(fi.IntelligenceError) as raised:
+            fi.validate_fact(fact(A6000_PROFILE_GW, "profile.gateway",
+                                  {"host": "gw0.internal", "auth": {"api_token": "sk-x"}}))
+        self.assertIn("value.auth.api_token", str(raised.exception))
+        self.assertNotIn("sk-x", str(raised.exception))
+
+    def test_profile_models_name_their_source(self):
+        fi.validate_fact(fact(A6000_PROFILE_GW, "profile.models",
+                              [{"model": "deepseek-v4", "source": "gateway"}]))
+        with self.assertRaises(fi.IntelligenceError):
+            fi.validate_fact(fact(A6000_PROFILE_GW, "profile.models",
+                                  [{"model": "deepseek-v4", "source": "somewhere"}]))
+
+
+class Resolution(unittest.TestCase):
+    def test_an_old_observation_reads_stale_not_true(self):
+        old = fact(A6000, "resource.pressure", {"swap_used_pct": 73}, age=600)
+        self.assertEqual(fi.current_status(old, NOW), "STALE")
+        self.assertEqual(fi.resolve([old], A6000, "resource.pressure", NOW)["status"], "STALE")
+
+    def test_nothing_known_is_unknown_never_absent(self):
+        answer = fi.resolve([], A6000, "capability.docker", NOW)
+        self.assertEqual((answer["status"], answer["value"]), ("UNKNOWN", None))
+
+    def test_observation_beats_declaration_and_the_disagreement_is_a_finding(self):
+        """The audit: Docker declared for A6000 by an old note, observed not installed."""
+        facts = [fact(A6000, "capability.docker", True, status="DECLARED", source="declaration"),
+                 fact(A6000, "capability.docker", False)]
+        answer = fi.resolve(facts, A6000, "capability.docker", NOW)
+        self.assertEqual((answer["status"], answer["value"]), ("OBSERVED", False))
+        self.assertIn("DECLARED_OBSERVED_MISMATCH", answer["findings"])
+
+    def test_a_declared_model_stays_declared(self):
+        """Config says sonnet; nothing proves the provider until a call is verified."""
+        declared = fact(A6000_PROFILE_GW, "profile.models",
+                        [{"model": "sonnet", "source": "gateway"}],
+                        status="DECLARED", source="declaration", age=10 ** 7)
+        self.assertEqual(fi.resolve([declared], A6000_PROFILE_GW, "profile.models", NOW)["status"],
+                         "DECLARED")
+
+
+class PathBindings(unittest.TestCase):
+    def test_the_audit_cases(self):
+        self.assertEqual(fi.path_binding_state({"declared": True, "exists": True,
+                                                "owner_matches": False}), "BLOCKED_IDENTITY")
+        self.assertEqual(fi.path_binding_state({"declared": True, "exists": False}), "STALE_BINDING")
+        self.assertEqual(fi.path_binding_state({"declared": True, "canonical_count": 2,
+                                                "exists": True}), "CONFLICT")
+        self.assertEqual(fi.path_binding_state({"declared": False, "in_use": True}),
+                         "UNDECLARED_IN_USE")
+        self.assertEqual(fi.path_binding_state({"declared": True, "exists": None}), "UNKNOWN")
+        self.assertEqual(fi.path_binding_state({"declared": True, "exists": True,
+                                                "owner_matches": True}), "BOUND")
+
+
+class Candidates(unittest.TestCase):
+    def test_choose_a_profile_by_model_source(self):
+        facts = [
+            fact(A6000_PROFILE_GW, "profile.models", [{"model": "deepseek-v4", "source": "gateway"}]),
+            fact(A6000_PROFILE_SUB, "profile.models",
+                 [{"model": "opus", "source": "official_subscription"},
+                  {"model": "sonnet", "source": "official_subscription"}]),
+        ]
+        want = [{"fact_type": "profile.models", "min_status": "OBSERVED",
+                 "model_source": "official_subscription"}]
+        result = {r["subject_ref"]: r["eligible"]
+                  for r in fi.candidates(want, facts, [A6000_PROFILE_GW, A6000_PROFILE_SUB], NOW)}
+        self.assertEqual(result, {A6000_PROFILE_GW: False, A6000_PROFILE_SUB: True})
+
+    def test_unknown_fails_closed_with_a_reason(self):
+        facts = [fact(TOKYO, "capability.docker", True)]
+        want = [{"fact_type": "capability.docker", "min_status": "OBSERVED", "equals": True}]
+        result = {r["subject_ref"]: r for r in fi.candidates(want, facts, [TOKYO, A6000], NOW)}
+        self.assertTrue(result[TOKYO]["eligible"])
+        self.assertFalse(result[A6000]["eligible"])
+        self.assertIn("UNKNOWN < OBSERVED", result[A6000]["reasons"][0])
+
+
+class TheContract(unittest.TestCase):
+    def test_every_fact_type_scope_is_a_subject_kind(self):
+        kinds = set(fi.contract()["subjects"])
+        for name, spec in fi.contract()["fact_types"].items():
+            with self.subTest(fact_type=name):
+                self.assertIn(spec["scope"], kinds)
+                self.assertGreater(spec["ttl_seconds"], 0)
+
+    def test_assignment_is_not_a_fact(self):
+        for name in fi.contract()["not_facts"]:
+            self.assertNotIn(name, fi.contract()["fact_types"])
+
+
+if __name__ == "__main__":
+    unittest.main()

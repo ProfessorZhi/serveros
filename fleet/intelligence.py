@@ -1,0 +1,238 @@
+"""What the fleet knows about its devices, and how it knows it.
+
+`fleet/intelligence-contract.yaml` is the model; this module is its reader.
+Everything is pure: facts in, verdicts out. Collecting facts (Core-Lite, the
+node connector, readback) and serving them (Fleet MCP) are other layers.
+
+Three questions this answers and nothing else:
+
+* is this fact well formed, and is its status one its source may claim?
+  (`validate_fact`) — a declaration cannot say OBSERVED, VERIFIED needs
+  evidence, and no secret-shaped key may sit inside a value;
+* what is true about this subject now? (`resolve`) — the strongest fresh fact
+  wins, an expired one reads STALE, a declaration that disagrees with an
+  observation is a finding, and nothing known resolves to UNKNOWN, never to
+  "absent";
+* which (device, principal, runtime, profile) can take this task?
+  (`candidates`) — hard requirements only, failing closed on UNKNOWN. Scoring
+  among the eligible is the commander's business.
+
+The registry is untouched: it stays authored identity. Work assignment is not
+a fact here (`not_facts` in the contract).
+"""
+from __future__ import annotations
+
+import re
+from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Iterable
+
+import yaml
+
+HERE = Path(__file__).resolve().parent
+
+
+class IntelligenceError(ValueError):
+    """A fact or requirement this model refuses, with the reason."""
+
+
+@lru_cache(maxsize=1)
+def contract() -> dict:
+    return yaml.safe_load((HERE / "intelligence-contract.yaml").read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=1)
+def _forbidden_keys() -> frozenset[str]:
+    source = contract()["envelope"]["forbidden_value_keys_source"]
+    filename, _, pointer = source.partition("#")
+    node = yaml.safe_load((HERE / filename).read_text(encoding="utf-8"))
+    for part in pointer.split("."):
+        node = node[part]
+    return frozenset(str(k).lower() for k in node)
+
+
+def _known() -> list[str]:
+    return contract()["statuses"]["known"]
+
+
+def _rank(status: str) -> int:
+    known = _known()
+    return known.index(status) if status in known else -1
+
+
+def subject_kind(ref: str) -> str:
+    for kind, rule in contract()["subjects"].items():
+        if isinstance(ref, str) and re.match(rule["pattern"], ref):
+            return kind
+    raise IntelligenceError(f"subject_ref {ref!r} is not a device, principal, runtime, "
+                            f"profile, path or target ref")
+
+
+def device_of(ref: str) -> str:
+    """`device:<id>` for any subject on a device."""
+    kind = subject_kind(ref)
+    if kind == "target":
+        raise IntelligenceError(f"{ref!r} is not on a device")
+    rest = ref.split(":", 1)[1]
+    return "device:" + rest.split("/", 1)[0]
+
+
+def _parse_time(value: Any, field: str) -> datetime:
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        try:
+            moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise IntelligenceError(f"{field} {value!r} is not an ISO time") from exc
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def _secret_paths(node: Any, trail: str = "value") -> list[str]:
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, child in node.items():
+            here = f"{trail}.{key}"
+            lowered = str(key).lower()
+            if any(bad in lowered for bad in _forbidden_keys()):
+                found.append(here)
+            found += _secret_paths(child, here)
+    elif isinstance(node, list):
+        for index, child in enumerate(node):
+            found += _secret_paths(child, f"{trail}[{index}]")
+    return found
+
+
+def validate_fact(fact: dict) -> dict:
+    """The fact, unchanged, or `IntelligenceError` naming what is wrong."""
+    if not isinstance(fact, dict):
+        raise IntelligenceError("a fact is a mapping")
+    envelope = contract()["envelope"]
+    missing = [k for k in envelope["required"] if k not in fact]
+    if missing:
+        raise IntelligenceError(f"fact lacks {missing}")
+    unknown = sorted(set(fact) - set(envelope["required"]) - set(envelope["optional"]))
+    if unknown:
+        raise IntelligenceError(f"fact carries unknown field(s) {unknown}")
+    kind = subject_kind(fact["subject_ref"])
+    spec = contract()["fact_types"].get(fact["fact_type"])
+    if spec is None:
+        raise IntelligenceError(f"fact_type {fact['fact_type']!r} is not declared")
+    if spec["scope"] != kind:
+        raise IntelligenceError(f"{fact['fact_type']} is about a {spec['scope']}, "
+                                f"not a {kind} ({fact['subject_ref']})")
+    allowed = contract()["sources"].get(fact["source"])
+    if allowed is None:
+        raise IntelligenceError(f"source {fact['source']!r} is not declared")
+    if fact["status"] not in allowed:
+        raise IntelligenceError(f"a {fact['source']} cannot claim {fact['status']}; "
+                                f"it may say {allowed}")
+    if fact["status"] == "VERIFIED" and not fact.get("evidence_ref"):
+        raise IntelligenceError("VERIFIED needs an evidence_ref")
+    _parse_time(fact["observed_at"], "observed_at")
+    secrets = _secret_paths(fact["value"])
+    if secrets:
+        # Named by position only: quoting the value would repeat the leak.
+        raise IntelligenceError(f"value carries credential-named key(s) at {secrets}")
+    if fact["fact_type"] == "profile.models":
+        sources = contract()["model_sources"]
+        for entry in fact["value"] or []:
+            if not isinstance(entry, dict) or entry.get("source") not in sources:
+                raise IntelligenceError(f"profile.models entries are {{model, source}} with "
+                                        f"source one of {sorted(sources)}")
+    return fact
+
+
+def current_status(fact: dict, now: datetime) -> str:
+    """The fact's status as of `now`: past its freshness an observation is STALE."""
+    status = fact["status"]
+    if status in ("DECLARED", "SOURCE_CODE", "DEPLOYED") or status not in _known():
+        return status
+    if fact.get("expires_at"):
+        expires = _parse_time(fact["expires_at"], "expires_at")
+    else:
+        ttl = contract()["fact_types"][fact["fact_type"]]["ttl_seconds"]
+        expires = _parse_time(fact["observed_at"], "observed_at").timestamp() + ttl
+        expires = datetime.fromtimestamp(expires, tz=timezone.utc)
+    return "STALE" if now > expires else status
+
+
+def resolve(facts: Iterable[dict], subject_ref: str, fact_type: str,
+            now: datetime) -> dict[str, Any]:
+    """What is known about one subject's one fact type now.
+
+    The strongest fresh fact wins; ties go to the latest observation. A
+    declaration that disagrees with the winning observation is reported as
+    `DECLARED_OBSERVED_MISMATCH` — the observation wins, the declaration is a
+    finding. With no fresh known fact the answer is UNKNOWN (or STALE when
+    something expired), never an invented value.
+    """
+    mine = [f for f in facts if f["subject_ref"] == subject_ref and f["fact_type"] == fact_type]
+    scored = [(current_status(f, now), f) for f in mine]
+    live = [(s, f) for s, f in scored if s in _known()]
+    findings: list[str] = []
+    if not live:
+        status = "STALE" if any(s == "STALE" for s, _ in scored) else "UNKNOWN"
+        return {"status": status, "value": None, "fact": None, "findings": findings}
+    live.sort(key=lambda pair: (_rank(pair[0]), _parse_time(pair[1]["observed_at"], "observed_at")))
+    status, best = live[-1]
+    declared = [f for s, f in live if s == "DECLARED"]
+    if _rank(status) > _rank("DECLARED") and any(d["value"] != best["value"] for d in declared):
+        findings.append("DECLARED_OBSERVED_MISMATCH")
+    return {"status": status, "value": best["value"], "fact": best, "findings": findings}
+
+
+def path_binding_state(binding: dict) -> str:
+    """One principal's path role, judged by the contract's path_binding rules.
+
+    `binding` holds what is declared and what was observed:
+    {declared: bool, canonical_count: int, exists: bool|None,
+     owner_matches: bool|None, shared: bool, in_use: bool}
+    """
+    if not binding.get("declared"):
+        return "UNDECLARED_IN_USE" if binding.get("in_use") else "UNBOUND"
+    if binding.get("canonical_count", 1) > 1:
+        return "CONFLICT"
+    if binding.get("exists") is None:
+        return "UNKNOWN"
+    if binding["exists"] is False:
+        return "STALE_BINDING"
+    if binding.get("owner_matches") is False and not binding.get("shared"):
+        return "BLOCKED_IDENTITY"
+    if binding.get("owner_matches") is None:
+        return "UNKNOWN"
+    return "BOUND"
+
+
+def candidates(requirements: list[dict], facts: list[dict], subjects: list[str],
+               now: datetime) -> list[dict[str, Any]]:
+    """Which subjects meet every hard requirement now.
+
+    A requirement is {fact_type, min_status, and one of: equals / contains /
+    model_source}. `contains` checks a list value; `model_source` checks a
+    profile.models value for a model from that source. A subject whose fact
+    resolves below `min_status` (UNKNOWN and STALE included) is NOT eligible —
+    unknown fails closed — and the reason says which requirement and why.
+    """
+    results = []
+    for subject in subjects:
+        reasons = []
+        for req in requirements:
+            if req.get("min_status") not in _known():
+                raise IntelligenceError(f"min_status must be one of {_known()}")
+            answer = resolve(facts, subject, req["fact_type"], now)
+            if _rank(answer["status"]) < _rank(req["min_status"]):
+                reasons.append(f"{req['fact_type']}: {answer['status']} < {req['min_status']}")
+                continue
+            value = answer["value"]
+            if "equals" in req and value != req["equals"]:
+                reasons.append(f"{req['fact_type']}: value does not match")
+            elif "contains" in req and req["contains"] not in (value or []):
+                reasons.append(f"{req['fact_type']}: {req['contains']!r} not present")
+            elif "model_source" in req and not any(
+                    isinstance(m, dict) and m.get("source") == req["model_source"]
+                    and m.get("model") == req.get("model", m.get("model")) for m in value or []):
+                reasons.append(f"{req['fact_type']}: no model from {req['model_source']}")
+        results.append({"subject_ref": subject, "eligible": not reasons, "reasons": reasons})
+    return results
