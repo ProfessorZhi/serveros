@@ -205,6 +205,23 @@ KIND_BY_FIELD: dict[str, str] = {
     # detail is prose built around what the caller sent, the code is what an
     # operator greps for when asking whether a door was tested.
     "error_code": ERROR_CODE,
+    # A defect that escaped a handler and reached the caller as one sentence,
+    # "internal error". Three facts and only these three, because the sentence
+    # is all the caller has and the log is the only place it can be matched to
+    # a request: `method` is the JSON-RPC method it escaped from, `exception`
+    # the class it was, `request_id` a digest of the id the caller sent.
+    #
+    # `method` is a `code`, so `tools/call` arrives with its slash folded to a
+    # dot — the dotted shape is what this table speaks, and leaving it unfolded
+    # would drop exactly the field that says which tool surface failed.
+    # `exception` is lowercased for the same reason `core_lite_source` filters
+    # exception names through a closed set before reporting one: a class is
+    # named by whoever wrote it, so the record keeps the shape and not the
+    # string. `request_id` is a `digest` and not a `ref` because the id is
+    # chosen by the caller — the same rule `idempotency_key` above follows.
+    "method": CODE,
+    "exception": CODE,
+    "request_id": DIGEST,
     # what was addressed
     "device_ref": REF,
     "devices": COUNT,
