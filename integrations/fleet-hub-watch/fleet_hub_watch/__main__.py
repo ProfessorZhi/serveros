@@ -1,8 +1,8 @@
 """`python -m fleet_hub_watch` — the hub's resident watcher.
 
-    python -m fleet_hub_watch --config <fleet binding> [--interval 30] [--once]
-        [--notify journal | lark:<user:open_id|chat:chat_id> | off]
-        [--card-spec card-spec.yaml]
+    python -m fleet_hub_watch --config <fleet binding>
+        --notify lark:<user:open_id|chat:chat_id> | journal | off
+        [--interval 30] [--once] [--card-spec card-spec.yaml]
     python -m fleet_hub_watch --check-spec card-spec.yaml
 
 The broadcast spec decides what the cards say and when they go out (titles,
@@ -13,9 +13,10 @@ the watch. `--check-spec` proves a spec without starting anything.
 
 Each tick: discover and classify runs (M2), read every company device's
 Core-Lite reading and record level changes (M4), then send or patch Feishu
-cards (M3). `--notify journal` (the default) writes the cards it would send to
-`notify.journal.jsonl` and sends nothing; `lark:<recipient>` sends for real and
-is the owner's decision.
+cards (M3). `--notify` has no default: `lark:user:<open_id>` and
+`lark:chat:<chat_id>` send for real, `journal` writes the cards it would send to
+`notify.journal.jsonl` and sends nothing, `off` runs with no notifier. Those
+three are the whole set, and none of them is reached by forgetting a flag.
 
 The binding must name `inbox.path`: the watcher writes the same inbox the Fleet
 surface reads through `fleet_inbox`, and a watcher writing somewhere the surface
@@ -115,8 +116,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=30.0, help="seconds between ticks")
     parser.add_argument("--instance-id", default="tokyo-hub")
     parser.add_argument("--once", action="store_true", help="one tick, then exit")
-    parser.add_argument("--notify", default="journal",
-                        help="journal (default, sends nothing) | lark:<recipient> | off")
+    parser.add_argument("--notify", default=None,
+                        help="required: lark:user:<open_id> | lark:chat:<chat_id> sends for "
+                             "real, journal writes the cards and sends nothing, off runs "
+                             "without a notifier")
     parser.add_argument("--contract", default=str(DEFAULT_CONTRACT),
                         help="attribution contract holding the resource thresholds")
     parser.add_argument("--card-spec", default=str(DEFAULT_SPEC_FILE),
@@ -136,6 +139,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not args.config:
         parser.error("--config is required")
+    if args.notify is None:
+        # `journal` used to be the default, so a unit that simply forgot the
+        # flag installed a watcher that found every run, recorded every outcome
+        # and wrote every card into a file nobody reads — a monitor that reports
+        # nothing while looking healthy. A destination is a decision, and a
+        # decision is not made by omitting an argument.
+        parser.error(
+            "--notify is required: name where the cards go. "
+            "`lark:user:<open_id>` or `lark:chat:<chat_id>` sends them for real; "
+            "`journal` writes the ones it would send and sends nothing; "
+            "`off` runs the watcher with no notifier")
 
     config = load_config(args.config)
     if config.inbox is None:

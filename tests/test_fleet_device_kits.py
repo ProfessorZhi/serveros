@@ -88,6 +88,46 @@ def test_hub_monitor_carries_the_notify_target():
     assert "--notify lark:user:ou_x" in unit
 
 
+def test_the_hub_monitor_is_not_rendered_without_a_destination():
+    """A unit rendered with no destination installs a watcher that records every
+    outcome and sends nothing — the failure mode this kit refuses to create."""
+    with pytest.raises(dk.KitError) as raised:
+        dk.plan(_args(notify=None))
+    assert "needs a destination" in str(raised.value)
+
+
+def test_an_update_keeps_the_destination_the_hub_was_installed_with(tmp_path):
+    """The first install chose a destination; a later update without --notify
+    re-renders the unit with that same one instead of refusing."""
+    unit_dir = tmp_path / ".config/systemd/user"
+    unit_dir.mkdir(parents=True)
+    _, steps = dk.plan(_args(home=str(tmp_path), notify="lark:user:ou_first"))
+    body = next(s.write[1] for s in steps if s.write and s.write[0].name == "serveros-fleet-watch.service")
+    (unit_dir / "serveros-fleet-watch.service").write_text(body, encoding="utf-8")
+    _, again = dk.plan(_args(home=str(tmp_path), notify=None))
+    unit = next(s.write[1] for s in again if s.write and s.write[0].name == "serveros-fleet-watch.service")
+    assert "--notify lark:user:ou_first" in unit
+
+
+def test_an_explicit_destination_replaces_the_installed_one(tmp_path):
+    unit_dir = tmp_path / ".config/systemd/user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "serveros-fleet-watch.service").write_text(
+        "ExecStart=/usr/bin/python3 -m fleet_hub_watch --config x --interval 30 --notify journal\n",
+        encoding="utf-8")
+    _, steps = dk.plan(_args(home=str(tmp_path), notify="lark:chat:oc_y"))
+    unit = next(s.write[1] for s in steps if s.write and s.write[0].name == "serveros-fleet-watch.service")
+    assert "--notify lark:chat:oc_y" in unit
+
+
+def test_a_placeholder_in_an_installed_unit_is_not_a_destination(tmp_path):
+    unit_dir = tmp_path / ".config/systemd/user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "serveros-fleet-watch.service").write_text(
+        "ExecStart=@HUB_PYTHON@ -m fleet_hub_watch --notify @HUB_NOTIFY@\n", encoding="utf-8")
+    assert dk.installed_notify(unit_dir) is None
+
+
 def test_the_same_ability_revision_builds_the_core_and_rolls_out_the_family():
     _, steps = dk.plan(_args())
     revs = {s.argv[s.argv.index(flag) + 1] for s in steps if s.argv

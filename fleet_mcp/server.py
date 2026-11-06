@@ -14,8 +14,12 @@ protocol questions and delegates every fleet question to `tools.py`.
 from __future__ import annotations
 
 import json
+import secrets
+import sys
+import traceback
 from typing import Any, Callable
 
+from .disclosure import digest_of
 from .errors import BAD_REQUEST, INTERNAL, METHOD_NOT_FOUND, FleetRefusal, refuse
 from .fleet import Principal
 from .tools import ToolContext, SERVED_TOOLS, call_tool, tool_names
@@ -80,8 +84,18 @@ class McpServer:
                 request_id, _rpc_code_for(exc), exc.detail, data=exc.as_payload()
             )
         except Exception as exc:  # noqa: BLE001 - a defect must be reported, not hidden
+            # The traceback goes to the unit's stderr, the same as the HTTP
+            # transport's two 500 paths: without it the log line below names a
+            # class and nothing else, and the defect still cannot be found.
+            traceback.print_exc(file=sys.stderr)
+            recorded = self._record_internal_error(method, request_id, exc)
+            # The class name and the id go back; the exception's own text does
+            # not. It is written by whoever raised it and may carry a path, a
+            # value or a remote reply — the log has it, the caller has the id.
             return None if is_notification else _error_response(
-                request_id, JSONRPC_INTERNAL_ERROR, f"internal error: {type(exc).__name__}: {exc}"
+                request_id, JSONRPC_INTERNAL_ERROR,
+                f"internal error: {type(exc).__name__}; see the service log ({recorded})",
+                data={"code": INTERNAL, "request_id": recorded},
             )
         if result is None:
             # A notification has no response, and a method that deliberately
@@ -90,6 +104,47 @@ class McpServer:
         if is_notification:
             return None
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+    def _record_internal_error(self, method: str, request_id: Any,
+                               exc: BaseException) -> str:
+        """Write the defect down and return the id the caller is handed back.
+
+        Everything else on this surface is attributed: a refusal records
+        `fleet.refused` with its code, an OAuth decision records its own event,
+        a tool call records which tool ran. The three fallbacks — here,
+        `http_transport`'s 500, and a `FleetRefusal(INTERNAL)` — did not, so a
+        caller reporting "internal error" had nothing to quote and an operator
+        had nothing to grep. A client that renders the sentence and drops the
+        rest is the normal case, not the exception, which is why the record has
+        to exist whether or not anyone reports it.
+
+        The id is a digest of the request id rather than the id: it is chosen
+        by the caller, and this log does not hold caller-chosen text in the
+        clear. The digest is printed to the caller, so the sentence they paste
+        back is the one this line was written for.
+        """
+        # A nonce, not just the request id: clients number requests from 1 on
+        # every connection, so `method:id` alone gives two unrelated failures
+        # the same fingerprint and the operator two log lines for one quote.
+        recorded = digest_of(f"{method}:{request_id!r}:{secrets.token_hex(8)}")
+        context = None
+        try:
+            context = self._context_provider()
+        except Exception:  # noqa: BLE001 - the context is what failed; nothing to name it by
+            context = None
+        audit = getattr(getattr(context, "service", None), "audit", None)
+        if audit is not None:
+            fields: dict[str, Any] = {
+                "method": method.strip().lower().replace("/", "."),
+                "exception": type(exc).__name__.lower(),
+                "request_id": recorded,
+            }
+            principal = getattr(context, "principal", None)
+            name = getattr(principal, "name", None)
+            if name:
+                fields["principal"] = name
+            audit.record("mcp.internal_error", **fields)
+        return recorded
 
     def _dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
         if method == "initialize":

@@ -295,7 +295,8 @@ class TheEntryPoint(unittest.TestCase):
 
     def test_no_inbox_in_the_binding_refuses(self):
         from fleet_hub_watch.__main__ import EXIT_NO_INBOX, main
-        self.assertEqual(main(["--config", self.binding(inbox=False), "--once"]), EXIT_NO_INBOX)
+        self.assertEqual(main(["--config", self.binding(inbox=False), "--notify", "off",
+                               "--once"]), EXIT_NO_INBOX)
 
     def test_a_second_watcher_on_the_same_inbox_refuses(self):
         import fcntl
@@ -303,12 +304,33 @@ class TheEntryPoint(unittest.TestCase):
         config = self.binding()
         with open(self.dir / "watch.lock", "a") as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.assertEqual(main(["--config", config, "--once"]), EXIT_ANOTHER_WATCHER)
+            self.assertEqual(main(["--config", config, "--notify", "off", "--once"]),
+                             EXIT_ANOTHER_WATCHER)
+
+    def test_without_a_destination_the_process_does_not_start(self):
+        """`journal` used to be the default, so a unit that forgot the flag ran
+        a watcher that recorded every run and sent nothing — healthy-looking and
+        silent. Omitting the destination must fail, not fall back."""
+        import io
+        from contextlib import redirect_stderr
+        from fleet_hub_watch.__main__ import main
+        err = io.StringIO()
+        with self.assertRaises(SystemExit) as raised, redirect_stderr(err):
+            main(["--config", self.binding(), "--once"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--notify is required", err.getvalue())
+        self.assertFalse((self.dir / "watch.heartbeat.json").exists())
+
+    def test_check_spec_needs_no_destination(self):
+        """Proving a card spec starts nothing, so it must stay usable as a
+        pre-install check — before anyone has decided where the cards go."""
+        from fleet_hub_watch.__main__ import DEFAULT_SPEC_FILE, main
+        self.assertEqual(main(["--check-spec", str(DEFAULT_SPEC_FILE)]), 0)
 
     def test_one_tick_writes_a_heartbeat_and_the_shared_inbox(self):
         import json
         from fleet_hub_watch.__main__ import main
-        self.assertEqual(main(["--config", self.binding(), "--once"]), 0)
+        self.assertEqual(main(["--config", self.binding(), "--notify", "off", "--once"]), 0)
         beat = json.loads((self.dir / "watch.heartbeat.json").read_text())
         self.assertIn("last_tick_at", beat)
         self.assertTrue((self.dir / "inbox.sqlite").is_file())

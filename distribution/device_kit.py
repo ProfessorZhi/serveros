@@ -61,6 +61,15 @@ UNIT_TEMPLATES = {
     "node_connector_windows": "fleet_mcp/node/install.ps1",
     "core_lite_publish_windows": "native/node-core/core-lite/windows/deploy/publish-status.ps1",
     "core_lite_task_windows": "native/node-core/core-lite/windows/deploy/register-publish-task.ps1",
+    # The task's action is wscript.exe running this file, and the registration
+    # script refuses to register without it. Pinned here rather than left to the
+    # device's checkout: the kit states what the device is supposed to run, and a
+    # task template that names a launcher the kit does not ship is the two-file
+    # kit that cannot start.
+    "core_lite_task_launcher_windows": "native/node-core/core-lite/windows/deploy/run-hidden-wait.vbs",
+    # Same reason for the connector: install.ps1 registers both Fleet tasks with
+    # wscript.exe running this launcher and throws when it is missing.
+    "node_connector_launcher_windows": "fleet_mcp/node/run-hidden-wait.vbs",
 }
 
 
@@ -154,7 +163,8 @@ def kit(doc: dict, name: str) -> dict:
             "build": "native/node-core/core-lite/windows (MSVC, static)",
             "task": "\\ServerOS\\ServerOS Core-Lite publish (scheduled task, this user)",
             "templates": [_pin(UNIT_TEMPLATES[k]) for k in ("core_lite_publish_windows",
-                                                             "core_lite_task_windows")],
+                                                             "core_lite_task_windows",
+                                                             "core_lite_task_launcher_windows")],
             "status_file": "%LOCALAPPDATA%\\ServerOS\\state\\core-lite\\status.json"}
     elif mon["core_lite"]:
         monitor["core_lite"] = {
@@ -168,6 +178,8 @@ def kit(doc: dict, name: str) -> dict:
         key = "node_connector" if dev["os"] == "linux" else "node_connector_windows"
         monitor["node_connector"] = {"what": f"link: reports this device to the hub ({hub['device']})",
                                      "template": _pin(UNIT_TEMPLATES[key])}
+        if dev["os"] == "windows":
+            monitor["node_connector"]["launcher"] = _pin(UNIT_TEMPLATES["node_connector_launcher_windows"])
     if mon["hub_watch"]:
         monitor["hub_watch"] = {
             "what": "hub: agent monitor — finds Fleet runs, records outcomes once, "
@@ -175,7 +187,12 @@ def kit(doc: dict, name: str) -> dict:
             "unit": "serveros-fleet-watch.service", "template": _pin(UNIT_TEMPLATES["hub_watch"]),
             "binding": hub["binding"], "card_spec": _pin("integrations/fleet-hub-watch/card-spec.yaml"),
             "binding_needs": "core_lite.snapshot_path: ~/.local/state/serveros/core-lite/status.json",
-            "notify_default": "journal (switch to lark:user:<open_id> after checking the cards)"}
+            # Not a default any more: the install refuses without it. Named here
+            # so a reader of the kit knows the decision the hub was installed
+            # with is *somebody's*, not a fallback.
+            "notify": "required at the first install, kept by later updates: "
+                      "lark:user:<open_id> | lark:chat:<chat_id> | "
+                      "journal (writes the cards, sends nothing) | off"}
     layers["monitor"] = monitor
     if dev["commander"]:
         channels = yaml.safe_load((HERE / "channels.yaml").read_text(encoding="utf-8"))
@@ -224,7 +241,7 @@ class Context:
     data_root: Path
     home: Path
     python: str
-    notify: str
+    notify: str | None
     lib_dir: Path = None
     unit_dir: Path = None
     state_dir: Path = None
@@ -233,6 +250,26 @@ class Context:
         self.lib_dir = self.home / ".local/lib/serveros-core-lite"
         self.unit_dir = self.home / ".config/systemd/user"
         self.state_dir = self.home / ".local/state/serveros"
+
+
+_NOTIFY_IN_UNIT = re.compile(r"^ExecStart=.*\s--notify\s+(\S+)", re.MULTILINE)
+
+
+def installed_notify(unit_dir: Path) -> str | None:
+    """The `--notify` destination of the hub watcher installed here, if any.
+
+    Only a value that is not an unrendered placeholder counts: a unit carrying
+    `@HUB_NOTIFY@` was never installed from this kit and decides nothing.
+    """
+    unit = Path(unit_dir) / "serveros-fleet-watch.service"
+    try:
+        text = unit.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _NOTIFY_IN_UNIT.search(text)
+    if not match or match.group(1).startswith("@"):
+        return None
+    return match.group(1)
 
 
 def _render(rel: str, values: dict[str, str]) -> str:
@@ -332,11 +369,27 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
                    " --cloudcli-credential <anchor> --identity <key> --systemd"]))
         units.append("serveros-fleet-node-connector.service")
     if "hub_watch" in mon:
+        if not ctx.notify:
+            # An update re-renders the unit. The destination chosen at the first
+            # install is the one already in the installed unit, so it is read
+            # back from there rather than asked for again — a decision made
+            # once is not a flag every later update has to remember.
+            ctx.notify = installed_notify(ctx.unit_dir)
+        if not ctx.notify:
+            # The unit is the only thing that decides whether a run's completion
+            # ever reaches a person. Rendered without a destination it would
+            # install a watcher that records everything and reports nothing,
+            # and the service would look healthy while doing it — so this is
+            # refused here, before a unit file exists, rather than defaulted.
+            raise KitError(
+                f"{k['device']}: the hub watcher needs a destination - pass --notify "
+                f"lark:user:<open_id>, lark:chat:<chat_id>, journal (writes the "
+                f"cards, sends nothing) or off")
         binding = str(Path(mon["hub_watch"]["binding"].replace("~", str(ctx.home), 1)))
         unit = _render(UNIT_TEMPLATES["hub_watch"], {
             "HUB_REPO": str(ROOT), "HUB_PYTHON": py, "HUB_BINDING": binding,
+            "HUB_NOTIFY": ctx.notify,
             "HUB_DOC_URL": "https://github.com/ProfessorZhi/serveros/blob/main/distribution/README.md"})
-        unit = unit.replace("--interval 30", f"--interval 30 --notify {ctx.notify}")
         steps += [
             Step("monitor", "agent monitor: check the card spec renders",
                  [py, "-m", "fleet_hub_watch", "--check-spec",
@@ -660,7 +713,9 @@ def update(args) -> int:
     print(f"ability-management at {rev}")
     install_argv = [args.python, str(HERE / "device_kit.py"), "install", "--device", k["device"],
                     "--ability-rev", rev, "--ability-repo", str(repo), "--home", str(home),
-                    "--python", args.python, "--notify", args.notify, "--apply"]
+                    "--python", args.python, "--apply"]
+    if args.notify:
+        install_argv += ["--notify", args.notify]
     if args.data_root:
         install_argv += ["--data-root", args.data_root]
     if args.enable:
@@ -700,8 +755,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-root")
     parser.add_argument("--home", default=str(Path.home()))
     parser.add_argument("--python", default=sys.executable)
-    parser.add_argument("--notify", default="journal",
-                        help="hub only: journal, or lark:user:<open_id> for Feishu")
+    parser.add_argument("--notify", default=None,
+                        help="hub only, required there: lark:user:<open_id> or "
+                             "lark:chat:<chat_id> for Feishu, journal (writes the cards, "
+                             "sends nothing), off (no notifier)")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--enable", action="store_true", help="also enable and start the units")
     parser.add_argument("--no-pull", action="store_true", help="update: use this checkout as it is")

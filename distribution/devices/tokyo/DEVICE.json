@@ -77,7 +77,7 @@
         "unit": "serveros-fleet-watch.service",
         "template": {
           "path": "integrations/fleet-hub-watch/serveros-fleet-watch.service.template",
-          "digest": "sha256:5b3384000abfa848ea94869ed7f97cd8be68966f1e00a5770dde5d1648a48f3d"
+          "digest": "sha256:60abd481fdafcfcb56487af7fa586cb19845609a6d85466c514032e871af025a"
         },
         "binding": "~/.config/serveros/fleet-v1.yaml",
         "card_spec": {
@@ -85,7 +85,7 @@
           "digest": "sha256:b57bbd0a970272f2779b898eef27b22f8d002aa3e23953c1cae552f5b1d53242"
         },
         "binding_needs": "core_lite.snapshot_path: ~/.local/state/serveros/core-lite/status.json",
-        "notify_default": "journal (switch to lark:user:<open_id> after checking the cards)"
+        "notify": "required at the first install, kept by later updates: lark:user:<open_id> | lark:chat:<chat_id> | journal (writes the cards, sends nothing) | off"
       }
     },
     "commander": {
