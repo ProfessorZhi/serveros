@@ -230,9 +230,54 @@ def candidates(requirements: list[dict], facts: list[dict], subjects: list[str],
                 reasons.append(f"{req['fact_type']}: value does not match")
             elif "contains" in req and req["contains"] not in (value or []):
                 reasons.append(f"{req['fact_type']}: {req['contains']!r} not present")
-            elif "model_source" in req and not any(
-                    isinstance(m, dict) and m.get("source") == req["model_source"]
-                    and m.get("model") == req.get("model", m.get("model")) for m in value or []):
-                reasons.append(f"{req['fact_type']}: no model from {req['model_source']}")
+            elif "model_source" in req:
+                offered = [m for m in value or [] if isinstance(m, dict)
+                           and m.get("source") == req["model_source"]
+                           and m.get("model") == req.get("model", m.get("model"))]
+                if not offered:
+                    reasons.append(f"{req['fact_type']}: no model from {req['model_source']}")
+                elif subject_kind(subject) == "profile":
+                    # The owner's rules are applied here, to every profile
+                    # candidate: a model the profile offers but policy forbids
+                    # is not offered at all.
+                    gateway = resolve(facts, subject, "profile.gateway", now)["value"] or {}
+                    verdicts = [policy_allows(subject, model=m["model"], source=m["source"],
+                                              gateway=gateway.get("target")) for m in offered]
+                    if not any(ok for ok, _ in verdicts):
+                        reasons.append("policy: " + verdicts[0][1])
         results.append({"subject_ref": subject, "eligible": not reasons, "reasons": reasons})
     return results
+
+
+# -- the owner's runtime policy ----------------------------------------------
+
+@lru_cache(maxsize=1)
+def runtime_policy() -> dict:
+    return yaml.safe_load((HERE / "runtime-policy.yaml").read_text(encoding="utf-8"))
+
+
+def policy_allows(profile_ref: str, *, model: str, source: str,
+                  gateway: str | None = None) -> tuple[bool, str]:
+    """May this profile run `model` from `source` (through `gateway`)?
+
+    Rules come from `runtime-policy.yaml`: the device's own entry, else
+    `default`. A runtime kind the rule does not name is refused; a rule that
+    names gateways refuses an unknown gateway (fail closed).
+    """
+    if subject_kind(profile_ref) != "profile":
+        raise IntelligenceError(f"policy is judged per profile, not {profile_ref!r}")
+    device_id, _principal, runtime, _name = profile_ref.split(":", 1)[1].split("/")
+    device = f"device:{device_id}"
+    policy = runtime_policy()
+    rules = (policy.get("devices", {}).get(device) or policy["default"])["runtimes"]
+    rule = rules.get(runtime)
+    if rule is None:
+        return False, f"{runtime} is not allowed on {device}"
+    if source not in rule.get("model_sources", []):
+        return False, f"{source} is not an allowed model source for {runtime} on {device}"
+    if rule.get("gateways") and gateway not in rule["gateways"]:
+        return False, f"gateway {gateway or 'UNKNOWN'} is not allowed for {runtime} on {device}"
+    patterns = rule.get("model_patterns")
+    if patterns and not any(re.search(p, model) for p in patterns):
+        return False, f"model {model!r} is not allowed for {runtime} on {device}"
+    return True, "allowed"

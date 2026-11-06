@@ -104,17 +104,18 @@ class PathBindings(unittest.TestCase):
 
 class Candidates(unittest.TestCase):
     def test_choose_a_profile_by_model_source(self):
+        gw = "profile:tokyo-shared-dev-01/main/claude-code/gateway0"
+        sub = "profile:tokyo-shared-dev-01/main/claude-code/subscription"
         facts = [
-            fact(A6000_PROFILE_GW, "profile.models", [{"model": "deepseek-v4", "source": "gateway"}]),
-            fact(A6000_PROFILE_SUB, "profile.models",
+            fact(gw, "profile.models", [{"model": "deepseek-v4", "source": "gateway"}]),
+            fact(sub, "profile.models",
                  [{"model": "opus", "source": "official_subscription"},
                   {"model": "sonnet", "source": "official_subscription"}]),
         ]
         want = [{"fact_type": "profile.models", "min_status": "OBSERVED",
                  "model_source": "official_subscription"}]
-        result = {r["subject_ref"]: r["eligible"]
-                  for r in fi.candidates(want, facts, [A6000_PROFILE_GW, A6000_PROFILE_SUB], NOW)}
-        self.assertEqual(result, {A6000_PROFILE_GW: False, A6000_PROFILE_SUB: True})
+        result = {r["subject_ref"]: r["eligible"] for r in fi.candidates(want, facts, [gw, sub], NOW)}
+        self.assertEqual(result, {gw: False, sub: True})
 
     def test_unknown_fails_closed_with_a_reason(self):
         facts = [fact(TOKYO, "capability.docker", True)]
@@ -140,3 +141,47 @@ class TheContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheOwnersPolicy(unittest.TestCase):
+    """fleet/runtime-policy.yaml, as set on 2026-11-06."""
+
+    def test_the_a6000_runs_only_claude_code_through_gateway0_deepseek(self):
+        ok, _ = fi.policy_allows(A6000_PROFILE_GW, model="deepseek-v4", source="gateway",
+                                 gateway="target:gateway0")
+        self.assertTrue(ok)
+        for kwargs, words in [
+            ({"model": "opus", "source": "official_subscription"}, "model source"),
+            ({"model": "deepseek-v4", "source": "gateway", "gateway": "target:other"}, "gateway"),
+            ({"model": "deepseek-v4", "source": "gateway"}, "UNKNOWN"),
+            ({"model": "qwen-3", "source": "gateway", "gateway": "target:gateway0"}, "model"),
+        ]:
+            with self.subTest(kwargs=kwargs):
+                ok, reason = fi.policy_allows(A6000_PROFILE_GW, **kwargs)
+                self.assertFalse(ok)
+                self.assertIn(words, reason)
+        ok, reason = fi.policy_allows("profile:llm-lab-dell/main/codex/default",
+                                      model="gpt-6", source="official_subscription")
+        self.assertFalse(ok)
+        self.assertIn("codex is not allowed", reason)
+
+    def test_gpt_uses_our_own_account_everywhere_else(self):
+        tokyo_codex = "profile:tokyo-shared-dev-01/main/codex/default"
+        self.assertTrue(fi.policy_allows(tokyo_codex, model="gpt-6",
+                                         source="official_subscription")[0])
+        self.assertFalse(fi.policy_allows(tokyo_codex, model="gpt-6", source="official_api")[0])
+
+    def test_candidates_drop_a_profile_policy_forbids(self):
+        sub = "profile:llm-lab-dell/main/claude-code/subscription"
+        facts = [fact(sub, "profile.models", [{"model": "opus", "source": "official_subscription"}]),
+                 fact(A6000_PROFILE_GW, "profile.models",
+                      [{"model": "deepseek-v4", "source": "gateway"}]),
+                 fact(A6000_PROFILE_GW, "profile.gateway", {"host": "gw0", "target": "target:gateway0"})]
+        want_sub = [{"fact_type": "profile.models", "min_status": "OBSERVED",
+                     "model_source": "official_subscription"}]
+        [result] = fi.candidates(want_sub, facts, [sub], NOW)
+        self.assertFalse(result["eligible"])
+        self.assertIn("policy:", result["reasons"][0])
+        want_gw = [{"fact_type": "profile.models", "min_status": "OBSERVED", "model_source": "gateway"}]
+        [result] = fi.candidates(want_gw, facts, [A6000_PROFILE_GW], NOW)
+        self.assertTrue(result["eligible"], result["reasons"])
