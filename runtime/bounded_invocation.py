@@ -104,6 +104,40 @@ def _receipt_lock(lock: Path):
         ) from None
 
 
+def _launcher_guard():
+    """`runtime/launcher_guard.py`, loaded by path for the reason `_store_io` is."""
+    if "launcher_guard" in sys.modules:
+        return sys.modules["launcher_guard"]
+    spec = importlib.util.spec_from_file_location(
+        "launcher_guard", Path(__file__).resolve().parent / "launcher_guard.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["launcher_guard"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _credential_findings(argv: list[str]) -> list[str]:
+    """Issue #171: the line this helper is about to start, judged before `Popen`.
+
+    Every agent this repository starts goes through `invoke_once` (the native
+    reader and the continuation wake), so this is the one place a command line
+    can be refused before it exists in `ps`. `--mcp-config` takes a file or an
+    inline string; both are read. A finding names a code and a position, never
+    the value.
+    """
+    guard = _launcher_guard()
+    found = list(guard.audit_argv(argv))
+    for index, token in enumerate(argv[:-1]):
+        if token != "--mcp-config":
+            continue
+        value = argv[index + 1]
+        if value.lstrip().startswith("{"):
+            found += guard.audit_mcp_config(value, f"argv[{index + 1}]")
+        else:
+            found += guard.audit_argv_stream([], mcp_config=Path(value))
+    return [f.line() for f in found]
+
+
 def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
                 input_text: str = "", timeout: int = 120, readonly: bool = True,
                 max_output_bytes: int = 2_000_000, env: dict | None = None) -> dict:
@@ -152,6 +186,11 @@ def invoke_once(*, key: str, argv: list[str], cwd: Path, receipts: Path,
             "env must map portable names ([A-Za-z_][A-Za-z0-9_]*) to string "
             "values with no NUL; a name nothing can address is a typo, not a "
             "setting")
+    findings = _credential_findings(argv)
+    if findings:
+        # Refused on the near side of `Popen`, as a `ValueError`, like every other
+        # refusal here: nothing has been written and nothing started.
+        raise ValueError("launcher_guard refused the command line: " + "; ".join(findings))
     receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
     if receipts.stat().st_mode & 0o077:
         raise ValueError("receipt directory must be private (0700)")
