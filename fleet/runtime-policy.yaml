@@ -1,0 +1,34 @@
+# Which agent, configured how, may run where — the owner's DEFAULT rules.
+#
+# Not the live rules: the hub reads ~/.serveros/runtime-policy.yaml over this
+# file (same shape; a device entry there replaces the one here, `null` removes
+# it). Change rules there — no code change, no pull request. This file is the
+# starting point a fresh hub gets.
+#
+# The commander chooses everything else on its own (which skill, plugin or MCP,
+# single agent, subagents or a workflow, which model for the task). It chooses
+# INSIDE these rules: fleet/intelligence.py `policy_allows` is applied to every
+# candidate before a dispatch, and a choice outside them is refused, not warned.
+#
+# A rule names what is allowed; anything not named is refused. A device with no
+# entry of its own gets `default`. Rules are by device and runtime kind, and
+# constrain the model SOURCE and, optionally, the model name and the gateway.
+schema: serveros/fleet-runtime-policy.v1
+
+default:
+  runtimes:
+    claude-code:
+      model_sources: [official_subscription, gateway]
+    codex:
+      # GPT runs on our own ChatGPT account quota, never on API billing.
+      model_sources: [official_subscription]
+
+devices:
+  device:llm-lab-dell:
+    # Owner, 2026-11-06: on the A6000 only Claude Code, and only through
+    # gateway 0's DeepSeek.
+    runtimes:
+      claude-code:
+        model_sources: [gateway]
+        gateways: [target:gateway0]
+        model_patterns: ['^deepseek']

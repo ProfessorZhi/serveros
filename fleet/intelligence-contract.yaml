@@ -83,7 +83,7 @@ fact_types:
   # profile-scoped facts: what a configuration offers
   profile.models:          {scope: profile, ttl_seconds: 86400}   # value: [{model, source}]
   profile.permission_mode: {scope: profile, ttl_seconds: 86400}
-  profile.gateway:         {scope: profile, ttl_seconds: 86400}   # value: {host} — never a key
+  profile.gateway:         {scope: profile, ttl_seconds: 86400}   # value: {host, target} — never a key
   # path facts
   path.binding:            {scope: path, ttl_seconds: 86400}      # value: see path_binding
 
