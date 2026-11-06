@@ -2,18 +2,39 @@
   "schema": "2.0",
   "config": {
     "update_multi": true,
-    "width_mode": "default"
+    "width_mode": "default",
+    "summary": {
+      "content": "正常 · 2 台设备"
+    }
   },
   "header": {
     "template": "green",
     "title": {
       "tag": "plain_text",
-      "content": "✅ Fleet 资源播报 · 正常 · [示例]"
+      "content": "Fleet 资源播报 · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",
       "content": "10-29 周四 · 14:30 更新（北京时间）"
-    }
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "正常"
+        },
+        "color": "green"
+      },
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "2 台"
+        },
+        "color": "neutral"
+      }
+    ]
   },
   "body": {
     "direction": "vertical",

@@ -2,18 +2,31 @@
   "schema": "2.0",
   "config": {
     "update_multi": true,
-    "width_mode": "default"
+    "width_mode": "default",
+    "summary": {
+      "content": "日报：完成 6 · 失败 1 · 仍未结束 1"
+    }
   },
   "header": {
     "template": "yellow",
     "title": {
       "tag": "plain_text",
-      "content": "📋 Fleet 日报 · 10-29 周四 · [示例]"
+      "content": "Fleet 日报 · 10-29 周四 · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",
       "content": "18:30 生成（北京时间） · 统计当天 00:00 起"
-    }
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "仍有未结束"
+        },
+        "color": "orange"
+      }
+    ]
   },
   "body": {
     "direction": "vertical",

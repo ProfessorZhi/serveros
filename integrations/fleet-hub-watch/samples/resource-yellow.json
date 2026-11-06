@@ -2,18 +2,39 @@
   "schema": "2.0",
   "config": {
     "update_multi": true,
-    "width_mode": "default"
+    "width_mode": "default",
+    "summary": {
+      "content": "注意 · Dell A6000 内存 91% / 256 GiB"
+    }
   },
   "header": {
     "template": "yellow",
     "title": {
       "tag": "plain_text",
-      "content": "⚠️ Fleet 资源播报 · 注意 · [示例]"
+      "content": "Fleet 资源播报 · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",
       "content": "10-29 周四 · 14:30 更新（北京时间）"
-    }
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "注意"
+        },
+        "color": "orange"
+      },
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "3 台"
+        },
+        "color": "neutral"
+      }
+    ]
   },
   "body": {
     "direction": "vertical",

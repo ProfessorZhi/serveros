@@ -2,18 +2,31 @@
   "schema": "2.0",
   "config": {
     "update_multi": true,
-    "width_mode": "default"
+    "width_mode": "compact",
+    "summary": {
+      "content": "报警 · Dell A6000 · 磁盘 DATA：已用 93% · 余 260 GiB（报警线 92%）"
+    }
   },
   "header": {
     "template": "red",
     "title": {
       "tag": "plain_text",
-      "content": "🚨 报警 · Dell A6000 · 磁盘 DATA · [示例]"
+      "content": "Dell A6000 · 磁盘 DATA · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",
       "content": "开始 10-29 14:02 · 持续 28 分钟"
-    }
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "报警"
+        },
+        "color": "red"
+      }
+    ]
   },
   "body": {
     "direction": "vertical",

@@ -98,7 +98,7 @@ CGROUP_ATTRIBUTION = "cgroup"
 #: now to keep the card inside that reference, not just inside a list.
 VOCABULARY = frozenset({
     "markdown", "hr", "collapsible_panel", "column_set", "column", "chart",
-    "plain_text", "standard_icon",
+    "plain_text", "standard_icon", "text_tag",
 })
 
 #: The one rule every CardKit 2.0 component reference states for `element_id`:

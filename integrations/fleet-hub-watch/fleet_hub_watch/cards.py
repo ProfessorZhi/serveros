@@ -97,13 +97,38 @@ def _minutes(start: datetime | str | None, end: datetime) -> str:
     return f"{total} 分钟" if total < 120 else f"{total // 60} 小时 {total % 60} 分钟"
 
 
-def _card(template: str, title: str, subtitle: str, elements: list[dict]) -> dict:
+#: The header tag's colour for each level. Feishu's `text_tag` palette has no
+#: "yellow" that reads on a yellow header, so 注意 is orange.
+TAG_COLOR = {OK: "green", WARN: "orange", ALERT: "red", UNCONFIRMED: "neutral"}
+
+
+def _tag(word: str, color: str) -> dict:
+    return {"tag": "text_tag", "text": {"tag": "plain_text", "content": word}, "color": color}
+
+
+def _card(template: str, title: str, subtitle: str, elements: list[dict], *,
+          tags: list[tuple[str, str]] = (), summary: str | None = None,
+          width: str = "default") -> dict:
+    """One CardKit 2.0 card.
+
+    `tags` become the header's `text_tag_list` (Feishu shows up to three, after
+    the title): the state lives there instead of an emoji in the title.
+    `summary` is `config.summary`, the line the chat list shows for this
+    message, so the state and the number are readable without opening it.
+    `width` is `compact` (400 px) for a single alert, `default` otherwise.
+    """
+    config: dict[str, Any] = {"update_multi": True, "width_mode": width}
+    if summary:
+        config["summary"] = {"content": summary[:120]}
+    header: dict[str, Any] = {"template": template,
+                              "title": {"tag": "plain_text", "content": title},
+                              "subtitle": {"tag": "plain_text", "content": subtitle}}
+    if tags:
+        header["text_tag_list"] = [_tag(word, color) for word, color in list(tags)[:3]]
     card = {
         "schema": "2.0",
-        "config": {"update_multi": True, "width_mode": "default"},
-        "header": {"template": template,
-                   "title": {"tag": "plain_text", "content": title},
-                   "subtitle": {"tag": "plain_text", "content": subtitle}},
+        "config": config,
+        "header": header,
         "body": {"direction": "vertical", "elements": elements},
     }
     return _fmc().validate(card)
@@ -165,7 +190,13 @@ def resource_card(views: list[dict], *, now: datetime, sample: bool = False,
             expanded=view["level"] in (WARN, ALERT)))
     elements.append(_hr())
     elements.append(_md(text["footer"]))
-    return _card(TEMPLATE[level], title, subtitle, elements)
+    flagged = counts[ALERT] + counts[WARN]
+    summary = (f"{WORD[level]} · {len(views)} 台设备" if not flagged else
+               f"{WORD[level]} · " + "；".join(f"{v['name']} {r['label']} {r['text']}"
+                                               for v, r in attention[:2]))
+    return _card(TEMPLATE[level], title, subtitle, elements,
+                 tags=[(WORD[level], TAG_COLOR[level]), (f"{len(views)} 台", "neutral")],
+                 summary=summary)
 
 
 # -- 报警卡 -------------------------------------------------------------------
@@ -185,12 +216,14 @@ def alert_card(episode: dict, *, now: datetime, sample: bool = False,
     state = episode.get("state", "OPEN")
     level = episode["level"]
     subject = episode["subject"]
+    # The title names the object; the state is the header colour and its tag.
+    head = subject
     if state == "RECOVERED":
-        template, head = TEMPLATE[OK], f"{ICON[OK]} 已恢复 · {subject}"
+        template, tag = TEMPLATE[OK], ("已恢复", TAG_COLOR[OK])
     elif state == "ESCALATED":
-        template, head = TEMPLATE[UNCONFIRMED], f"⬆️ 已升级为报警 · {subject}"
+        template, tag = TEMPLATE[UNCONFIRMED], ("已升级为报警", "neutral")
     else:
-        template, head = TEMPLATE[level], f"{ICON[level]} {WORD[level]} · {subject}"
+        template, tag = TEMPLATE[level], (WORD[level], TAG_COLOR[level])
     if sample:
         head += f" · {SAMPLE_TITLE}"
     end = episode.get("recovered_at") or now
@@ -221,7 +254,8 @@ def alert_card(episode: dict, *, now: datetime, sample: bool = False,
     elements.append(_panel(_eid("det", episode["episode"]), text["details_title"], detail,
                            expanded=False))
     elements.append(_md(text["footer"]))
-    return _card(template, head, subtitle, elements)
+    return _card(template, head, subtitle, elements, tags=[tag],
+                 summary=f"{tag[0]} · {subject}：{episode['text']}", width="compact")
 
 
 # -- 任务完成卡 ---------------------------------------------------------------
@@ -242,7 +276,10 @@ def completion_card(runs: list[dict], *, now: datetime, sample: bool = False,
         elements.append(_md(SAMPLE_LINE))
     elements.append(_md("\n".join(lines)))
     elements.append(_md(text["basis"]))
-    return _card(TEMPLATE[OK], title, f"{_local(now, with_date=True)}（北京时间）", elements)
+    return _card(TEMPLATE[OK], title, f"{_local(now, with_date=True)}（北京时间）", elements,
+                 tags=[(f"{len(runs)} 个", "green")],
+                 summary=f"任务完成 {len(runs)} 个：" + "、".join(
+                     str(r.get("project") or r["run_id"]) for r in runs[:3]))
 
 
 # -- 每日日报 -----------------------------------------------------------------
@@ -293,7 +330,11 @@ def daily_card(day: dict, *, now: datetime, sample: bool = False,
         elements.append(_md(f"**{text['headings'][name]}**\n{sections[name]}"))
     elements.append(_hr())
     elements.append(_md(text["footer"]))
-    return _card(TEMPLATE[level], title, subtitle, elements)
+    open_count = len(day.get("open_now", []))
+    return _card(TEMPLATE[level], title, subtitle, elements,
+                 tags=[("仍有未结束" if open_count else "全部结束", TAG_COLOR[level])],
+                 summary=(f"日报：完成 {runs.get('completed', 0)} · 失败 {runs.get('failed', 0)}"
+                          f" · 仍未结束 {open_count}"))
 
 
 # -- spec proof ---------------------------------------------------------------
