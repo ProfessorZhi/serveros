@@ -495,11 +495,16 @@ class InstallScriptsPutNothingSecretInAnArgument(unittest.TestCase):
                     self.assertNotIn(variable, body)
 
     def test_the_windows_installer_hands_the_task_a_script_and_its_arguments(self):
+        # wscript.exe rather than powershell.exe: an action that is a console
+        # program flashes a window on every start, and -WindowStyle Hidden
+        # cannot stop it (docs/fleet-reverse-tunnel-recovery.md, "Windows
+        # process lifetime").
         self.assertIn(
-            "$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argument",
+            "$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $argument",
             self.ps1,
         )
         self.assertIn("$ScriptPath", self._assignment_body("$argument"))
+        self.assertIn("run-hidden-wait.vbs", self.ps1)
 
     def test_the_windows_installer_prints_a_fingerprint_and_not_the_secret(self):
         self.assertIn("Get-FileHash", self.ps1)
