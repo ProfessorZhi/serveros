@@ -412,9 +412,37 @@ class FleetService:
         if profile is not None:
             permission_mode = profile.permission_mode if permission_mode is None else permission_mode
             by = "owner-max profile"
+        # The caller's own choice is capped by the project grant; the owner's
+        # policy default is not the caller's choice and is not capped by it.
         self._may_name_mode_and_model(device_ref, project, grant,
                                       model=model, permission_mode=permission_mode)
+        model, by = self._apply_runtime_policy(device_ref, runtime, family, model, by)
         return model, permission_mode, by
+
+    def _apply_runtime_policy(self, device_ref: str, runtime: str, family: str, model, by):
+        """The owner's runtime policy decides the model nobody named, and vets a named one.
+
+        So the commander never has to ask the owner which model: it omits
+        `model` and the device's `default_model` applies. A named model outside
+        the device's rule is refused here, before a session exists.
+        """
+        from fleet import intelligence
+
+        kind = {"claude": "claude-code", "codex": "codex"}.get(family)
+        if kind is None:
+            return model, by
+        if model is None:
+            choice = intelligence.default_choice(device_ref, kind)
+            if not choice["allowed"]:
+                raise refuse(WRITE_NOT_GRANTED, f"runtime policy: {choice['reason']}")
+            default = choice["model"]
+            if default is not None and self._library_has(device_ref, runtime, family, default):
+                return default, "runtime policy default_model"
+            return model, by
+        ok, reason = intelligence.model_name_allowed(device_ref, kind, model)
+        if not ok:
+            raise refuse(WRITE_NOT_GRANTED, f"runtime policy: {reason}")
+        return model, by
 
     @staticmethod
     def _project_row(rows, project_id: str) -> dict[str, Any] | None:
@@ -656,6 +684,23 @@ class FleetService:
         }
 
     # -- CloudCLI model library ----------------------------------------------
+
+    def _library_has(self, device_ref: str, runtime: str, family: str, model_id: str) -> bool:
+        """Whether the device's model library holds `model_id`, when that can be read.
+
+        A policy default the device does not have yet would make CloudCLI refuse
+        the create; the device's own default is used instead until the entry
+        exists. An unreadable library (not enabled, unreachable) also falls back.
+        """
+        provider = self._provider(device_ref, runtime)
+        lister = getattr(provider, "list_models", None)
+        if lister is None:
+            return False
+        try:
+            answer = lister(provider=family)
+        except FleetRefusal:
+            return False
+        return any(e.get("model_id") == model_id for e in (answer or {}).get("entries") or [])
 
     def _model_library_target(self, principal: Principal, device: Any, runtime: str):
         self._validate_runtime_selector(runtime)

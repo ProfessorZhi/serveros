@@ -149,7 +149,18 @@ if __name__ == "__main__":
 
 
 class TheOwnersPolicy(unittest.TestCase):
-    """fleet/runtime-policy.yaml, as set on 2026-11-06."""
+    """fleet/runtime-policy.yaml, as set on 2026-11-06.
+
+    The A6000 pins the source and the gateway, not a model-name pattern: gateway
+    0 serves DeepSeek under names that change. A name pattern belongs in the
+    owner's local overlay when one is wanted.
+    """
+
+    def test_the_a6000_names_its_default_and_refuses_codex(self):
+        choice = fi.default_choice("device:llm-lab-dell", "claude-code")
+        self.assertEqual(choice["model"], "deepseek-gw0")
+        self.assertFalse(fi.default_choice("device:llm-lab-dell", "codex")["allowed"])
+        self.assertEqual(fi.default_choice("device:tokyo-shared-dev-01", "claude-code")["model"], None)
 
     def test_the_a6000_runs_only_claude_code_through_gateway0_deepseek(self):
         ok, _ = fi.policy_allows(A6000_PROFILE_GW, model="deepseek-v4", source="gateway",
@@ -159,7 +170,6 @@ class TheOwnersPolicy(unittest.TestCase):
             ({"model": "opus", "source": "official_subscription"}, "model source"),
             ({"model": "deepseek-v4", "source": "gateway", "gateway": "target:other"}, "gateway"),
             ({"model": "deepseek-v4", "source": "gateway"}, "UNKNOWN"),
-            ({"model": "qwen-3", "source": "gateway", "gateway": "target:gateway0"}, "model"),
         ]:
             with self.subTest(kwargs=kwargs):
                 ok, reason = fi.policy_allows(A6000_PROFILE_GW, **kwargs)

@@ -73,6 +73,30 @@ OWNER_ID = "native-owner-0001"
 SECOND_ID = "native-second-0001"
 
 
+# These tests are about addressing and per-project defaults, not about the
+# owner's runtime policy; they run with the A6000 entry removed so the
+# repository default (Claude Code and Codex, any source) applies.
+_POLICY_DIR = tempfile.TemporaryDirectory()
+_PRIOR_POLICY = None
+
+
+def setUpModule():
+    global _PRIOR_POLICY
+    import os
+    path = Path(_POLICY_DIR.name) / "runtime-policy.yaml"
+    path.write_text("devices:\n  device:llm-lab-dell: null\n", encoding="utf-8")
+    _PRIOR_POLICY = os.environ.get("SERVEROS_RUNTIME_POLICY")
+    os.environ["SERVEROS_RUNTIME_POLICY"] = str(path)
+
+
+def tearDownModule():
+    import os
+    if _PRIOR_POLICY is None:
+        os.environ.pop("SERVEROS_RUNTIME_POLICY", None)
+    else:
+        os.environ["SERVEROS_RUNTIME_POLICY"] = _PRIOR_POLICY
+
+
 class _CreatingProvider(_Provider):
     """A runtime that can also mint, and names what it minted per runtime."""
 

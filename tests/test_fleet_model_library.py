@@ -220,3 +220,34 @@ def test_listing_annotates_each_entry_with_the_policy(tmp_path, a6000_like_polic
     assert by_id["sonnet"]["policy"]["allowed"] is False
     assert by_id["deepseek-gw0"]["policy"]["inferred_source"] == "gateway"
     assert "pasted-by-hand" not in json.dumps(out)
+
+
+# -- the commander never has to name a model --------------------------------------
+
+def test_no_model_named_takes_the_policy_default_when_the_device_has_it(tmp_path, monkeypatch):
+    from fleet import intelligence
+    h = Harness(tmp_path)
+    monkeypatch.setattr(intelligence, "default_choice",
+                        lambda d, k: {"allowed": True, "model": "deepseek-gw0", "reason": "x"})
+    h.tokyo.list_models = lambda *, provider: cm.project(provider, LISTING)
+    assert h.service._apply_runtime_policy(TOKYO, "claude", "claude", None, None) == (
+        "deepseek-gw0", "runtime policy default_model")
+
+
+def test_a_default_the_device_lacks_falls_back_to_the_device_default(tmp_path, monkeypatch):
+    from fleet import intelligence
+    h = Harness(tmp_path)
+    monkeypatch.setattr(intelligence, "default_choice",
+                        lambda d, k: {"allowed": True, "model": "not-there", "reason": "x"})
+    h.tokyo.list_models = lambda *, provider: cm.project(provider, LISTING)
+    assert h.service._apply_runtime_policy(TOKYO, "claude", "claude", None, None) == (None, None)
+
+
+def test_a_runtime_the_policy_does_not_name_is_refused_at_create(tmp_path, monkeypatch):
+    from fleet import intelligence
+    h = Harness(tmp_path)
+    monkeypatch.setattr(intelligence, "default_choice",
+                        lambda d, k: {"allowed": False, "model": None,
+                                      "reason": "codex is not allowed on x"})
+    with pytest.raises(FleetRefusal, match="codex is not allowed"):
+        h.service._apply_runtime_policy(TOKYO, "claude", "codex", None, None)

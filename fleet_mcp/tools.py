@@ -683,9 +683,12 @@ TOOLS: tuple[Tool, ...] = (
                     "is refused rather than redirected."
                 ),
                 "model": _string(
-                    "Model id for the session. Omit to let the device use its own "
-                    "default for the chosen provider — which is the only value "
-                    "every project accepts. A model named here must be listed for "
+                    "Model id for the session. Omit it unless the task needs a "
+                    "specific model: the device's runtime-policy `default_model` "
+                    "applies when its model library holds that entry, otherwise "
+                    "the device's own default — the only value every project "
+                    "accepts. A named model must also satisfy the device's runtime "
+                    "policy (fleet_models_list shows which entries do). A model named here must be listed for "
                     "this project in the local binding; a caller does not get to "
                     "pick a backend the operator has not considered."
                 ),
