@@ -447,90 +447,70 @@ profiles:
   linux-gpu-compute:
     device_ref: device:llm-lab-dell
     platform: linux
+    # 2026-11-06: the Fleet runtime on this device runs as `fjd` (owner
+    # decision, and the three-device audit's VERIFIED principal). The bindings
+    # this profile carried until today pointed into `vince`'s home — another
+    # principal's directory, which the audit marked P0. They are withdrawn
+    # rather than moved: the subdirectory names under fjd's home are observed
+    # to exist but are not recorded in this repository, and a guessed path is
+    # worse than an UNBOUND one. A device-local scan as `fjd` binds them.
     paths:
       data_root:
         state: UNBOUND
         provenance: server_local_agent
         note: >-
-          UNBOUND for a structural reason rather than as a gap somebody has yet
-          to close: the roles below do not sit under one root. Source and
-          worktrees resolve under the home directory; toolchains resolve to
-          `~/.local/opt`. Any single value here would make
-          `{DATA_ROOT}/toolchains` resolve to a path that means nothing. The
-          two Windows profiles give this answer for the same reason -- separate
-          volumes there, separate trees here -- reached from the same question
-          rather than copied from them.
+          The roles below do not sit under one root on this machine, so no
+          single data root is bound.
       workspace.src:
-        path: /home/vince/projects
-        state: BOUND
-        provenance: server_local_agent
+        state: UNBOUND
+        provenance: audit_2026_11_06
         note: >-
-          The directory source checkouts live in, bound the way
-          `windows-corporate` binds `D:\projects`: the parent, not one
-          checkout. The primary checkout inside it is `llm-lab-dev`. Binding a
-          single repository here would answer "where does source live" with the
-          name of one project, and the next checkout would have no role to
-          resolve through.
+          Observed in use under fjd's home (projects); path not recorded here.
+          Was /home/vince/projects — another principal's — until 2026-11-06.
       workspace.worktrees:
-        path: /home/vince/projects/worktrees
-        state: BOUND
-        provenance: server_local_agent
+        state: UNBOUND
+        provenance: audit_2026_11_06
+        note: >-
+          Observed in use under fjd's home (about 37 entries). Was
+          /home/vince/projects/worktrees until 2026-11-06.
       artifacts:
         state: UNBOUND
-        provenance: server_local_agent
+        provenance: audit_2026_11_06
+        note: Observed in use under fjd's home; path not recorded here.
       state:
         state: UNBOUND
-        provenance: server_local_agent
-      toolchains:
-        path: /home/vince/.local/opt
-        state: BOUND
-        provenance: server_local_agent
+        provenance: audit_2026_11_06
         note: >-
-          User-level toolchains, under the home directory rather than under a
-          per-host toolchains root. Worth stating out loud because Beijing and
-          Tokyo both bind a `toolchains` directory OUTSIDE the home directory:
-          a reader who assumed the usual shape would resolve this role to a
-          path that does not exist on this machine, and would be right about
-          the pattern and wrong about the device.
+          Two state roots are in use (serverosd's, and Core-Lite / device-kit
+          publishing). They are separate roles, not one; see the audit's
+          state.serverosd / state.core_lite proposal.
+      toolchains:
+        state: UNBOUND
+        provenance: audit_2026_11_06
+        note: Was /home/vince/.local/opt — another principal's — until 2026-11-06.
       runtime-assets:
         state: UNBOUND
-        provenance: server_local_agent
+        provenance: audit_2026_11_06
+        note: serverosd is observed starting from a runtime-assets directory under fjd's home.
       downloads:
         state: UNBOUND
-        provenance: server_local_agent
+        provenance: audit_2026_11_06
       software.gui:
         state: NOT_APPLICABLE
         provenance: server_local_agent
-        note: >-
-          NOT_APPLICABLE rather than UNBOUND: this machine's role is a headless
-          compute and development worker, so the role has no meaning on it.
-          This is the same kind of claim `linux-shared-multiuser` makes about
-          itself, and it is falsifiable in the same way -- a desktop session
-          observed on the device would make this line wrong rather than merely
-          old.
+        note: Headless; no desktop session is expected on this device.
       knowledge.corporate:
         state: UNBOUND
         provenance: server_local_agent
-        note: >-
-          UNBOUND, and NOT NOT_APPLICABLE -- the distinction `windows-personal`
-          turns the other way. This device is company-owned and used for
-          company work, so the role plausibly applies and its path is simply
-          not known from here; a personal machine can say the role has no
-          meaning on it at all. Neither answer has been read off this machine,
-          so the one that keeps the question open is the one written down.
       home:
-        path: /home/vince
+        path: /home/operator
         state: BOUND
         provenance: server_local_agent
         note: >-
-          Note that this is `/home/vince`, which is Tokyo's answer inverted.
-          On `linux-shared-multiuser` the human homes are on the 4 TB data
-          volume and `/home/vince` is specifically where a user's files are
-          NOT; here `/home/vince` IS the home. The two Windows profiles say
-          nothing about this role at all -- UNBOUND, which is a gap and not a
-          different value -- so the pair of Linux answers is where this file's
-          point is visible: one role, two unrelated physical paths, and no
-          layer above allowed to know either literal.
+          fjd's home, recorded by `stat` (metadata only, mode 0750 fjd:fjd) in
+          docs/fleet-v1-dell-fjd-cutover-plan.md and the principal the
+          2026-11-06 audit verified for the running Fleet runtime. Until that
+          date this role was /home/vince: a different OS user's home.
 
 rules:
   - "A profile is selected by the device, not by the caller. Asking for a path

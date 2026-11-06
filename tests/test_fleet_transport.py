@@ -146,7 +146,9 @@ def test_profiles_bind_one_role_to_different_physical_paths():
     registry = DeviceRegistry(contract("registry.yaml"))
     profiles = Profiles(contract("profiles.yaml"))
 
-    lab = profiles.resolve(registry.resolve("device:llm-lab-dell"), "workspace.src")
+    # Tokyo stands in for the Linux side: the Dell LLM Lab's workspace.src is
+    # UNBOUND since 2026-11-06 (it pointed into another principal's home).
+    lab = profiles.resolve(registry.resolve("device:tokyo-shared-dev-01"), "workspace.src")
     fj = profiles.resolve(registry.resolve("device:work-fj"), "workspace.src")
     dell = profiles.resolve(registry.resolve("device:personal-dell"), "workspace.src")
 
