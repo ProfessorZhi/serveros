@@ -21,7 +21,7 @@ using only public in-tree code:
 The old owner-private #15 producer is labelled
 `HISTORICAL_PRIVATE_SOURCE_UNVERIFIED`; it is never read, extracted or copied.
 Pinned public fixtures remain for consumer-gate tests where the producer is not
-the point.  See `integrations/fleet-v1-portability/README.md`.
+the point.
 
 WHAT THIS FILE STILL PINS
 -------------------------
