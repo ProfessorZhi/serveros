@@ -37,7 +37,7 @@ from typing import Any, Callable
 
 from .workboard import CANDIDATE_KINDS, SOURCE_KINDS
 from . import cloudcli_native
-from .errors import BAD_REQUEST, FleetRefusal, refuse
+from .errors import BAD_REQUEST, INTERNAL, FleetRefusal, refuse
 from .fleet import Principal
 from .identity import SessionKey
 from .privacy import redact_payload
@@ -1279,7 +1279,19 @@ def call_tool(ctx: ToolContext, name: str, arguments: dict[str, Any] | None) -> 
         return _refusal_answer(ctx, exc, tool=tool.name)
     except ValueError as exc:
         return _refusal_answer(ctx, refuse(BAD_REQUEST, str(exc)), tool=tool.name)
-    return _disclose(ctx, _ok(payload))
+    try:
+        return _disclose(ctx, _ok(payload))
+    except TypeError as exc:
+        # A handler that returns a value `json.dumps` cannot carry is a defect
+        # in the handler, and this used to leave as an unattributed "internal
+        # error" from the dispatcher, several frames from the tool that caused
+        # it. Named here, where the tool is known and the refusal record
+        # carries its name.
+        return _refusal_answer(ctx, refuse(
+            INTERNAL,
+            f"{tool.name} returned a result that cannot be serialized "
+            f"({type(exc).__name__}); nothing was returned",
+        ), tool=tool.name)
 
 
 def _refusal_answer(ctx: ToolContext, exc: FleetRefusal,
