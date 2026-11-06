@@ -82,7 +82,7 @@
         "binding": "~/.config/serveros/fleet-v1.yaml",
         "card_spec": {
           "path": "integrations/fleet-hub-watch/card-spec.yaml",
-          "digest": "sha256:5d914b238222070754b71795b340b7c446dcaa411547ff549adfd73436ee8a3c"
+          "digest": "sha256:b57bbd0a970272f2779b898eef27b22f8d002aa3e23953c1cae552f5b1d53242"
         },
         "binding_needs": "core_lite.snapshot_path: ~/.local/state/serveros/core-lite/status.json",
         "notify_default": "journal (switch to lark:user:<open_id> after checking the cards)"
