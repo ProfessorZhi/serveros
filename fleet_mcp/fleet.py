@@ -1719,9 +1719,27 @@ class FleetService:
         session_ok = key.ref in self.config.policy.send_allow
         grant_verbs = self._operator_grant_verbs(principal, key.device_ref, key.provider)
         scope_ok = SCOPE_SEND in principal.scopes
+        allowed = bool(scope_ok and device_ok and (session_ok or "send" in grant_verbs))
+        # One plain answer to "why may I (not) send", so no caller has to infer
+        # it from three booleans. `session_allowlisted: false` next to
+        # `send_allowed: true` read to a commander as "the owner must authorize
+        # again" (Tokyo, 2026-11-06); it means a different grant applies.
+        if allowed:
+            authorized_by = "SESSION_ALLOWLIST" if session_ok else "OPERATOR_GRANT"
+            denied_because = None
+        else:
+            authorized_by = None
+            if not scope_ok:
+                denied_because = "this credential does not carry fleet:send"
+            elif not device_ok:
+                denied_because = "sending is not enabled for this device and runtime"
+            else:
+                denied_because = ("neither this session is allowlisted nor does an "
+                                  "operator grant give this principal send on this device")
         return {
-            "send_allowed": bool(scope_ok and device_ok
-                                 and (session_ok or "send" in grant_verbs)),
+            "send_allowed": allowed,
+            "send_authorized_by": authorized_by,
+            "send_denied_because": denied_because,
             "device_authorized": device_ok,
             "session_allowlisted": bool(session_ok),
             # Reported as the verbs the grant actually supplied, and empty for

@@ -1,0 +1,48 @@
+"""A CloudCLI that runs Claude from its own config dir gets the family too."""
+import importlib.util
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("device_kit", ROOT / "distribution/device_kit.py")
+dk = importlib.util.module_from_spec(spec)
+sys.modules.setdefault("device_kit", dk)
+spec.loader.exec_module(dk)
+
+
+def _proc(root: Path, pid: str, cmd: str, env: dict) -> None:
+    d = root / pid
+    d.mkdir(parents=True)
+    (d / "cmdline").write_bytes(cmd.replace(" ", "\0").encode())
+    (d / "environ").write_bytes("\0".join(f"{k}={v}" for k, v in env.items()).encode())
+
+
+def test_config_dir_is_read_from_the_running_cloudcli(tmp_path):
+    proc = tmp_path / "proc"
+    _proc(proc, "101", "node /usr/lib/node_modules/@yalehwang/cloudcli/server/index.js",
+          {"HOME": "/home/fjd", "CLAUDE_CONFIG_DIR": "/srv/cloudcli/claude"})
+    _proc(proc, "102", "node /opt/other/app.js", {"CLAUDE_CONFIG_DIR": "/elsewhere"})
+    _proc(proc, "103", "cloudcli serve", {"HOME": "/home/svc"})
+    assert dk.cloudcli_claude_dirs(tmp_path, proc) == [Path("/srv/cloudcli/claude"),
+                                                       Path("/home/svc/.claude")]
+
+
+def test_dell_plan_rolls_out_into_cloudclis_dir(tmp_path):
+    doc = dk.declaration()
+    k = dk.kit(doc, "dell")
+    ctx = dk.Context(ability_repo=tmp_path / "am", ability_rev="a" * 40, data_root=tmp_path / "data",
+                     home=tmp_path / "home", python="python3", notify=None,
+                     cloudcli_claude_dir=tmp_path / "cc-claude")
+    argvs = [s.argv for s in dk.linux_steps(k, ctx) if s.layer == "family"]
+    assert any("--claude-config-dir" in a and str(tmp_path / "cc-claude") in a
+               and "rollout" in a for a in argvs)
+    assert any("--claude-config-dir" in a and "readback" in a for a in argvs)
+
+
+def test_same_dir_as_the_shell_is_not_rolled_out_twice(tmp_path):
+    k = dk.kit(dk.declaration(), "dell")
+    home = tmp_path / "home"
+    ctx = dk.Context(ability_repo=tmp_path / "am", ability_rev="a" * 40, data_root=tmp_path / "data",
+                     home=home, python="python3", notify=None, cloudcli_claude_dir=home / ".claude")
+    argvs = [s.argv for s in dk.linux_steps(k, ctx) if s.layer == "family"]
+    assert not any("--claude-config-dir" in a for a in argvs)

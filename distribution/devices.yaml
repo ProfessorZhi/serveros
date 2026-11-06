@@ -62,12 +62,14 @@ devices:
     device_ref: device:llm-lab-dell
     principal: fjd
     os: linux
-    role: company GPU compute and model deployment first; owner's personal projects when idle
+    role: company GPU compute and model deployment first; background work (production
+      observation, shared-gateway changes, tests) while Windows is short of resources
     core:
       composition: plugin/profiles/linux-work.yaml
-      agents: [claude-code, codex]
+      agents: [claude-code, codex]   # installed; which may RUN is fleet/runtime-policy.yaml
     family:
       profile: dell-gpu-compute
+      cloudcli: true                 # CloudCLI runs Claude from its own config dir here
     monitor:
       serverosd: true
       core_lite: native/node-core/core-lite/profiles/dell-fjd.profile.json
