@@ -178,7 +178,8 @@ def kit(doc: dict, name: str) -> dict:
             # Not a default any more: the install refuses without it. Named here
             # so a reader of the kit knows the decision the hub was installed
             # with is *somebody's*, not a fallback.
-            "notify": "required at install: lark:user:<open_id> | lark:chat:<chat_id> | "
+            "notify": "required at the first install, kept by later updates: "
+                      "lark:user:<open_id> | lark:chat:<chat_id> | "
                       "journal (writes the cards, sends nothing) | off"}
     layers["monitor"] = monitor
     if dev["commander"]:
@@ -237,6 +238,26 @@ class Context:
         self.lib_dir = self.home / ".local/lib/serveros-core-lite"
         self.unit_dir = self.home / ".config/systemd/user"
         self.state_dir = self.home / ".local/state/serveros"
+
+
+_NOTIFY_IN_UNIT = re.compile(r"^ExecStart=.*\s--notify\s+(\S+)", re.MULTILINE)
+
+
+def installed_notify(unit_dir: Path) -> str | None:
+    """The `--notify` destination of the hub watcher installed here, if any.
+
+    Only a value that is not an unrendered placeholder counts: a unit carrying
+    `@HUB_NOTIFY@` was never installed from this kit and decides nothing.
+    """
+    unit = Path(unit_dir) / "serveros-fleet-watch.service"
+    try:
+        text = unit.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _NOTIFY_IN_UNIT.search(text)
+    if not match or match.group(1).startswith("@"):
+        return None
+    return match.group(1)
 
 
 def _render(rel: str, values: dict[str, str]) -> str:
@@ -336,6 +357,12 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
                    " --cloudcli-credential <anchor> --identity <key> --systemd"]))
         units.append("serveros-fleet-node-connector.service")
     if "hub_watch" in mon:
+        if not ctx.notify:
+            # An update re-renders the unit. The destination chosen at the first
+            # install is the one already in the installed unit, so it is read
+            # back from there rather than asked for again — a decision made
+            # once is not a flag every later update has to remember.
+            ctx.notify = installed_notify(ctx.unit_dir)
         if not ctx.notify:
             # The unit is the only thing that decides whether a run's completion
             # ever reaches a person. Rendered without a destination it would

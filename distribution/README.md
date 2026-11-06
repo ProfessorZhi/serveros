@@ -162,7 +162,9 @@ credential anchor and tunnel key, which only the owner supplies. On the hub,
 `--notify` is required: `lark:user:<open_id>` / `lark:chat:<chat_id>` sends the
 cards to Feishu, `journal` writes them locally and sends nothing, `off` runs the
 watcher with no notifier. Rendering the hub without it is refused, so an
-installed hub always has a stated destination. A Windows kit is plan-only here;
+installed hub always has a stated destination. It is asked for once: a later
+`install` or `update` without `--notify` reads the destination back from the
+installed `serveros-fleet-watch.service`, and passing `--notify` replaces it. A Windows kit is plan-only here;
 its README holds the PowerShell to run on the device.
 
 Add a device: one entry in `devices.yaml` (and a core-lite profile in

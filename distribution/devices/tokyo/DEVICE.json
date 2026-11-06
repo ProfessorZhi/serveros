@@ -85,7 +85,7 @@
           "digest": "sha256:5d914b238222070754b71795b340b7c446dcaa411547ff549adfd73436ee8a3c"
         },
         "binding_needs": "core_lite.snapshot_path: ~/.local/state/serveros/core-lite/status.json",
-        "notify": "required at install: lark:user:<open_id> | lark:chat:<chat_id> | journal (writes the cards, sends nothing) | off"
+        "notify": "required at the first install, kept by later updates: lark:user:<open_id> | lark:chat:<chat_id> | journal (writes the cards, sends nothing) | off"
       }
     },
     "commander": {
