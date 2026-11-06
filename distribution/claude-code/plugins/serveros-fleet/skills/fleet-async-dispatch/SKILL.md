@@ -9,7 +9,8 @@ description: Preserve the exact execution coordinates after a Fleet create/send 
 
 - **Use when:** right after any create/send ACK.
 - **Input:** the ACK.
-- **Steps:** (1) record device_ref, runtime, session_ref, run_id (or `NOT_RETURNED`), queued_message_uuid, idempotency_key, durability in the Work checkpoint; (2) return to coordination; (3) later, `fleet_get_run` / `fleet_read_session` / the artefact.
+- **Steps:** (1) read `delivery_state` — STARTED, QUEUED or UNCONFIRMED; (2) record device_ref, runtime, session_ref, run_id (or `NOT_RETURNED`), queued_message_uuid, idempotency_key, delivery_state, run_durability in the Work checkpoint; (3) return to coordination; (4) later, `fleet_get_run` / `fleet_read_session` / the artefact.
+- **Say to the person:** STARTED → "running"; QUEUED → "queued, not started yet"; UNCONFIRMED → "sent, not confirmed — checking the session". Never "dispatched" or "running" on QUEUED or UNCONFIRMED.
 - **Done when:** a fresh session could resume from the record alone.
 - **Never:** poll until settled; read a timeout as failure; resend with a fresh key to "find out".
 
@@ -43,12 +44,28 @@ accepted_at:       when the ACK was observed
 idempotency_durability:
                    PROCESS_LOCAL | AGENT_CONTROL_STORE | NOT_REQUESTED
                    # absent from an older service means UNKNOWN
+delivery_state:    STARTED | QUEUED | UNCONFIRMED      # from the send
+run_durability:    sqlite | process_local | UNKNOWN
 last_known_state:  ACKED | RUN_UNSETTLED | EFFECT_UNKNOWN | SETTLED_*
 ```
 
 Also record the receiving owner/model and the task's stop condition. Do not
 store the instruction text in the ACK record if the Work item already holds it;
 do not store a token, credential or raw provider blob anywhere.
+
+## What the send's `delivery_state` means
+
+`fleet_send_to_session` now says what happened instead of only "accepted":
+
+| delivery_state | fact | next step |
+|---|---|---|
+| `STARTED` | a run exists; Fleet read it back once | follow it later with `fleet_get_run` (wait=true) |
+| `QUEUED` | CloudCLI queued the message; nothing runs yet | if the session is stopped, start it (`fleet_cloudcli_native_capability` → `session_start` where offered), then follow the run; do not send again |
+| `UNCONFIRMED` | no run can be read back | `fleet_read_session` before telling anyone it was dispatched; do not resend blindly |
+
+`run_durability: process_local` means a CloudCLI restart can lose the run;
+check again rather than assume. A response from an older service with no
+`delivery_state` is UNCONFIRMED until a read shows otherwise.
 
 If the ACK has no `run_id`, record `run_id: NOT_RETURNED`. Do not invent one,
 and do not turn a successful create into a started run: "created" and "started"

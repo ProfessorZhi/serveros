@@ -106,7 +106,8 @@ Pass a stable `idempotency_key` for every create/send that may be retried after
 an unknown outcome. After the ACK:
 
 1. preserve the exact execution coordinates in the existing Work/checkpoint;
-2. note whether the ACK is delivery-only or carries a `run_id`;
+2. note the send's `delivery_state` — only STARTED is a running task; QUEUED
+   and UNCONFIRMED are reported as exactly that, never as "dispatched";
 3. return promptly to coordination.
 
 The ACK contract and the no-resend rule are in `fleet-async-dispatch`. Do not
