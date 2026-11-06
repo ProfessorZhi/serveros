@@ -118,3 +118,42 @@ def test_an_error_with_neither_text_nor_code_is_still_our_gap():
     with pytest.raises(FleetRefusal) as caught:
         structured({"isError": True, "content": []})
     assert caught.value.code == "INTERNAL"
+
+
+def _sending_harness(tmp_path):
+    key = SessionKey.compose(TOKYO, "claude", "owned-session")
+    h = Harness(tmp_path, send_allow=(key.ref,), allow_tokyo_send=True)
+    return h, key
+
+
+def test_a_queued_message_is_reported_queued_not_running(tmp_path):
+    h, key = _sending_harness(tmp_path)
+    h.tokyo.send = lambda *a, **k: {"runId": "r-1", "queued": True,
+                                    "queuedMessageUuid": "q-1", "durability": "sqlite"}
+    out = h.service.send_to_session(h.principal(), key, message="task")
+    assert out["delivery_state"] == "QUEUED"
+    assert out["run_durability"] == "sqlite"
+
+
+def test_a_run_that_cannot_be_read_back_is_unconfirmed(tmp_path):
+    """Tokyo, 2026-11-06: accepted with a run id, run_get said RUN_NOT_FOUND."""
+    h, key = _sending_harness(tmp_path)
+    h.tokyo.send = lambda *a, **k: {"runId": "r-2", "queued": False,
+                                    "durability": "process_local"}
+
+    def missing(*a, **k):
+        raise FleetRefusal("RUN_NOT_FOUND", "run 'r-2' is not known")
+
+    h.tokyo.get_run = missing
+    out = h.service.send_to_session(h.principal(), key, message="task")
+    assert out["delivery_state"] == "UNCONFIRMED"
+    assert "fleet_read_session" in out["delivery_hint"]
+    assert out["run_durability"] == "process_local"
+
+
+def test_a_readable_run_is_started(tmp_path):
+    h, key = _sending_harness(tmp_path)
+    h.tokyo.send = lambda *a, **k: {"runId": "r-3", "queued": False}
+    h.tokyo.get_run = lambda *a, **k: {"runId": "r-3", "status": "running"}
+    out = h.service.send_to_session(h.principal(), key, message="task")
+    assert out["delivery_state"] == "STARTED"

@@ -1860,6 +1860,37 @@ class FleetService:
         if claim is not None:
             self.dispatch.complete(claim, record)
 
+    def _delivery_state(self, key: SessionKey, provider, payload: dict[str, Any],
+                        run_id: str | None) -> tuple[str, str]:
+        """STARTED, QUEUED or UNCONFIRMED, with what the caller should do next.
+
+        An accepted send is not a started run. CloudCLI answers `queued: true`
+        when the message waits behind the session's current run or start, and
+        a run it reports may be unreadable a moment later (a process-local run
+        lost to a restart). Measured on Tokyo, 2026-11-06: a send answered with
+        a run id whose `run_get` returned RUN_NOT_FOUND while the session sat
+        idle — reported upstream as "dispatched". One bounded, non-waiting read
+        settles which of the three it is before anyone says "running".
+        """
+        if payload.get("queued") is True:
+            return "QUEUED", ("the message is queued, not running: follow it with "
+                              "fleet_get_run on this run_id, or read the session")
+        if not run_id:
+            return "UNCONFIRMED", ("no run id came back; read the session before "
+                                   "reporting the task as dispatched")
+        read_back = getattr(provider, "get_run", None)
+        if read_back is None:
+            return "UNCONFIRMED", ("this provider cannot read a run back; read the session "
+                                   "before reporting the task as dispatched")
+        try:
+            read_back(key, run_id, wait=False)
+        except FleetRefusal as exc:
+            return "UNCONFIRMED", (f"the run cannot be read back ({exc.code}); the "
+                                   f"message may not have started. Read the session "
+                                   f"with fleet_read_session before reporting it as "
+                                   f"dispatched, and do not resend blindly")
+        return "STARTED", "a run exists; follow it with fleet_get_run (wait=true)"
+
     def send_to_session(
         self,
         principal: Principal,
@@ -1924,6 +1955,7 @@ class FleetService:
             "raw": payload,
         }
         self._record_delivery_ack(claim, record, expect_execution=True)
+        state, hint = self._delivery_state(key, provider, payload, run_id)
         self.audit.record(
             "fleet.send",
             principal=principal.name,
@@ -1936,6 +1968,13 @@ class FleetService:
             "idempotent_replay": False,
             "run_id": run_id,
             "queued_message_uuid": record["queued_message_uuid"],
+            # What actually happened, not what the provider's envelope implied:
+            # STARTED (a run exists now), QUEUED (the message waits behind the
+            # session's current run or start), UNCONFIRMED (no run can be read
+            # and nothing says it was queued). Only STARTED means work began.
+            "delivery_state": state,
+            "delivery_hint": hint,
+            "run_durability": payload.get("durability") or "UNKNOWN",
             "run": record,
             "idempotency_durability": self.dispatch.durability if claim else "NOT_REQUESTED",
             "note": "session_send is message delivery. It grants no authority "
