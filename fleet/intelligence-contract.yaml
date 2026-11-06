@@ -1,0 +1,113 @@
+# Fleet intelligence: one model for what the fleet knows about its devices.
+#
+# Design input: docs/audits/2026-11-06-serveros-fleet/ (three-device audit).
+# The registry (registry.yaml) stays what it is — authored, stable identity.
+# Everything below is a FACT about a subject, carried in one envelope, with a
+# status that says how it is known and a freshness that says until when.
+#
+#   python3 -c "import fleet.intelligence as i; i.contract()"
+#
+# Read by fleet/intelligence.py. Pure L0: no transport, no hub, no runtime.
+schema: serveros/fleet-intelligence.v1
+
+# -- subjects ---------------------------------------------------------------
+# A fact is about exactly one subject. The ref says which, and its shape says
+# what kind. Principals and profiles are ALIASES chosen on the device (never an
+# OS account name, a home path or an e-mail): the public repository holds the
+# alias, the device's local node root maps it.
+subjects:
+  device:
+    pattern: '^device:[a-z0-9][a-z0-9-]{1,62}$'
+  principal:            # one OS user on one device: its own HOME, services, runtimes
+    pattern: '^principal:[a-z0-9][a-z0-9-]{1,62}/[a-z0-9][a-z0-9_-]{0,31}$'
+  runtime:              # one agent kind installed for one principal
+    pattern: '^runtime:[a-z0-9][a-z0-9-]{1,62}/[a-z0-9][a-z0-9_-]{0,31}/(claude-code|codex|cloudcli)$'
+  profile:              # one named configuration of one runtime (model set, gateway, mode)
+    pattern: '^profile:[a-z0-9][a-z0-9-]{1,62}/[a-z0-9][a-z0-9_-]{0,31}/(claude-code|codex)/[a-z0-9][a-z0-9_.-]{0,47}$'
+  path:                 # one path role bound for one principal
+    pattern: '^path:[a-z0-9][a-z0-9-]{1,62}/[a-z0-9][a-z0-9_-]{0,31}/[a-z][a-z0-9_.-]{1,47}$'
+  target:               # a named network destination reachability is measured to
+    pattern: '^target:[a-z0-9][a-z0-9_.-]{1,63}$'
+
+# -- how a fact is known ----------------------------------------------------
+# Ordered weakest to strongest for resolution. UNKNOWN, STALE and SKIPPED are
+# not points on that scale: they say the strength is not available now.
+statuses:
+  known: [DECLARED, SOURCE_CODE, DEPLOYED, OBSERVED, TESTED, VERIFIED]
+  not_known: [UNKNOWN, STALE, SKIPPED]
+
+# Which source kinds may produce which status. A declaration can never claim to
+# have been observed; only a test or a check with evidence can verify.
+sources:
+  declaration: [DECLARED]          # registry, profile, config file as written
+  source_code: [SOURCE_CODE]
+  installer:   [DEPLOYED]
+  collector:   [OBSERVED, UNKNOWN, SKIPPED]   # Core-Lite, node collector, readback
+  probe:       [OBSERVED, TESTED, UNKNOWN, SKIPPED]  # bounded active check
+  verifier:    [TESTED, VERIFIED, UNKNOWN]    # end-to-end check with evidence_ref
+
+envelope:
+  required: [subject_ref, fact_type, value, status, source, observed_at]
+  optional: [evidence_ref, collector_version, expires_at, note]
+  # Keys that may never appear anywhere inside `value`, at any depth: the
+  # same list transport bindings refuse.
+  forbidden_value_keys_source: transport-contract.yaml#transport.forbidden_binding_fields
+
+# -- fact types --------------------------------------------------------------
+# scope: which subject kind the fact may be about.
+# ttl_seconds: after observed_at + ttl an OBSERVED/TESTED/VERIFIED fact reads
+# STALE. DECLARED facts do not go stale; they are simply never more than
+# declared. Capacity is slow, load is fast, reachability is in between.
+fact_types:
+  # device-level stable facts
+  hardware.cpu:            {scope: device, ttl_seconds: 2592000}
+  hardware.memory:         {scope: device, ttl_seconds: 2592000}
+  hardware.gpu:            {scope: device, ttl_seconds: 2592000}
+  os.release:              {scope: device, ttl_seconds: 604800}
+  filesystem.mounts:       {scope: device, ttl_seconds: 86400}
+  # device-level live facts
+  resource.pressure:       {scope: device, ttl_seconds: 120}
+  gpu.contention:          {scope: device, ttl_seconds: 120}
+  service.health:          {scope: device, ttl_seconds: 300}
+  core_lite.live:          {scope: device, ttl_seconds: 300}
+  capability.docker:       {scope: device, ttl_seconds: 86400}
+  network.reach:           {scope: device, ttl_seconds: 3600}     # value: {target, result}
+  # principal-scoped facts
+  principal.home_bound:    {scope: principal, ttl_seconds: 86400}
+  principal.services:      {scope: principal, ttl_seconds: 300}
+  # runtime-scoped facts
+  runtime.version:         {scope: runtime, ttl_seconds: 86400}
+  runtime.active:          {scope: runtime, ttl_seconds: 300}
+  runtime.profiles:        {scope: runtime, ttl_seconds: 86400}   # value: [profile alias, ...]
+  ability.visible:         {scope: runtime, ttl_seconds: 86400}   # value: [skill/plugin id, ...]
+  # profile-scoped facts: what a configuration offers
+  profile.models:          {scope: profile, ttl_seconds: 86400}   # value: [{model, source}]
+  profile.permission_mode: {scope: profile, ttl_seconds: 86400}
+  profile.gateway:         {scope: profile, ttl_seconds: 86400}   # value: {host} — never a key
+  # path facts
+  path.binding:            {scope: path, ttl_seconds: 86400}      # value: see path_binding
+
+# Where a model is served from. A profile may list several models from several
+# sources; a request is only known to have gone to a source once a call through
+# that profile is VERIFIED — a model name alone never proves the provider.
+model_sources:
+  official_subscription: the agent vendor's own sign-in (Claude / ChatGPT subscription)
+  official_api:          the vendor API with an API key held by the device
+  gateway:               a shared gateway the device routes through (e.g. LiteLLM)
+  self_hosted:           a model server the fleet runs itself
+
+# -- path bindings -----------------------------------------------------------
+path_binding:
+  states: [BOUND, UNBOUND, NOT_APPLICABLE, STALE_BINDING, CONFLICT, BLOCKED_IDENTITY, UNDECLARED_IN_USE]
+  rules:
+    - a BOUND path that does not exist reads STALE_BINDING
+    - a BOUND path owned by another principal reads BLOCKED_IDENTITY unless shared is declared
+    - two canonical bindings for one principal and role read CONFLICT
+    - a directory observed in use with no binding reads UNDECLARED_IN_USE
+    - unknown existence stays UNKNOWN; it is never read as absent
+
+# -- what is NOT a fact ------------------------------------------------------
+# Work assignment — which device works on which project now — is computed per
+# task from the facts above, or assigned explicitly per task. It is never a
+# field of the registry or of this model.
+not_facts: [current_task, project_assignment, device_role_for_work]
