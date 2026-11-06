@@ -251,9 +251,44 @@ def candidates(requirements: list[dict], facts: list[dict], subjects: list[str],
 
 # -- the owner's runtime policy ----------------------------------------------
 
-@lru_cache(maxsize=1)
+#: Where the live rules live: the hub's own node root, never this repository.
+#: `SERVEROS_RUNTIME_POLICY` names another file (tests, a second hub).
+LOCAL_POLICY = Path("~/.serveros/runtime-policy.yaml")
+
+
+def _policy_path() -> Path:
+    import os
+    named = os.environ.get("SERVEROS_RUNTIME_POLICY")
+    return Path(named).expanduser() if named else LOCAL_POLICY.expanduser()
+
+
+@lru_cache(maxsize=8)
+def _read_policy(path: str, mtime: float) -> dict:
+    return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+
+
 def runtime_policy() -> dict:
-    return yaml.safe_load((HERE / "runtime-policy.yaml").read_text(encoding="utf-8"))
+    """The rules in force: the repository's defaults, overlaid by the hub's file.
+
+    The repository file is a starting point, not the rules. The owner changes
+    rules by editing the local file — no code change, no pull request, read
+    again on its next modification. The overlay is per key: a local `default`
+    replaces the repository's `default`; a local device entry replaces that
+    device's entry and leaves the others; `devices: {device:x: null}` removes one.
+    """
+    base = _read_policy(str(HERE / "runtime-policy.yaml"),
+                        (HERE / "runtime-policy.yaml").stat().st_mtime)
+    local_path = _policy_path()
+    if not local_path.is_file():
+        return {**base, "source": "repository-default"}
+    local = _read_policy(str(local_path), local_path.stat().st_mtime)
+    if local.get("schema") not in (None, base.get("schema")):
+        raise IntelligenceError(f"{local_path}: schema {local.get('schema')!r} is not "
+                                f"{base.get('schema')!r}")
+    devices = {**(base.get("devices") or {}), **(local.get("devices") or {})}
+    return {**base, "default": local.get("default", base["default"]),
+            "devices": {k: v for k, v in devices.items() if v is not None},
+            "source": str(local_path)}
 
 
 def policy_allows(profile_ref: str, *, model: str, source: str,

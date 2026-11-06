@@ -6,6 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 from fleet import intelligence as fi
 
+# The repository defaults are what these tests read, whatever rules the host
+# running them has in its own ~/.serveros/runtime-policy.yaml.
+import os as _os
+_os.environ["SERVEROS_RUNTIME_POLICY"] = "/nonexistent/serveros-runtime-policy.yaml"
+
 NOW = datetime(2026, 11, 6, 8, 0, tzinfo=timezone.utc)
 A6000 = "device:llm-lab-dell"
 TOKYO = "device:tokyo-shared-dev-01"
@@ -185,3 +190,41 @@ class TheOwnersPolicy(unittest.TestCase):
         want_gw = [{"fact_type": "profile.models", "min_status": "OBSERVED", "model_source": "gateway"}]
         [result] = fi.candidates(want_gw, facts, [A6000_PROFILE_GW], NOW)
         self.assertTrue(result["eligible"], result["reasons"])
+
+
+class ThePolicyIsNotHardcoded(unittest.TestCase):
+    def setUp(self):
+        import os, tempfile
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self._dir.name, "runtime-policy.yaml")
+        self._old = os.environ.get("SERVEROS_RUNTIME_POLICY")  # the module default
+        os.environ["SERVEROS_RUNTIME_POLICY"] = self.path
+
+    def tearDown(self):
+        import os
+        if self._old is None:
+            os.environ.pop("SERVEROS_RUNTIME_POLICY", None)
+        else:
+            os.environ["SERVEROS_RUNTIME_POLICY"] = self._old
+        self._dir.cleanup()
+
+    def write(self, text):
+        import os, time
+        with open(self.path, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.utime(self.path, (time.time() + 1, time.time() + 1))
+
+    def test_without_a_local_file_the_repository_default_applies(self):
+        self.assertEqual(fi.runtime_policy()["source"], "repository-default")
+
+    def test_a_local_file_changes_a_device_rule_without_a_code_change(self):
+        self.write("devices:\n  device:llm-lab-dell:\n    runtimes:\n      claude-code:\n"
+                   "        model_sources: [gateway, official_subscription]\n")
+        ok, _ = fi.policy_allows(A6000_PROFILE_GW, model="opus", source="official_subscription")
+        self.assertTrue(ok)
+        self.assertEqual(fi.runtime_policy()["source"], self.path)
+
+    def test_a_local_null_removes_a_device_rule_back_to_default(self):
+        self.write("devices:\n  device:llm-lab-dell: null\n")
+        self.assertTrue(fi.policy_allows("profile:llm-lab-dell/main/codex/default",
+                                         model="gpt-6", source="official_subscription")[0])

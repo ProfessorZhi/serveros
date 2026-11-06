@@ -1,4 +1,9 @@
-# Which agent, configured how, may run where — the owner's rules.
+# Which agent, configured how, may run where — the owner's DEFAULT rules.
+#
+# Not the live rules: the hub reads ~/.serveros/runtime-policy.yaml over this
+# file (same shape; a device entry there replaces the one here, `null` removes
+# it). Change rules there — no code change, no pull request. This file is the
+# starting point a fresh hub gets.
 #
 # The commander chooses everything else on its own (which skill, plugin or MCP,
 # single agent, subagents or a workflow, which model for the task). It chooses
