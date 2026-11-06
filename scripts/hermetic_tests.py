@@ -30,8 +30,9 @@ FLAKY and does not fail the run. A listed failure that now passes is reported
 so its line can be deleted. Without `--baseline` the exit code is pytest's.
 
 Some tests read two sibling repositories: `ability-management` (the
-composition evaluator, the ability catalogue) and the archived `hwz-ops` (the
-workspace declaration the composition fixture is built from). The runner finds
+composition evaluator, the ability catalogue) and the ops tree (the workspace
+declaration the composition fixture is built from) — `hwz-records/ops` since
+hwz-ops was merged into hwz-records, or the archived `hwz-ops` checkout. The runner finds
 each from its flag (`--ability-repo`, `--ops-repo`), its environment variable
 (`SERVEROS_ABILITY_REPO`, `SERVEROS_OPS_REPO`), or a sibling directory of that
 name next to this checkout, and exports it to those tests. Without one, the run
@@ -184,7 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ability-repo",
                         help="an ability-management checkout (default: discovered)")
     parser.add_argument("--ops-repo",
-                        help="an hwz-ops checkout (default: discovered)")
+                        help="the ops tree: hwz-records/ops or an archived hwz-ops checkout "
+                             "(default: discovered)")
     parser.add_argument("--shard", metavar="K/N",
                         help="run only the K-th of N interleaved slices of the test files")
     parser.add_argument("--baseline", type=Path,
@@ -216,10 +218,13 @@ def main(argv: list[str] | None = None) -> int:
         if abilities is not None:
             env["SERVEROS_ABILITY_REPO"] = str(abilities)
             env.setdefault("SERVEROS_COMPOSITION_EVALUATOR", str(abilities / EVALUATOR_REL))
-        ops = sibling_repo(args.ops_repo, "SERVEROS_OPS_REPO", "hwz-ops", OPS_MARKER)
+        # hwz-ops was merged into hwz-records/ops on 2026-10-19; the archived
+        # checkout is still accepted, the current one is preferred.
+        ops = (sibling_repo(args.ops_repo, "SERVEROS_OPS_REPO", "hwz-records/ops", OPS_MARKER)
+               or sibling_repo(None, "", "hwz-ops", OPS_MARKER))
         if ops is not None:
             env["SERVEROS_OPS_REPO"] = str(ops)
-        for name, found in (("ability-management", abilities), ("hwz-ops", ops)):
+        for name, found in (("ability-management", abilities), ("ops tree", ops)):
             print(f"{name}: {found or 'not found; tests that need it will say so'}",
                   file=sys.stderr, flush=True)
         files = shard_files(args.shard) if args.shard else []

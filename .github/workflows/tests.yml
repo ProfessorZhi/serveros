@@ -9,11 +9,12 @@
 #   python3 scripts/hermetic_tests.py --baseline tests/hermetic-known-failures.txt \
 #       --shard 2/4 -n auto
 #
-# Two sibling repositories are read by some tests: ability-management and the
-# archived hwz-ops. Both are private, so checking them out needs the repository
-# secret SIBLING_REPOS_TOKEN (a fine-grained token with read access to
-# contents of those two repositories). Without it the tests that need them
-# fail and say which checkout is missing.
+# Two sibling trees are read by some tests: ability-management and the ops tree,
+# which has lived in hwz-records/ops since hwz-ops was merged there. Both are
+# private, so checking them out needs the repository secret SIBLING_REPOS_TOKEN
+# (a fine-grained token with read access to ability-management and hwz-records;
+# a token that still only reaches the archived hwz-ops keeps working, see the
+# fallback below). Without it the tests that need them say which is missing.
 name: Tests
 
 on:
@@ -24,6 +25,12 @@ on:
 
 permissions:
   contents: read
+
+# A newer push to the same pull request makes the older run worthless; a push
+# to main is evidence and is never cancelled.
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plugin:
@@ -44,6 +51,11 @@ jobs:
         run: python3 distribution/build.py check
       - name: Device kits match devices.yaml
         run: python3 distribution/device_kit.py check
+      - name: Every client package builds
+        run: |
+          for client in openai codex claude-code mcp; do
+            python3 distribution/build.py zip --client "$client" --out "$RUNNER_TEMP/dist"
+          done
       - name: Plugin and Skill tests
         run: >
           python3 -m pytest -q -p no:cacheprovider
@@ -76,8 +88,19 @@ jobs:
           # The tests read pinned revisions out of its history.
           fetch-depth: 0
           persist-credentials: false
-      - name: Check out hwz-ops next to it
+      - name: Check out hwz-records (the ops tree) next to it
+        id: records
         if: env.SIBLING_TOKEN != ''
+        continue-on-error: true
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: ProfessorZhi/hwz-records
+          path: hwz-records
+          token: ${{ env.SIBLING_TOKEN }}
+          sparse-checkout: ops
+          persist-credentials: false
+      - name: Fall back to the archived hwz-ops
+        if: env.SIBLING_TOKEN != '' && steps.records.outcome != 'success'
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: ProfessorZhi/hwz-ops

@@ -14,20 +14,15 @@
 # Claude Code and Codex CLI do not need these zips: they install and update from
 # the repository root, which is the `serveros-fleet` marketplace.
 #
-# On a pull request the same assets are built and kept as workflow artifacts,
-# so a broken package is caught before it can be released. Only a push to main
-# (or a manual run) replaces the release.
+# Pull requests do not run this workflow: `Tests` already checks every client
+# tree and builds every client zip, and `serveros-core-lite-windows` builds and
+# runs the Windows collector. Only a push to main (or a manual run) builds the
+# assets here and replaces the release.
 name: fleet-release
 
 on:
   push:
     branches: [main]
-    paths:
-      - "distribution/**"
-      - "integrations/fleet-v1-first-install/plugin/**"
-      - "native/node-core/**"
-      - ".github/workflows/fleet-release.yml"
-  pull_request:
     paths:
       - "distribution/**"
       - "integrations/fleet-v1-first-install/plugin/**"

@@ -11,18 +11,6 @@ on:
       - '.github/scripts/hosted_daemon_inputs.py'
       - 'tests/test_hosted_daemon_inputs.py'
       - '.github/workflows/serveros-native-linux-contract.yml'
-  push:
-    branches:
-      - 'test/fleet-v1-complete-*'
-    paths:
-      - 'native/node-core/**'
-      - 'runtime/native_core_facts.py'
-      - 'runtime/daemon.py'
-      - 'tests/test_daemon.py'
-      - 'tests/test_native_core_facts.py'
-      - '.github/scripts/hosted_daemon_inputs.py'
-      - 'tests/test_hosted_daemon_inputs.py'
-      - '.github/workflows/serveros-native-linux-contract.yml'
 
 permissions:
   contents: read
