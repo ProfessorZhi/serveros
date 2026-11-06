@@ -259,14 +259,30 @@ def admit_core_lite(
     # Only here — an authenticated route that NAMED this device — may the
     # document be read. `verified_route=True` is passed because the route, not
     # the document, established it.
-    summary = readback.readback(
-        fetch.document,
-        expected_device_ref=device_ref,
-        binding_account=binding_account,
-        received_at=received_at,
-        verified_route=True,
-        max_age_seconds=max_age_seconds,
-    )
+    try:
+        summary = readback.readback(
+            fetch.document,
+            expected_device_ref=device_ref,
+            binding_account=binding_account,
+            received_at=received_at,
+            verified_route=True,
+            max_age_seconds=max_age_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001 - a document is written by the device
+        # The route was authenticated and it named this device; the DOCUMENT did
+        # not survive being read. That is still a Fleet-side answer and still
+        # says nothing about whether the device is up, so it is reported the way
+        # a raising source is — not as `NO_DOCUMENT` (something came back), not
+        # as a device fault, and never by letting the exception out: this used
+        # to be the one statement outside the `try`, so a single malformed
+        # document took down `fleet_list_devices` and `fleet_status` together
+        # with the same unattributed "internal error".
+        name = type(exc).__name__
+        return _placeholder(
+            device_ref, binding_account, received_at,
+            state="SOURCE_FAILED",
+            reason="the device's Core-Lite document could not be read",
+            failure=name if name in SAFE_FAILURE_NAMES else "Exception")
     summary["route"] = {
         "state": "VERIFIED",
         "device_ref": device_ref,

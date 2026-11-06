@@ -40,7 +40,11 @@
           },
           {
             "path": "native/node-core/core-lite/windows/deploy/register-publish-task.ps1",
-            "digest": "sha256:2bf271c8f60e9d0a46e773d1dfcdab2b64db75cf59da8e72ca2c4212d36f420f"
+            "digest": "sha256:3ad8fb6fcab15ba5de5a4ecaa4b00193c03c648735dc993cd0eb9d83ed947e3d"
+          },
+          {
+            "path": "native/node-core/core-lite/windows/deploy/run-hidden-wait.vbs",
+            "digest": "sha256:c73f9ba68fffdb2672f0949d7c96d5e761f718679ae114ddbd70faa9d1b0fef8"
           }
         ],
         "status_file": "%LOCALAPPDATA%\\ServerOS\\state\\core-lite\\status.json"
@@ -49,7 +53,11 @@
         "what": "link: reports this device to the hub (tokyo)",
         "template": {
           "path": "fleet_mcp/node/install.ps1",
-          "digest": "sha256:3b19400790188488ec617cbd996a0ebfe656e77a39b98e8255c9d5a55b2afa39"
+          "digest": "sha256:06f7ece1ae54e84b715c22c41238d9882e07f8106ff9249f3b6708b97545984f"
+        },
+        "launcher": {
+          "path": "fleet_mcp/node/run-hidden-wait.vbs",
+          "digest": "sha256:ed581861f0215afae648d96bc61f792c7909f085ab3e2983a1883e9510bf961c"
         }
       }
     }

@@ -7,6 +7,12 @@ Task Scheduler's smallest repetition is one minute (systemd's timer runs every
 privilege, and ignores a new start while one is running. It does nothing until
 this script is run, and -Unregister removes it.
 
+The action is wscript.exe running run-hidden-wait.vbs, not PowerShell itself.
+A task that names pwsh.exe or powershell.exe pops a console window every
+minute, because the console is allocated before PowerShell can hide it; see
+docs/fleet-reverse-tunnel-recovery.md, "Windows process lifetime". Re-running
+this script therefore keeps the window away instead of bringing it back.
+
 Usage:
   register-publish-task.ps1 -Bin <dir> -ProfilePath <profile.json> [-Filesystem ROLE=PATH ...]
   register-publish-task.ps1 -Unregister
@@ -29,13 +35,16 @@ if ($Unregister) {
 if (-not $Bin -or -not $ProfilePath) { throw "-Bin and -ProfilePath are required" }
 
 $script = Join-Path $PSScriptRoot 'publish-status.ps1'
-$arguments = @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
-               '-File', "`"$script`"", '-Bin', "`"$Bin`"", '-ProfilePath', "`"$ProfilePath`"")
+$launcher = Join-Path $PSScriptRoot 'run-hidden-wait.vbs'
+foreach ($path in @($script, $launcher)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "missing $path" }
+}
+
+$arguments = @('//B', "`"$launcher`"", "`"$script`"",
+               '-Bin', "`"$Bin`"", '-ProfilePath', "`"$ProfilePath`"")
 foreach ($spec in $Filesystem) { $arguments += @('-Filesystem', "`"$spec`"") }
 
-$pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
-if (-not $pwsh) { $pwsh = (Get-Command powershell).Source }
-$action = New-ScheduledTaskAction -Execute $pwsh -Argument ($arguments -join ' ')
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ($arguments -join ' ')
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
     -RepetitionInterval (New-TimeSpan -Minutes 1)
 $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
