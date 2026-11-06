@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-11
+tool_surface_revision: fleet-mcp-12
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -376,6 +376,43 @@ tools:
       answers from it — PROJECT_NOT_FOUND after a force delete, `was_archived:
       true` after an archive. That is a statement about the present; a cached
       answer would replay the past.
+
+  fleet_models_list:
+    verb: read
+    answers: one device's CloudCLI model library for a provider, entry by entry, with env keys and kinds and the runtime policy's verdict
+    answered_by: >-
+      the device's own CloudCLI REST model routes on loopback, read with a login
+      token its owner placed on that machine (node route `POST /v1/models`, or
+      the hub's own binding for a hub-local CloudCLI); projected on the device
+    authorization: >-
+      fleet:read, and the device's binding must name `model_library_token_path`
+      (CAPABILITY_UNSUPPORTED otherwise).
+    secrets: >-
+      No secret value is ever in the answer: a `secret` row says only that it is
+      set, a `value` row whose key looks like a credential is withheld, and an
+      `envref` row carries the variable NAME. The projection runs on the device.
+
+  fleet_model_upsert:
+    verb: write
+    answers: the entry as the device's library reads it back after the write, and whether that matches what was written (`verified`)
+    answered_by: the device's own CloudCLI REST model routes on loopback (node route `POST /v1/models/upsert`)
+    schema: >-
+      device, model_id, label, env and source are required; provider defaults to
+      claude, gateway is a target ref. env rows are value, envref (naming a
+      CloudCLI service variable), unset, or secret WITHOUT a value (keep the
+      stored one). A credential-looking key may only be an envref.
+    authorization: >-
+      fleet:control; the declared source must fit the rows; runtime policy
+      (fleet/runtime-policy.yaml plus the device's local overlay) must allow the
+      source, gateway and every model name the entry runs; then the device's
+      `allow_control` and the `control` operator grant; then the device's own
+      `allow_model_library_write`, which an owner-max profile does not imply.
+    secrets: >-
+      A secret value is refused on the hub AND re-refused on the device; the
+      CloudCLI login token never leaves the device.
+    idempotency: >-
+      Upsert by model_id: the same call twice leaves the same entry. A built-in
+      model id is refused rather than shadowed.
 
   fleet_inbox:
     verb: read
@@ -752,7 +789,7 @@ native_mirror:
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 51
+  served_total: 53
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.
@@ -825,6 +862,12 @@ node_transport:
     # What the device runs, as its last update recorded it. Named and
     # parameterless like the Core route, and signed over the caller's nonce.
     - 'GET /v1/device/versions'
+    # CloudCLI's model library on the device: list projected entries, and create
+    # or replace ONE entry. Provider and entry ride in the SIGNED body. The
+    # connector reaches CloudCLI's REST routes on loopback with its owner's
+    # token; no secret value crosses in either direction.
+    - 'POST /v1/models'
+    - 'POST /v1/models/upsert'
   route_set: closed
   declared_in: fleet_mcp/node_protocol.py#ROUTES
   rule: >-

@@ -655,6 +655,150 @@ class FleetService:
                     "NOT_RECORDED means no update has run there yet.",
         }
 
+    # -- CloudCLI model library ----------------------------------------------
+
+    def _model_library_target(self, principal: Principal, device: Any, runtime: str):
+        self._validate_runtime_selector(runtime)
+        if not isinstance(device, str) or not device.strip():
+            raise refuse(BAD_REQUEST, "device is required")
+        device_ref = resolve_or_refuse(self.registry, device).device_ref.ref
+        binding = self.config.namespace_binding(device_ref, runtime)
+        if binding is None or not binding.enabled:
+            raise refuse(UNKNOWN_DEVICE, f"{device_ref} has no enabled binding for {runtime}")
+        provider = self._require_provider(device_ref, binding.runtime)
+        return device_ref, binding, provider
+
+    def list_models(self, principal: Principal, *, device: str, provider: str = "claude",
+                    runtime: str = BASE_RUNTIME) -> dict[str, Any]:
+        """One device's CloudCLI model library: entries, their env keys and kinds.
+
+        No secret value is in the answer — the device withholds them before
+        anything leaves it. Each entry is annotated with whether this device's
+        runtime policy would let it run, so a commander can choose without a
+        second call.
+        """
+        from . import cloudcli_models
+
+        principal.require(SCOPE_READ)
+        self.admit(principal)
+        if provider not in cloudcli_models.PROVIDER_RUNTIME:
+            raise refuse(BAD_REQUEST, f"provider must be one of {sorted(cloudcli_models.PROVIDER_RUNTIME)}")
+        device_ref, binding, prov = self._model_library_target(principal, device, runtime)
+        lister = getattr(prov, "list_models", None)
+        if lister is None:
+            raise refuse("CAPABILITY_UNSUPPORTED",
+                         f"{device_ref}'s provider ({prov.kind}) has no model library route",
+                         device_ref=device_ref)
+        answer = lister(provider=provider)
+        if not isinstance(answer, dict) or answer.get("schema") != cloudcli_models.SCHEMA:
+            raise refuse(INTERNAL, "the device's model library answer is not one this build reads",
+                         retry_safe=False)
+        for entry in answer.get("entries") or []:
+            entry["policy"] = self._model_policy(device_ref, binding.runtime, provider, entry)
+        answer["device_ref"] = device_ref
+        answer["runtime"] = binding.runtime
+        self.audit.record("fleet.models_list", principal=principal.name, device_ref=device_ref,
+                          provider=provider, entries=len(answer.get("entries") or []))
+        return answer
+
+    def _model_policy(self, device_ref: str, runtime: str, provider: str,
+                      entry: dict[str, Any]) -> dict[str, Any]:
+        """What runtime-policy.yaml says about one listed entry, inferred from its rows."""
+        from fleet import intelligence
+        from . import cloudcli_models
+
+        rows = entry.get("env") or []
+        base = next((r for r in rows if r.get("key") in ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL")
+                     and r.get("kind") in ("value", "envref")), None)
+        source = "gateway" if base else "official_subscription"
+        ok, reason = intelligence.policy_allows(
+            self._policy_profile(device_ref, runtime, provider),
+            model=entry.get("model_id") or "", source=source, gateway=None)
+        note = None
+        if base and not ok and "gateway" in reason:
+            # Which gateway a URL is cannot be read off the entry; the caller
+            # declares it when writing. Say so rather than guess.
+            note = "the gateway this entry routes to is declared when it is written"
+        return {"allowed": ok, "reason": reason, "inferred_source": source,
+                **({"note": note} if note else {})}
+
+    @staticmethod
+    def _policy_profile(device_ref: str, runtime: str, provider: str) -> str:
+        from . import cloudcli_models
+        import re as _re
+
+        device_id = device_ref.split(":", 1)[1]
+        principal = _re.sub(r"[^a-z0-9_-]", "-", runtime.lower())[:32] or "base"
+        return (f"profile:{device_id}/{principal}/"
+                f"{cloudcli_models.PROVIDER_RUNTIME[provider]}/model-library")
+
+    def upsert_model(self, principal: Principal, *, device: str, model_id: str, label: str,
+                     env: list[dict[str, Any]], source: str, gateway: str | None = None,
+                     provider: str = "claude", runtime: str = BASE_RUNTIME) -> dict[str, Any]:
+        """Create or replace ONE custom entry in a device's CloudCLI model library.
+
+        Four checks, in order, each its own authority:
+
+        *   **no secret value** — rows are `value`, `envref`, `unset`, or a
+            `secret` with no value (keep the stored one). A credential-looking
+            key may only be an envref. Checked here AND again on the device;
+        *   **the declared source fits the rows** — a gateway entry must carry a
+            base URL, an official one must not;
+        *   **runtime policy** — `fleet/runtime-policy.yaml` (plus the device's
+            local overlay) for this device and runtime kind: source, gateway
+            and every model name the entry would run;
+        *   **may this caller change this device** — `control` scope, the
+            device's control grant, and the binding's own
+            `allow_model_library_write`.
+
+        The device's answer is not taken as proof: it re-reads its library and
+        says whether the entry now reads back as written (`verified`).
+        """
+        from fleet import intelligence
+        from . import cloudcli_models
+
+        principal.require(SCOPE_CONTROL)
+        self.admit(principal)
+        rows = cloudcli_models.check_entry(provider, model_id, label, env)
+        if source not in ("official_subscription", "official_api", "gateway", "self_hosted"):
+            raise refuse(BAD_REQUEST, "source must be official_subscription, official_api, "
+                                      "gateway or self_hosted")
+        if gateway is not None and (not isinstance(gateway, str)
+                                    or not gateway.startswith("target:")):
+            raise refuse(BAD_REQUEST, "gateway is a target ref, e.g. target:gateway0")
+        contradiction = cloudcli_models.source_contradiction(source, rows)
+        if contradiction:
+            raise refuse(BAD_REQUEST, contradiction)
+        device_ref, binding, prov = self._model_library_target(principal, device, runtime)
+        profile_ref = self._policy_profile(device_ref, binding.runtime, provider)
+        for name in cloudcli_models.declared_models(model_id, rows):
+            ok, reason = intelligence.policy_allows(profile_ref, model=name, source=source,
+                                                    gateway=gateway)
+            if not ok:
+                raise refuse(APPROVAL_REQUIRED,
+                             f"runtime policy refuses this entry: {reason}",
+                             device_ref=device_ref)
+        self._may_control_device(principal, device_ref, binding,
+                                 _AuthoredVerb("fleet_model_upsert"), runtime=binding.runtime)
+        writer = getattr(prov, "upsert_model", None)
+        if writer is None:
+            raise refuse("CAPABILITY_UNSUPPORTED",
+                         f"{device_ref}'s provider ({prov.kind}) has no model library route",
+                         device_ref=device_ref)
+        answer = writer(provider=provider, model_id=model_id, label=label, env=rows)
+        if not isinstance(answer, dict) or answer.get("schema") != cloudcli_models.SCHEMA:
+            raise refuse(INTERNAL, "the device's answer is not one this build reads",
+                         retry_safe=False)
+        answer.update({"device_ref": device_ref, "runtime": binding.runtime,
+                       "source": source, "gateway": gateway})
+        if not answer.get("verified"):
+            answer["warning"] = ("the device acknowledged the write but its library does not "
+                                 "read back as written; do not use this entry yet")
+        self.audit.record("fleet.model_upsert", principal=principal.name, device_ref=device_ref,
+                          provider=provider, model_id=model_id, source=source,
+                          gateway=gateway, verified=bool(answer.get("verified")))
+        return answer
+
     def monitor_status(self, principal: Principal) -> dict[str, Any]:
         """The resident monitor: heartbeat, open alerts, mutes, pause, recent commands."""
         principal.require(SCOPE_READ)

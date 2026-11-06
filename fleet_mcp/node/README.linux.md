@@ -208,6 +208,34 @@ token, and that output lands in whatever transcript is watching. `is-active`,
 `show -p` and `journalctl -u` answer the same question without printing one.
 No script in this directory calls it.
 
+## Letting Fleet manage this machine's CloudCLI models (optional)
+
+Fleet can list this machine's CloudCLI model library and create or replace
+entries in it, so a commander can run a session on, say, DeepSeek through a
+shared gateway. No key ever crosses: an entry names the variable that holds a
+key (`envref`), and the value stays in CloudCLI's own service environment.
+
+1. Add to the connector binding, then restart the connector:
+
+   ```yaml
+   model_library_token_path: /home/<you>/.config/serveros/cloudcli-model-token
+   allow_model_library_write: true   # omit to allow listing only
+   ```
+
+2. Log in once at this keyboard (the password is not stored; the token is
+   written 0600 and refreshed as CloudCLI rotates it):
+
+   ```bash
+   python3 -m fleet_mcp.node.model_login
+   ```
+
+3. Put each key the entries reference in CloudCLI's service environment (for
+   example `GW0_TOKEN=...` in its systemd unit's `EnvironmentFile`) and restart
+   CloudCLI. CloudCLI reads `envref` variables from its own process at launch.
+
+Which entries may be written is still the hub's runtime policy
+(`fleet/runtime-policy.yaml` plus `~/.serveros/runtime-policy.yaml` on the hub).
+
 ## The tunnel port is stuck
 
 If the Fleet host's sshd keeps the assigned remote port bound to a connection

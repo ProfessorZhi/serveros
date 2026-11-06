@@ -112,6 +112,13 @@ ROUTES = (
     # parameterless for the same reason as the Core route above, and signed the
     # same way: the connector reads its own owner-fixed record and projects it.
     "GET /v1/device/versions",
+    # CloudCLI's model library on this machine: list projected entries, and
+    # create or replace ONE custom entry. Named routes with the provider and the
+    # entry in the SIGNED body. The connector reaches CloudCLI's REST routes on
+    # loopback with a token its owner placed here; no secret value crosses —
+    # reading withholds them and writing refuses them, on both ends.
+    "POST /v1/models",
+    "POST /v1/models/upsert",
 )
 
 

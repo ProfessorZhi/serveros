@@ -41,7 +41,11 @@ SERVER_VERSION = "0.2.0"
 # `fleet-mcp-11`: `fleet_device_versions` (read) — what each device's last
 # in-place update recorded, over the signed `GET /v1/device/versions` node
 # route or this hub's own record. Eighteen authored, 51 total.
-TOOL_SURFACE_REVISION = "fleet-mcp-11"
+# `fleet-mcp-12`: CloudCLI's model library — `fleet_models_list` (read) and
+# `fleet_model_upsert` (fleet:control; envref-only credentials, runtime policy,
+# read back). Over the signed `POST /v1/models[/upsert]` node routes. Twenty
+# authored, 53 total.
+TOOL_SURFACE_REVISION = "fleet-mcp-12"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

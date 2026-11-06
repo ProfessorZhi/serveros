@@ -172,6 +172,13 @@ class ProviderBinding:
     # this one base account gateway. This adds no runtime or grant.
     multiplex_native_families: bool = False
     owner_access: OwnerAccessProfile | None = None
+    #: CloudCLI's model library, for a CloudCLI this hub reaches on its OWN
+    #: machine (a loopback endpoint): the owner's CloudCLI login token, kept on
+    #: this machine. Unset means the library is not served for this binding. A
+    #: node-channel device keeps its token on the device instead.
+    model_library_token_path: Path | None = None
+    #: Whether an entry may be written, not only read. Its own grant.
+    allow_model_library_write: bool = False
 
     def __post_init__(self) -> None:
         """Shape only. Whether a declared runtime EXISTS is not a question a
@@ -1137,6 +1144,10 @@ def load_config(path: str | Path | None = None) -> FleetConfig:
                 instance_id=entry.get("instance_id"),
                 multiplex_native_families=entry.get("multiplex_native_families", False),
                 owner_access=parse_owner_access(entry.get("owner_access")),
+                model_library_token_path=(
+                    Path(str(entry["model_library_token_path"])).expanduser()
+                    if entry.get("model_library_token_path") else None),
+                allow_model_library_write=bool(entry.get("allow_model_library_write", False)),
             )
         except ValueError as exc:
             raise refuse(BAD_REQUEST, f"provider {ref}: {exc}") from None
