@@ -195,8 +195,9 @@ class SessionRouting(SessionFixture):
         self.service.send_to_session(self.principal, self.key, message="complete task")
         self.service.interrupt_session(self.principal, self.key)
         self.assertEqual(self.gateway.sent[0][0], self.key.ref)
-        self.assertEqual(self.gateway.calls, [("get", self.key.ref), ("get", self.key.ref),
-                                              ("interrupt", self.key.ref)])
+        # The send reads its run back once (`delivery_state`) before reporting.
+        self.assertEqual(self.gateway.calls, [("get", self.key.ref), ("run", self.key.ref),
+                                              ("get", self.key.ref), ("interrupt", self.key.ref)])
         self.configure(send_allow=(), operator_grants={"tester": {provider_key(DEVICE, "codex"): ("send",)}})
         self.service.send_to_session(self.principal, self.key, message="another complete task")
         read_only = self.h.principal("fleet:read")

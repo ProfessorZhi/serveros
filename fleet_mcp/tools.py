@@ -446,7 +446,11 @@ TOOLS: tuple[Tool, ...] = (
         title="Send a message to a session",
         description=(
             "Deliver a message to a session and return the real run id it "
-            "produced. A selected owner-max profile authorizes its managed sessions "
+            "produced, with `delivery_state`: STARTED (a run exists now), QUEUED "
+            "(the message waits; nothing runs yet) or UNCONFIRMED (no run can be "
+            "read back). Only STARTED means work began — never report a task as "
+            "dispatched or running on QUEUED or UNCONFIRMED; read the session "
+            "first, and do not resend blindly. A selected owner-max profile authorizes its managed sessions "
             "once; other callers need the existing device and session grants. "
             "The credential still needs fleet:send. Naming a session id does "
             "not create it.\n\n"

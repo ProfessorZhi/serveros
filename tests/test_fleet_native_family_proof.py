@@ -93,7 +93,11 @@ class ActualNativeFamily(SessionFixture):
                 self.queue_only = durable
                 args = dict(message="complete task", idempotency_key="verified")
                 first = self.service.send_to_session(self.principal, self.key, **args)
-                self.assertEqual([name for name, _ in self.forwarded], ["session_get", "session_send"])
+                # A send with a run id that was not queued reads its run back once
+                # (`delivery_state`); a queue-only acknowledgement has nothing to read.
+                read_back = ["run_get"] if first["run_id"] and first["delivery_state"] != "QUEUED" else []
+                self.assertEqual([name for name, _ in self.forwarded],
+                                 ["session_get", "session_send", *read_back])
                 def offline(*args, **kwargs):
                     raise AssertionError("ACCEPTED replay must not contact a provider")
                 self.adapter._call = offline
