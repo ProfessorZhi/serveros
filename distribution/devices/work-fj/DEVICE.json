@@ -54,6 +54,10 @@
         "template": {
           "path": "fleet_mcp/node/install.ps1",
           "digest": "sha256:06f7ece1ae54e84b715c22c41238d9882e07f8106ff9249f3b6708b97545984f"
+        },
+        "launcher": {
+          "path": "fleet_mcp/node/run-hidden-wait.vbs",
+          "digest": "sha256:ed581861f0215afae648d96bc61f792c7909f085ab3e2983a1883e9510bf961c"
         }
       }
     }

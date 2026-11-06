@@ -85,3 +85,19 @@ class TheLauncherWaitsAndReturnsTheExitCode(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_the_windows_kit_pins_the_connector_launcher_install_ps1_requires():
+    """install.ps1 throws without fleet_mcp/node/run-hidden-wait.vbs, so a kit
+    that pins only install.ps1 describes a connector that cannot be installed."""
+    import importlib.util, pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("device_kit", root / "distribution/device_kit.py")
+    dk = importlib.util.module_from_spec(spec)
+    import sys
+    sys.modules.setdefault("device_kit", dk)  # dataclasses resolve their module by name
+    spec.loader.exec_module(dk)
+    k = dk.kit(dk.declaration(), "work-fj")
+    connector = k["layers"]["monitor"]["node_connector"]
+    assert connector["launcher"]["path"] == "fleet_mcp/node/run-hidden-wait.vbs"
+    assert connector["launcher"]["digest"].startswith("sha256:")
