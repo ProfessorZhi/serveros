@@ -343,7 +343,7 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
             # and the service would look healthy while doing it — so this is
             # refused here, before a unit file exists, rather than defaulted.
             raise KitError(
-                f"{name}: the hub watcher needs a destination — pass --notify "
+                f"{k['device']}: the hub watcher needs a destination - pass --notify "
                 f"lark:user:<open_id>, lark:chat:<chat_id>, journal (writes the "
                 f"cards, sends nothing) or off")
         binding = str(Path(mon["hub_watch"]["binding"].replace("~", str(ctx.home), 1)))

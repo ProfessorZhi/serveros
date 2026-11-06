@@ -159,9 +159,11 @@ order and stops at the first failure, writing a receipt to
 written but nothing is enabled or started without `--enable`. The node
 connector step is a preflight: its real install needs the device's own
 credential anchor and tunnel key, which only the owner supplies. On the hub,
-`--notify lark:user:<open_id>` switches the agent monitor from the local
-journal to Feishu. A Windows kit is plan-only here; its README holds the
-PowerShell to run on the device.
+`--notify` is required: `lark:user:<open_id>` / `lark:chat:<chat_id>` sends the
+cards to Feishu, `journal` writes them locally and sends nothing, `off` runs the
+watcher with no notifier. Rendering the hub without it is refused, so an
+installed hub always has a stated destination. A Windows kit is plan-only here;
+its README holds the PowerShell to run on the device.
 
 Add a device: one entry in `devices.yaml` (and a core-lite profile in
 `native/node-core/core-lite/profiles/` whose `node` is its device ref), then

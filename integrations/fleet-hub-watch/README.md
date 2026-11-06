@@ -29,7 +29,8 @@ Inbox events carry identifiers and the verdict only, never transcript text.
 composed here, so neither imports the other.
 
     PYTHONPATH=<repo>:<repo>/integrations/fleet-next-agent-monitor:<repo>/integrations/fleet-hub-watch \
-      python3 -m fleet_hub_watch --config <fleet binding> [--interval 30] [--once]
+      python3 -m fleet_hub_watch --config <fleet binding> \
+        --notify <lark:user:open_id | lark:chat:chat_id | journal | off> [--interval 30] [--once]
 
 The binding must declare `inbox.path` (the same file `fleet_inbox` reads).
 `watch.sqlite`, `watch.lock` and `watch.heartbeat.json` sit next to it, all 0600.

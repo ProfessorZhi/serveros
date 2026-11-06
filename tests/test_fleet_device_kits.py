@@ -88,6 +88,14 @@ def test_hub_monitor_carries_the_notify_target():
     assert "--notify lark:user:ou_x" in unit
 
 
+def test_the_hub_monitor_is_not_rendered_without_a_destination():
+    """A unit rendered with no destination installs a watcher that records every
+    outcome and sends nothing — the failure mode this kit refuses to create."""
+    with pytest.raises(dk.KitError) as raised:
+        dk.plan(_args(notify=None))
+    assert "needs a destination" in str(raised.value)
+
+
 def test_the_same_ability_revision_builds_the_core_and_rolls_out_the_family():
     _, steps = dk.plan(_args())
     revs = {s.argv[s.argv.index(flag) + 1] for s in steps if s.argv
