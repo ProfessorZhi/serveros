@@ -334,8 +334,8 @@ def test_every_interface_is_answerable_with_no_controller(tmp_path):
 
     for name in interfaces.declared_interfaces():
         kwargs = {
-            "device.show": {}, "environment.inspect": {}, "context.resolve": {"role": "workspace.src"},
-            "path.resolve": {"role": "workspace.src", "device_ref": "device:llm-lab-dell"},
+            "device.show": {}, "environment.inspect": {}, "context.resolve": {"role": "home"},
+            "path.resolve": {"role": "home", "device_ref": "device:llm-lab-dell"},
             "ability.list": {"device_ref": "device:work-fj"},
             "ability.status": {"device_ref": "device:work-fj", "ability": "feishu-report"},
             "fleet.devices": {}, "fleet.device.inspect": {"device_ref": "device:work-fj"},
