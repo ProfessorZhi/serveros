@@ -911,6 +911,10 @@ thresholds:
   # Pointing `_THRESHOLDS` at a PSI name DERIVES this key, so it is declared in
   # the same change as the code that derives it.
   psi_memory_some_avg60_percent_recovery_margin: 0.5
+  # The same rule for `full`: half of its 0.5 opening line. The hub watcher
+  # read `full` with no margin at all, so a host sitting at 0.42-0.55 opened
+  # and closed a red card every few minutes (Tokyo, 2026-11-06 00:47-01:28).
+  psi_memory_full_avg60_percent_recovery_margin: 0.25
 
   # The process layer's two continuous measurements. `cpu_percent_high` is the
   # case §5's acceptance run produced: a runtime group sitting at 279% of one

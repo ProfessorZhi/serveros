@@ -140,6 +140,7 @@ DEFAULT_THRESHOLDS = {
     # The measurement is a stall percentage and the quiet reading is 0.00, so
     # neither 1.0 nor 0.5 is a line a resting machine drifts across.
     "psi_memory_some_avg60_percent_recovery_margin": 0.5,
+    "psi_memory_full_avg60_percent_recovery_margin": 0.25,
     "docker_storage_percent_recovery_margin": 3.0,
     # The process layer's own margins, and the three byte-valued aggregates
     # whose margins were derivable but undeclared — see the contract for why

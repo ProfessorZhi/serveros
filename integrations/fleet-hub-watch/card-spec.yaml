@@ -26,6 +26,7 @@ schedule:
   window: 08:00-20:00
   slot_minutes: 30
   completion_batch_seconds: 300
+  alert_debounce_seconds: 300
   daily_report_at: '18:00'
 resource_card:
   title: '{icon} Fleet 资源播报 · {word}'

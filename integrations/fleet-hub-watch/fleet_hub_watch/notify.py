@@ -12,7 +12,11 @@ place (a PATCH), following CARDS-STYLE R14/R17/R20:
 | first tick of a workday window (CN 08:00–20:00)| send today's 资源播报卡        |
 | a later :00/:30 slot, card content changed     | patch it                       |
 | the fleet turns 报警, card content changed     | patch it now (not at the slot) |
-| a reading or run opens an episode             | send a 报警卡 (yellow or red)  |
+| a run fails, or cannot be confirmed, or stalls | send a 报警卡 (yellow or red)  |
+| a device reading turns 报警 and HOLDS for       | send a red 报警卡              |
+|   `schedule.alert_debounce_seconds` (300)     |                                |
+| a device reading turns 注意, or a 报警 ends     | no card: the 资源播报卡 line   |
+|   before the debounce                         |   and the 日报 carry it         |
 | yellow episode becomes red                    | send a new red card, patch the |
 |                                               | old one to grey 已升级         |
 | red episode falls back to yellow              | patch, no new message          |
@@ -72,6 +76,11 @@ CREATE TABLE IF NOT EXISTS pending_completions (
     run_key    TEXT PRIMARY KEY,
     body       TEXT NOT NULL,
     first_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pending_alerts (
+    episode    TEXT PRIMARY KEY,
+    body       TEXT NOT NULL,
+    since      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS daily_events (
     day        TEXT NOT NULL,
@@ -368,18 +377,33 @@ class Notifier:
             episode = f"{event['device_ref']}|{key}"
             if kind == "node.recovered":
                 self._note(event, {"episode": episode})
+                # Recovered before it was ever carded: a blip. It stays in the
+                # 日报 through the note above and interrupts nobody.
+                self._drop_pending(episode)
                 self._close(episode, now, text=event["summary"])
                 return
+            level = level if level in (WARN, ALERT) else WARN
             self._note(event, {"episode": episode, "subject": event["summary"].split("：")[0],
                                "text": event["summary"].split("：", 1)[-1],
-                               "level": level if level in (WARN, ALERT) else WARN})
-            self._open({"episode": episode, "key": key, "kind": kind,
-                        "device_ref": event["device_ref"],
-                        "subject": event["summary"].split("：")[0],
-                        "text": event["summary"].split("：", 1)[-1],
-                        "level": level if level in (WARN, ALERT) else WARN,
-                        "last_seen": event["occurred_at"], "first_seen": event["occurred_at"],
-                        "evidence": event.get("evidence")}, now)
+                               "level": level})
+            body = {"episode": episode, "key": key, "kind": kind,
+                    "device_ref": event["device_ref"],
+                    "subject": event["summary"].split("：")[0],
+                    "text": event["summary"].split("：", 1)[-1],
+                    "level": level,
+                    "last_seen": event["occurred_at"], "first_seen": event["occurred_at"],
+                    "evidence": event.get("evidence")}
+            current = self._episode(episode)
+            if current is not None and current["state"] == "OPEN":
+                # A card already exists: raising, lowering and refreshing it is
+                # the card's job and does not wait.
+                self._open(body, now)
+                return
+            if level != ALERT:
+                # 注意 is a line on the 资源播报卡, not a card of its own.
+                self._drop_pending(episode)
+                return
+            self._hold(episode, body, event["occurred_at"])
             return
         if not kind.startswith("run."):
             return
@@ -412,6 +436,42 @@ class Notifier:
                     "text": f"{event['run_id']}（{name}）{detail}",
                     "level": level, "first_seen": event["occurred_at"],
                     "last_seen": event["occurred_at"], "evidence": event.get("session_ref")}, now)
+
+    # -- debounce -------------------------------------------------------------
+
+    def _hold(self, episode: str, body: dict, since: str) -> None:
+        """Remember a device 报警 until it has lasted `alert_debounce_seconds`."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT since FROM pending_alerts WHERE episode=?",
+                               (episode,)).fetchone()
+            first = row["since"] if row else since
+            conn.execute("INSERT OR REPLACE INTO pending_alerts(episode, body, since) VALUES (?,?,?)",
+                         (episode, json.dumps({**body, "first_seen": first}, ensure_ascii=False),
+                          first))
+
+    def _drop_pending(self, episode: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM pending_alerts WHERE episode=?", (episode,))
+
+    def promote_pending(self, now: datetime) -> int:
+        """Open a card for each held 报警 that has outlasted the debounce."""
+        wait = timedelta(seconds=self.spec["schedule"]["alert_debounce_seconds"])
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM pending_alerts ORDER BY since").fetchall()
+        opened = 0
+        for row in rows:
+            if now - _parse(row["since"]) < wait:
+                continue
+            if self._sent_this_tick >= MAX_SENDS_PER_TICK:
+                break
+            self._open(json.loads(row["body"]), now)
+            current = self._episode(row["episode"])
+            if current is not None and current["state"] == "OPEN":
+                self._drop_pending(row["episode"])
+                opened += 1
+            elif self._muted(json.loads(row["body"]), now):
+                self._drop_pending(row["episode"])
+        return opened
 
     def flush_completions(self, now: datetime, *, force: bool = False) -> int:
         with self._connect() as conn:
@@ -484,8 +544,9 @@ class Notifier:
     def tick(self, views: list[dict], now: datetime) -> dict[str, Any]:
         self._sent_this_tick = 0
         consumed = self.consume(now)
+        promoted = self.promote_pending(now)
         completions = self.flush_completions(now)
         status = self.status(views, now)
         daily = self.daily(now)
-        return {"consumed": consumed, "completions_sent": completions,
+        return {"consumed": consumed, "alerts_opened": promoted, "completions_sent": completions,
                 "status": status, "daily": daily, "messages": self._sent_this_tick}
