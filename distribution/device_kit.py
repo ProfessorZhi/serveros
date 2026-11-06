@@ -142,6 +142,9 @@ def kit(doc: dict, name: str) -> dict:
                           "note": "core skills arrive as standalone skills through the family profile"}
     layers["family"] = {"repo": doc["ability_management"]["repo"], "profile": dev["family"]["profile"],
                         "agents": dev["core"]["agents"], "revision": "pinned at install (--ability-rev)"}
+    if dev["family"].get("cloudcli"):
+        layers["family"]["cloudcli"] = ("also rolled out into the Claude config dir a running "
+                                        "CloudCLI uses (read from the process at install)")
     monitor: dict = {}
     if mon["serverosd"]:
         monitor["serverosd"] = {"what": "basic: resources, anomalies, runtime status (python daemon)",
@@ -242,6 +245,7 @@ class Context:
     home: Path
     python: str
     notify: str | None
+    cloudcli_claude_dir: Path | None = None   # where a local CloudCLI runs Claude from
     lib_dir: Path = None
     unit_dir: Path = None
     state_dir: Path = None
@@ -253,6 +257,37 @@ class Context:
 
 
 _NOTIFY_IN_UNIT = re.compile(r"^ExecStart=.*\s--notify\s+(\S+)", re.MULTILINE)
+
+
+def cloudcli_claude_dirs(home: Path, proc_root: Path = Path("/proc")) -> list[Path]:
+    """The Claude config dirs that CloudCLI processes of this user run with.
+
+    CloudCLI starts Claude through the Agent SDK with its own environment, so
+    the skills it sees are under that process's CLAUDE_CONFIG_DIR (or its
+    HOME/.claude), which is not always the installing shell's. Read from the
+    running processes rather than declared, so a CloudCLI that moves its
+    config dir is followed without a code change. Only this user's processes
+    are readable; an unreadable one is skipped, never guessed.
+    """
+    found: list[Path] = []
+    try:
+        entries = sorted((e for e in proc_root.iterdir() if e.name.isdigit()), key=lambda e: int(e.name))
+    except OSError:
+        return found
+    for e in entries:
+        try:
+            cmd = (e / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+            if "cloudcli" not in cmd.lower() and "claudecodeui" not in cmd.lower():
+                continue
+            env = dict(kv.split("=", 1) for kv in
+                       (e / "environ").read_bytes().decode("utf-8", "replace").split("\0")
+                       if "=" in kv)
+        except OSError:
+            continue
+        d = env.get("CLAUDE_CONFIG_DIR") or (env.get("HOME") and os.path.join(env["HOME"], ".claude"))
+        if d and Path(d) not in found:
+            found.append(Path(d))
+    return found
 
 
 def installed_notify(unit_dir: Path) -> str | None:
@@ -331,6 +366,26 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
         Step("family", "read it back (installed == desired)",
              [py, am, "readback", "--profile", fam["profile"], "--agent", "all"]),
     ]
+    # A CloudCLI on this device may run Claude from another config dir; give it
+    # the same family there, or its sessions see none of these skills.
+    if fam.get("cloudcli"):
+        dirs = [ctx.cloudcli_claude_dir] if ctx.cloudcli_claude_dir else cloudcli_claude_dirs(ctx.home)
+        default = (ctx.home / ".claude").resolve()
+        for d in dirs:
+            if Path(d).expanduser().resolve() == default:
+                continue
+            steps += [
+                Step("family", f"roll out the same family into CloudCLI's Claude dir {d}",
+                     [py, am, "rollout", "--profile", fam["profile"], "--rev", rev,
+                      "--agent", "claude-code", "--claude-config-dir", str(d), "--apply"]),
+                Step("family", "read it back there",
+                     [py, am, "readback", "--profile", fam["profile"], "--agent", "claude-code",
+                      "--claude-config-dir", str(d)]),
+            ]
+        if not dirs:
+            steps[-1].notes.append(
+                "no running CloudCLI found: if its sessions do not see these skills, rerun with "
+                "--cloudcli-claude-dir <its CLAUDE_CONFIG_DIR> while it runs")
 
     mon = k["layers"]["monitor"]
     units: list[str] = []
@@ -563,7 +618,9 @@ def _context(args) -> Context:
         raise KitError("--data-root (or SERVEROS_DATA_ROOT) is required: the node's DATA_ROOT")
     return Context(ability_repo=Path(args.ability_repo).expanduser().resolve(),
                    ability_rev=args.ability_rev, data_root=Path(data_root).expanduser(),
-                   home=Path(args.home).expanduser(), python=args.python, notify=args.notify)
+                   home=Path(args.home).expanduser(), python=args.python, notify=args.notify,
+                   cloudcli_claude_dir=(Path(args.cloudcli_claude_dir).expanduser()
+                                        if getattr(args, "cloudcli_claude_dir", None) else None))
 
 
 def plan(args) -> tuple[dict, list[Step] | list[str]]:
@@ -718,6 +775,8 @@ def update(args) -> int:
         install_argv += ["--notify", args.notify]
     if args.data_root:
         install_argv += ["--data-root", args.data_root]
+    if getattr(args, "cloudcli_claude_dir", None):
+        install_argv += ["--cloudcli-claude-dir", args.cloudcli_claude_dir]
     if args.enable:
         install_argv.append("--enable")
     # A fresh process, so the steps come from the code the pull just brought.
@@ -759,6 +818,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="hub only, required there: lark:user:<open_id> or "
                              "lark:chat:<chat_id> for Feishu, journal (writes the cards, "
                              "sends nothing), off (no notifier)")
+    parser.add_argument("--cloudcli-claude-dir", default=None,
+                        help="the Claude config dir a local CloudCLI runs with, when it cannot "
+                             "be read from the running process")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--enable", action="store_true", help="also enable and start the units")
     parser.add_argument("--no-pull", action="store_true", help="update: use this checkout as it is")

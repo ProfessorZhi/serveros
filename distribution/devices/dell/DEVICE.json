@@ -4,7 +4,7 @@
   "device_ref": "device:llm-lab-dell",
   "principal": "fjd",
   "os": "linux",
-  "role": "company GPU compute and model deployment first; owner's personal projects when idle",
+  "role": "company GPU compute and model deployment first; background work (production observation, shared-gateway changes, tests) while Windows is short of resources",
   "hub": "tokyo",
   "layers": {
     "core": {
@@ -35,7 +35,8 @@
         "claude-code",
         "codex"
       ],
-      "revision": "pinned at install (--ability-rev)"
+      "revision": "pinned at install (--ability-rev)",
+      "cloudcli": "also rolled out into the Claude config dir a running CloudCLI uses (read from the process at install)"
     },
     "monitor": {
       "serverosd": {
