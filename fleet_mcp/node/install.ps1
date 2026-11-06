@@ -127,9 +127,17 @@ if (-not (Test-Path $CloudCliCredential)) {
 
 function Register-ConnectorTask {
     param([string]$Name, [string]$ScriptPath, [object[]]$ScriptArgs)
-    $argument = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" {1}' -f `
-        $ScriptPath, ($ScriptArgs -join ' ')
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argument
+    # wscript.exe, not powershell.exe: a task whose action is a console program
+    # flashes a window on this user's desktop every time it starts, and
+    # -WindowStyle Hidden cannot prevent it because the console already exists
+    # by the time PowerShell runs. run-hidden-wait.vbs waits for the script and
+    # returns its exit code, which the IgnoreNew and restart settings below
+    # depend on (docs/fleet-reverse-tunnel-recovery.md,
+    # "Windows process lifetime").
+    $launcher = Join-Path $PSScriptRoot 'run-hidden-wait.vbs'
+    if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw "missing $launcher" }
+    $argument = '//B "{0}" "{1}" {2}' -f $launcher, $ScriptPath, ($ScriptArgs -join ' ')
+    $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument $argument
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `

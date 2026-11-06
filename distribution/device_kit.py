@@ -61,6 +61,15 @@ UNIT_TEMPLATES = {
     "node_connector_windows": "fleet_mcp/node/install.ps1",
     "core_lite_publish_windows": "native/node-core/core-lite/windows/deploy/publish-status.ps1",
     "core_lite_task_windows": "native/node-core/core-lite/windows/deploy/register-publish-task.ps1",
+    # The task's action is wscript.exe running this file, and the registration
+    # script refuses to register without it. Pinned here rather than left to the
+    # device's checkout: the kit states what the device is supposed to run, and a
+    # task template that names a launcher the kit does not ship is the two-file
+    # kit that cannot start.
+    "core_lite_task_launcher_windows": "native/node-core/core-lite/windows/deploy/run-hidden-wait.vbs",
+    # Same reason for the connector: install.ps1 registers both Fleet tasks with
+    # wscript.exe running this launcher and throws when it is missing.
+    "node_connector_launcher_windows": "fleet_mcp/node/run-hidden-wait.vbs",
 }
 
 
@@ -154,7 +163,8 @@ def kit(doc: dict, name: str) -> dict:
             "build": "native/node-core/core-lite/windows (MSVC, static)",
             "task": "\\ServerOS\\ServerOS Core-Lite publish (scheduled task, this user)",
             "templates": [_pin(UNIT_TEMPLATES[k]) for k in ("core_lite_publish_windows",
-                                                             "core_lite_task_windows")],
+                                                             "core_lite_task_windows",
+                                                             "core_lite_task_launcher_windows")],
             "status_file": "%LOCALAPPDATA%\\ServerOS\\state\\core-lite\\status.json"}
     elif mon["core_lite"]:
         monitor["core_lite"] = {
@@ -168,6 +178,8 @@ def kit(doc: dict, name: str) -> dict:
         key = "node_connector" if dev["os"] == "linux" else "node_connector_windows"
         monitor["node_connector"] = {"what": f"link: reports this device to the hub ({hub['device']})",
                                      "template": _pin(UNIT_TEMPLATES[key])}
+        if dev["os"] == "windows":
+            monitor["node_connector"]["launcher"] = _pin(UNIT_TEMPLATES["node_connector_launcher_windows"])
     if mon["hub_watch"]:
         monitor["hub_watch"] = {
             "what": "hub: agent monitor — finds Fleet runs, records outcomes once, "

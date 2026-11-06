@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 import socket
 import sys
 import threading
@@ -49,6 +50,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import human_auth
 from .audit import AuditLog
+from .disclosure import digest_of
 from .errors import FleetRefusal
 from .feishu_sso import FeishuBroker, SSOError, build_feishu
 from .fleet import Principal, SCOPE_CREATE, SCOPE_READ, SCOPE_SEND
@@ -118,6 +120,27 @@ class HttpSurface:
         advertised = urlparse(str(getattr(config.server, "public_base_url", "") or "")).path
         self.path_prefix = advertised.rstrip("/") if advertised.rstrip("/") != "/" else ""
         self._authenticate = authorize or self._default_authenticate
+
+    def record_internal_error(self, exc: BaseException) -> str:
+        """Write a defect that became a bare 500, and return the id it was given.
+
+        The two 500 paths in this module — the router's and the handler's — have
+        no principal and no JSON-RPC method to name: the failure can happen
+        before either is read. What they can always say is which exception class
+        it was and which request it belonged to, and that is the difference
+        between a caller reporting "internal error" and an operator finding the
+        one call in the log that produced it.
+
+        The id is minted here rather than taken from the request because these
+        responses carry none. It is a digest of a random token: this log holds a
+        fingerprint, and the caller holds the sentence containing it.
+        """
+        recorded = digest_of(f"http:{secrets.token_hex(8)}")
+        if self.audit:
+            self.audit.record("mcp.internal_error",
+                              exception=type(exc).__name__.lower(),
+                              request_id=recorded)
+        return recorded
 
     # -- authentication ----------------------------------------------------
 
@@ -235,14 +258,16 @@ class HttpSurface:
             return _json(400, exc.as_payload())
         except HttpAuthError as exc:
             return self._unauthorized(str(exc))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             # A defect in this process. The traceback goes to the unit's stderr,
             # not to the caller: a stack trace in a response body is an
             # information leak dressed as helpfulness.
             traceback.print_exc(file=sys.stderr)
+            recorded = self.record_internal_error(exc)
             return _json(500, {"error": "internal_error",
                                "error_description": "the Fleet surface failed unexpectedly; "
-                                                    "see the service log"})
+                                                    f"see the service log ({recorded})",
+                               "request_id": recorded})
         return _json(404, {"error": "not_found", "error_description": f"no route for {route!r}"})
 
     # -- endpoints ---------------------------------------------------------
@@ -932,9 +957,11 @@ class _Handler(BaseHTTPRequestHandler):
             status, out_headers, out_body = self.surface.handle(
                 self.command, self.path, urlparse(self.path).query, headers, body
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             traceback.print_exc(file=sys.stderr)
-            status, out_headers, out_body = _json(500, {"error": "internal_error"})
+            recorded = self.surface.record_internal_error(exc)
+            status, out_headers, out_body = _json(
+                500, {"error": "internal_error", "request_id": recorded})
         self._respond(status, out_headers, out_body)
 
     do_GET = do_POST = do_DELETE = do_HEAD = _dispatch

@@ -226,6 +226,15 @@ class McpHttpClient:
         reply = self._post(message, notify=notify)
         if notify:
             return reply
+        if not isinstance(reply, dict):
+            # A reply that is not an object is not a JSON-RPC response, so
+            # neither `["error"]` nor `.get` is meaningful on it. Refused as a
+            # provider answer rather than reached for: `reply["error"]` on a
+            # list is where this used to raise out of, past every caller that
+            # catches `ProviderRefusal`.
+            raise ProviderRefusal(
+                INTERNAL, remote_summary(self.label, method=method, rpc_code=None,
+                                         error_message="the reply was not an object"))
         if "error" in reply:
             err = reply["error"] or {}
             raise ProviderRefusal(
@@ -237,7 +246,16 @@ class McpHttpClient:
                     error_message=err.get("message"),
                 ),
             )
-        return reply.get("result", {})
+        result = reply.get("result", {})
+        if result is None:
+            # `"result": null` is a legal JSON-RPC reply and a useless one: an
+            # absent result is not an empty answer, and returning it here made
+            # the next `.get` on it an `AttributeError` two frames away — to a
+            # caller who only catches `ProviderRefusal`.
+            raise ProviderRefusal(
+                INTERNAL, remote_summary(self.label, method=method, rpc_code=None,
+                                         error_message="the reply carried a null result"))
+        return result
 
     def initialize(self) -> dict[str, Any]:
         result = self._rpc(
@@ -256,6 +274,14 @@ class McpHttpClient:
         if not self._initialized:
             self.initialize()
         result = self._rpc("tools/list", {})
+        if not isinstance(result, dict):
+            # A result that is not an object cannot be a `tools/list`: the reply
+            # was well-formed and the answer was not. Named as a provider
+            # refusal so the caller that asks "which tools may I call" hears
+            # that the provider failed rather than that the fleet has none.
+            raise ProviderRefusal(
+                INTERNAL, remote_summary(self.label, method="tools/list", rpc_code=None,
+                                         error_message="the result was not an object"))
         return list(result.get("tools") or [])
 
     def tools_call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
