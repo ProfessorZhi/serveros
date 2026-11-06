@@ -28,6 +28,9 @@ DEFAULT_SPEC: dict[str, Any] = {
         "window": "08:00-20:00",
         "slot_minutes": 30,
         "completion_batch_seconds": 300,
+        # A device 报警 opens a card only after it has held this long. Shorter
+        # episodes are counted into the 日报 and never interrupt anyone.
+        "alert_debounce_seconds": 300,
         "daily_report_at": "18:00",
     },
     "resource_card": {
@@ -131,6 +134,8 @@ def _check_schedule(schedule: dict) -> None:
         raise SpecError("schedule.slot_minutes must be 5-240")
     if not 0 <= schedule["completion_batch_seconds"] <= 3600:
         raise SpecError("schedule.completion_batch_seconds must be 0-3600")
+    if not 0 <= schedule["alert_debounce_seconds"] <= 3600:
+        raise SpecError("schedule.alert_debounce_seconds must be 0-3600")
 
 
 def _check_daily(daily: dict) -> None:

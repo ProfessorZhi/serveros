@@ -50,7 +50,7 @@ threshold is declared). Level changes become `node.*` inbox events.
 | card | colour | when a message is sent | when it changes in place |
 |---|---|---|---|
 | 资源播报卡 | worst device level | first tick of a workday, CN 08:00–20:00 | next :00/:30 slot if changed; at once on 报警 |
-| 报警卡 | 🟡 注意 / 🔴 报警 | an episode opens; yellow → red (old card turns grey 已升级) | red → yellow; 已恢复 (green) |
+| 报警卡 | 🔴 报警 (a device reading that held 5 min); 🟡/🔴 for a run | an episode opens; yellow → red (old card turns grey 已升级) | red → yellow; 已恢复 (green) |
 | 任务完成卡 | 🟢 | completions gathered for 5 minutes | — |
 
 Feishu rules applied (open.feishu.cn message create/patch): `update_multi: true`
@@ -106,6 +106,14 @@ counted that day: runs completed / failed / unconfirmed / stalled, the runs that
 need a look, the resource episodes (with 已恢复 when they ended), and what is
 still open. The header colour is what is still open at report time, not the worst
 thing that happened. `samples/daily.json` is an example.
+
+A device reading at 注意 never sends a card of its own: it is a line on the
+资源播报卡. A device 报警 is held for `schedule.alert_debounce_seconds` (300 s in
+`card-spec.yaml`) before its card goes out; one that recovers or drops back to
+注意 inside that window sends nothing and is still counted in the 日报. Memory
+pressure `full` has its own recovery margin
+(`psi_memory_full_avg60_percent_recovery_margin`, 0.25), so a host hovering at
+the 0.5 line does not flip a card red and green.
 
 ## Not done here
 

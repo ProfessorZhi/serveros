@@ -100,6 +100,13 @@ class DeviceLevels(unittest.TestCase):
         self.assertEqual(levels_of(self.view(psi_full=0.6))["psi"], ALERT)
         self.assertEqual(levels_of(self.view(service_state="FAILED"))["svc:serverosd"], ALERT)
 
+    def test_psi_full_holds_until_it_is_past_its_own_margin(self):
+        """0.5 opens; with the 0.25 margin it holds at 0.42 and leaves at 0.2.
+        Without a margin a host hovering at the line chattered red/green."""
+        self.assertEqual(levels_of(self.view({"psi": ALERT}, psi_full=0.42))["psi"], ALERT)
+        self.assertEqual(levels_of(self.view({"psi": ALERT}, psi_full=0.2))["psi"], OK)
+        self.assertEqual(levels_of(self.view(psi_full=0.42))["psi"], OK)
+
     def test_gpu_memory_is_shown_and_never_judged(self):
         view = self.view(gpu=47)
         self.assertEqual(levels_of(view)["gpu:0"], OK)
@@ -300,36 +307,63 @@ class AlertEpisodes(NotifierTest):
     def tick(self, at):
         return self.notifier.tick([], at)
 
-    def test_yellow_then_red_then_yellow_then_recovered(self):
-        self.node(WARN, "2026-10-29T02:00:00Z")
+    def test_red_that_holds_opens_one_card_then_lowers_and_recovers_in_place(self):
+        self.node(ALERT, "2026-10-29T02:00:00Z")
         self.tick(THURSDAY_10)
-        self.node(ALERT, "2026-10-29T02:10:00Z")
+        self.assertEqual(self.transport.ops, [], "a red waits out the debounce")
+        self.tick(THURSDAY_10 + timedelta(minutes=5))
+        self.node(WARN, "2026-10-29T02:10:00Z")
         self.tick(THURSDAY_10 + timedelta(minutes=10))
-        self.node(WARN, "2026-10-29T02:20:00Z")
+        self.node(OK, "2026-10-29T02:20:00Z", recovered=True)
         self.tick(THURSDAY_10 + timedelta(minutes=20))
-        self.node(OK, "2026-10-29T02:30:00Z", recovered=True)
-        self.tick(THURSDAY_10 + timedelta(minutes=30))
         self.assertEqual([(op, mid, colour) for op, mid, colour, _ in self.transport.headers()], [
-            ("send", "m0", "yellow"),     # opened: 注意
-            ("patch", "m0", "grey"),      # escalated: the old card says 已升级
-            ("send", "m2", "red"),        # and a new red card interrupts
-            ("patch", "m2", "yellow"),    # lowered in place, no new message
-            ("patch", "m2", "green"),     # 已恢复, in place
+            ("send", "m0", "red"),        # held five minutes: one card interrupts
+            ("patch", "m0", "yellow"),    # lowered in place, no new message
+            ("patch", "m0", "green"),     # 已恢复, in place
         ])
 
-    def test_a_reopened_episode_is_a_new_card(self):
-        self.node(WARN, "2026-10-29T02:00:00Z")
-        self.node(OK, "2026-10-29T02:10:00Z", recovered=True)
-        self.node(WARN, "2026-10-29T02:20:00Z")
+    def test_a_red_blip_shorter_than_the_debounce_sends_nothing(self):
+        self.node(ALERT, "2026-10-29T02:00:00Z")
         self.tick(THURSDAY_10)
+        self.node(OK, "2026-10-29T02:02:00Z", recovered=True)
+        self.tick(THURSDAY_10 + timedelta(minutes=2))
+        self.tick(THURSDAY_10 + timedelta(minutes=10))
+        self.assertEqual(self.transport.ops, [])
+        # It is still counted for the 日报.
+        day = self.notifier.day_summary("2026-10-29")
+        self.assertTrue(day, "the blip is recorded for the daily report")
+
+    def test_a_warning_never_opens_a_card_of_its_own(self):
+        self.node(WARN, "2026-10-29T02:00:00Z")
+        self.tick(THURSDAY_10)
+        self.tick(THURSDAY_10 + timedelta(hours=1))
+        self.node(OK, "2026-10-29T03:30:00Z", recovered=True)
+        self.tick(THURSDAY_10 + timedelta(hours=2))
+        self.assertEqual(self.transport.ops, [])
+
+    def test_a_red_that_lowers_before_the_debounce_is_not_carded(self):
+        self.node(ALERT, "2026-10-29T02:00:00Z")
+        self.tick(THURSDAY_10)
+        self.node(WARN, "2026-10-29T02:03:00Z")
+        self.tick(THURSDAY_10 + timedelta(minutes=3))
+        self.tick(THURSDAY_10 + timedelta(minutes=10))
+        self.assertEqual(self.transport.ops, [])
+
+    def test_a_reopened_episode_is_a_new_card(self):
+        self.node(ALERT, "2026-10-29T02:00:00Z")
+        self.tick(THURSDAY_10 + timedelta(minutes=5))
+        self.node(OK, "2026-10-29T02:10:00Z", recovered=True)
+        self.tick(THURSDAY_10 + timedelta(minutes=10))
+        self.node(ALERT, "2026-10-29T02:20:00Z")
+        self.tick(THURSDAY_10 + timedelta(minutes=25))
         self.assertEqual([op for op, *_ in self.transport.ops], ["send", "patch", "send"])
 
     def test_a_card_past_the_patch_window_is_continued_on_a_new_one(self):
-        self.node(WARN, "2026-10-29T02:00:00Z")
-        self.tick(THURSDAY_10)
+        self.node(ALERT, "2026-10-29T02:00:00Z")
+        self.tick(THURSDAY_10 + timedelta(minutes=5))
         self.inbox.record({"kind": "node.pressure", "level": "notify", "device_ref": DELL,
                            "occurred_at": "2026-11-12T02:00:00Z",
-                           "summary": "Dell A6000 · 磁盘 DATA：still 86%", "evidence": "fs:DATA|WARN"})
+                           "summary": "Dell A6000 · 磁盘 DATA：still 93%", "evidence": "fs:DATA|ALERT"})
         self.tick(THURSDAY_10 + timedelta(days=14))
         # The first card can no longer be patched, so the same episode continues
         # on a second card rather than failing to update the first.

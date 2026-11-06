@@ -44,6 +44,7 @@ THRESHOLD_KEYS = (
     "swap_percent_high", "swap_percent_recovery_margin",
     "psi_memory_some_avg60_percent_high", "psi_memory_full_avg60_percent_high",
     "psi_memory_some_avg60_percent_recovery_margin",
+    "psi_memory_full_avg60_percent_recovery_margin",
 )
 
 
@@ -145,7 +146,12 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
         some_level = _level(some, warn=t["psi_memory_some_avg60_percent_high"], alert=None,
                             margin=t["psi_memory_some_avg60_percent_recovery_margin"],
                             previous=previous.get("psi"))
-        full_level = ALERT if full is not None and full >= t["psi_memory_full_avg60_percent_high"] else OK
+        # `full` carries its own recovery margin: without one a reading that
+        # hovers on the line opens and closes an alert every pass.
+        full_level = (OK if full is None else
+                      _level(full, warn=None, alert=t["psi_memory_full_avg60_percent_high"],
+                             margin=t["psi_memory_full_avg60_percent_recovery_margin"],
+                             previous=previous.get("psi")))
         if some is not None or full is not None:
             add("psi", "内存压力",
                 f"some {some if some is not None else '?'}% · full {full if full is not None else '?'}%",
