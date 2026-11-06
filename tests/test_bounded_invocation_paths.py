@@ -392,3 +392,41 @@ class BoundedInvocationPaths(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheLauncherGuardRunsBeforePopen(unittest.TestCase):
+    """#171: a credential-shaped command line is refused before it exists in `ps`."""
+
+    TOKEN = "ghp_" + "A" * 36
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        self.cwd = root / "cwd"
+        self.cwd.mkdir()
+        self.receipts = root / "receipts"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_token_on_the_command_line_starts_nothing_and_is_not_echoed(self):
+        with self.assertRaises(ValueError) as raised:
+            invoke_once(key="leak", argv=["/bin/echo", "--token", self.TOKEN],
+                        cwd=self.cwd, receipts=self.receipts)
+        self.assertIn("ARGV_CARRIES_CREDENTIAL_SHAPE", str(raised.exception))
+        self.assertIn("argv[2]", str(raised.exception))
+        self.assertNotIn(self.TOKEN, str(raised.exception))
+        self.assertFalse((self.receipts / "leak.json").exists(), "nothing was recorded or started")
+
+    def test_an_inline_mcp_config_carrying_a_token_is_refused(self):
+        config = json.dumps({"mcpServers": {"x": {"headers": {"Authorization": "Bearer " + self.TOKEN}}}})
+        with self.assertRaises(ValueError) as raised:
+            invoke_once(key="inline", argv=["/bin/echo", "--mcp-config", config],
+                        cwd=self.cwd, receipts=self.receipts)
+        self.assertNotIn(self.TOKEN, str(raised.exception))
+
+    def test_the_native_readers_empty_inline_config_still_runs(self):
+        result = invoke_once(key="clean", argv=["/bin/echo", "--strict-mcp-config", "--mcp-config",
+                                                '{"mcpServers":{}}'],
+                             cwd=self.cwd, receipts=self.receipts)
+        self.assertEqual(result["status"], "EXITED")
