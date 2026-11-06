@@ -29,7 +29,8 @@ Inbox events carry identifiers and the verdict only, never transcript text.
 composed here, so neither imports the other.
 
     PYTHONPATH=<repo>:<repo>/integrations/fleet-next-agent-monitor:<repo>/integrations/fleet-hub-watch \
-      python3 -m fleet_hub_watch --config <fleet binding> [--interval 30] [--once]
+      python3 -m fleet_hub_watch --config <fleet binding> \
+        --notify <lark:user:open_id | lark:chat:chat_id | journal | off> [--interval 30] [--once]
 
 The binding must declare `inbox.path` (the same file `fleet_inbox` reads).
 `watch.sqlite`, `watch.lock` and `watch.heartbeat.json` sit next to it, all 0600.
@@ -56,9 +57,12 @@ Feishu rules applied (open.feishu.cn message create/patch): `update_multi: true`
 on every card; patch only within 14 days (continued on a fresh card after 13);
 5 QPS per recipient (sends spaced, capped at 20 per tick, the rest next tick);
 30 KB per card (validated); a stable send key so a retry within the hour cannot
-duplicate. `--notify journal` (default) writes cards to `notify.journal.jsonl`
-and sends nothing; `--notify lark:<user:…|chat:…>` uses
-`runtime/message_transport.LarkMessageSender` and is the owner's decision.
+duplicate. `--notify` has no default and is required: `lark:<user:…|chat:…>`
+sends for real through `runtime/message_transport.LarkMessageSender`;
+`journal` writes the cards it would send to `notify.journal.jsonl` and sends
+nothing; `off` runs with no notifier at all. Which one an installation passes
+*is* its broadcast policy — a monitor that records completions and sends no
+card is a deliberate `journal`, never a forgotten flag.
 
 `samples/` holds one rendered card per kind and level, marked 示例; paste one
 into Feishu's card builder to preview it.
@@ -105,8 +109,9 @@ thing that happened. `samples/daily.json` is an example.
 
 ## Not done here
 
-- Not installed anywhere. `serveros-fleet-watch.service.template` is a
-  rendering input; enabling it on Tokyo is M5 and an owner decision.
+- `serveros-fleet-watch.service.template` is a rendering input, not a unit:
+  `distribution/device_kit.py` refuses to render it without `--notify`, because
+  the destination cannot be left to the template's author's guess.
 - Discovery cannot see a run that starts and ends between two passes.
 - The native `run_get` field naming the run's state is not yet observed on a
   live CloudCLI; `status` and `state` are both read. Confirm at M5.
