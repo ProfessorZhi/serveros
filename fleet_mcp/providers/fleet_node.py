@@ -319,6 +319,17 @@ class FleetNodeProvider(DeviceProvider):
         return self._request("POST", "/v1/projects/delete",
                              {"project_id": project_id, "force": bool(force)})
 
+    def list_models(self, *, provider: str) -> dict[str, Any]:
+        """This machine's CloudCLI model library, projected on the device."""
+        return self._request("POST", "/v1/models", {"provider": provider})
+
+    def upsert_model(self, *, provider: str, model_id: str, label: str,
+                     env: list[dict[str, Any]]) -> dict[str, Any]:
+        """Create or replace one entry; the device re-checks the rows itself."""
+        return self._request("POST", "/v1/models/upsert",
+                             {"provider": provider, "model_id": model_id,
+                              "label": label, "env": env})
+
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:
         """Call ONE mirrored native tool on this node, over the signed route.

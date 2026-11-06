@@ -156,6 +156,17 @@ an independent QA read are not the same job. Say which person or model owns
 each node and what would make the result unacceptable. Keep one writer per
 checkout and do not let two agents "help" the same worktree.
 
+Choosing the model is part of choosing the owner. Read
+`fleet_models_list` for the device: each entry says whether the device's
+runtime policy allows it and why. Pass an allowed entry's `model_id` as `model`
+when you create or send. If the right entry does not exist, create it with
+`fleet_model_upsert`: credentials go in as `envref` rows naming a variable the
+device's owner keeps (`{key: ANTHROPIC_AUTH_TOKEN, kind: envref, variable:
+GW0_TOKEN}`), never as values — you never see, ask for, or paste a key. Use
+the entry only when the answer says `verified: true`. A policy refusal is the
+owner's rule, not an obstacle: choose an allowed entry or say what you would
+need.
+
 The commander's output is a set of dispatched tasks with their references, a
 graph with honest edges, and later an evidence-based accept/refuse decision —
 not a transcript of waiting.

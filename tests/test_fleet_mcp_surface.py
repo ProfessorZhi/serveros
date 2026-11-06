@@ -161,8 +161,8 @@ class ToolSurface(unittest.TestCase):
                 "fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
                 "fleet_read_session", "fleet_send_to_session", "fleet_get_run",
                 "fleet_status", "fleet_create_session", "fleet_interrupt_session",
-                "fleet_create_project", "fleet_delete_project", "fleet_inbox",
-                "fleet_work_board", "fleet_project_understanding",
+                "fleet_create_project", "fleet_delete_project", "fleet_models_list",
+                "fleet_model_upsert", "fleet_inbox", "fleet_work_board", "fleet_project_understanding",
                 "fleet_work_candidate_add", "fleet_device_versions",
                 "fleet_monitor_status", "fleet_monitor_control",
             ]),
@@ -184,7 +184,8 @@ class ToolSurface(unittest.TestCase):
         )
         self.assertEqual(fleet_tools.tool_names()[8:],
                          ["fleet_interrupt_session", "fleet_create_project",
-                          "fleet_delete_project", "fleet_inbox", "fleet_work_board",
+                          "fleet_delete_project", "fleet_models_list",
+                          "fleet_model_upsert", "fleet_inbox", "fleet_work_board",
                           "fleet_project_understanding", "fleet_work_candidate_add",
                           "fleet_device_versions", "fleet_monitor_status",
                           "fleet_monitor_control"])
@@ -193,7 +194,7 @@ class ToolSurface(unittest.TestCase):
         writes = [t.name for t in fleet_tools.TOOLS if not t.annotations["readOnlyHint"]]
         self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session",
                                   "fleet_interrupt_session", "fleet_create_project",
-                                  "fleet_delete_project", "fleet_work_candidate_add",
+                                  "fleet_delete_project", "fleet_model_upsert", "fleet_work_candidate_add",
                                   "fleet_monitor_control"])
 
     def test_the_two_destructive_tools_are_named(self):

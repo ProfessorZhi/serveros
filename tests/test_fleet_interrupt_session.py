@@ -242,7 +242,8 @@ class TheToolIsOnTheSurfaceAndSaysWhatItIs(unittest.TestCase):
     def test_interrupt_stays_ninth_before_the_project_extensions(self):
         names = fleet_tools.tool_names()
         self.assertEqual(names[8:], ["fleet_interrupt_session", "fleet_create_project",
-                                     "fleet_delete_project", "fleet_inbox",
+                                     "fleet_delete_project", "fleet_models_list",
+                                     "fleet_model_upsert", "fleet_inbox",
                                      "fleet_work_board", "fleet_project_understanding",
                                      "fleet_work_candidate_add", "fleet_device_versions",
                                      "fleet_monitor_status", "fleet_monitor_control"])
@@ -716,8 +717,8 @@ class TheNodeTransportSignsAndCloses(unittest.TestCase):
         from fleet_mcp import node_protocol as np
 
         # The session routes, native mirror, core status, fresh projects and
-        # the one destructive project route.
-        self.assertEqual(len(np.ROUTES), 14)
+        # the one destructive project route, the model library pair.
+        self.assertEqual(len(np.ROUTES), 16)
         # Named so that a future edit cannot add a second one under cover of
         # this count going up.
         self.assertEqual([r for r in np.ROUTES if "interrupt" in r],

@@ -269,11 +269,20 @@ class RouteClosure(_Base):
             ("POST", "/v1/native/call", {"tool": "overview", "arguments": {}}),
             ("GET", "/v1/core/status", None),
             ("GET", "/v1/device/versions", None),
+            ("POST", "/v1/models", {"provider": "claude"}),
+            ("POST", "/v1/models/upsert", {"provider": "claude"}),
         ]
         self.assertEqual(len(cases), len(np.ROUTES))
         for method, path, body in cases:
             with self.subTest(route=f"{method} {path}"):
                 status, payload = self.request(method, path, body)
+                if path in ("/v1/models", "/v1/models/upsert"):
+                    # Reachable, and refused by name: this binding serves no
+                    # model library and allows no library writes.
+                    self.assertIn(status, (400, 403), payload)
+                    self.assertIn(payload["error"]["code"],
+                                  ("CAPABILITY_UNSUPPORTED", "WRITE_NOT_GRANTED"))
+                    continue
                 if path in ("/v1/projects", "/v1/projects/delete"):
                     self.assertEqual(status, 403, payload)
                     self.assertEqual(payload["error"]["code"], "WRITE_NOT_GRANTED")

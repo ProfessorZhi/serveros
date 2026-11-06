@@ -169,6 +169,32 @@ class CloudCliProvider(DeviceProvider):
         except ProviderRefusal as exc:
             raise _translate(exc) from None
 
+    def _model_library(self):
+        from ..cloudcli_models import LocalLibrary
+
+        path = self.binding.model_library_token_path
+        if path is None:
+            raise refuse("CAPABILITY_UNSUPPORTED",
+                         f"{self.device_ref}'s binding does not serve its model library "
+                         f"(no model_library_token_path)")
+        return LocalLibrary(self.binding.endpoint, path, timeout=self.binding.read_timeout)
+
+    def list_models(self, *, provider: str) -> dict[str, Any]:
+        """The model library, projected: secret values are withheld here."""
+        return self._model_library().list(provider)
+
+    def upsert_model(self, *, provider: str, model_id: str, label: str,
+                     env: list[dict[str, Any]]) -> dict[str, Any]:
+        """Create or replace ONE custom entry; the rows were already checked."""
+        from ..cloudcli_models import check_entry
+
+        if not self.binding.allow_model_library_write:
+            raise refuse("APPROVAL_REQUIRED",
+                         f"{self.device_ref}'s binding does not let its model library be "
+                         f"written (allow_model_library_write)")
+        rows = check_entry(provider, model_id, label, env)
+        return self._model_library().upsert(provider, model_id, label, rows)
+
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:
         """Call ONE native tool by a name this build records. Never a proxy.

@@ -341,6 +341,14 @@ class NodeConfig:
     # latency and the same place as every other binding in this system. Nothing
     # else reads this file, so nothing else can re-grant it.
     allow_all_sessions_for_owner: tuple[str, ...] = ()
+    # CloudCLI's model library on THIS machine. The token file is the owner's
+    # CloudCLI login (written by `python3 -m fleet_mcp.node.model_login`); unset
+    # means the library is not served here. Reading it needs only the file;
+    # writing an entry also needs `allow_model_library_write`, which an owner-max
+    # profile does NOT turn on: changing which model and gateway a session runs
+    # with is a decision of its own, not a consequence of other grants.
+    model_library_token_path: Path | None = None
+    allow_model_library_write: bool = False
     owner_access: Any = None
 
     def __post_init__(self):
@@ -794,6 +802,10 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         device_versions_path=_owner_fixed_path(raw.get("device_versions_path"),
                                                "device_versions_path"),
         notes=str(raw.get("notes") or ""),
+        model_library_token_path=_owner_fixed_path(raw.get("model_library_token_path"),
+                                                   "model_library_token_path"),
+        allow_model_library_write=_flag(raw.get("allow_model_library_write"),
+                                        name="allow_model_library_write"),
         allow_all_sessions_for_owner=_owner_floors(raw.get("allow_all_sessions_for_owner")),
     )
 
@@ -966,7 +978,49 @@ class Connector:
             return 200, self._device_versions()
         if parts == ["v1", "native", "call"]:
             return 200, self._native_call(payload)
+        if parts == ["v1", "models"]:
+            return 200, self._models_list(payload)
+        if parts == ["v1", "models", "upsert"]:
+            return 200, self._models_upsert(payload)
         return 404, error_payload("UNKNOWN_ROUTE", f"{method} {path} is not routed")
+
+    def _model_library(self):
+        from ..cloudcli_models import LocalLibrary
+
+        if self.config.model_library_token_path is None:
+            raise FleetRefusal(
+                "CAPABILITY_UNSUPPORTED",
+                "this machine does not serve its CloudCLI model library: the "
+                "connector binding has no model_library_token_path")
+        return LocalLibrary(self.config.cloudcli_endpoint, self.config.model_library_token_path,
+                            timeout=self.config.read_timeout)
+
+    def _models_list(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """This machine's model library, projected: no secret value leaves it."""
+        provider = payload.get("provider", "claude")
+        if provider not in ("claude", "codex"):
+            raise FleetRefusal("BAD_REQUEST", "provider must be claude or codex")
+        return self._model_library().list(provider)
+
+    def _models_upsert(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Create or replace one entry, re-checked HERE with the hub's own rules.
+
+        The hub has already judged the runtime policy; this machine applies the
+        no-secret-value rule again itself, because it is the side that holds
+        the library and must not take the other end's word for what it writes.
+        """
+        from ..cloudcli_models import check_entry
+
+        if not self.config.allow_model_library_write:
+            raise FleetRefusal(
+                "WRITE_NOT_GRANTED",
+                "this machine does not let its model library be written from the "
+                "fleet: its connector binding does not set allow_model_library_write")
+        provider = payload.get("provider", "claude")
+        rows = check_entry(provider, payload.get("model_id"), payload.get("label"),
+                           payload.get("env"))
+        return self._model_library().upsert(provider, payload["model_id"],
+                                            payload["label"], rows)
 
     def _device_versions(self) -> dict[str, Any]:
         """What this device runs, as its last update recorded it.

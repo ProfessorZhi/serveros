@@ -278,6 +278,39 @@ def _delete_project(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
 
 
+
+def _list_models(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.list_models(
+        ctx.principal, device=args.get("device"), provider=args.get("provider") or "claude",
+        runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
+
+
+def _upsert_model(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.upsert_model(
+        ctx.principal, device=args.get("device"), model_id=args.get("model_id"),
+        label=args.get("label"), env=args.get("env"), source=args.get("source"),
+        gateway=args.get("gateway"), provider=args.get("provider") or "claude",
+        runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
+
+
+_ENV_ROW = {
+    "type": "object",
+    "properties": {
+        "key": _string("Environment variable name, e.g. ANTHROPIC_BASE_URL."),
+        "kind": {"type": "string", "enum": ["value", "envref", "unset", "secret"],
+                 "description": "value: plain text (never for a credential key). envref: "
+                                "set from a variable of the CloudCLI service, named in "
+                                "`variable`. unset: remove the key. secret: keep the value "
+                                "the device already stores — never send one."},
+        "value": _string("For kind value: the text."),
+        "variable": _string("For kind envref: the CloudCLI service variable holding the "
+                            "value, e.g. GW0_TOKEN."),
+    },
+    "required": ["key", "kind"],
+    "additionalProperties": False,
+}
+
+
 TOOLS: tuple[Tool, ...] = (
     Tool(
         name="fleet_list_devices",
@@ -815,6 +848,80 @@ TOOLS: tuple[Tool, ...] = (
         annotations={"readOnlyHint": False, "destructiveHint": True,
                      "idempotentHint": False, "openWorldHint": True},
         handler=_delete_project,
+    ),
+    Tool(
+        name="fleet_models_list",
+        title="List a device's CloudCLI model library",
+        description=(
+            "The model entries one device's CloudCLI offers for a provider (claude or "
+            "codex): each entry's id, label, whether it is custom, and its environment "
+            "rows by key and kind. No secret value is ever returned: a secret row says "
+            "only that it is set, and an envref row names the CloudCLI service variable "
+            "that holds the value.\n\n"
+            "Each entry carries `policy`: whether this device's runtime policy would let "
+            "it run, with the reason. Pick an allowed entry's `model_id` as `model` when "
+            "creating or sending to a session. CAPABILITY_UNSUPPORTED means the device's "
+            "owner has not enabled the library for Fleet."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "device": _string(DEVICE_REF_DOC),
+                "provider": {"type": "string", "enum": ["claude", "codex"],
+                             "description": "Defaults to claude."},
+                "runtime": _string("Exact authorized runtime namespace; defaults to claude."),
+            },
+            "required": ["device"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": True, "destructiveHint": False,
+                     "idempotentHint": True, "openWorldHint": True},
+        handler=_list_models,
+    ),
+    Tool(
+        name="fleet_model_upsert",
+        title="Create or replace a model entry on a device",
+        description=(
+            "Create or replace ONE custom model entry in a device's CloudCLI model "
+            "library, e.g. a DeepSeek model through a shared gateway.\n\n"
+            "Keys never pass through here. A credential (any key like *_TOKEN, *_KEY, "
+            "*AUTH*) must be an `envref` row naming the CloudCLI service variable that "
+            "holds it (`{key: ANTHROPIC_AUTH_TOKEN, kind: envref, variable: GW0_TOKEN}`); "
+            "the device's owner puts the value in that variable. A `secret` row with no "
+            "value keeps the one the device stores. A secret value is refused.\n\n"
+            "`source` says where the model is served from and must fit the rows "
+            "(gateway/self_hosted need a base URL row; official sources must not have "
+            "one). The entry is judged against the device's runtime policy (source, "
+            "`gateway`, every model name it would run) before anything is written, and "
+            "needs the control grant on the device plus the device's own consent to "
+            "library writes. The answer's `verified` is true only when the device's "
+            "library reads back as written."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "device": _string(DEVICE_REF_DOC),
+                "provider": {"type": "string", "enum": ["claude", "codex"],
+                             "description": "Defaults to claude."},
+                "model_id": _string("The entry id sessions select as `model` (no whitespace), "
+                                    "e.g. deepseek-v3-gw0."),
+                "label": _string("Display name, at most 80 characters."),
+                "env": {"type": "array", "items": _ENV_ROW, "maxItems": 64,
+                        "description": "The entry's environment rows, replacing any it had."},
+                "source": {"type": "string",
+                           "enum": ["official_subscription", "official_api", "gateway",
+                                    "self_hosted"],
+                           "description": "Where this entry's model is served from."},
+                "gateway": _string("For a gateway entry: the gateway's target ref, e.g. "
+                                   "target:gateway0. Required where policy names gateways."),
+                "runtime": _string("Exact authorized runtime namespace; defaults to claude."),
+            },
+            "required": ["device", "model_id", "label", "env", "source"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": False,
+                     "idempotentHint": True, "openWorldHint": True},
+        handler=_upsert_model,
     ),
     Tool(
         name="fleet_inbox",

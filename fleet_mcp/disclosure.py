@@ -283,6 +283,15 @@ KIND_BY_FIELD: dict[str, str] = {
     "aborted": FLAG,  # whether an interrupt stopped a run
     "redirect_uri": URI,
     "redirect_uris": URI,
+    # CloudCLI's model library. `model_id` is an entry id the caller chose, a
+    # ref-shaped name and never a value; `gateway` a target ref. Which keys an
+    # entry carried is not recorded: a key list is the caller's text.
+    "provider": CODE,
+    "model_id": REF,
+    "source": CODE,
+    "gateway": REF,
+    "entries": COUNT,
+    "verified": FLAG,
 }
 """The audit vocabulary, closed twice over: the names, and for each name the
 kind of value it may carry. Adding a name here is the whole procedure for
