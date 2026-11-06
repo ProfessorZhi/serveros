@@ -14,6 +14,9 @@ protocol questions and delegates every fleet question to `tools.py`.
 from __future__ import annotations
 
 import json
+import secrets
+import sys
+import traceback
 from typing import Any, Callable
 
 from .disclosure import digest_of
@@ -81,10 +84,17 @@ class McpServer:
                 request_id, _rpc_code_for(exc), exc.detail, data=exc.as_payload()
             )
         except Exception as exc:  # noqa: BLE001 - a defect must be reported, not hidden
+            # The traceback goes to the unit's stderr, the same as the HTTP
+            # transport's two 500 paths: without it the log line below names a
+            # class and nothing else, and the defect still cannot be found.
+            traceback.print_exc(file=sys.stderr)
             recorded = self._record_internal_error(method, request_id, exc)
+            # The class name and the id go back; the exception's own text does
+            # not. It is written by whoever raised it and may carry a path, a
+            # value or a remote reply — the log has it, the caller has the id.
             return None if is_notification else _error_response(
                 request_id, JSONRPC_INTERNAL_ERROR,
-                f"internal error: {type(exc).__name__}: {exc}",
+                f"internal error: {type(exc).__name__}; see the service log ({recorded})",
                 data={"code": INTERNAL, "request_id": recorded},
             )
         if result is None:
@@ -113,7 +123,10 @@ class McpServer:
         clear. The digest is printed to the caller, so the sentence they paste
         back is the one this line was written for.
         """
-        recorded = digest_of(f"{method}:{request_id!r}")
+        # A nonce, not just the request id: clients number requests from 1 on
+        # every connection, so `method:id` alone gives two unrelated failures
+        # the same fingerprint and the operator two log lines for one quote.
+        recorded = digest_of(f"{method}:{request_id!r}:{secrets.token_hex(8)}")
         context = None
         try:
             context = self._context_provider()

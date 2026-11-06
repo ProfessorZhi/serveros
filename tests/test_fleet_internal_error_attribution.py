@@ -97,6 +97,31 @@ class TheJsonRpcFallbackNamesItsDefect(Audited):
         self.assertEqual(reply["error"]["data"]["code"], "INTERNAL")
         self.assertRegex(reply["error"]["data"]["request_id"], r"^sha256:[0-9a-f]{12}$")
 
+    def test_two_failures_with_the_same_request_number_get_two_ids(self):
+        """Clients restart numbering per connection; the id must still be unique."""
+        server = self._server_that_raises("tools/call", RuntimeError("boom"))
+        first = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}})
+        second = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {}})
+        self.assertNotEqual(first["error"]["data"]["request_id"],
+                            second["error"]["data"]["request_id"])
+
+    def test_the_exception_text_stays_in_the_log_not_the_reply(self):
+        """The caller gets the class and the id; the raiser's text is not theirs."""
+        server = self._server_that_raises("tools/call", RuntimeError("/srv/secret/path"))
+        reply = server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {}})
+        self.assertNotIn("/srv/secret/path", json.dumps(reply))
+        self.assertIn("RuntimeError", reply["error"]["message"])
+        self.assertIn(reply["error"]["data"]["request_id"], reply["error"]["message"])
+
+    def test_the_traceback_reaches_stderr(self):
+        """A class name alone cannot locate a defect; the stack goes to the unit log."""
+        import contextlib, io
+        server = self._server_that_raises("tools/call", RuntimeError("boom"))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            server.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {}})
+        self.assertIn("Traceback", err.getvalue())
+
     def test_the_id_is_a_digest_because_the_request_id_is_the_callers(self):
         """A caller who puts a token in `id` must not find it in this log."""
         server = self._server_that_raises("tools/call", RuntimeError("boom"))
