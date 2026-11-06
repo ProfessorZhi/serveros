@@ -2,18 +2,31 @@
   "schema": "2.0",
   "config": {
     "update_multi": true,
-    "width_mode": "default"
+    "width_mode": "compact",
+    "summary": {
+      "content": "注意 · 任务运行时间过长 · lab-notes：run-22c1（Dell A6000）仍在运行，已超过 2 小时"
+    }
   },
   "header": {
     "template": "yellow",
     "title": {
       "tag": "plain_text",
-      "content": "⚠️ 注意 · 任务运行时间过长 · lab-notes · [示例]"
+      "content": "任务运行时间过长 · lab-notes · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",
       "content": "开始 10-29 12:20 · 持续 2 小时 10 分钟"
-    }
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "注意"
+        },
+        "color": "orange"
+      }
+    ]
   },
   "body": {
     "direction": "vertical",

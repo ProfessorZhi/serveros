@@ -34,7 +34,7 @@ DEFAULT_SPEC: dict[str, Any] = {
         "daily_report_at": "18:00",
     },
     "resource_card": {
-        "title": "{icon} Fleet 资源播报 · {word}",
+        "title": "Fleet 资源播报",
         "subtitle": "{date} 周{weekday} · {time} 更新（北京时间）",
         "summary": "**{devices} 台设备** · 🚨 报警 {alert} · ⚠️ 注意 {warn} · ✅ 正常 {ok} · ⚪ 无法确认 {unknown}",
         "attention_heading": "需要关注",
@@ -64,14 +64,14 @@ DEFAULT_SPEC: dict[str, Any] = {
         },
     },
     "completion_card": {
-        "title": "{icon} 任务完成 · {count} 个",
+        "title": "任务完成 · {count} 个",
         "max_rows": 20,
         "more": "另有 {count} 个，见 fleet_inbox",
         "basis": "判定依据：读到了 agent 的实际输出 · 详细结果用 fleet_read_session 查看",
     },
     "daily_report": {
         "enabled": True,
-        "title": "📋 Fleet 日报 · {date} 周{weekday}",
+        "title": "Fleet 日报 · {date} 周{weekday}",
         "subtitle": "{time} 生成（北京时间） · 统计当天 00:00 起",
         "sections": ["runs", "problems", "resources", "open_now"],
         "headings": {

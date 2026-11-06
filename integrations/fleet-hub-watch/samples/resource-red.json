@@ -2,18 +2,39 @@
   "schema": "2.0",
   "config": {
     "update_multi": true,
-    "width_mode": "default"
+    "width_mode": "default",
+    "summary": {
+      "content": "报警 · Dell A6000 磁盘 DATA 93% · 余 260 GiB；Dell A6000 内存 91% / 256 GiB"
+    }
   },
   "header": {
     "template": "red",
     "title": {
       "tag": "plain_text",
-      "content": "🚨 Fleet 资源播报 · 报警 · [示例]"
+      "content": "Fleet 资源播报 · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",
       "content": "10-29 周四 · 14:30 更新（北京时间）"
-    }
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "报警"
+        },
+        "color": "red"
+      },
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "3 台"
+        },
+        "color": "neutral"
+      }
+    ]
   },
   "body": {
     "direction": "vertical",

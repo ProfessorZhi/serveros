@@ -2,18 +2,31 @@
   "schema": "2.0",
   "config": {
     "update_multi": true,
-    "width_mode": "default"
+    "width_mode": "default",
+    "summary": {
+      "content": "任务完成 3 个：serveros、ability-management、lab-notes"
+    }
   },
   "header": {
     "template": "green",
     "title": {
       "tag": "plain_text",
-      "content": "✅ 任务完成 · 3 个 · [示例]"
+      "content": "任务完成 · 3 个 · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",
       "content": "10-29 14:30（北京时间）"
-    }
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "3 个"
+        },
+        "color": "green"
+      }
+    ]
   },
   "body": {
     "direction": "vertical",

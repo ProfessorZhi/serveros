@@ -2,18 +2,31 @@
   "schema": "2.0",
   "config": {
     "update_multi": true,
-    "width_mode": "default"
+    "width_mode": "compact",
+    "summary": {
+      "content": "已恢复 · Dell A6000 · 磁盘 DATA：已用 80% · 余 800 GiB"
+    }
   },
   "header": {
     "template": "green",
     "title": {
       "tag": "plain_text",
-      "content": "✅ 已恢复 · Dell A6000 · 磁盘 DATA · [示例]"
+      "content": "Dell A6000 · 磁盘 DATA · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",
       "content": "开始 10-29 14:02 · 历时 68 分钟"
-    }
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "已恢复"
+        },
+        "color": "green"
+      }
+    ]
   },
   "body": {
     "direction": "vertical",
