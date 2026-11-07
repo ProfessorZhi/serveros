@@ -317,6 +317,24 @@ def _render(rel: str, values: dict[str, str]) -> str:
     return text
 
 
+def agent_bin(name: str, home: Path) -> str:
+    """The agent CLI to run, found even when a non-interactive shell's PATH lacks it.
+
+    A login shell puts ~/.local/bin (where both CLIs install themselves) on PATH;
+    `ssh host cmd` does not, and the kit then failed at "claude: not found".
+    """
+    import shutil
+
+    found = shutil.which(name)
+    if found:
+        return found
+    for candidate in (home / ".local/bin" / name, home / ".npm-global/bin" / name,
+                      home / ".bun/bin" / name):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return name
+
+
 def linux_steps(k: dict, ctx: Context) -> list[Step]:
     steps: list[Step] = []
     rev = ctx.ability_rev
@@ -329,7 +347,15 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
         label = f"am-{rev[:12]}"
         staging = runtime_root / f".staging-{label}"
         current = runtime_root / core["composition"] / "current"
-        steps += [
+        claude, codex = agent_bin("claude", ctx.home), agent_bin("codex", ctx.home)
+        # A revision is released once: release.py refuses a second promote of the
+        # same label by design. An update whose ability revision did not move has
+        # nothing to build, so it says so instead of failing on the refusal.
+        released = (runtime_root / core["composition"] / "revisions" / label).is_dir()
+        if released:
+            steps.append(Step("core", f"{core['name']} at {label} is already released here; "
+                                      f"nothing to build", ["true"]))
+        steps += [] if released else [
             Step("core", f"build {core['name']} {core['version']} at ability-management {rev[:12]}",
                  [py, str(ROOT / "scripts/build.py"), "--write", "--bundle", str(ROOT / core["source"]),
                   "--ability-repo", str(ctx.ability_repo), "--ability-rev", rev,
@@ -343,20 +369,20 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
         if "claude-code" in core["agents"]:
             steps += [
                 Step("core", "Claude Code: add the local marketplace (fails harmlessly if present)",
-                     ["claude", "plugin", "marketplace", "add", str(current)], ok_fail=True),
+                     [claude, "plugin", "marketplace", "add", str(current)], ok_fail=True),
                 Step("core", "Claude Code: refresh it",
-                     ["claude", "plugin", "marketplace", "update", core["name"]]),
+                     [claude, "plugin", "marketplace", "update", core["name"]]),
                 Step("core", "Claude Code: install (fails harmlessly if installed)",
-                     ["claude", "plugin", "install", core["claude_code"]], ok_fail=True),
+                     [claude, "plugin", "install", core["claude_code"]], ok_fail=True),
                 Step("core", "Claude Code: update to this version",
-                     ["claude", "plugin", "update", core["claude_code"]]),
+                     [claude, "plugin", "update", core["claude_code"]]),
             ]
         if "codex" in core["agents"]:
             steps += [
                 Step("core", "Codex: add the local marketplace (fails harmlessly if present)",
-                     ["codex", "plugin", "marketplace", "add", str(runtime_root)], ok_fail=True),
+                     [codex, "plugin", "marketplace", "add", str(runtime_root)], ok_fail=True),
                 Step("core", "Codex: add the plugin (replaces the installed version)",
-                     ["codex", "plugin", "add", core["codex"]]),
+                     [codex, "plugin", "add", core["codex"]]),
             ]
 
     fam = k["layers"]["family"]

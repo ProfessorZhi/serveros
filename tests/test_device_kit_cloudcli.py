@@ -46,3 +46,27 @@ def test_same_dir_as_the_shell_is_not_rolled_out_twice(tmp_path):
                      home=home, python="python3", notify=None, cloudcli_claude_dir=home / ".claude")
     argvs = [s.argv for s in dk.linux_steps(k, ctx) if s.layer == "family"]
     assert not any("--claude-config-dir" in a for a in argvs)
+
+
+def test_an_already_released_revision_is_not_built_again(tmp_path):
+    k = dk.kit(dk.declaration(), "dell")
+    rev = "c" * 40
+    data = tmp_path / "data"
+    core = k["layers"]["core"]
+    (data / "runtime-assets/hwz-server-os" / core["composition"] / "revisions"
+     / f"am-{rev[:12]}").mkdir(parents=True)
+    ctx = dk.Context(ability_repo=tmp_path / "am", ability_rev=rev, data_root=data,
+                     home=tmp_path / "home", python="python3", notify=None)
+    titles = [s.title for s in dk.linux_steps(k, ctx) if s.layer == "core"]
+    assert any("already released" in t for t in titles)
+    assert not any(t.startswith("build ") or t.startswith("promote") for t in titles)
+
+
+def test_the_agent_cli_is_found_outside_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", "/nonexistent")
+    bin_dir = tmp_path / ".local/bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "claude").write_text("#!/bin/sh\n")
+    (bin_dir / "claude").chmod(0o755)
+    assert dk.agent_bin("claude", tmp_path) == str(bin_dir / "claude")
+    assert dk.agent_bin("codex", tmp_path) == "codex"
