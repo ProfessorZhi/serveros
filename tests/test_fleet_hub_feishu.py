@@ -76,7 +76,7 @@ def test_buttons_start_the_cli_that_exists_not_just_the_first_name(monkeypatch):
 
     def popen(argv, **kwargs):
         tried.append(argv[0])
-        if argv[0] == "lark-cli":
+        if argv[0] != "/opt/lark-cli":
             raise FileNotFoundError(argv[0])
         return FakeProc()
 
