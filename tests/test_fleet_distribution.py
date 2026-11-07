@@ -210,7 +210,7 @@ class TheInstallersAreOneCommand(unittest.TestCase):
         for retired in ("serveros-fleet-v1@serveros-v1", "serveros-fleet-ingress@serveros"):
             self.assertIn(f"+ claude plugin uninstall {retired}", out)
         self.assertIn("fleet-latest/serveros-fleet-openai.zip", out)
-        self.assertIn("plugin_asdk_app_6aec2811173881918325a3dc82742d8d", out)
+        self.assertIn("plugin_asdk_app_6aed2ec2e0e48191b438082e444c3210", out)
 
     def test_install_sh_pins_a_release_tag_or_uses_this_checkout(self):
         self.assertIn("serveros.git#fleet-v1.3.2", self._dry_run("--version", "1.3.2"))

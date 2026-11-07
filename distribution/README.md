@@ -87,7 +87,7 @@ plugin.
 | | |
 |---|---|
 | package | `python3 distribution/build.py zip --client openai --out dist/`, or `serveros-fleet-openai-v<version>.zip` from the release |
-| install / update | upload the zip on [the ServerOS Fleet plugin page](https://chatgpt.com/plugins/plugin_asdk_app_6aec2811173881918325a3dc82742d8d) |
+| install / update | upload the zip on [the ServerOS Fleet plugin page](https://chatgpt.com/plugins/plugin_asdk_app_6aed2ec2e0e48191b438082e444c3210) |
 | verify | the plugin shows **ServerOS Fleet** with its icon and the new version; Fleet tools answer on the web and in Codex |
 | rollback | upload the previous version's zip from `fleet-v<previous>` |
 | other accounts | the App id is this account's. Another account registers its own App for `https://fleet-v1.professorzhi.fun/mcp`, and its id goes into its own build |
