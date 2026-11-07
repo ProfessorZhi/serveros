@@ -133,11 +133,18 @@ def health(*, run: Runner | None = None) -> dict[str, Any]:
     state: dict[str, Any] = {"cli": "OK"}
     try:
         data = json.loads(out)
+        if not isinstance(data, dict):
+            raise ValueError("auth status is not an object")
+        # Both identities live under `identities`; a flat {"bot": …} shape is
+        # still read, so an older lark-cli keeps reporting correctly.
+        people = data.get("identities")
+        if not isinstance(people, dict):
+            people = data
         for who in ("bot", "user"):
-            value = data.get(who)
+            value = people.get(who)
             if isinstance(value, dict):
                 value = value.get("status") or value.get("state")
-            state[who] = str(value or "UNKNOWN")
+            state[who] = value if isinstance(value, str) and value else "UNKNOWN"
     except (ValueError, AttributeError):
         for who in ("bot", "user"):
             match = re.search(rf"^\s*{who}\s*[=:]\s*(\S+)", out, re.MULTILINE)
@@ -174,6 +181,32 @@ def decide(event: dict[str, Any], owner: str | None) -> dict[str, Any] | None:
     return value
 
 
+CONSUME_CALLBACKS = ["event", "consume", "card.action.trigger", "--as", "bot"]
+
+
+def _spawn(argv: list[str]):
+    """Start lark-cli, trying every candidate `_cli()` offers.
+
+    `_ask` already walks them because a service's PATH usually has no
+    `~/.local/bin`; the listener used to take the first name only and give up,
+    which reported CLI_MISSING on a hub where every other lark-cli call worked.
+
+    `stdin` is a pipe we hold and never write: `event consume` treats stdin EOF
+    as "shut down", and under systemd the unit's stdin is /dev/null, so the
+    consumer would exit — cleanly, and at once — with the subscription ready
+    and never used. Holding the pipe open is the documented way to keep it
+    (SIGTERM is the other).
+    """
+    for cli in _cli():
+        try:
+            return subprocess.Popen([cli, *argv], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+        except OSError:
+            continue
+    return None
+
+
 class ButtonListener:
     """`lark-cli event consume card.action.trigger --as bot`, one thread, restarted."""
 
@@ -182,6 +215,7 @@ class ButtonListener:
         self.act = act
         self.state = "NOT_STARTED"
         self.handled = 0
+        self.last = ""
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -195,23 +229,32 @@ class ButtonListener:
         import time
 
         while True:
-            cli = next(iter(_cli()))
-            try:
-                proc = subprocess.Popen([cli, "event", "consume", "card.action.trigger", "--as", "bot"],
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            except OSError:
+            proc = _spawn(CONSUME_CALLBACKS)
+            if proc is None:
                 self.state = "CLI_MISSING"
                 return
             self.state = "STARTING"
-            for line in proc.stderr:
-                if "[event] ready" in line:
-                    self.state = "LISTENING"
-                    break
+            self.last = ""
+            # stderr is drained beside stdout: it is where readiness and the
+            # reason for an exit are written, and a child filling an unread
+            # stderr pipe would block with the state still saying LISTENING.
+            pump = threading.Thread(target=self._drain, args=(proc.stderr,), daemon=True)
+            pump.start()
             for line in proc.stdout:
                 self.feed(line)
             proc.wait()
-            self.state = f"EXITED_{proc.returncode}"
+            pump.join(timeout=2)
+            self.state = f"EXITED_{proc.returncode}" + (f": {self.last}" if self.last else "")
             time.sleep(30)
+
+    def _drain(self, stream) -> None:
+        for line in stream:
+            line = line.strip()
+            if not line:
+                continue
+            self.last = line[:160]
+            if "[event] ready" in line:
+                self.state = "LISTENING"
 
     def feed(self, line: str) -> str | None:
         try:
