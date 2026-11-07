@@ -39,9 +39,7 @@ if (-not $AbilityRepo) {
         (Join-Path $env:USERPROFILE 'projects\ability-management')
     ) | Where-Object { Test-Path -LiteralPath (Join-Path $_ '.git') } | Select-Object -First 1
 }
-if (-not $AbilityRepo -or -not (Test-Path -LiteralPath (Join-Path $AbilityRepo '.git'))) {
-    throw "no ability-management checkout found; pass -AbilityRepo <path>"
-}
+if (-not $AbilityRepo) { $AbilityRepo = Join-Path (Split-Path $root -Parent) 'ability-management' }
 $kitPath = Join-Path $root "distribution\devices\$Device\DEVICE.json"
 if (-not (Test-Path -LiteralPath $kitPath)) { throw "no device kit for '$Device' at $kitPath" }
 $kit = Get-Content -LiteralPath $kitPath -Raw | ConvertFrom-Json
@@ -66,6 +64,9 @@ if ($coreLite.profile) {
 Write-Host " 5. print the connector restart (if the task is registered)"
 Write-Host " 6. write $state\device-versions.json"
 if (-not $Apply) { Write-Host "`n(dry run - add -Apply to run these steps)"; return }
+if (-not (Test-Path -LiteralPath (Join-Path $AbilityRepo '.git'))) {
+    throw "no ability-management checkout at $AbilityRepo; pass -AbilityRepo <path>"
+}
 
 function Invoke-Step([string]$title, [scriptblock]$body) {
     Write-Host "== $title"
