@@ -264,3 +264,17 @@ def test_a_failed_install_records_no_versions(tmp_path, monkeypatch):
                     "--home", str(home), "--python", str(exe), "--apply"])
     assert code == 1
     assert not (home / ".local/state/serveros/device-versions.json").exists()
+
+
+def test_alerts_can_go_to_a_named_group_and_an_update_keeps_it(tmp_path):
+    unit_dir = tmp_path / ".config/systemd/user"
+    unit_dir.mkdir(parents=True)
+    args = _args(home=str(tmp_path), notify="lark:owner")
+    args.alerts_to = "lark:chat-name:ServerOS 播报"
+    _, steps = dk.plan(args)
+    body = next(s.write[1] for s in steps if s.write and s.write[0].name == "serveros-fleet-watch.service")
+    assert '--notify lark:owner --alerts-to "lark:chat-name:ServerOS 播报"' in body
+    (unit_dir / "serveros-fleet-watch.service").write_text(body, encoding="utf-8")
+    _, again = dk.plan(_args(home=str(tmp_path), notify=None))
+    unit = next(s.write[1] for s in again if s.write and s.write[0].name == "serveros-fleet-watch.service")
+    assert '--alerts-to "lark:chat-name:ServerOS 播报"' in unit
