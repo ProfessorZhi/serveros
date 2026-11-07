@@ -70,6 +70,7 @@ def test_buttons_start_the_cli_that_exists_not_just_the_first_name(monkeypatch):
     """The listener used to take the first candidate, the bare name, and report
     CLI_MISSING where the absolute path works."""
     tried = []
+    seen = {}
 
     class FakeProc:
         pass
@@ -78,14 +79,28 @@ def test_buttons_start_the_cli_that_exists_not_just_the_first_name(monkeypatch):
         tried.append(argv[0])
         if argv[0] != "/opt/lark-cli":
             raise FileNotFoundError(argv[0])
+        seen.update(kwargs)
         return FakeProc()
 
     monkeypatch.setattr(feishu, "_cli", lambda: ["lark-cli", "/opt/lark-cli"])
     monkeypatch.setattr(feishu.subprocess, "Popen", popen)
     assert isinstance(feishu._spawn(feishu.CONSUME_CALLBACKS), FakeProc)
     assert tried == ["lark-cli", "/opt/lark-cli"]
+    # `event consume` treats stdin EOF as "shut down"; a unit's stdin is
+    # /dev/null, so the pipe we hold is what keeps the subscription alive.
+    assert seen["stdin"] == feishu.subprocess.PIPE
     monkeypatch.setattr(feishu, "_cli", lambda: ["nowhere/lark-cli"])
     assert feishu._spawn(feishu.CONSUME_CALLBACKS) is None
+
+
+def test_a_listener_that_never_gets_ready_says_why():
+    listener = feishu.ButtonListener(OWNER, lambda value: "ok")
+    listener.state = "STARTING"
+    listener._drain(iter(["[event] consuming as cli_x\n",
+                          "[event] stdin closed — shutting down. consume treats stdin EOF as exit signal\n"]))
+    assert listener.state == "STARTING" and "stdin closed" in listener.last
+    listener._drain(iter(["[event] ready event_key=card.action.trigger\n"]))
+    assert listener.state == "LISTENING"
 
 
 def test_a_click_counts_only_when_the_owner_made_it():
