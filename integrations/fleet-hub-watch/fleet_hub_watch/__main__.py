@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 
 from . import resources
 from . import spec as broadcast_spec
-from .notify import JournalTransport, LarkTransport, Notifier
+from .notify import JournalTransport, LarkTransport, Notifier, resolve_recipient
 from .watch import Watcher, WatchStore
 
 DEFAULT_CONTRACT = Path(__file__).resolve().parents[3] / "runtime" / "attribution-contract.yaml"
@@ -147,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         # decision is not made by omitting an argument.
         parser.error(
             "--notify is required: name where the cards go. "
+            "`lark:owner` sends them to whoever lark-cli here is logged in as; "
             "`lark:user:<open_id>` or `lark:chat:<chat_id>` sends them for real; "
             "`journal` writes the ones it would send and sends nothing; "
             "`off` runs the watcher with no notifier")
@@ -179,8 +180,14 @@ def main(argv: list[str] | None = None) -> int:
                             JournalTransport(directory / "notify.journal.jsonl"), device_names=names,
                             spec=specs.spec, control=control)
     elif args.notify.startswith("lark:"):
+        try:
+            recipient = resolve_recipient(args.notify[len("lark:"):])
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_NO_INBOX
+        print(f"cards go to {recipient}", file=sys.stderr)
         notifier = Notifier(watcher.inbox, directory / "notify.sqlite",
-                            LarkTransport(args.notify[len("lark:"):]), device_names=names,
+                            LarkTransport(recipient), device_names=names,
                             spec=specs.spec, control=control)
     elif args.notify != "off":
         print(f"unknown --notify {args.notify!r}", file=sys.stderr)

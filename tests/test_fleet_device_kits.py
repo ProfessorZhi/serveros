@@ -88,12 +88,13 @@ def test_hub_monitor_carries_the_notify_target():
     assert "--notify lark:user:ou_x" in unit
 
 
-def test_the_hub_monitor_is_not_rendered_without_a_destination():
-    """A unit rendered with no destination installs a watcher that records every
-    outcome and sends nothing — the failure mode this kit refuses to create."""
-    with pytest.raises(dk.KitError) as raised:
-        dk.plan(_args(notify=None))
-    assert "needs a destination" in str(raised.value)
+def test_a_first_install_without_a_destination_sends_to_the_owner(tmp_path):
+    """Never a silent `journal`: with nothing chosen and nothing installed, the
+    watcher sends to the owner lark-cli is logged in as (resolved at start, and
+    refused loudly there if it cannot be)."""
+    _, steps = dk.plan(_args(home=str(tmp_path), notify=None))
+    unit = next(s.write[1] for s in steps if s.write and s.write[0].name == "serveros-fleet-watch.service")
+    assert "--notify lark:owner" in unit
 
 
 def test_an_update_keeps_the_destination_the_hub_was_installed_with(tmp_path):
