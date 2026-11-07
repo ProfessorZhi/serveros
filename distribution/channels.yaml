@@ -65,10 +65,10 @@ clients:
     # owner's ChatGPT account, which holds the Fleet connection and its OAuth;
     # the package declares no server. Uploading it replaces this plugin.
     tree: distribution/openai
-    plugin_name: dev-6aec2811173881918325a3dc82742d8d
-    plugin_id: plugin_asdk_app_6aec2811173881918325a3dc82742d8d
-    app_id: asdk_app_6aec2811173881918325a3dc82742d8d
-    page: https://chatgpt.com/plugins/plugin_asdk_app_6aec2811173881918325a3dc82742d8d
+    plugin_name: dev-6aed2ec2e0e48191b438082e444c3210
+    plugin_id: plugin_asdk_app_6aed2ec2e0e48191b438082e444c3210
+    app_id: asdk_app_6aed2ec2e0e48191b438082e444c3210
+    page: https://chatgpt.com/plugins/plugin_asdk_app_6aed2ec2e0e48191b438082e444c3210
   mcp:
     # Any other MCP agent (DeepSeek Harness, custom agents): server + Skills.
     tree: distribution/mcp

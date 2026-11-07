@@ -86,7 +86,7 @@ Write-Host @'
 == Clients installed by hand (once; a later upload replaces the same entry)
   ChatGPT (web) + Codex (desktop): upload
     https://github.com/ProfessorZhi/serveros/releases/download/fleet-latest/serveros-fleet-openai.zip
-    on https://chatgpt.com/plugins/plugin_asdk_app_6aec2811173881918325a3dc82742d8d
+    on https://chatgpt.com/plugins/plugin_asdk_app_6aed2ec2e0e48191b438082e444c3210
   Claude (web / desktop / Cowork):
     Settings -> Connectors -> add custom connector  https://fleet-v1.professorzhi.fun/mcp
   Any other MCP agent (DeepSeek Harness, ...):
