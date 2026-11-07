@@ -133,11 +133,18 @@ def health(*, run: Runner | None = None) -> dict[str, Any]:
     state: dict[str, Any] = {"cli": "OK"}
     try:
         data = json.loads(out)
+        if not isinstance(data, dict):
+            raise ValueError("auth status is not an object")
+        # Both identities live under `identities`; a flat {"bot": …} shape is
+        # still read, so an older lark-cli keeps reporting correctly.
+        people = data.get("identities")
+        if not isinstance(people, dict):
+            people = data
         for who in ("bot", "user"):
-            value = data.get(who)
+            value = people.get(who)
             if isinstance(value, dict):
                 value = value.get("status") or value.get("state")
-            state[who] = str(value or "UNKNOWN")
+            state[who] = value if isinstance(value, str) and value else "UNKNOWN"
     except (ValueError, AttributeError):
         for who in ("bot", "user"):
             match = re.search(rf"^\s*{who}\s*[=:]\s*(\S+)", out, re.MULTILINE)
@@ -174,6 +181,25 @@ def decide(event: dict[str, Any], owner: str | None) -> dict[str, Any] | None:
     return value
 
 
+CONSUME_CALLBACKS = ["event", "consume", "card.action.trigger", "--as", "bot"]
+
+
+def _spawn(argv: list[str]):
+    """Start lark-cli, trying every candidate `_cli()` offers.
+
+    `_ask` already walks them because a service's PATH usually has no
+    `~/.local/bin`; the listener used to take the first name only and give up,
+    which reported CLI_MISSING on a hub where every other lark-cli call worked.
+    """
+    for cli in _cli():
+        try:
+            return subprocess.Popen([cli, *argv], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+        except OSError:
+            continue
+    return None
+
+
 class ButtonListener:
     """`lark-cli event consume card.action.trigger --as bot`, one thread, restarted."""
 
@@ -195,11 +221,8 @@ class ButtonListener:
         import time
 
         while True:
-            cli = next(iter(_cli()))
-            try:
-                proc = subprocess.Popen([cli, "event", "consume", "card.action.trigger", "--as", "bot"],
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            except OSError:
+            proc = _spawn(CONSUME_CALLBACKS)
+            if proc is None:
                 self.state = "CLI_MISSING"
                 return
             self.state = "STARTING"

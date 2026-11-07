@@ -56,6 +56,38 @@ def test_health_reads_text_and_json():
     assert feishu.health(run=runner({}))["cli"] == "UNAVAILABLE"
 
 
+def test_health_reads_the_identities_lark_cli_actually_prints():
+    """`lark-cli auth status` nests both identities; reading the top level said
+    UNKNOWN for a hub that was fully logged in."""
+    out = json.dumps({"appId": "cli_x", "brand": "feishu", "identities": {
+        "bot": {"status": "ready", "available": True},
+        "user": {"status": "ready", "available": True, "openId": OWNER}}})
+    state = feishu.health(run=runner({"status": out}))
+    assert state == {"cli": "OK", "bot": "ready", "user": "ready"}
+
+
+def test_buttons_start_the_cli_that_exists_not_just_the_first_name(monkeypatch):
+    """The listener used to take the first candidate, the bare name, and report
+    CLI_MISSING where the absolute path works."""
+    tried = []
+
+    class FakeProc:
+        pass
+
+    def popen(argv, **kwargs):
+        tried.append(argv[0])
+        if argv[0] == "lark-cli":
+            raise FileNotFoundError(argv[0])
+        return FakeProc()
+
+    monkeypatch.setattr(feishu, "_cli", lambda: ["lark-cli", "/opt/lark-cli"])
+    monkeypatch.setattr(feishu.subprocess, "Popen", popen)
+    assert isinstance(feishu._spawn(feishu.CONSUME_CALLBACKS), FakeProc)
+    assert tried == ["lark-cli", "/opt/lark-cli"]
+    monkeypatch.setattr(feishu, "_cli", lambda: ["nowhere/lark-cli"])
+    assert feishu._spawn(feishu.CONSUME_CALLBACKS) is None
+
+
 def test_a_click_counts_only_when_the_owner_made_it():
     value = {"fleet": "mute", "subject": "device:x|mem", "minutes": 60}
     click = {"event": {"operator_id": OWNER, "action_value": json.dumps(value)}}
