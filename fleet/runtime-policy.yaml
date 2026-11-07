@@ -19,6 +19,13 @@
 # CloudCLI model entry id (see fleet_models_list) and must satisfy the rule.
 schema: serveros/fleet-runtime-policy.v1
 
+# What an agent may change on its own, inside the rules below, without a code
+# change or a release (fleet_tune). Every change is journalled beside the hub's
+# local policy file, announced by card, and revertible. Rules themselves —
+# sources, gateways, which agent runs where — are never tunable.
+tunable:
+  default_model: true
+
 default:
   runtimes:
     claude-code:

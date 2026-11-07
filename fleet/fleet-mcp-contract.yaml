@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-12
+tool_surface_revision: fleet-mcp-13
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -413,6 +413,31 @@ tools:
     idempotency: >-
       Upsert by model_id: the same call twice leaves the same entry. A built-in
       model id is refused rather than shadowed.
+
+  fleet_batch:
+    verb: write
+    answers: a batch of dispatched runs and its progress; one batch.completed event when every run has an outcome
+    answered_by: this surface's own event inbox (batches beside the events)
+    authorization: >-
+      open: fleet:send, the scope that dispatched the runs; every run must name
+      a session on an enrolled device. status: fleet:read.
+    effect: >-
+      Records only. Member completions are tagged with the batch and the
+      monitor reports them once, in the batch card; a failed member still
+      alerts on its own. Nothing on any device changes.
+
+  fleet_tune:
+    verb: write
+    answers: the setting before and after, as journalled, or the journal
+    answered_by: the hub's local runtime policy file and the journal beside it
+    authorization: >-
+      set and revert: fleet:control, and the knob must be listed under
+      `tunable:` in the runtime policy; the new value must satisfy the device's
+      rule and exist in its model library. history: fleet:read.
+    effect: >-
+      Changes the hub's local policy overlay only; announced to the owner as a
+      tuning.changed inbox event and card. Rules (sources, gateways, runtimes)
+      are never changed here.
 
   fleet_inbox:
     verb: read
@@ -789,7 +814,7 @@ native_mirror:
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 53
+  served_total: 55
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.

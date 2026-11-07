@@ -287,6 +287,7 @@ def runtime_policy() -> dict:
                                 f"{base.get('schema')!r}")
     devices = {**(base.get("devices") or {}), **(local.get("devices") or {})}
     return {**base, "default": local.get("default", base["default"]),
+            "tunable": {**(base.get("tunable") or {}), **(local.get("tunable") or {})},
             "devices": {k: v for k, v in devices.items() if v is not None},
             "source": str(local_path)}
 
@@ -318,6 +319,82 @@ def default_choice(device_ref: str, runtime_kind: str) -> dict:
             "reason": ("the device's own default; the policy constrains models here "
                        "but names no default_model, so what runs is unverified")
                       if constrained else "the device's own default"}
+
+
+# -- self-tuning: what an agent may change inside the owner's bounds --------
+
+#: Knobs an agent can be allowed to turn. The owner opts each one in under
+#: `tunable:` in the policy (repository or local file); none is on otherwise.
+TUNABLE_KNOBS = ("default_model",)
+
+
+def tunable(knob: str) -> bool:
+    return knob in TUNABLE_KNOBS and bool((runtime_policy().get("tunable") or {}).get(knob))
+
+
+def _journal_path() -> Path:
+    return _policy_path().with_name("runtime-policy.journal.jsonl")
+
+
+def set_default_model(device_ref: str, runtime_kind: str, model: str | None, *,
+                      by: str, reason: str) -> dict:
+    """Write one rule's `default_model` into the hub's LOCAL policy file.
+
+    The local file overlays the repository's per device, so the device's whole
+    rule as now in force is copied there first and only `default_model`
+    changes: no other bound moves. `model=None` removes the default. Every
+    change is journalled beside the file with its before and after.
+    """
+    import copy
+    import json
+    import os
+    import tempfile
+
+    if subject_kind(device_ref) != "device":
+        raise IntelligenceError(f"not a device ref: {device_ref!r}")
+    policy = runtime_policy()
+    current = policy.get("devices", {}).get(device_ref) or policy["default"]
+    rule = (current.get("runtimes") or {}).get(runtime_kind)
+    if rule is None:
+        raise IntelligenceError(f"{runtime_kind} is not allowed on {device_ref}")
+    before = rule.get("default_model")
+    path = _policy_path()
+    local = {}
+    if path.is_file():
+        local = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    devices = local.setdefault("devices", {}) or {}
+    local["devices"] = devices
+    entry = copy.deepcopy(devices.get(device_ref) or current)
+    target = entry.setdefault("runtimes", {}).setdefault(runtime_kind, copy.deepcopy(rule))
+    if model is None:
+        target.pop("default_model", None)
+    else:
+        target["default_model"] = model
+    devices[device_ref] = entry
+    local.setdefault("schema", policy.get("schema"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".runtime-policy-")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("# The hub's live overlay of fleet/runtime-policy.yaml. Edited by the owner,\n"
+                 "# and by fleet_tune for knobs the owner made tunable (journal beside it).\n")
+        yaml.safe_dump(local, fh, allow_unicode=True, sort_keys=False)
+    os.replace(tmp, path)
+    record = {"at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "knob": "default_model", "device_ref": device_ref, "runtime": runtime_kind,
+              "before": before, "after": model, "by": by, "reason": reason}
+    with _journal_path().open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record
+
+
+def tuning_journal(limit: int = 20) -> list[dict]:
+    import json
+
+    path = _journal_path()
+    if not path.is_file():
+        return []
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return rows[-limit:]
 
 
 def model_name_allowed(device_ref: str, runtime_kind: str, model: str) -> tuple[bool, str]:

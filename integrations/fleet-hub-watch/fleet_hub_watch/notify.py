@@ -372,6 +372,13 @@ class Notifier:
     def _handle(self, event: dict, now: datetime) -> None:
         kind = event["kind"]
         name = self._name(event.get("device_ref"))
+        if kind == "batch.completed":
+            self._send(f"batch:{event.get('work_ref')}", cards.batch_card(event, now=now), now)
+            return
+        if kind == "tuning.changed":
+            self._send(f"tune:{event.get('event_id') or event.get('seq')}",
+                       cards.tuning_card(event, now=now), now)
+            return
         if kind.startswith("node."):
             key, _, level = (event.get("evidence") or "|").partition("|")
             episode = f"{event['device_ref']}|{key}"
@@ -412,6 +419,9 @@ class Notifier:
         if kind == "run.completed":
             self._note(event, {"episode": run_episode})
             self._close(run_episode, now, text="任务已完成，读到了实际输出")
+            if str(event.get("work_ref") or "").startswith("batch:"):
+                # Part of a dispatched batch: reported once, when the batch closes.
+                return
             with self._connect() as conn:
                 conn.execute("INSERT OR IGNORE INTO pending_completions(run_key, body, first_at)"
                              " VALUES (?,?,?)",

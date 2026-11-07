@@ -45,7 +45,10 @@ SERVER_VERSION = "0.2.0"
 # `fleet_model_upsert` (fleet:control; envref-only credentials, runtime policy,
 # read back). Over the signed `POST /v1/models[/upsert]` node routes. Twenty
 # authored, 53 total.
-TOOL_SURFACE_REVISION = "fleet-mcp-12"
+# `fleet-mcp-13`: `fleet_batch` (one report when a dispatched batch is done) and
+# `fleet_tune` (an agent adjusts a tunable setting inside the owner's bounds).
+# Twenty-two authored, 55 total.
+TOOL_SURFACE_REVISION = "fleet-mcp-13"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

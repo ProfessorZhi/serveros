@@ -249,8 +249,8 @@ class TheIngressRefusesBeforeItEnumerates(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, token=OWNER_TOKEN)
         self.assertEqual(status, 200)
         names = [tool["name"] for tool in payload["result"]["tools"]]
-        self.assertEqual(len(names), 53)
-        self.assertEqual(len(set(names)), 53)
+        self.assertEqual(len(names), 55)
+        self.assertEqual(len(set(names)), 55)
         # The verb the Skill used to misname. It is served under its real name,
         # and the name it was called by is not a tool.
         self.assertIn("fleet_send_to_session", names)

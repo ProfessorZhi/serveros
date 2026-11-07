@@ -452,3 +452,46 @@ class TheCommittedSamplesAreCurrent(unittest.TestCase):
                 committed = json.loads((here / f"{name}.json").read_text(encoding="utf-8"))
                 self.assertEqual(committed, card, "run samples/build_samples.py and commit")
                 self.assertIn("[示例]", card["header"]["title"]["content"])
+
+
+class BatchesReportOnce(NotifierTest):
+    """Owner, 2026-11-07: a dispatched batch reports once, when it is all done."""
+
+    def test_a_batch_is_one_card_when_its_last_run_settles(self):
+        runs = [{"session_ref": f"{TOKYO}|claude|s-1", "run_id": f"run-{i}"} for i in range(3)]
+        self.inbox.open_batch("回归 x3", runs, opened_by="commander")
+        self.run_event("run.completed", run_id="run-0")
+        self.run_event("run.completed", run_id="run-1")
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=10))
+        self.assertEqual(self.transport.ops, [], "members are not carded one by one")
+        self.run_event("run.completed", run_id="run-2")
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=11))
+        (header,) = self.transport.headers()
+        self.assertIn("批次完成 · 回归 x3", header[3])
+        self.assertEqual(header[2], "green")
+
+    def test_a_failed_member_alerts_at_once_and_the_batch_card_is_red(self):
+        runs = [{"session_ref": f"{TOKYO}|claude|s-1", "run_id": f"run-{i}"} for i in range(2)]
+        self.inbox.open_batch("部署 x2", runs, opened_by="commander")
+        self.run_event("run.failed", run_id="run-0")
+        self.notifier.tick([], THURSDAY_10)
+        self.assertEqual(len(self.transport.ops), 1, "the failure is not held for the batch")
+        self.run_event("run.completed", run_id="run-1")
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=1))
+        self.assertIn("批次完成 · 部署 x2", self.transport.headers()[-1][3])
+        self.assertEqual(self.transport.headers()[-1][2], "red")
+
+
+class TheInboxClosesABatchOnce(unittest.TestCase):
+    def test_runs_already_finished_settle_at_open_and_close_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            inbox = EventInbox(Path(d) / "i.sqlite")
+            run = {"kind": "run.completed", "level": "notify", "device_ref": TOKYO,
+                   "session_ref": f"{TOKYO}|claude|s-1", "run_id": "r1", "summary": "x"}
+            inbox.record(run)
+            answer = inbox.open_batch("one", [{"session_ref": run["session_ref"], "run_id": "r1"}],
+                                      opened_by="c")
+            self.assertTrue(answer["closed"])
+            inbox.record(run)
+            closed = [e for e in inbox.read("x", limit=50)["events"] if e["kind"] == "batch.completed"]
+            self.assertEqual(len(closed), 1)

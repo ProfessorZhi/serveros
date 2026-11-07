@@ -251,3 +251,45 @@ def test_a_runtime_the_policy_does_not_name_is_refused_at_create(tmp_path, monke
                                       "reason": "codex is not allowed on x"})
     with pytest.raises(FleetRefusal, match="codex is not allowed"):
         h.service._apply_runtime_policy(TOKYO, "claude", "codex", None, None)
+
+
+# -- self-tuning inside the owner's bounds ------------------------------------------
+
+def test_tune_sets_reverts_and_journals_the_default(tmp_path, a6000_like_policy, monkeypatch):
+    from fleet import intelligence
+    path = tmp_path / "runtime-policy.yaml"
+    path.write_text(path.read_text() + "tunable:\n  default_model: true\n")
+    h = Harness(tmp_path)
+    h.tokyo.list_models = lambda *, provider: cm.project(provider, LISTING)
+    p = h.principal("fleet:read", "fleet:control")
+    out = h.service.tune(p, action="set", device=TOKYO, value="deepseek-gw0",
+                         reason="faster for batch work")
+    assert out["before"] is None and out["after"] == "deepseek-gw0"
+    assert intelligence.default_choice(TOKYO, "claude-code")["model"] == "deepseek-gw0"
+    rule = intelligence.policy_rule(TOKYO, "claude-code")
+    assert rule["gateways"] == ["target:gateway0"]          # the bounds did not move
+    h.service.tune(p, action="revert", device=TOKYO, reason="undo")
+    assert intelligence.default_choice(TOKYO, "claude-code")["model"] is None
+    assert len(h.service.tune(p, action="history")["journal"]) == 2
+
+
+def test_tune_refuses_outside_the_bounds_and_unknown_entries(tmp_path, a6000_like_policy):
+    path = tmp_path / "runtime-policy.yaml"
+    path.write_text(path.read_text() + "tunable:\n  default_model: true\n")
+    h = Harness(tmp_path)
+    h.tokyo.list_models = lambda *, provider: cm.project(provider, LISTING)
+    p = h.principal("fleet:read", "fleet:control")
+    with pytest.raises(FleetRefusal, match="outside the owner's bounds"):
+        h.service.tune(p, action="set", device=TOKYO, value="gpt-5", reason="x")
+    with pytest.raises(FleetRefusal, match="not in"):
+        h.service.tune(p, action="set", device=TOKYO, value="deepseek-missing", reason="x")
+
+
+def test_tune_needs_the_owner_to_make_the_knob_tunable(tmp_path, monkeypatch):
+    path = tmp_path / "runtime-policy.yaml"
+    path.write_text("tunable:\n  default_model: false\n")
+    monkeypatch.setenv("SERVEROS_RUNTIME_POLICY", str(path))
+    h = Harness(tmp_path)
+    with pytest.raises(FleetRefusal, match="not made default_model tunable"):
+        h.service.tune(h.principal("fleet:read", "fleet:control"), action="set",
+                       device=TOKYO, value="deepseek-gw0", reason="x")

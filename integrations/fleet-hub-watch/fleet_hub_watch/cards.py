@@ -282,6 +282,32 @@ def completion_card(runs: list[dict], *, now: datetime, sample: bool = False,
                      str(r.get("project") or r["run_id"]) for r in runs[:3]))
 
 
+def batch_card(event: dict, *, now: datetime) -> dict:
+    """One card when every run of a dispatched batch has an outcome.
+
+    The members' own completions were not carded one by one; a member that
+    failed already raised its own alert, so this card is the whole picture.
+    """
+    failed = event.get("level") == "decide"
+    template = TEMPLATE[ALERT] if failed else TEMPLATE[OK]
+    name, _, rest = (event.get("summary") or "").partition("：")
+    return _card(template, f"批次完成 · {name}", f"{_local(now, with_date=True)}（北京时间）",
+                 [_md(rest or event.get("summary") or ""),
+                  _md("指挥端可用 `fleet_batch`（status）读每个任务的结果。")],
+                 tags=[("有失败" if failed else "全部完成", "red" if failed else "green")],
+                 summary=f"批次完成：{event.get('summary') or ''}", width="compact")
+
+
+def tuning_card(event: dict, *, now: datetime) -> dict:
+    """An agent changed a setting inside the owner's bounds: say what and why."""
+    return _card(TEMPLATE[WARN], "自调整 · " + (event.get("summary") or "")[:40],
+                 f"{_local(now, with_date=True)}（北京时间）",
+                 [_md(event.get("summary") or ""),
+                  _md("在你定的边界内；不需要批准。撤销：`fleet_tune`（action: revert）。")],
+                 tags=[("已生效", "blue")], summary=f"自调整：{event.get('summary') or ''}",
+                 width="compact")
+
+
 # -- 每日日报 -----------------------------------------------------------------
 
 def daily_card(day: dict, *, now: datetime, sample: bool = False,

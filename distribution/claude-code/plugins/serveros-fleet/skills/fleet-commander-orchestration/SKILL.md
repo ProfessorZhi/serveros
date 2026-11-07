@@ -110,6 +110,14 @@ an unknown outcome. After the ACK:
    and UNCONFIRMED are reported as exactly that, never as "dispatched";
 3. return promptly to coordination.
 
+When you dispatch **two or more** tasks that belong together, open a batch right
+after the last ACK: `fleet_batch` action `open`, a name the owner will
+recognise, and each run's `session_ref` and `run_id` exactly as returned. The
+hub then reports the batch ONCE, when every run has an outcome; a failure still
+alerts at once. Wait for `batch.completed` with `fleet_inbox` (kinds
+`[batch.completed]`), not by polling each run; then accept or refuse each run on
+its evidence.
+
 The ACK contract and the no-resend rule are in `fleet-async-dispatch`. Do not
 poll a run until it settles just to make your own turn feel finished. Owner-max
 does not change delivery semantics: an ACK is still not completion, and an
@@ -155,6 +163,12 @@ Give each task the owner and model that fit it: a difficult control change and
 an independent QA read are not the same job. Say which person or model owns
 each node and what would make the result unacceptable. Keep one writer per
 checkout and do not let two agents "help" the same worktree.
+
+When the evidence shows a better default for a device — an allowed entry that
+is consistently faster or more reliable there — change it yourself with
+`fleet_tune` (action `set`, with a one-sentence reason). It stays inside the
+owner's policy, is journalled, the owner is told by card, and `revert` undoes
+it. Never try to change the bounds themselves.
 
 Never ask the owner which model, agent or device to use — choosing is your
 job, inside the owner's runtime policy. By default omit `model`: the device's

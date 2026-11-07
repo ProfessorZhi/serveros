@@ -572,6 +572,119 @@ class FleetService:
         result["inbox"] = "OK"
         return result
 
+    # -- batches: one report when a dispatched set of runs is done ------------
+
+    def batch(self, principal: Principal, *, action: str, name: str | None = None,
+              runs: list[dict[str, str]] | None = None,
+              batch_id: str | None = None) -> dict[str, Any]:
+        """Open a batch of dispatched runs, or read one.
+
+        `open` (fleet:send, the scope that dispatched them): the hub records
+        ONE `batch.completed` event when every run has an outcome, and the
+        monitor sends one card for it instead of one per run; a failed run
+        still alerts on its own at once. `status` (fleet:read) reads progress.
+        """
+        if self.inbox is None:
+            raise refuse(BAD_REQUEST, "this Fleet surface has no event inbox; batches live there")
+        try:
+            if action == "open":
+                principal.require(SCOPE_SEND)
+                self.admit(principal)
+                enrolled = {entry.device_ref.ref for entry in self.registry.all()}
+                for run in runs or []:
+                    ref = run.get("session_ref") if isinstance(run, dict) else None
+                    if not isinstance(ref, str) or ref.split("|", 1)[0] not in enrolled:
+                        raise refuse(BAD_REQUEST, "every run names a session_ref on an enrolled "
+                                                  "device, exactly as the send or create returned it")
+                answer = self.inbox.open_batch(name, runs, opened_by=principal.name)
+                self.audit.record("fleet.batch_open", principal=principal.name,
+                                  sessions=answer["total"])
+            elif action == "status":
+                principal.require(SCOPE_READ)
+                self.admit(principal)
+                if not isinstance(batch_id, str) or not batch_id:
+                    raise refuse(BAD_REQUEST, "batch_id is required for status")
+                answer = self.inbox.batch(batch_id)
+            else:
+                raise refuse(BAD_REQUEST, "action must be open or status")
+        except InboxError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+        answer["note"] = ("when every run has an outcome, one batch.completed event appears in "
+                          "fleet_inbox and the owner gets one card; read it with "
+                          "fleet_inbox kinds=[batch.completed] instead of polling each run")
+        return answer
+
+    # -- self-tuning inside the owner's bounds --------------------------------
+
+    def tune(self, principal: Principal, *, action: str, device: str | None = None,
+             runtime_kind: str = "claude-code", value: str | None = None,
+             reason: str | None = None) -> dict[str, Any]:
+        """Change a setting the owner made tunable, revert it, or read the journal.
+
+        Only knobs listed under `tunable:` in the runtime policy may move, and
+        only inside the rule: today that is a rule's `default_model`, which must
+        satisfy the rule's model patterns and exist in the device's model
+        library (whose entries were themselves judged on source and gateway when
+        written). The change goes to the hub's local policy file, is journalled
+        with before and after, and is announced to the owner — no approval is
+        asked, and `revert` undoes the last change.
+        """
+        from fleet import intelligence
+
+        if action == "history":
+            principal.require(SCOPE_READ)
+            self.admit(principal)
+            return {"journal": intelligence.tuning_journal(),
+                    "tunable": {k: intelligence.tunable(k) for k in intelligence.TUNABLE_KNOBS}}
+        principal.require(SCOPE_CONTROL)
+        self.admit(principal)
+        if not intelligence.tunable("default_model"):
+            raise refuse(APPROVAL_REQUIRED,
+                         "the owner has not made default_model tunable (runtime policy "
+                         "`tunable: {default_model: true}`)")
+        if not isinstance(reason, str) or not reason.strip():
+            raise refuse(BAD_REQUEST, "reason is required: it is what the owner reads")
+        device_ref = resolve_or_refuse(self.registry, device or "").device_ref.ref
+        if runtime_kind not in ("claude-code", "codex"):
+            raise refuse(BAD_REQUEST, "runtime_kind is claude-code or codex")
+        family = "claude" if runtime_kind == "claude-code" else "codex"
+        if action == "set":
+            if not isinstance(value, str) or not value.strip():
+                raise refuse(BAD_REQUEST, "value (the model entry id) is required")
+            ok, why = intelligence.model_name_allowed(device_ref, runtime_kind, value)
+            if not ok:
+                raise refuse(APPROVAL_REQUIRED, f"outside the owner's bounds: {why}")
+            if not self._library_has(device_ref, self._own_runtime(device_ref), family, value):
+                raise refuse(BAD_REQUEST,
+                             f"{value} is not in {device_ref}'s model library (or the library "
+                             f"is not readable); create it with fleet_model_upsert first")
+            target = value
+        elif action == "revert":
+            last = next((r for r in reversed(intelligence.tuning_journal(200))
+                         if r["device_ref"] == device_ref and r["runtime"] == runtime_kind
+                         and r["knob"] == "default_model"), None)
+            if last is None:
+                raise refuse(BAD_REQUEST, "nothing to revert for this device and runtime")
+            target = last["before"]
+        else:
+            raise refuse(BAD_REQUEST, "action must be set, revert or history")
+        try:
+            record = intelligence.set_default_model(device_ref, runtime_kind, target,
+                                                    by=principal.name, reason=reason.strip())
+        except intelligence.IntelligenceError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+        if self.inbox is not None:
+            self.inbox.record({
+                "kind": "tuning.changed", "level": "notify", "device_ref": device_ref,
+                "dispatched_by": principal.name,
+                "summary": (f"{device_ref} {runtime_kind} 默认模型："
+                            f"{record['before'] or '设备默认'} → {record['after'] or '设备默认'}。"
+                            f"原因：{reason.strip()}")[:500]})
+        self.audit.record("fleet.tune", principal=principal.name, device_ref=device_ref,
+                          model_id=target)
+        return {**record, "applied": True,
+                "note": "takes effect for the next session created without a model"}
+
     # -- the hub's requirement board (design §4) ------------------------------
 
     def _board(self, principal: Principal, scope: str):
