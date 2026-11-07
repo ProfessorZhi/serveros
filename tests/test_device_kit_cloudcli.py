@@ -70,3 +70,13 @@ def test_the_agent_cli_is_found_outside_path(tmp_path, monkeypatch):
     (bin_dir / "claude").chmod(0o755)
     assert dk.agent_bin("claude", tmp_path) == str(bin_dir / "claude")
     assert dk.agent_bin("codex", tmp_path) == "codex"
+
+
+def test_the_family_rollout_starts_from_the_pinned_checkout(tmp_path):
+    k = dk.kit(dk.declaration(), "dell")
+    rev = "d" * 40
+    ctx = dk.Context(ability_repo=tmp_path / "am", ability_rev=rev, data_root=tmp_path / "data",
+                     home=tmp_path / "home", python="python3", notify=None)
+    family = [s.argv for s in dk.linux_steps(k, ctx) if s.layer == "family"]
+    assert family[0] == ["git", "-C", str(tmp_path / "am"), "checkout", "--detach", "-q", rev]
+    assert "rollout" in family[1]
