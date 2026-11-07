@@ -457,15 +457,11 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
             # once is not a flag every later update has to remember.
             ctx.notify = installed_notify(ctx.unit_dir)
         if not ctx.notify:
-            # The unit is the only thing that decides whether a run's completion
-            # ever reaches a person. Rendered without a destination it would
-            # install a watcher that records everything and reports nothing,
-            # and the service would look healthy while doing it — so this is
-            # refused here, before a unit file exists, rather than defaulted.
-            raise KitError(
-                f"{k['device']}: the hub watcher needs a destination - pass --notify "
-                f"lark:user:<open_id>, lark:chat:<chat_id>, journal (writes the "
-                f"cards, sends nothing) or off")
+            # The owner should not have to look an id up. `lark:owner` is a real
+            # destination — the person lark-cli on the hub is logged in as,
+            # resolved by the watcher at start and refused loudly if it cannot
+            # be — so it is the default, not a silent `journal`.
+            ctx.notify = "lark:owner"
         binding = str(Path(mon["hub_watch"]["binding"].replace("~", str(ctx.home), 1)))
         unit = _render(UNIT_TEMPLATES["hub_watch"], {
             "HUB_REPO": str(ROOT), "HUB_PYTHON": py, "HUB_BINDING": binding,
@@ -841,9 +837,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--home", default=str(Path.home()))
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--notify", default=None,
-                        help="hub only, required there: lark:user:<open_id> or "
-                             "lark:chat:<chat_id> for Feishu, journal (writes the cards, "
-                             "sends nothing), off (no notifier)")
+                        help="hub only: lark:owner (default at first install: the person "
+                             "lark-cli on the hub is logged in as), lark:user:<open_id>, "
+                             "lark:chat:<chat_id>, journal (writes the cards, sends nothing), "
+                             "off (no notifier). An update keeps the installed one.")
     parser.add_argument("--cloudcli-claude-dir", default=None,
                         help="the Claude config dir a local CloudCLI runs with, when it cannot "
                              "be read from the running process")

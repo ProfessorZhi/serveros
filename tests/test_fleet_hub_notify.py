@@ -495,3 +495,22 @@ class TheInboxClosesABatchOnce(unittest.TestCase):
             inbox.record(run)
             closed = [e for e in inbox.read("x", limit=50)["events"] if e["kind"] == "batch.completed"]
             self.assertEqual(len(closed), 1)
+
+
+class TheOwnerIsFoundWithoutAnId(unittest.TestCase):
+    def test_owner_resolves_from_lark_cli(self):
+        from fleet_hub_watch.notify import resolve_recipient
+        answer = SimpleNamespace(returncode=0, stdout=json.dumps(
+            {"ok": True, "data": {"user": {"name": "x", "open_id": "ou_" + "a" * 32}}}))
+        self.assertEqual(resolve_recipient("owner", run=lambda argv: answer),
+                         "user:ou_" + "a" * 32)
+
+    def test_explicit_recipients_pass_through(self):
+        from fleet_hub_watch.notify import resolve_recipient
+        self.assertEqual(resolve_recipient("chat:oc_1"), "chat:oc_1")
+
+    def test_unresolvable_owner_is_an_error_not_a_silent_fallback(self):
+        from fleet_hub_watch.notify import resolve_recipient
+        failed = SimpleNamespace(returncode=1, stdout="")
+        with self.assertRaises(RuntimeError):
+            resolve_recipient("owner", run=lambda argv: failed)

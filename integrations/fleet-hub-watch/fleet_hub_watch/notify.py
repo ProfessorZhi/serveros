@@ -117,6 +117,60 @@ class JournalTransport:
         return True
 
 
+def resolve_recipient(spec: str, *, run=None) -> str:
+    """`owner` -> `user:<open_id>` of the person lark-cli on this machine is logged in as.
+
+    The owner should not have to look an id up: `lark-cli` here is already
+    logged in as them (user identity), so `contact +get-user` with no argument
+    answers with their own record, under the same app that sends the cards.
+    `SERVEROS_NOTIFY_OWNER` (an open_id) overrides it. Anything else is passed
+    through unchanged. Unresolvable is an error, never a silent fallback.
+    """
+    import os
+    import subprocess
+
+    if spec != "owner":
+        return spec
+    named = os.environ.get("SERVEROS_NOTIFY_OWNER", "").strip()
+    if named:
+        return named if named.startswith(("user:", "chat:")) else f"user:{named}"
+    run = run or (lambda argv: subprocess.run(argv, text=True, capture_output=True, timeout=60))
+    for cli in ("lark-cli", str(Path.home() / ".local/bin/lark-cli")):
+        try:
+            done = run([cli, "contact", "+get-user", "--as", "user"])
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if done.returncode != 0:
+            continue
+        found = _first_open_id(done.stdout)
+        if found:
+            return f"user:{found}"
+    raise RuntimeError(
+        "--notify lark:owner: could not read the owner's open_id from `lark-cli contact "
+        "+get-user --as user` (is lark-cli logged in as the owner? `lark-cli auth status`). "
+        "Set SERVEROS_NOTIFY_OWNER=<open_id>, or pass lark:user:<open_id> / lark:chat:<chat_id>.")
+
+
+def _first_open_id(text: str) -> str | None:
+    import re
+
+    try:
+        stack = [json.loads(text)]
+    except (ValueError, TypeError):
+        match = re.search(r"\bou_[0-9a-f]{20,}\b", text or "")
+        return match.group(0) if match else None
+    while stack:
+        item = stack.pop(0)
+        if isinstance(item, dict):
+            value = item.get("open_id")
+            if isinstance(value, str) and value.startswith("ou_"):
+                return value
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return None
+
+
 class LarkTransport:
     """The real thing: `runtime/message_transport.LarkMessageSender` (lark-cli).
 
