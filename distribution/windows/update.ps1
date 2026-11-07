@@ -29,7 +29,19 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-if (-not $AbilityRepo) { $AbilityRepo = Join-Path (Split-Path $root -Parent) 'ability-management' }
+if (-not $AbilityRepo) {
+    # The sibling of this checkout first; then the usual places on a Windows
+    # host. A path that does not exist is refused here, not at the first git.
+    $AbilityRepo = @(
+        (Join-Path (Split-Path $root -Parent) 'ability-management'),
+        'D:\projects\ability-management',
+        (Join-Path $env:USERPROFILE 'ability-management'),
+        (Join-Path $env:USERPROFILE 'projects\ability-management')
+    ) | Where-Object { Test-Path -LiteralPath (Join-Path $_ '.git') } | Select-Object -First 1
+}
+if (-not $AbilityRepo -or -not (Test-Path -LiteralPath (Join-Path $AbilityRepo '.git'))) {
+    throw "no ability-management checkout found; pass -AbilityRepo <path>"
+}
 $kitPath = Join-Path $root "distribution\devices\$Device\DEVICE.json"
 if (-not (Test-Path -LiteralPath $kitPath)) { throw "no device kit for '$Device' at $kitPath" }
 $kit = Get-Content -LiteralPath $kitPath -Raw | ConvertFrom-Json
@@ -70,6 +82,12 @@ try {
     if ($rev -eq 'main') {
         Invoke-Step 'fetch ability-management' { git -C $AbilityRepo fetch -q origin main }
         $rev = (git -C $AbilityRepo rev-parse origin/main).Trim()
+    }
+    # Install only from the pinned revision, as device_kit.py does on Linux: an
+    # older checkout may not even have the verb, and the rollout refuses a
+    # registry whose HEAD is not the revision. git refuses to overwrite edits.
+    Invoke-Step "check out ability-management at $rev (detached)" {
+        git -C $AbilityRepo checkout --detach -q $rev
     }
     Invoke-Step "family rollout $family @ $rev" {
         python $controlPlane rollout --profile $family --rev $rev --agent all --apply
