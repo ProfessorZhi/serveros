@@ -129,6 +129,24 @@ def test_a_placeholder_in_an_installed_unit_is_not_a_destination(tmp_path):
     assert dk.installed_notify(unit_dir) is None
 
 
+def test_a_device_that_already_runs_the_connector_does_not_stall_on_its_preflight(tmp_path):
+    """The preflight names what a real connector install needs (endpoint,
+    anchor, host, port) and the kit supplies none of them, so it exits 2 on
+    every device that declares a connector. On a device already running one,
+    stopping there kept the version record unwritten — the device read as
+    "behind" while running current code. With no connector unit yet the gaps
+    are the owner's next action, so it stays fatal."""
+    def preflight_steps(home):
+        _, steps = dk.plan(_args(device="dell", home=str(home)))
+        return next(s for s in steps if "node connector: preflight" in s.title)
+
+    assert preflight_steps(tmp_path).ok_fail is False
+    unit = tmp_path / ".config/systemd/user"
+    unit.mkdir(parents=True)
+    (unit / "serveros-fleet-node-connector.service").write_text("[Service]\n")
+    assert preflight_steps(tmp_path).ok_fail is True
+
+
 def test_the_same_ability_revision_builds_the_core_and_rolls_out_the_family():
     _, steps = dk.plan(_args())
     revs = {s.argv[s.argv.index(flag) + 1] for s in steps if s.argv

@@ -459,10 +459,21 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
         ]
         units.append("serveros-core-lite-publish.timer")
     if "node_connector" in mon:
+        # The preflight names what a real connector install would need — the
+        # CloudCLI endpoint, the credential anchor, the SSH host and the port —
+        # and the kit supplies none of them, so it exits 2 on every device that
+        # declares a connector. On a device already running one that is a
+        # preview of a step this update does not perform, and stopping there
+        # meant the version record was never written: the device stayed "behind"
+        # forever on a machine that was in fact up to date. A device with no
+        # connector unit yet keeps it fatal, because there the gaps are the
+        # owner's next action rather than a rerun of something already done.
+        already = (ctx.unit_dir / "serveros-fleet-node-connector.service").exists()
         steps.append(Step(
             "monitor", "node connector: preflight (says what is missing; writes nothing)",
             ["bash", str(ROOT / "fleet_mcp/node/install.sh"), "--device-ref", k["device_ref"],
              "--systemd", "--preflight"],
+            ok_fail=already,
             notes=["the real install needs this device's CloudCLI credential anchor and tunnel key: "
                    "fleet_mcp/node/install.sh --device-ref " + k["device_ref"] +
                    " --cloudcli-credential <anchor> --identity <key> --systemd"]))
