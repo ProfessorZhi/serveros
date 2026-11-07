@@ -245,6 +245,7 @@ class Context:
     home: Path
     python: str
     notify: str | None
+    alerts_to: str | None = None              # optional second destination, alerts only
     cloudcli_claude_dir: Path | None = None   # where a local CloudCLI runs Claude from
     lib_dir: Path = None
     unit_dir: Path = None
@@ -257,6 +258,17 @@ class Context:
 
 
 _NOTIFY_IN_UNIT = re.compile(r"^ExecStart=.*\s--notify\s+(\S+)", re.MULTILINE)
+_ALERTS_IN_UNIT = re.compile(r'^ExecStart=.*\s--alerts-to\s+"([^"]+)"', re.MULTILINE)
+
+
+def installed_alerts(unit_dir: Path) -> str | None:
+    """The `--alerts-to` destination of the installed hub watcher, if any."""
+    try:
+        text = (Path(unit_dir) / "serveros-fleet-watch.service").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _ALERTS_IN_UNIT.search(text)
+    return match.group(1) if match else None
 
 
 def cloudcli_claude_dirs(home: Path, proc_root: Path = Path("/proc")) -> list[Path]:
@@ -466,6 +478,8 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
         unit = _render(UNIT_TEMPLATES["hub_watch"], {
             "HUB_REPO": str(ROOT), "HUB_PYTHON": py, "HUB_BINDING": binding,
             "HUB_NOTIFY": ctx.notify,
+            "HUB_ALERTS": (f' --alerts-to "{alerts}"'
+                           if (alerts := ctx.alerts_to or installed_alerts(ctx.unit_dir)) else ""),
             "HUB_DOC_URL": "https://github.com/ProfessorZhi/serveros/blob/main/distribution/README.md"})
         steps += [
             Step("monitor", "agent monitor: check the card spec renders",
@@ -641,6 +655,7 @@ def _context(args) -> Context:
     return Context(ability_repo=Path(args.ability_repo).expanduser().resolve(),
                    ability_rev=args.ability_rev, data_root=Path(data_root).expanduser(),
                    home=Path(args.home).expanduser(), python=args.python, notify=args.notify,
+                   alerts_to=getattr(args, "alerts_to", None),
                    cloudcli_claude_dir=(Path(args.cloudcli_claude_dir).expanduser()
                                         if getattr(args, "cloudcli_claude_dir", None) else None))
 
@@ -797,6 +812,8 @@ def update(args) -> int:
         install_argv += ["--notify", args.notify]
     if args.data_root:
         install_argv += ["--data-root", args.data_root]
+    if getattr(args, "alerts_to", None):
+        install_argv += ["--alerts-to", args.alerts_to]
     if getattr(args, "cloudcli_claude_dir", None):
         install_argv += ["--cloudcli-claude-dir", args.cloudcli_claude_dir]
     if args.enable:
@@ -841,6 +858,9 @@ def main(argv: list[str] | None = None) -> int:
                              "lark-cli on the hub is logged in as), lark:user:<open_id>, "
                              "lark:chat:<chat_id>, journal (writes the cards, sends nothing), "
                              "off (no notifier). An update keeps the installed one.")
+    parser.add_argument("--alerts-to", default=None,
+                        help="hub only, optional: a second destination for alert cards, e.g. "
+                             "lark:chat-name:<group name>. An update keeps the installed one.")
     parser.add_argument("--cloudcli-claude-dir", default=None,
                         help="the Claude config dir a local CloudCLI runs with, when it cannot "
                              "be read from the running process")

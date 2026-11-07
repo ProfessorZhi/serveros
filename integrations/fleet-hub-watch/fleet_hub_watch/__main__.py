@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 
 from . import resources
 from . import spec as broadcast_spec
+from . import cards, feishu
 from .notify import JournalTransport, LarkTransport, Notifier, resolve_recipient
 from .watch import Watcher, WatchStore
 
@@ -92,6 +93,42 @@ def _heartbeat(path: Path, document: dict) -> None:
     os.replace(temporary, path)
 
 
+HEALTH_EVERY_SECONDS = 1800
+
+
+def _ready(state) -> bool:
+    return str(state or "").lower() in ("ready", "ok", "valid", "needs_refresh")
+
+
+def act_on_button(value: dict, control: MonitorControl, inbox) -> str:
+    """The one action an owner's click on a hub card may cause."""
+    by = "feishu:owner-button"
+    if value["fleet"] == "mute":
+        control.queue("mute", {"subject": str(value.get("subject")),
+                               "minutes": int(value.get("minutes") or 60),
+                               "reason": "飞书卡片按钮"}, by=by)
+        return "MUTE_QUEUED"
+    if value["fleet"] == "pause_broadcast":
+        control.queue("pause_broadcast", {"minutes": int(value.get("minutes") or 120),
+                                          "reason": "飞书卡片按钮"}, by=by)
+        return "PAUSE_QUEUED"
+    if value["fleet"] == "revert_tune":
+        from fleet import intelligence
+        device, runtime = str(value.get("device_ref")), str(value.get("runtime"))
+        last = next((r for r in reversed(intelligence.tuning_journal(200))
+                     if r["device_ref"] == device and r["runtime"] == runtime), None)
+        if last is None:
+            return "NOTHING_TO_REVERT"
+        record = intelligence.set_default_model(device, runtime, last["before"], by=by,
+                                                reason="飞书卡片上撤销")
+        inbox.record({"kind": "tuning.changed", "level": "notify", "device_ref": device,
+                      "dispatched_by": by, "evidence": f"{device}|tune|{runtime}",
+                      "summary": f"{device} {runtime} 默认模型：{record['before'] or '设备默认'} → "
+                                 f"{record['after'] or '设备默认'}。原因：你在飞书卡片上撤销"})
+        return "REVERTED"
+    return "IGNORED"
+
+
 def apply_commands(control: MonitorControl, notifier, specs: SpecWatcher) -> int:
     """Apply what Fleet queued (fleet_monitor_control) since the last tick."""
     def daily() -> str:
@@ -120,6 +157,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="required: lark:user:<open_id> | lark:chat:<chat_id> sends for "
                              "real, journal writes the cards and sends nothing, off runs "
                              "without a notifier")
+    parser.add_argument("--alerts-to", default=None,
+                        help="optional second destination for alert cards only, e.g. "
+                             "lark:chat-name:<group name>; the rest stay on --notify")
     parser.add_argument("--contract", default=str(DEFAULT_CONTRACT),
                         help="attribution contract holding the resource thresholds")
     parser.add_argument("--card-spec", default=str(DEFAULT_SPEC_FILE),
@@ -185,14 +225,33 @@ def main(argv: list[str] | None = None) -> int:
         except RuntimeError as exc:
             print(str(exc), file=sys.stderr)
             return EXIT_NO_INBOX
+        alert_transport = None
+        if args.alerts_to:
+            try:
+                alerts = resolve_recipient(args.alerts_to[len("lark:"):]
+                                           if args.alerts_to.startswith("lark:") else args.alerts_to)
+            except RuntimeError as exc:
+                print(str(exc), file=sys.stderr)
+                return EXIT_NO_INBOX
+            alert_transport = LarkTransport(alerts)
+            print(f"alert cards go to {alerts}", file=sys.stderr)
         print(f"cards go to {recipient}", file=sys.stderr)
         notifier = Notifier(watcher.inbox, directory / "notify.sqlite",
                             LarkTransport(recipient), device_names=names,
-                            spec=specs.spec, control=control)
+                            spec=specs.spec, control=control, alert_transport=alert_transport)
     elif args.notify != "off":
         print(f"unknown --notify {args.notify!r}", file=sys.stderr)
         return EXIT_NO_INBOX
     beat = directory / "watch.heartbeat.json"
+    lark_state: dict = {}
+    buttons = None
+    if notifier is not None and args.notify.startswith("lark:"):
+        lark_state = feishu.health()
+        buttons = feishu.ButtonListener(
+            feishu.owner_open_id(),
+            lambda value: act_on_button(value, control, watcher.inbox))
+        buttons.start()
+    last_health = time.time()
     while True:
         started = time.time()
         try:
@@ -204,13 +263,21 @@ def main(argv: list[str] | None = None) -> int:
             views = resources.sweep(service, principal, watcher.inbox, levels, thresholds,
                                     now_iso=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
             sent = notifier.tick(views, now) if notifier else None
+            if buttons is not None and time.time() - last_health > HEALTH_EVERY_SECONDS:
+                lark_state, last_health = feishu.health(), time.time()
+            if buttons is not None and not _ready(lark_state.get("user")):
+                notifier.notify_owner(f"lark-login:{now:%Y-%m-%d}",
+                                      cards.lark_card(lark_state, now=now), now)
             _heartbeat(beat, {"last_tick_at": started, "ok": True,
                               "watching": result["watching"],
                               "recorded": result["observe"]["recorded"],
                               "unreachable": result["discover"]["unreachable"],
                               "devices": {v["device_ref"]: v["level"] for v in views},
                               "notify": sent, "card_spec": specs.state,
-                              "commands_applied": applied})
+                              "commands_applied": applied,
+                              "feishu": ({**lark_state, "buttons": buttons.state,
+                                          "clicks_handled": buttons.handled}
+                                         if buttons is not None else None)})
         except Exception as exc:  # noqa: BLE001 - one bad tick must not end the watch
             _heartbeat(beat, {"last_tick_at": started, "ok": False,
                               "error": type(exc).__name__})

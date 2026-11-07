@@ -254,6 +254,11 @@ def alert_card(episode: dict, *, now: datetime, sample: bool = False,
     elements.append(_panel(_eid("det", episode["episode"]), text["details_title"], detail,
                            expanded=False))
     elements.append(_md(text["footer"]))
+    if state == "OPEN" and not sample:
+        from .feishu import button
+        elements.append(button("静音 1 小时", {"fleet": "mute", "subject": episode["episode"],
+                                               "minutes": 60}))
+        elements.append(button("暂停播报 2 小时", {"fleet": "pause_broadcast", "minutes": 120}))
     return _card(template, head, subtitle, elements, tags=[tag],
                  summary=f"{tag[0]} · {subject}：{episode['text']}", width="compact")
 
@@ -298,12 +303,31 @@ def batch_card(event: dict, *, now: datetime) -> dict:
                  summary=f"批次完成：{event.get('summary') or ''}", width="compact")
 
 
+def _revert_button(event: dict) -> list[dict]:
+    from .feishu import button
+    device, _, runtime = (event.get("evidence") or "").partition("|tune|")
+    if not device.startswith("device:") or not runtime:
+        return []
+    return [button("撤销这次调整", {"fleet": "revert_tune", "device_ref": device,
+                                    "runtime": runtime}, kind="danger")]
+
+
+def lark_card(state: dict, *, now: datetime) -> dict:
+    """lark-cli's own login lapsed: the bot still sends, user calls do not."""
+    return _card(TEMPLATE[WARN], "飞书 CLI 需要重新登录", f"{_local(now, with_date=True)}（北京时间）",
+                 [_md(f"bot：{state.get('bot')}　user：{state.get('user')}"),
+                  _md("在东京执行 `lark-cli auth login`。在那之前：按钮回调、找你本人的 ID、"
+                      "按名字找群都不可用；卡片照常发送。")],
+                 tags=[("需要处理", "orange")], summary="飞书 CLI 需要重新登录", width="compact")
+
+
 def tuning_card(event: dict, *, now: datetime) -> dict:
     """An agent changed a setting inside the owner's bounds: say what and why."""
     return _card(TEMPLATE[WARN], "自调整 · " + (event.get("summary") or "")[:40],
                  f"{_local(now, with_date=True)}（北京时间）",
                  [_md(event.get("summary") or ""),
-                  _md("在你定的边界内；不需要批准。撤销：`fleet_tune`（action: revert）。")],
+                  _md("在你定的边界内；不需要批准。")]
+                 + _revert_button(event),
                  tags=[("已生效", "blue")], summary=f"自调整：{event.get('summary') or ''}",
                  width="compact")
 

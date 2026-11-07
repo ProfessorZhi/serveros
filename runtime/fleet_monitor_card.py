@@ -99,6 +99,9 @@ CGROUP_ATTRIBUTION = "cgroup"
 VOCABULARY = frozenset({
     "markdown", "hr", "collapsible_panel", "column_set", "column", "chart",
     "plain_text", "standard_icon", "text_tag",
+    # Callback buttons on hub cards (mute, pause, revert). The click comes back
+    # over lark-cli's event stream and is only acted on for the owner.
+    "button",
 })
 
 #: The one rule every CardKit 2.0 component reference states for `element_id`:

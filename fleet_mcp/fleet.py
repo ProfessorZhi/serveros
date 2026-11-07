@@ -676,7 +676,7 @@ class FleetService:
         if self.inbox is not None:
             self.inbox.record({
                 "kind": "tuning.changed", "level": "notify", "device_ref": device_ref,
-                "dispatched_by": principal.name,
+                "dispatched_by": principal.name, "evidence": f"{device_ref}|tune|{runtime_kind}",
                 "summary": (f"{device_ref} {runtime_kind} 默认模型："
                             f"{record['before'] or '设备默认'} → {record['after'] or '设备默认'}。"
                             f"原因：{reason.strip()}")[:500]})

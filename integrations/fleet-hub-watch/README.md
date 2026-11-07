@@ -91,6 +91,35 @@ The monitor answers to the Fleet command centre through two tools (introduced in
   `fleet_monitor_status`. A mute or pause stops messages, never observation or
   counting; nothing acts on a device.
 
+## Feishu through lark-cli: destinations, self-check, buttons
+
+The watcher uses the lark-cli already logged in on the hub, so nobody looks an
+id up (`fleet_hub_watch/feishu.py`).
+
+| `--notify` / `--alerts-to` | goes to |
+|---|---|
+| `lark:owner` (kit default) | whoever lark-cli is logged in as (`contact +get-user --as user`) |
+| `lark:chat-name:<name>` | the group with exactly that name the bot can see (`im +chat-search`) |
+| `lark:user:<open_id>` / `lark:chat:<chat_id>` | that person or group |
+
+`--alerts-to` is optional: alert cards go there, everything else stays on
+`--notify` (e.g. alerts to a group, the 日报 and completions to the owner).
+Unresolvable destinations stop the watcher with the reason; there is no silent
+`journal` fallback.
+
+**Self-check.** `lark-cli auth status` at start and every 30 minutes, written to
+the heartbeat under `feishu` (`fleet_monitor_status` shows it). A lapsed user
+login is carded to the owner once a day; the bot keeps sending.
+
+**Buttons.** Open alert cards carry 静音 1 小时 / 暂停播报 2 小时; tuning cards
+carry 撤销这次调整. Clicks arrive over `lark-cli event consume
+card.action.trigger --as bot` and are acted on only when the operator is the
+owner, only for those three actions (queued as monitor-control commands, or the
+tuning journal reverted). One-time console step: **App → Events & Callbacks →
+Callback configuration → long connection**, subscribe `card.action.trigger`.
+Without it the buttons render and nothing comes back; the heartbeat's
+`feishu.buttons` says `LISTENING` either way, so check a click once.
+
 ## Resource readings
 
 For the hub's own device, bind `core_lite: {snapshot_path: ...}` in the Fleet

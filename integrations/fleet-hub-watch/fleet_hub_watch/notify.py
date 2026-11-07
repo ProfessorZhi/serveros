@@ -118,57 +118,9 @@ class JournalTransport:
 
 
 def resolve_recipient(spec: str, *, run=None) -> str:
-    """`owner` -> `user:<open_id>` of the person lark-cli on this machine is logged in as.
-
-    The owner should not have to look an id up: `lark-cli` here is already
-    logged in as them (user identity), so `contact +get-user` with no argument
-    answers with their own record, under the same app that sends the cards.
-    `SERVEROS_NOTIFY_OWNER` (an open_id) overrides it. Anything else is passed
-    through unchanged. Unresolvable is an error, never a silent fallback.
-    """
-    import os
-    import subprocess
-
-    if spec != "owner":
-        return spec
-    named = os.environ.get("SERVEROS_NOTIFY_OWNER", "").strip()
-    if named:
-        return named if named.startswith(("user:", "chat:")) else f"user:{named}"
-    run = run or (lambda argv: subprocess.run(argv, text=True, capture_output=True, timeout=60))
-    for cli in ("lark-cli", str(Path.home() / ".local/bin/lark-cli")):
-        try:
-            done = run([cli, "contact", "+get-user", "--as", "user"])
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if done.returncode != 0:
-            continue
-        found = _first_open_id(done.stdout)
-        if found:
-            return f"user:{found}"
-    raise RuntimeError(
-        "--notify lark:owner: could not read the owner's open_id from `lark-cli contact "
-        "+get-user --as user` (is lark-cli logged in as the owner? `lark-cli auth status`). "
-        "Set SERVEROS_NOTIFY_OWNER=<open_id>, or pass lark:user:<open_id> / lark:chat:<chat_id>.")
-
-
-def _first_open_id(text: str) -> str | None:
-    import re
-
-    try:
-        stack = [json.loads(text)]
-    except (ValueError, TypeError):
-        match = re.search(r"\bou_[0-9a-f]{20,}\b", text or "")
-        return match.group(0) if match else None
-    while stack:
-        item = stack.pop(0)
-        if isinstance(item, dict):
-            value = item.get("open_id")
-            if isinstance(value, str) and value.startswith("ou_"):
-                return value
-            stack.extend(item.values())
-        elif isinstance(item, list):
-            stack.extend(item)
-    return None
+    """A `--notify lark:<spec>` destination, resolved through lark-cli (see feishu.py)."""
+    from . import feishu
+    return feishu.resolve(spec, run=run)
 
 
 class LarkTransport:
@@ -227,7 +179,8 @@ class Notifier:
     def __init__(self, inbox: Any, ledger_path: str | Path, transport: Transport, *,
                  device_names: dict[str, str] | None = None,
                  sleep: Callable[[float], None] = time.sleep,
-                 spec: dict | None = None, control: Any = None) -> None:
+                 spec: dict | None = None, control: Any = None,
+                 alert_transport: Transport | None = None) -> None:
         self.spec = spec or broadcast_spec.load(None)
         #: `fleet_mcp.monitor_control.MonitorControl`, or None: mutes and pauses
         #: that Fleet queued. A pause or a mute stops messages, never counting.
@@ -235,6 +188,9 @@ class Notifier:
         self.inbox = inbox
         self.path = private_file(ledger_path)
         self.transport = transport
+        #: Where alert-episode cards go when it differs from the default (e.g.
+        #: alerts to a group, the 日报 and completions to the owner).
+        self.alert_transport = alert_transport
         self.device_names = device_names or {}
         self.sleep = sleep
         self._sent_this_tick = 0
@@ -259,12 +215,23 @@ class Notifier:
         return self.control is not None and self.control.muted(
             [body.get("device_ref"), body.get("episode")], now)
 
+    def _route(self, card_key: str):
+        if self.alert_transport is not None and card_key.startswith("episode:"):
+            return self.alert_transport
+        return self.transport
+
+    def notify_owner(self, card_key: str, card: dict, now: datetime) -> bool:
+        """A card from outside the inbox (e.g. the lark-cli self-check)."""
+        if self._card(card_key) is not None:
+            return False
+        return self._send(card_key, card, now)
+
     def _send(self, card_key: str, card: dict, now: datetime, *, slot: str | None = None) -> bool:
         if self._sent_this_tick >= MAX_SENDS_PER_TICK or self._paused(now):
             return False
         if self._sent_this_tick:
             self.sleep(SPACING_SECONDS)
-        message_id = self.transport.send(card, idempotency_key=_key(card_key, _version(card)))
+        message_id = self._route(card_key).send(card, idempotency_key=_key(card_key, _version(card)))
         self._sent_this_tick += 1
         if not message_id:
             return False
@@ -285,7 +252,7 @@ class Notifier:
             return False
         if self._sent_this_tick:
             self.sleep(SPACING_SECONDS)
-        ok = self.transport.patch(row["message_id"], card, sent_at=row["sent_at"])
+        ok = self._route(card_key).patch(row["message_id"], card, sent_at=row["sent_at"])
         self._sent_this_tick += 1
         if ok:
             with self._connect() as conn:

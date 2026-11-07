@@ -16,7 +16,7 @@ StartLimitBurst=5
 [Service]
 Type=simple
 Environment=PYTHONPATH=@HUB_REPO@:@HUB_REPO@/integrations/fleet-next-agent-monitor:@HUB_REPO@/integrations/fleet-hub-watch
-ExecStart=@HUB_PYTHON@ -m fleet_hub_watch --config @HUB_BINDING@ --interval 30 --notify @HUB_NOTIFY@
+ExecStart=@HUB_PYTHON@ -m fleet_hub_watch --config @HUB_BINDING@ --interval 30 --notify @HUB_NOTIFY@@HUB_ALERTS@
 Restart=on-failure
 RestartSec=30
 MemoryMax=256M
