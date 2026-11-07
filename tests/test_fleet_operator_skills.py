@@ -351,7 +351,11 @@ class TheSkillsNameOnlyServedTools(unittest.TestCase):
     def test_no_unserved_batch_or_scheduler_name_is_written(self) -> None:
         all_text = "\n".join(p.read_text(encoding="utf-8")
                              for p in SHARED.glob("*/SKILL.md"))
+        from fleet_mcp.tools import tool_names
+        served = set(tool_names())
         for invented in ("fleet_batch", "fleet_schedule", "fleet_dispatch"):
+            if invented in served:
+                continue          # fleet_batch is served since fleet-mcp-13
             self.assertNotIn(invented, all_text)
 
 

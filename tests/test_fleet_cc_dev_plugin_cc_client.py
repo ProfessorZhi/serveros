@@ -205,8 +205,8 @@ class TheProtocolSurface(unittest.TestCase):
     def test_discovery_is_all_44_tools_and_is_not_entitlement(self) -> None:
         tools = self.rpc("tools/list")["result"]["tools"]
         names = [tool["name"] for tool in tools]
-        self.assertEqual(len(names), 53)
-        self.assertEqual(len(set(names)), 53)
+        self.assertEqual(len(names), 55)
+        self.assertEqual(len(set(names)), 55)
         self.assertIn("fleet_list_devices", names)
         self.assertIn("fleet_send_to_session", names)
         self.assertIn("fleet_cloudcli_native_capability", names)

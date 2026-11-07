@@ -32,7 +32,14 @@ KINDS = frozenset({
     "run.completed", "run.failed", "run.unknown", "run.stalled",
     "decision.required", "directive.issued", "preempted",
     "node.unreachable", "node.pressure", "node.service_down", "node.recovered",
+    # A dispatched batch whose every run reached an outcome, recorded once.
+    "batch.completed",
+    # A setting an agent changed inside the owner's bounds (fleet_tune).
+    "tuning.changed",
 })
+#: The run outcomes that close a batch member. `run.stalled` is still running.
+TERMINAL = frozenset({"run.completed", "run.failed", "run.unknown"})
+MAX_BATCH = 100
 #: `auto` is recorded and read; `notify` is also told to a person; `decide`
 #: needs one.
 LEVELS = frozenset({"auto", "notify", "decide"})
@@ -61,6 +68,23 @@ CREATE TABLE IF NOT EXISTS events (
     summary       TEXT NOT NULL,
     evidence      TEXT
 );
+CREATE TABLE IF NOT EXISTS batches (
+    batch_id   TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    opened_by  TEXT NOT NULL,
+    opened_at  TEXT NOT NULL,
+    total      INTEGER NOT NULL,
+    closed_seq INTEGER
+);
+CREATE TABLE IF NOT EXISTS batch_members (
+    batch_id    TEXT NOT NULL,
+    session_ref TEXT NOT NULL,
+    run_id      TEXT NOT NULL,
+    outcome     TEXT,
+    seq         INTEGER,
+    PRIMARY KEY (batch_id, session_ref, run_id)
+);
+CREATE INDEX IF NOT EXISTS batch_member_run ON batch_members(session_ref, run_id);
 CREATE TABLE IF NOT EXISTS cursors (
     subscriber TEXT PRIMARY KEY,
     seq        INTEGER NOT NULL,
@@ -108,7 +132,8 @@ def event_id_for(event: dict[str, Any]) -> str:
     kind = event["kind"]
     parts = [kind] + [str(event.get(name) or "") for name in
                       ("device_ref", "runtime", "session_ref", "run_id", "project")]
-    if kind.startswith("node.") or kind in ("directive.issued", "preempted"):
+    if kind.startswith("node.") or kind in ("directive.issued", "preempted",
+                                            "tuning.changed"):
         parts.append(str(event.get("occurred_at") or ""))
     return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
 
@@ -177,11 +202,114 @@ class EventInbox:
             if existing is not None:
                 conn.execute("COMMIT")
                 return Recorded(existing["seq"], row["event_id"], False)
+            if kind in TERMINAL and row["session_ref"] and row["run_id"] and not row["work_ref"]:
+                member = conn.execute(
+                    "SELECT batch_id FROM batch_members WHERE session_ref=? AND run_id=? "
+                    "AND outcome IS NULL LIMIT 1", (row["session_ref"], row["run_id"])).fetchone()
+                if member is not None:
+                    # Tagged so a reader (the notifier) folds it into the batch.
+                    row["work_ref"] = f"batch:{member['batch_id']}"
             cursor = conn.execute(
                 f"INSERT INTO events ({','.join(names)}) VALUES ({','.join('?' * len(names))})",
                 [row[n] for n in names])
+            seq = cursor.lastrowid
+            if kind in TERMINAL and row["session_ref"] and row["run_id"]:
+                self._settle(conn, row["session_ref"], row["run_id"], kind, seq)
             conn.execute("COMMIT")
-            return Recorded(cursor.lastrowid, row["event_id"], True)
+            return Recorded(seq, row["event_id"], True)
+
+    # -- batches ---------------------------------------------------------------
+
+    def open_batch(self, name: str, runs: list[dict[str, str]], *, opened_by: str) -> dict[str, Any]:
+        """Group dispatched runs so their outcome is reported once, together.
+
+        Runs that already have an outcome in this inbox are settled at once, so
+        a batch opened after a fast run finished still closes. When the last
+        member settles, one `batch.completed` event is recorded.
+        """
+        name = _bounded(name, "name", 120, required=True)
+        if not isinstance(runs, list) or not 1 <= len(runs) <= MAX_BATCH:
+            raise InboxError(f"`runs` must list 1-{MAX_BATCH} runs")
+        members = []
+        for i, run in enumerate(runs):
+            if not isinstance(run, dict):
+                raise InboxError(f"runs[{i}] must be {{session_ref, run_id}}")
+            ref = _bounded(run.get("session_ref"), "session_ref", 256, required=True)
+            rid = _bounded(run.get("run_id"), "run_id", 256, required=True)
+            if (ref, rid) in members:
+                raise InboxError(f"runs[{i}] repeats a run")
+            members.append((ref, rid))
+        batch_id = hashlib.sha256(
+            "\x1f".join([name, opened_by, _now(), os.urandom(4).hex()]
+                         + [f"{a}|{b}" for a, b in members]).encode("utf-8")).hexdigest()[:16]
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT INTO batches(batch_id, name, opened_by, opened_at, total) "
+                         "VALUES (?,?,?,?,?)", (batch_id, name, opened_by, _now(), len(members)))
+            conn.executemany("INSERT INTO batch_members(batch_id, session_ref, run_id) VALUES (?,?,?)",
+                             [(batch_id, a, b) for a, b in members])
+            for ref, rid in members:
+                done = conn.execute(
+                    "SELECT seq, kind FROM events WHERE session_ref=? AND run_id=? AND kind IN "
+                    "('run.completed','run.failed','run.unknown') ORDER BY seq LIMIT 1",
+                    (ref, rid)).fetchone()
+                if done is not None:
+                    self._settle(conn, ref, rid, done["kind"], done["seq"], only=batch_id)
+            conn.execute("COMMIT")
+        return self.batch(batch_id)
+
+    def _settle(self, conn: sqlite3.Connection, session_ref: str, run_id: str, kind: str,
+                seq: int, *, only: str | None = None) -> None:
+        rows = conn.execute(
+            "SELECT batch_id FROM batch_members WHERE session_ref=? AND run_id=? AND outcome IS NULL"
+            + (" AND batch_id=?" if only else ""),
+            (session_ref, run_id, only) if only else (session_ref, run_id)).fetchall()
+        for row in rows:
+            batch_id = row["batch_id"]
+            conn.execute("UPDATE batch_members SET outcome=?, seq=? WHERE batch_id=? AND "
+                         "session_ref=? AND run_id=?",
+                         (kind.split(".", 1)[1], seq, batch_id, session_ref, run_id))
+            open_left = conn.execute("SELECT COUNT(*) FROM batch_members WHERE batch_id=? AND "
+                                     "outcome IS NULL", (batch_id,)).fetchone()[0]
+            batch = conn.execute("SELECT * FROM batches WHERE batch_id=?", (batch_id,)).fetchone()
+            if open_left or batch["closed_seq"] is not None:
+                continue
+            counts = dict(conn.execute("SELECT outcome, COUNT(*) FROM batch_members WHERE "
+                                       "batch_id=? GROUP BY outcome", (batch_id,)).fetchall())
+            words = "，".join(f"{w} {counts[k]}" for k, w in (("completed", "完成"),
+                                                              ("failed", "失败"),
+                                                              ("unknown", "无法确认"))
+                             if counts.get(k))
+            failed = counts.get("failed", 0) + counts.get("unknown", 0)
+            summary = f"{batch['name']}：{batch['total']} 个任务都有了结果（{words}）"
+            values = {n: None for n in _COLUMNS if n != "seq"}
+            values.update({
+                "event_id": hashlib.sha256(f"batch.completed|{batch_id}".encode()).hexdigest(),
+                "kind": "batch.completed", "level": "decide" if failed else "notify",
+                "occurred_at": _now(), "recorded_at": _now(), "summary": summary[:MAX_SUMMARY],
+                "work_ref": f"batch:{batch_id}", "dispatched_by": batch["opened_by"],
+                "evidence": f"batch:{batch_id}"})
+            names = list(values)
+            cur = conn.execute(
+                f"INSERT OR IGNORE INTO events ({','.join(names)}) "
+                f"VALUES ({','.join('?' * len(names))})", [values[n] for n in names])
+            conn.execute("UPDATE batches SET closed_seq=? WHERE batch_id=?",
+                         (cur.lastrowid, batch_id))
+
+    def batch(self, batch_id: str) -> dict[str, Any]:
+        """One batch: its members, their outcomes so far, and whether it closed."""
+        with self._connect() as conn:
+            head = conn.execute("SELECT * FROM batches WHERE batch_id=?", (batch_id,)).fetchone()
+            if head is None:
+                raise InboxError(f"no batch {batch_id!r}")
+            members = conn.execute("SELECT session_ref, run_id, outcome FROM batch_members "
+                                   "WHERE batch_id=? ORDER BY rowid", (batch_id,)).fetchall()
+        runs = [dict(m) for m in members]
+        pending = sum(1 for r in runs if r["outcome"] is None)
+        return {"batch_id": batch_id, "name": head["name"], "opened_by": head["opened_by"],
+                "opened_at": head["opened_at"], "total": head["total"],
+                "settled": head["total"] - pending, "pending": pending,
+                "closed": head["closed_seq"] is not None, "runs": runs}
 
     # -- reading -------------------------------------------------------------
 

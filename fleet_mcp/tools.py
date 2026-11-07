@@ -311,6 +311,18 @@ _ENV_ROW = {
 }
 
 
+
+def _batch(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.batch(ctx.principal, action=args.get("action"), name=args.get("name"),
+                             runs=args.get("runs"), batch_id=args.get("batch_id"))
+
+
+def _tune(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.tune(ctx.principal, action=args.get("action"), device=args.get("device"),
+                            runtime_kind=args.get("runtime_kind") or "claude-code",
+                            value=args.get("value"), reason=args.get("reason"))
+
+
 TOOLS: tuple[Tool, ...] = (
     Tool(
         name="fleet_list_devices",
@@ -925,6 +937,66 @@ TOOLS: tuple[Tool, ...] = (
         annotations={"readOnlyHint": False, "destructiveHint": False,
                      "idempotentHint": True, "openWorldHint": True},
         handler=_upsert_model,
+    ),
+    Tool(
+        name="fleet_batch",
+        title="Group dispatched runs into one report",
+        description=(
+            "After dispatching several tasks, `open` a batch with their session_ref and "
+            "run_id (as each send or create returned them). When every run has an "
+            "outcome the hub records ONE `batch.completed` event and the owner gets ONE "
+            "card, instead of one per run; a failed run still alerts at once. Wait for "
+            "it with `fleet_inbox` kinds=[batch.completed] rather than polling each run. "
+            "`status` reads progress: settled, pending, and each run's outcome."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["open", "status"]},
+                "name": _string("For open: a short name the owner will read, e.g. 'A6000 "
+                                "regression x5'."),
+                "runs": {"type": "array", "maxItems": 100,
+                         "items": {"type": "object",
+                                   "properties": {"session_ref": _string("As returned."),
+                                                  "run_id": _string("As returned.")},
+                                   "required": ["session_ref", "run_id"],
+                                   "additionalProperties": False}},
+                "batch_id": _string("For status: the id `open` returned."),
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": False,
+                     "idempotentHint": False, "openWorldHint": False},
+        handler=_batch,
+    ),
+    Tool(
+        name="fleet_tune",
+        title="Adjust a setting the owner made tunable",
+        description=(
+            "Change, revert, or read the history of a setting the owner has made "
+            "tunable — today a device's default model (`value`: a model entry id from "
+            "fleet_models_list). No approval is asked: the change must stay inside the "
+            "owner's runtime policy, is journalled with before and after, and the owner "
+            "is told by card. `reason` is required and is what the owner reads. Bounds "
+            "(sources, gateways, which agent may run where) are never changed here."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["set", "revert", "history"]},
+                "device": _string(DEVICE_REF_DOC),
+                "runtime_kind": {"type": "string", "enum": ["claude-code", "codex"],
+                                 "description": "Defaults to claude-code."},
+                "value": _string("For set: the model entry id to make the default."),
+                "reason": _string("For set and revert: why, in one sentence for the owner."),
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": False,
+                     "idempotentHint": True, "openWorldHint": False},
+        handler=_tune,
     ),
     Tool(
         name="fleet_inbox",
