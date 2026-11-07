@@ -398,6 +398,12 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
             ]
 
     fam = k["layers"]["family"]
+    # The rollout installs only from a checkout whose HEAD is the pinned
+    # revision (control_plane refuses otherwise). Put the checkout there first,
+    # detached, so an update never stalls on "registry HEAD is X". git itself
+    # refuses if local edits would be overwritten; nothing is discarded here.
+    steps.append(Step("family", f"check out ability-management at {rev[:12]} (detached)",
+                      ["git", "-C", str(ctx.ability_repo), "checkout", "--detach", "-q", rev]))
     steps += [
         Step("family", f"roll out ability family `{fam['profile']}` at {rev[:12]} (skills + norms)",
              [py, am, "rollout", "--profile", fam["profile"], "--rev", rev, "--agent", "all", "--apply"]),

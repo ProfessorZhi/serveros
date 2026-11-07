@@ -153,7 +153,7 @@ def test_apply_runs_in_order_writes_units_and_enables_nothing_without_enable(tmp
     fakebin = tmp_path / "bin"
     fakebin.mkdir()
     log = tmp_path / "calls.log"
-    for tool in ("claude", "codex", "cmake", "install", "systemctl", "bash", "python3"):
+    for tool in ("claude", "codex", "cmake", "install", "systemctl", "bash", "python3", "git"):
         exe = fakebin / tool
         exe.write_text(f"#!/bin/sh\necho \"{tool} $*\" >> {log}\n")
         exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
