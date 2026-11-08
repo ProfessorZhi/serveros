@@ -52,6 +52,7 @@ devices:
     family:
       profile: tokyo-development-primary
     monitor:
+      secrets_sync: true
       serverosd: true
       core_lite: native/node-core/core-lite/profiles/tokyo-vince.profile.json
       node_connector: false          # the hub reads its own core-lite file
@@ -71,6 +72,7 @@ devices:
       profile: dell-gpu-compute
       cloudcli: true                 # CloudCLI runs Claude from its own config dir here
     monitor:
+      secrets_sync: true
       serverosd: true
       core_lite: native/node-core/core-lite/profiles/dell-fjd.profile.json
       node_connector: true

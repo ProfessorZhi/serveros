@@ -59,7 +59,7 @@ PINNED_SKILLS = {
     "fleet-ability-change": "74628d452c62b9fa5458305c16949dcf6f1f0c2e2ff40e1b1857ad42f6e031ec",
     "fleet-ability-inventory": "4eca875dd3d11903c4d2f0855dae21ea1015ee9f5fab7c0a553d831adce99e24",
     "fleet-async-dispatch": "910a1f84c1a9e78968cfdba8c92bf3f33636acef983a781ffca9af0d191e40c9",
-    "fleet-commander-orchestration": "016cec97471f9a9de21edfe0bac566ae65f66233dffa26f881ad6759b235c5ec",
+    "fleet-commander-orchestration": "7f2b883bfc9d6ff4996e87e65c674ea521b92c96ce6f34b1d29ea6e294d374cd",
     "fleet-create-with-grants": "7cc0a83d800677f8ded6a65fca995bddae84f8eb8b0627c090a60add9321b1e9",
     "fleet-device-and-session-discovery": "eb3046466fefa7acc8080e904c0aa29835b61326252641afd65d55a19bb6b0af",
     "fleet-evidence-review": "754fa0ab340bfc64fbf76939f8292e99b09ceb0017210bba74b122a428979d69",
@@ -67,6 +67,7 @@ PINNED_SKILLS = {
     "fleet-plugin-update": "0fb8600f0a9c3225ae5c163241bd5ad8cb12f86c77c2d9ce8ffcb9da566ba001",
     "fleet-reuse-idle-session": "1dc7e6d6c33d6ac72760a71ff27273c457df3eaee6de0a9b8d2b3c2dac23a918",
     "fleet-broadcast-tune": "0617e847aa2b920d26878eef443e81a55daa1c51f337430a9cfc8b13a2b21c44",
+    "fleet-self-check": "23c56c50e1c93527234de730c26e01aed0d92cbaea78271217bc800507aed224",
     "fleet-safety-boundaries": "08b357f013be28ece2d26a564569589e53d93da06eea637f3252db631a8a720e",
     "fleet-work-drive": "560b2246e0c14dda1beab24daa04a85e89dd5d81b12ae9aab2c57ec8e8430105",
 }

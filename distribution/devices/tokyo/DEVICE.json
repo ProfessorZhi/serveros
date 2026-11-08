@@ -38,6 +38,22 @@
       "revision": "pinned at install (--ability-rev)"
     },
     "monitor": {
+      "secrets_sync": {
+        "what": "key center: pull ProfessorZhi/serveros-secrets, decrypt this device's bundles (SOPS + age) into 0600 env files, restart what reads them",
+        "unit": "serveros-secrets-sync.timer",
+        "template": {
+          "path": "distribution/keycenter/serveros-secrets-sync.service.template",
+          "digest": "sha256:8ab99b3b0de4cba0d488049fcea1571ee78854dc959563849683ee2d4350926d"
+        },
+        "timer": {
+          "path": "distribution/keycenter/serveros-secrets-sync.timer",
+          "digest": "sha256:0295a1c0127febe6a2c19052d2a099086a6a139b50451fffe6bc4fa36fd4865c"
+        },
+        "tool": {
+          "path": "distribution/keycenter/serveros_secret.py",
+          "digest": "sha256:8edc4378da95a4fbb0815e797374baed354e9e2998629ae5dd95c64d7e9afc72"
+        }
+      },
       "serverosd": {
         "what": "basic: resources, anomalies, runtime status (python daemon)",
         "unit": "serverosd.service",

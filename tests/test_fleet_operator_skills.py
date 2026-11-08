@@ -40,6 +40,7 @@ EXPECTED_SKILLS = {
     "fleet-plugin-update",
     "fleet-reuse-idle-session",
     "fleet-safety-boundaries",
+    "fleet-self-check",
     "fleet-work-drive",
 }
 

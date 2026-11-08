@@ -319,3 +319,31 @@ def test_the_model_tools_default_to_the_devices_own_runtime(tmp_path, a6000_like
     h.tokyo.list_models = lambda *, provider: cm.project(provider, LISTING)
     h.service.list_models(h.principal("fleet:read"), device=TOKYO)
     assert seen["asked"] == TOKYO
+
+
+def test_listing_names_the_key_centers_variables_without_values(tmp_path, monkeypatch):
+    state = tmp_path / "names.json"
+    state.write_text(json.dumps({"schema": "serveros/secret-names.v1", "names": ["GW0_TOKEN"],
+                                 "synced_at": "t", "errors": []}))
+    monkeypatch.setattr(cm, "SECRET_NAMES", state)
+    lib = cm.LocalLibrary("http://127.0.0.1:3001/mcp", _token(tmp_path),
+                          opener=lambda req, timeout: _Resp(LISTING))
+    out = lib.list("claude")
+    assert out["variables"]["names"] == ["GW0_TOKEN"] and out["variables"]["state"] == "SYNCED"
+
+
+def test_an_envref_the_key_center_never_delivered_is_flagged(tmp_path, monkeypatch):
+    state = tmp_path / "names.json"
+    state.write_text(json.dumps({"schema": "serveros/secret-names.v1", "names": ["OTHER"]}))
+    monkeypatch.setattr(cm, "SECRET_NAMES", state)
+    listing = json.loads(json.dumps(LISTING))
+
+    def opener(req, timeout):
+        if req.get_method() == "PATCH":
+            body = json.loads(req.data)
+            listing["data"]["models"]["OPTIONS"][1].update({"label": body["model"], "config": body["config"]})
+        return _Resp(listing)
+    lib = cm.LocalLibrary("http://127.0.0.1:3001/mcp", _token(tmp_path), opener=opener)
+    rows = cm.check_entry("claude", "deepseek-gw0", "x", GW_ROWS)
+    out = lib.upsert("claude", "deepseek-gw0", "x", rows)
+    assert out["unknown_variables"] == ["GW0_TOKEN"]

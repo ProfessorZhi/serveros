@@ -212,6 +212,11 @@ def _served_tool_count() -> int:
     return len(SERVED_TOOLS)
 
 
+def _served_tool_names() -> list[str]:
+    from .tools import SERVED_TOOLS
+    return [tool.name for tool in SERVED_TOOLS]
+
+
 @dataclass(frozen=True)
 class _AuthoredVerb:
     """The label `_require_operator_verb` reports for a tool with no native row.
@@ -3716,6 +3721,7 @@ class FleetService:
                 # tool list is shorter than `served_tools` must refresh it.
                 "tool_surface_revision": TOOL_SURFACE_REVISION,
                 "served_tools": _served_tool_count(),
+                "served_tool_names": _served_tool_names(),
                 "local_device_ref": self.config.local_device_ref,
                 "config_source": str(self.config.source) if self.config.source else None,
                 "audit_enabled": bool(self.config.audit),
