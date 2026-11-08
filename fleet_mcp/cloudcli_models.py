@@ -63,6 +63,23 @@ _MODEL_KEYS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
                "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL")
 
 TOKEN_MAX_BYTES = 8192
+#: Written by `serveros-secret sync` on this machine: the NAMES of the variables
+#: the key center delivered here, never their values.
+SECRET_NAMES = Path("~/.local/state/serveros/secret-names.json")
+
+
+def secret_names(path: Path | None = None) -> dict[str, Any]:
+    """The variable names the key center delivered to this machine."""
+    path = (path or SECRET_NAMES).expanduser()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"state": "NOT_SYNCED", "names": []}
+    if not isinstance(data, dict) or data.get("schema") != "serveros/secret-names.v1":
+        return {"state": "UNREADABLE", "names": []}
+    names = sorted(n for n in data.get("names") or [] if isinstance(n, str) and _ENV_KEY.match(n))
+    return {"state": "SYNCED", "names": names, "synced_at": data.get("synced_at"),
+            "errors": len(data.get("errors") or [])}
 
 
 def is_secretish(key: str) -> bool:
@@ -297,7 +314,10 @@ class LocalLibrary:
         return self._call("GET", f"/api/providers/{provider}/models")
 
     def list(self, provider: str) -> dict[str, Any]:
-        return project(provider, self.raw_list(provider))
+        out = project(provider, self.raw_list(provider))
+        # Which variables an envref row can name here: the key center's names.
+        out["variables"] = secret_names()
+        return out
 
     def upsert(self, provider: str, model_id: str, label: str,
                rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -320,6 +340,9 @@ class LocalLibrary:
             self._call("PATCH", f"/api/providers/{provider}/models/{record}", body)
             action = "updated"
         after = project(provider, self.raw_list(provider))
+        known = secret_names()
+        missing = sorted({r["value"] for r in rows if r["kind"] == "envref"}
+                         - set(known["names"])) if known["state"] == "SYNCED" else []
         entry = next((e for e in after["entries"] if e["model_id"] == model_id), None)
         written = {(r["key"], r["kind"]) for r in rows}
         seen = {(r["key"], r["kind"]) for r in (entry or {}).get("env", [])}
@@ -329,4 +352,9 @@ class LocalLibrary:
             "action": action,
             "entry": entry,
             "verified": entry is not None and entry.get("label") == label and written == seen,
+            # An envref naming a variable the key center has not delivered here
+            # resolves to nothing at launch; said now rather than discovered then.
+            **({"unknown_variables": missing,
+                "warning": "these variables are not delivered to this machine by the key "
+                           "center; add them with `serveros-secret set` first"} if missing else {}),
         }

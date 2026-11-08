@@ -10,6 +10,7 @@
 |---|---|
 | 1 core plugin | `hwz-server-os-linux-work` 3.1.0+srv0005.20261014a for claude-code, codex — skills serveros, runtime-management, ability-management, workspace-management, test-management; same payload runs serverosd |
 | 2 ability family | `dell-gpu-compute` from ProfessorZhi/ability-management, one pinned revision, read back after rollout |
+| 3 monitor · secrets_sync | key center: pull ProfessorZhi/serveros-secrets, decrypt this device's bundles (SOPS + age) into 0600 env files, restart what reads them |
 | 3 monitor · serverosd | basic: resources, anomalies, runtime status (python daemon) |
 | 3 monitor · core_lite | native: C++ collector → status.json (0600) every 30 s, observe only |
 | 3 monitor · node_connector | link: reports this device to the hub (tokyo) |

@@ -39,6 +39,22 @@
       "cloudcli": "also rolled out into the Claude config dir a running CloudCLI uses (read from the process at install)"
     },
     "monitor": {
+      "secrets_sync": {
+        "what": "key center: pull ProfessorZhi/serveros-secrets, decrypt this device's bundles (SOPS + age) into 0600 env files, restart what reads them",
+        "unit": "serveros-secrets-sync.timer",
+        "template": {
+          "path": "distribution/secrets/serveros-secrets-sync.service.template",
+          "digest": "sha256:8ab99b3b0de4cba0d488049fcea1571ee78854dc959563849683ee2d4350926d"
+        },
+        "timer": {
+          "path": "distribution/secrets/serveros-secrets-sync.timer",
+          "digest": "sha256:0295a1c0127febe6a2c19052d2a099086a6a139b50451fffe6bc4fa36fd4865c"
+        },
+        "tool": {
+          "path": "distribution/secrets/serveros_secret.py",
+          "digest": "sha256:e5d802f0a2a7b265d37a6864d8e54f1bdf12050d34c728214185fab7946a74f7"
+        }
+      },
       "serverosd": {
         "what": "basic: resources, anomalies, runtime status (python daemon)",
         "unit": "serverosd.service",

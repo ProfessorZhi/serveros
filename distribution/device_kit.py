@@ -58,6 +58,9 @@ UNIT_TEMPLATES = {
     "core_lite_publish": "native/node-core/core-lite/deploy/publish-status.sh",
     "node_connector": "fleet_mcp/node/systemd/user/serveros-fleet-node-connector.service.in",
     "hub_watch": "integrations/fleet-hub-watch/serveros-fleet-watch.service.template",
+    "secrets_sync": "distribution/secrets/serveros-secrets-sync.service.template",
+    "secrets_timer": "distribution/secrets/serveros-secrets-sync.timer",
+    "secrets_tool": "distribution/secrets/serveros_secret.py",
     "node_connector_windows": "fleet_mcp/node/install.ps1",
     "core_lite_publish_windows": "native/node-core/core-lite/windows/deploy/publish-status.ps1",
     "core_lite_task_windows": "native/node-core/core-lite/windows/deploy/register-publish-task.ps1",
@@ -146,6 +149,14 @@ def kit(doc: dict, name: str) -> dict:
         layers["family"]["cloudcli"] = ("also rolled out into the Claude config dir a running "
                                         "CloudCLI uses (read from the process at install)")
     monitor: dict = {}
+    if mon.get("secrets_sync"):
+        monitor["secrets_sync"] = {
+            "what": "key center: pull ProfessorZhi/serveros-secrets, decrypt this device's "
+                    "bundles (SOPS + age) into 0600 env files, restart what reads them",
+            "unit": "serveros-secrets-sync.timer",
+            "template": _pin(UNIT_TEMPLATES["secrets_sync"]),
+            "timer": _pin(UNIT_TEMPLATES["secrets_timer"]),
+            "tool": _pin(UNIT_TEMPLATES["secrets_tool"])}
     if mon["serverosd"]:
         monitor["serverosd"] = {"what": "basic: resources, anomalies, runtime status (python daemon)",
                                 "unit": "serverosd.service", "template": _pin(UNIT_TEMPLATES["serverosd"])}
@@ -458,6 +469,22 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
                         (ROOT / UNIT_TEMPLATES["core_lite_timer"]).read_text(encoding="utf-8"))),
         ]
         units.append("serveros-core-lite-publish.timer")
+    if "secrets_sync" in mon:
+        tool = str(ROOT / UNIT_TEMPLATES["secrets_tool"])
+        steps += [
+            Step("monitor", "key center: sync unit",
+                 write=(ctx.unit_dir / "serveros-secrets-sync.service",
+                        _render(UNIT_TEMPLATES["secrets_sync"],
+                                {"PYTHON": ctx.python, "SECRET_TOOL": tool}))),
+            Step("monitor", "key center: timer (every 5 minutes)",
+                 write=(ctx.unit_dir / "serveros-secrets-sync.timer",
+                        (ROOT / UNIT_TEMPLATES["secrets_timer"]).read_text(encoding="utf-8"))),
+            Step("monitor", "key center: doctor (binaries, age key, config; values never printed)",
+                 [ctx.python, tool, "doctor"], ok_fail=True,
+                 notes=["first time on this device: `serveros-secret keygen`, send the printed "
+                        "public key to the owner, write ~/.config/serveros/secrets.yaml (repo, device)"]),
+        ]
+        units.append("serveros-secrets-sync.timer")
     if "node_connector" in mon:
         # The preflight names what a real connector install would need — the
         # CloudCLI endpoint, the credential anchor, the SSH host and the port —
