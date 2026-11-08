@@ -158,7 +158,7 @@ class TheOwnersPolicy(unittest.TestCase):
 
     def test_the_a6000_names_its_default_and_refuses_codex(self):
         choice = fi.default_choice("device:llm-lab-dell", "claude-code")
-        self.assertEqual(choice["model"], "deepseek-gw0")
+        self.assertEqual(choice["model"], "v4.1flash-anthropic")
         self.assertFalse(fi.default_choice("device:llm-lab-dell", "codex")["allowed"])
         self.assertEqual(fi.default_choice("device:tokyo-shared-dev-01", "claude-code")["model"], None)
 

@@ -282,7 +282,7 @@ def _delete_project(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
 def _list_models(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.list_models(
         ctx.principal, device=args.get("device"), provider=args.get("provider") or "claude",
-        runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
+        runtime=args.get("runtime"))
 
 
 def _upsert_model(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -290,7 +290,7 @@ def _upsert_model(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         ctx.principal, device=args.get("device"), model_id=args.get("model_id"),
         label=args.get("label"), env=args.get("env"), source=args.get("source"),
         gateway=args.get("gateway"), provider=args.get("provider") or "claude",
-        runtime=args["runtime"] if args.get("runtime") is not None else BASE_RUNTIME)
+        runtime=args.get("runtime"))
 
 
 _ENV_ROW = {
@@ -884,7 +884,8 @@ TOOLS: tuple[Tool, ...] = (
                 "device": _string(DEVICE_REF_DOC),
                 "provider": {"type": "string", "enum": ["claude", "codex"],
                              "description": "Defaults to claude."},
-                "runtime": _string("Exact authorized runtime namespace; defaults to claude."),
+                "runtime": _string("Runtime namespace; defaults to the device's own runtime "
+                                   "(e.g. claude-fjd on the A6000)."),
             },
             "required": ["device"],
             "additionalProperties": False,

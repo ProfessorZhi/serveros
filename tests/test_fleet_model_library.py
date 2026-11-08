@@ -293,3 +293,29 @@ def test_tune_needs_the_owner_to_make_the_knob_tunable(tmp_path, monkeypatch):
     with pytest.raises(FleetRefusal, match="not made default_model tunable"):
         h.service.tune(h.principal("fleet:read", "fleet:control"), action="set",
                        device=TOKYO, value="deepseek-gw0", reason="x")
+
+
+def test_a_gateway_entry_is_recognised_from_its_base_url(tmp_path, a6000_like_policy):
+    path = tmp_path / "runtime-policy.yaml"
+    path.write_text(path.read_text() + "gateway_hosts:\n  target:gateway0: ['127.0.0.1:26601']\n")
+    from fleet import intelligence
+    assert intelligence.gateway_for_url("http://127.0.0.1:26601") == "target:gateway0"
+    assert intelligence.gateway_for_url("http://10.0.0.9:4000") is None
+    listing = {"data": {"models": {"DEFAULT": "default", "OPTIONS": [
+        {"value": "deepseek-x", "label": "gw0", "isCustom": True, "config": {"env": [
+            {"key": "ANTHROPIC_BASE_URL", "kind": "value", "value": "http://127.0.0.1:26601"}]}}]}}}
+    h = Harness(tmp_path)
+    h.tokyo.list_models = lambda *, provider: cm.project(provider, listing)
+    entry = h.service.list_models(h.principal("fleet:read"), device=TOKYO)["entries"][0]
+    assert entry["policy"]["inferred_gateway"] == "target:gateway0"
+    assert entry["policy"]["allowed"] is True
+
+
+def test_the_model_tools_default_to_the_devices_own_runtime(tmp_path, a6000_like_policy, monkeypatch):
+    h = Harness(tmp_path)
+    seen = {}
+    real = h.service._own_runtime
+    monkeypatch.setattr(h.service, "_own_runtime", lambda ref: seen.setdefault("asked", ref) and real(ref))
+    h.tokyo.list_models = lambda *, provider: cm.project(provider, LISTING)
+    h.service.list_models(h.principal("fleet:read"), device=TOKYO)
+    assert seen["asked"] == TOKYO

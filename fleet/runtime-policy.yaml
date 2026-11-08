@@ -26,6 +26,13 @@ schema: serveros/fleet-runtime-policy.v1
 tunable:
   default_model: true
 
+# Which base URLs are which gateway, so a model entry's route can be judged
+# without the writer declaring it (host:port; local overlay adds to these).
+# A6000 reaches gateway 0 through an SSH forward on 26601; Tokyo serves it on
+# 26500 (LiteLLM in container0).
+gateway_hosts:
+  target:gateway0: ["127.0.0.1:26601", "127.0.0.1:26500"]
+
 default:
   runtimes:
     claude-code:
@@ -46,6 +53,6 @@ devices:
         # change (e.g. v4.1flash-anthropic). Source and gateway are what the
         # owner fixed; an entry is judged on both when it is written. Add
         # `model_patterns` in ~/.serveros/runtime-policy.yaml to narrow further.
-        # The entry created with fleet_model_upsert (gateway 0, envref token);
-        # used only once the device's library holds it.
-        default_model: deepseek-gw0
+        # The A6000's existing gateway-0 entry (东京网关0 · v4.1flash), as its
+        # CloudCLI model library lists it; used only while the library holds it.
+        default_model: v4.1flash-anthropic
