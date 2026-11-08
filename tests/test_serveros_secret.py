@@ -112,3 +112,51 @@ def test_a_readable_key_is_refused(world):
     with pytest.raises(ss.SecretError, match="0600"):
         ss.sync({"repo": world.repo, "device": "device:llm-lab-dell", "key": world.dell},
                 pull=False, state=world.tmp / "s.json")
+
+
+# -- taking in what the owner collected by hand ---------------------------------
+
+def test_a_messy_collection_reads_into_names(tmp_path):
+    src = tmp_path / "collected"
+    (src / "vault").mkdir(parents=True)
+    (src / "vault" / "gw0-token").write_text("sk-gw0\n")
+    (src / "vault" / "feishu.app_secret").write_text("fs-1")
+    (src / "a6000.env").write_text('# comment\nexport GW0_TOKEN="sk-gw0"\nOPENAI_KEY=\'o-1\'\nnot a line\n')
+    (src / "more.yaml").write_text("MINIMAX_KEY: mm-1\nnested: {a: 1}\n")
+    values, skipped = ss.read_collected(src)
+    assert values == {"GW0_TOKEN": "sk-gw0", "FEISHU_APP_SECRET": "fs-1",
+                      "OPENAI_KEY": "o-1", "MINIMAX_KEY": "mm-1"}
+    assert any("nested" in s for s in skipped) and any("not NAME=value" in s for s in skipped)
+    assert "sk-gw0" not in json.dumps(skipped)
+
+
+def test_import_to_the_vault_then_assign_to_a_device(world):
+    src = world.tmp / "collected.env"
+    src.write_text("GW0_TOKEN=sk-1\nFEISHU_SECRET=fs-1\n")
+    values, _ = ss.read_collected(src)
+    out = ss.import_values(world.repo, None, "main", values, world.owner)
+    assert out["bundle"] == "vault/main.sops.yaml" and out["added"] == ["FEISHU_SECRET", "GW0_TOKEN"]
+    # the vault is the owner's alone
+    with pytest.raises(ss.SecretError):
+        ss.decrypt_bundle(world.repo / out["bundle"], world.dell)
+    given = ss.assign(world.repo, ["GW0_TOKEN"], "vault/main", "device:llm-lab-dell", "cloudcli",
+                      world.owner)
+    assert ss.decrypt_bundle(world.repo / given["bundle"], world.dell) == {"GW0_TOKEN": "sk-1"}
+    inv = {r["bundle"]: r["names"] for r in ss.inventory(world.repo)}
+    assert inv == {"devices/llm-lab-dell/cloudcli.sops.yaml": ["GW0_TOKEN"],
+                   "vault/main.sops.yaml": ["FEISHU_SECRET", "GW0_TOKEN"]}
+    assert "sk-1" not in json.dumps(inv)
+
+
+def test_reimport_reports_replaced_and_unchanged(world):
+    ss.import_values(world.repo, None, "main", {"A_KEY": "1", "B_KEY": "2"}, world.owner)
+    out = ss.import_values(world.repo, None, "main", {"A_KEY": "1", "B_KEY": "3"}, world.owner)
+    assert out["unchanged"] == ["A_KEY"] and out["replaced"] == ["B_KEY"]
+
+
+def test_shred_removes_what_was_imported(tmp_path):
+    src = tmp_path / "c"
+    (src / "sub").mkdir(parents=True)
+    (src / "sub" / "x").write_text("secret")
+    (src / "y.env").write_text("A=1\n")
+    assert ss.shred(src) == 2 and not src.exists()
