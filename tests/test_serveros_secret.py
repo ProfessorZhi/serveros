@@ -160,3 +160,29 @@ def test_shred_removes_what_was_imported(tmp_path):
     (src / "sub" / "x").write_text("secret")
     (src / "y.env").write_text("A=1\n")
     assert ss.shred(src) == 2 and not src.exists()
+
+
+def test_device_bundles_name_their_recipients_explicitly(world):
+    # even with no .sops.yaml at all, a device bundle reaches owner + device
+    (world.repo / ".sops.yaml").unlink()
+    out = ss.set_value(world.repo, "device:llm-lab-dell", "cloudcli", "GW0_TOKEN", "v", world.owner)
+    assert ss.decrypt_bundle(world.repo / out["bundle"], world.dell) == {"GW0_TOKEN": "v"}
+    vault = ss.import_values(world.repo, None, "main", {"X_KEY": "1"}, world.owner)
+    with pytest.raises(ss.SecretError):
+        ss.decrypt_bundle(world.repo / vault["bundle"], world.dell)
+
+
+def test_per_file_import_keeps_same_names_apart(world):
+    src = world.tmp / "collected"
+    src.mkdir()
+    (src / "prod.env").write_text("LITELLM_MASTER_KEY=prod\n")
+    (src / "lit-test.env").write_text("LITELLM_MASTER_KEY=test\n")
+    out = ss.import_per_file(world.repo, src, None, world.owner)
+    got = {b["bundle"]: ss.decrypt_bundle(world.repo / b["bundle"], world.owner)["LITELLM_MASTER_KEY"]
+           for b in out["bundles"]}
+    assert got == {"vault/lit-test-env.sops.yaml": "test", "vault/prod-env.sops.yaml": "prod"}
+
+
+def test_the_sync_unit_can_find_sops_in_local_bin():
+    unit = (ROOT / "distribution/keycenter/serveros-secrets-sync.service.template").read_text()
+    assert "Environment=PATH=%h/.local/bin" in unit

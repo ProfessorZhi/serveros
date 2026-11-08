@@ -132,12 +132,52 @@ def decrypt_bundle(path: Path, key: Path) -> dict[str, str]:
     return {k: str(v) for k, v in data.items() if NAME_RE.match(str(k))}
 
 
+def recipients_for(repo: Path, rel: str) -> list[str]:
+    """Who may read `rel`, decided here from recipients.yaml — not by sops matching
+    .sops.yaml path rules, which on Windows silently fell through to owner-only
+    and left the device unable to decrypt its own bundle."""
+    data = yaml.safe_load((repo / "recipients.yaml").read_text(encoding="utf-8")) or {}
+    owner = data.get("owner")
+    if not isinstance(owner, str) or not owner.startswith("age1"):
+        raise SecretError("recipients.yaml needs `owner: age1...`")
+    parts = rel.replace("\\", "/").split("/")
+    if parts[0] == "devices" and len(parts) >= 3:
+        device = f"device:{parts[1]}"
+        pub = (data.get("devices") or {}).get(device)
+        if not isinstance(pub, str) or not pub.startswith("age1"):
+            raise SecretError(f"recipients.yaml has no public key for {device}")
+        return [owner, pub]
+    return [owner]
+
+
 def encrypt_bundle(repo: Path, rel: str, values: dict[str, str], key: Path | None) -> None:
-    """Encrypt `values` to `rel` using the repo's creation rules; plaintext via a pipe only."""
+    """Encrypt `values` to `rel` for exactly the recipients `recipients_for` names.
+
+    POSIX: the plaintext reaches sops through a pipe only. Windows has no
+    /dev/stdin, so there it goes through a temporary file readable by this
+    account only, overwritten and deleted as soon as sops has read it.
+    """
     plain = yaml.safe_dump(values, allow_unicode=True, sort_keys=True)
     env = {"SOPS_AGE_KEY_FILE": str(key)} if key else {}
-    done = _run([_need("sops"), "--encrypt", "--input-type", "yaml", "--output-type", "yaml",
-                 "--filename-override", rel, "/dev/stdin"], stdin=plain, env=env, cwd=repo)
+    argv = [_need("sops"), "--encrypt", "--input-type", "yaml", "--output-type", "yaml",
+            "--age", ",".join(recipients_for(repo, rel))]
+    if os.name == "nt":
+        fd, tmp = tempfile.mkstemp(prefix="kc-", suffix=".yaml")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(plain)
+            done = _run(argv + [tmp], env=env, cwd=Path(tmp).parent)
+        finally:
+            try:
+                with open(tmp, "r+b") as fh:
+                    fh.write(os.urandom(max(1, len(plain.encode()))))
+            except OSError:
+                pass
+            Path(tmp).unlink(missing_ok=True)
+    else:
+        # Recipients are explicit; run outside the repository so sops does not
+        # also go looking for .sops.yaml rules to match a pipe against.
+        done = _run(argv + ["/dev/stdin"], stdin=plain, env=env, cwd=Path(tempfile.gettempdir()))
     if done.returncode != 0:
         raise SecretError(f"sops could not encrypt {rel}: {done.stderr.strip()[-300:]}")
     _atomic_write(repo / rel, done.stdout, 0o644)
@@ -285,6 +325,29 @@ def import_values(repo: Path, device: str | None, bundle: str, values: dict[str,
     return {"bundle": rel, "added": added, "replaced": replaced,
             "unchanged": sorted(set(values) - set(added) - set(replaced)),
             "names": sorted(current)}
+
+
+def import_per_file(repo: Path, source: Path, device: str | None,
+                    owner_key: Path | None) -> dict[str, Any]:
+    """One bundle per source file: the same NAME in two files (a test env's
+    LITELLM_MASTER_KEY beside production's) stays two values, never one."""
+    files = [source] if source.is_file() else sorted(
+        p for p in source.rglob("*") if p.is_file()
+        and not any(part.startswith(".git") for part in p.relative_to(source).parts))
+    bundles, skipped, used = [], [], set()
+    for f in files:
+        values, skip = read_collected(f)
+        skipped += [f"{f.name}: {s}" for s in skip]
+        if not values:
+            continue
+        stem = re.sub(r"[^a-z0-9_-]+", "-", f.name.lower()).strip("-")[:40] or "item"
+        name, n = stem, 2
+        while name in used:
+            name, n = f"{stem}-{n}", n + 1
+        used.add(name)
+        bundles.append(import_values(repo, device, name, values, owner_key))
+    return {"bundles": bundles, "skipped": skipped,
+            "bundle": "vault/" if device is None else f"devices/{_device_id(device)}/"}
 
 
 def assign(repo: Path, names: list[str], source: str, device: str, bundle: str,
@@ -469,6 +532,9 @@ def main(argv: list[str] | None = None) -> int:
     im.add_argument("--bundle", default="main"); im.add_argument("--repo", required=True)
     im.add_argument("--owner-key", default=os.environ.get("SOPS_AGE_KEY_FILE"))
     im.add_argument("--shred", action="store_true", help="overwrite and delete the source after")
+    im.add_argument("--per-file", action="store_true",
+                    help="each source file becomes its own bundle (vault/<file-name>), so the "
+                         "same name in two files never collides")
     im.add_argument("--no-commit", action="store_true")
     asg = sub.add_parser("assign"); asg.add_argument("names", nargs="+")
     asg.add_argument("--from", dest="source", default="vault/main")
@@ -506,9 +572,13 @@ def main(argv: list[str] | None = None) -> int:
             owner_key = Path(args.owner_key).expanduser() if args.owner_key else None
             if args.cmd == "import":
                 source = Path(args.path).expanduser()
-                values, skipped = read_collected(source)
-                result = import_values(repo, args.device, args.bundle, values, owner_key)
-                result["skipped"] = skipped
+                if args.per_file:
+                    result = import_per_file(repo, source, args.device, owner_key)
+                    values = {n: 1 for b in result["bundles"] for n in b["names"]}
+                else:
+                    values, skipped = read_collected(source)
+                    result = import_values(repo, args.device, args.bundle, values, owner_key)
+                    result["skipped"] = skipped
                 if args.shred:
                     result["shredded_files"] = shred(source)
                 message = f"import {len(values)} names into {result['bundle']}"
@@ -516,7 +586,9 @@ def main(argv: list[str] | None = None) -> int:
                 result = assign(repo, args.names, args.source, args.device, args.bundle, owner_key)
                 message = f"assign {', '.join(args.names)} to {args.device} ({args.bundle})"
             if not args.no_commit:
-                _run(["git", "-C", str(repo), "add", result["bundle"]])
+                for rel in ([b["bundle"] for b in result["bundles"]] if "bundles" in result
+                            else [result["bundle"]]):
+                    _run(["git", "-C", str(repo), "add", rel])
                 _run(["git", "-C", str(repo), "commit", "-q", "-m", message])
             print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.cmd == "inventory":
