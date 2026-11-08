@@ -21,6 +21,11 @@ leaves the owner's machine. No agent ever sees a value:
 Commands:
     serveros-secret keygen                       (device) make this device's age key, print its public key
     serveros-secret recipients --repo R --write  (owner)  regenerate .sops.yaml from recipients.yaml
+    serveros-secret import PATH [--device D] [--bundle B] --repo R [--shred]
+                                                 (owner) take in what you collected by hand
+    serveros-secret assign NAME.. --from vault/B --device D [--bundle B] --repo R
+                                                 (owner) give a device names held in the vault
+    serveros-secret inventory --repo R           (anyone) bundles and their NAMES, never values
     serveros-secret set NAME --device D [--bundle B] --repo R   (owner) add/replace one value
     serveros-secret rm NAME --device D [--bundle B] --repo R    (owner)
     serveros-secret sync [--no-pull] [--no-restart]            (device) pull, decrypt, write, restart
@@ -80,7 +85,8 @@ def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
-        os.fchmod(fd, mode)
+        if hasattr(os, "fchmod"):        # not on Windows; the owner's machine may be
+            os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
         os.replace(tmp, path)
@@ -158,11 +164,154 @@ def write_sops_config(repo: Path) -> str:
     return text
 
 
-def _bundle_paths(repo: Path, device: str, bundle: str) -> tuple[str, Path]:
+def _bundle_paths(repo: Path, device: str | None, bundle: str) -> tuple[str, Path]:
+    """A device bundle, or with no device the owner-only vault."""
     if not BUNDLE_RE.match(bundle):
         raise SecretError("bundle is lowercase letters, digits, - and _")
-    rel = f"devices/{_device_id(device)}/{bundle}.sops.yaml"
+    rel = (f"devices/{_device_id(device)}/{bundle}.sops.yaml" if device
+           else f"vault/{bundle}.sops.yaml")
     return rel, repo / rel
+
+
+# -- taking in what the owner collected by hand ------------------------------------
+
+_DOTENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*[=:]\s*(.*?)\s*$")
+
+
+def normalise_name(raw: str) -> str | None:
+    """`gw0-token`, `gw0.token` -> `GW0_TOKEN`; None when it cannot be a variable name."""
+    name = re.sub(r"[^A-Za-z0-9_]", "_", raw.strip()).upper()
+    if name and name[0].isdigit():
+        name = "_" + name
+    return name if NAME_RE.match(name) else None
+
+
+def _unquote(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        inner = value[1:-1]
+        return inner.replace('\\"', '"').replace("\\n", "\n") if value[0] == '"' else inner
+    return value
+
+
+def read_collected(path: Path) -> tuple[dict[str, str], list[str]]:
+    """What the owner gathered: a .env / .yaml / .json file, or a folder.
+
+    A folder is read the way vault-style folders are laid out: each regular
+    file is one value named after the file (`gw0-token` -> GW0_TOKEN), and
+    .env/.yaml/.json files inside it are read as mappings. Returns the values
+    and the list of things skipped (by name only, never by content).
+    """
+    values: dict[str, str] = {}
+    skipped: list[str] = []
+
+    def put(raw_name: str, value: Any, where: str) -> None:
+        name = normalise_name(str(raw_name))
+        if name is None or value is None or isinstance(value, (dict, list)):
+            skipped.append(f"{where}:{raw_name}")
+            return
+        text = str(value).strip()
+        if not text:
+            skipped.append(f"{where}:{raw_name} (empty)")
+            return
+        if name in values and values[name] != text:
+            skipped.append(f"{where}:{raw_name} (conflicts with an earlier {name}; kept the first)")
+            return
+        values[name] = text
+
+    def read_file(f: Path, where: str) -> None:
+        text = f.read_text(encoding="utf-8", errors="replace")
+        suffix = f.suffix.lower()
+        if suffix in (".yaml", ".yml", ".json"):
+            data = json.loads(text) if suffix == ".json" else yaml.safe_load(text)
+            if not isinstance(data, dict):
+                skipped.append(f"{where} (not a mapping)")
+                return
+            for k, v in data.items():
+                put(k, v, where)
+        elif suffix == ".env" or f.name.startswith(".env") or f.name.endswith(".env"):
+            for line in text.splitlines():
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                m = _DOTENV_LINE.match(line)
+                if m:
+                    put(m.group(1), _unquote(m.group(2)), where)
+                else:
+                    skipped.append(f"{where} (a line that is not NAME=value)")
+        else:
+            put(f.name, text, where)        # one file, one value (vault-style)
+
+    if path.is_dir():
+        for f in sorted(p for p in path.rglob("*") if p.is_file()):
+            if any(part.startswith(".git") for part in f.relative_to(path).parts):
+                continue
+            read_file(f, str(f.relative_to(path)))
+    elif path.is_file():
+        read_file(path, path.name)
+    else:
+        raise SecretError(f"nothing to import at {path}")
+    return values, skipped
+
+
+def shred(path: Path) -> int:
+    """Overwrite then delete what was imported. Best effort on SSDs; say so."""
+    files = [path] if path.is_file() else [p for p in path.rglob("*") if p.is_file()]
+    for f in files:
+        try:
+            size = f.stat().st_size
+            with open(f, "r+b") as fh:
+                fh.write(os.urandom(size))
+                fh.flush()
+                os.fsync(fh.fileno())
+        except OSError:
+            pass
+        f.unlink(missing_ok=True)
+    if path.is_dir():
+        for d in sorted((p for p in path.rglob("*") if p.is_dir()), reverse=True):
+            d.rmdir()
+        path.rmdir()
+    return len(files)
+
+
+def import_values(repo: Path, device: str | None, bundle: str, values: dict[str, str],
+                  owner_key: Path | None) -> dict[str, Any]:
+    if not values:
+        raise SecretError("nothing importable found")
+    rel, path = _bundle_paths(repo, device, bundle)
+    current = decrypt_bundle(path, owner_key) if path.exists() else {}
+    added = sorted(n for n in values if n not in current)
+    replaced = sorted(n for n in values if n in current and current[n] != values[n])
+    current.update(values)
+    encrypt_bundle(repo, rel, current, owner_key)
+    return {"bundle": rel, "added": added, "replaced": replaced,
+            "unchanged": sorted(set(values) - set(added) - set(replaced)),
+            "names": sorted(current)}
+
+
+def assign(repo: Path, names: list[str], source: str, device: str, bundle: str,
+           owner_key: Path | None) -> dict[str, Any]:
+    """Copy names from an owner bundle (e.g. vault/main) into a device's bundle."""
+    src = repo / (source if source.endswith(".sops.yaml") else f"{source}.sops.yaml")
+    held = decrypt_bundle(src, owner_key)
+    missing = [n for n in names if n not in held]
+    if missing:
+        raise SecretError(f"not in {source}: {missing}")
+    return import_values(repo, device, bundle, {n: held[n] for n in names}, owner_key)
+
+
+def inventory(repo: Path) -> list[dict[str, Any]]:
+    """Every bundle and the NAMES in it, read from the files without decrypting.
+
+    sops leaves keys in clear and encrypts values, so this needs no key.
+    """
+    rows = []
+    for f in sorted(repo.glob("**/*.sops.yaml")):
+        if f.name == ".sops.yaml":           # the creation rules, not a bundle
+            continue
+        data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        names = sorted(k for k in data if k != "sops" and NAME_RE.match(str(k)))
+        rows.append({"bundle": str(f.relative_to(repo)), "names": names,
+                     "updated": (data.get("sops") or {}).get("lastmodified")})
+    return rows
 
 
 def set_value(repo: Path, device: str, bundle: str, name: str, value: str,
@@ -315,6 +464,19 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--bundle", default="cloudcli"); p.add_argument("--repo", required=True)
         p.add_argument("--owner-key", default=os.environ.get("SOPS_AGE_KEY_FILE"))
         p.add_argument("--no-commit", action="store_true")
+    im = sub.add_parser("import"); im.add_argument("path")
+    im.add_argument("--device", default=None, help="omit to keep it in the owner-only vault")
+    im.add_argument("--bundle", default="main"); im.add_argument("--repo", required=True)
+    im.add_argument("--owner-key", default=os.environ.get("SOPS_AGE_KEY_FILE"))
+    im.add_argument("--shred", action="store_true", help="overwrite and delete the source after")
+    im.add_argument("--no-commit", action="store_true")
+    asg = sub.add_parser("assign"); asg.add_argument("names", nargs="+")
+    asg.add_argument("--from", dest="source", default="vault/main")
+    asg.add_argument("--device", required=True); asg.add_argument("--bundle", default="cloudcli")
+    asg.add_argument("--repo", required=True)
+    asg.add_argument("--owner-key", default=os.environ.get("SOPS_AGE_KEY_FILE"))
+    asg.add_argument("--no-commit", action="store_true")
+    inv = sub.add_parser("inventory"); inv.add_argument("--repo", required=True)
     s = sub.add_parser("sync"); s.add_argument("--no-pull", action="store_true")
     s.add_argument("--no-restart", action="store_true"); s.add_argument("--config", default=str(CONFIG))
     sub.add_parser("names")
@@ -339,6 +501,26 @@ def main(argv: list[str] | None = None) -> int:
                 _run(["git", "-C", str(repo), "commit", "-q", "-m",
                       f"{result['action']} {args.name} for {args.device} ({args.bundle})"])
             print(json.dumps(result, ensure_ascii=False))
+        elif args.cmd in ("import", "assign"):
+            repo = Path(args.repo).expanduser()
+            owner_key = Path(args.owner_key).expanduser() if args.owner_key else None
+            if args.cmd == "import":
+                source = Path(args.path).expanduser()
+                values, skipped = read_collected(source)
+                result = import_values(repo, args.device, args.bundle, values, owner_key)
+                result["skipped"] = skipped
+                if args.shred:
+                    result["shredded_files"] = shred(source)
+                message = f"import {len(values)} names into {result['bundle']}"
+            else:
+                result = assign(repo, args.names, args.source, args.device, args.bundle, owner_key)
+                message = f"assign {', '.join(args.names)} to {args.device} ({args.bundle})"
+            if not args.no_commit:
+                _run(["git", "-C", str(repo), "add", result["bundle"]])
+                _run(["git", "-C", str(repo), "commit", "-q", "-m", message])
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        elif args.cmd == "inventory":
+            print(json.dumps(inventory(Path(args.repo).expanduser()), ensure_ascii=False, indent=2))
         elif args.cmd == "sync":
             result = sync(load_config(Path(args.config).expanduser()), pull=not args.no_pull,
                           restart=not args.no_restart)
