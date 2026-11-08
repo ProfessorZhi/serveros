@@ -288,8 +288,28 @@ def runtime_policy() -> dict:
     devices = {**(base.get("devices") or {}), **(local.get("devices") or {})}
     return {**base, "default": local.get("default", base["default"]),
             "tunable": {**(base.get("tunable") or {}), **(local.get("tunable") or {})},
+            "gateway_hosts": {**(base.get("gateway_hosts") or {}), **(local.get("gateway_hosts") or {})},
             "devices": {k: v for k, v in devices.items() if v is not None},
             "source": str(local_path)}
+
+
+def gateway_for_url(url: Any) -> str | None:
+    """The gateway target a base URL belongs to, from runtime-policy `gateway_hosts`.
+
+    Matched on host:port, so `http://127.0.0.1:26601/v1` and the bare
+    `127.0.0.1:26601` agree. Unknown URLs are None — never guessed.
+    """
+    import urllib.parse
+
+    if not isinstance(url, str) or not url.strip():
+        return None
+    parsed = urllib.parse.urlsplit(url if "://" in url else f"http://{url}")
+    hostport = parsed.netloc.lower()
+    for target, hosts in (runtime_policy().get("gateway_hosts") or {}).items():
+        for host in hosts or []:
+            if str(host).lower().split("://")[-1].rstrip("/") == hostport:
+                return target
+    return None
 
 
 def policy_rule(device_ref: str, runtime_kind: str) -> dict | None:

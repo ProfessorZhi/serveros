@@ -63,7 +63,7 @@ from .errors import (
 )
 from .identity import SessionKey
 from .owner_access import build_project_path, OwnerAccessError
-from .version import SERVER_VERSION
+from .version import SERVER_VERSION, TOOL_SURFACE_REVISION
 from .session_detail import normalize_detail
 from .privacy import clamp_limit, redact_payload, UNTRUSTED_NOTICE
 from .providers import DeviceProvider, ProviderHealth, build_providers
@@ -205,6 +205,11 @@ class Principal:
     def as_dict(self) -> dict[str, Any]:
         return {"name": self.name, "credential_kind": self.credential_kind,
                 "scopes": sorted(self.scopes)}
+
+
+def _served_tool_count() -> int:
+    from .tools import SERVED_TOOLS
+    return len(SERVED_TOOLS)
 
 
 @dataclass(frozen=True)
@@ -815,11 +820,14 @@ class FleetService:
             return False
         return any(e.get("model_id") == model_id for e in (answer or {}).get("entries") or [])
 
-    def _model_library_target(self, principal: Principal, device: Any, runtime: str):
-        self._validate_runtime_selector(runtime)
+    def _model_library_target(self, principal: Principal, device: Any, runtime: str | None):
         if not isinstance(device, str) or not device.strip():
             raise refuse(BAD_REQUEST, "device is required")
         device_ref = resolve_or_refuse(self.registry, device).device_ref.ref
+        # No runtime named means the device's own (claude-fjd on the A6000),
+        # not the base tag a device may not even have.
+        runtime = runtime or self._own_runtime(device_ref)
+        self._validate_runtime_selector(runtime)
         binding = self.config.namespace_binding(device_ref, runtime)
         if binding is None or not binding.enabled:
             raise refuse(UNKNOWN_DEVICE, f"{device_ref} has no enabled binding for {runtime}")
@@ -827,7 +835,7 @@ class FleetService:
         return device_ref, binding, provider
 
     def list_models(self, principal: Principal, *, device: str, provider: str = "claude",
-                    runtime: str = BASE_RUNTIME) -> dict[str, Any]:
+                    runtime: str | None = None) -> dict[str, Any]:
         """One device's CloudCLI model library: entries, their env keys and kinds.
 
         No secret value is in the answer — the device withholds them before
@@ -869,16 +877,16 @@ class FleetService:
         base = next((r for r in rows if r.get("key") in ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL")
                      and r.get("kind") in ("value", "envref")), None)
         source = "gateway" if base else "official_subscription"
+        gateway = intelligence.gateway_for_url(base.get("value")) if base and base.get("kind") == "value" else None
         ok, reason = intelligence.policy_allows(
             self._policy_profile(device_ref, runtime, provider),
-            model=entry.get("model_id") or "", source=source, gateway=None)
+            model=entry.get("model_id") or "", source=source, gateway=gateway)
         note = None
-        if base and not ok and "gateway" in reason:
-            # Which gateway a URL is cannot be read off the entry; the caller
-            # declares it when writing. Say so rather than guess.
-            note = "the gateway this entry routes to is declared when it is written"
+        if base and gateway is None:
+            note = ("the base URL matches no gateway in runtime-policy `gateway_hosts`; "
+                    "add it there if this entry is a known gateway")
         return {"allowed": ok, "reason": reason, "inferred_source": source,
-                **({"note": note} if note else {})}
+                "inferred_gateway": gateway, **({"note": note} if note else {})}
 
     @staticmethod
     def _policy_profile(device_ref: str, runtime: str, provider: str) -> str:
@@ -892,7 +900,7 @@ class FleetService:
 
     def upsert_model(self, principal: Principal, *, device: str, model_id: str, label: str,
                      env: list[dict[str, Any]], source: str, gateway: str | None = None,
-                     provider: str = "claude", runtime: str = BASE_RUNTIME) -> dict[str, Any]:
+                     provider: str = "claude", runtime: str | None = None) -> dict[str, Any]:
         """Create or replace ONE custom entry in a device's CloudCLI model library.
 
         Four checks, in order, each its own authority:
@@ -3704,6 +3712,10 @@ class FleetService:
             "surface": {
                 "server_name": "serveros-fleet-mcp",
                 "version": SERVER_VERSION,
+                # Which tool surface this server serves. A client whose cached
+                # tool list is shorter than `served_tools` must refresh it.
+                "tool_surface_revision": TOOL_SURFACE_REVISION,
+                "served_tools": _served_tool_count(),
                 "local_device_ref": self.config.local_device_ref,
                 "config_source": str(self.config.source) if self.config.source else None,
                 "audit_enabled": bool(self.config.audit),
