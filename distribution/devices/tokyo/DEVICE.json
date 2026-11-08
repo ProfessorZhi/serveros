@@ -43,7 +43,7 @@
         "unit": "serveros-secrets-sync.timer",
         "template": {
           "path": "distribution/keycenter/serveros-secrets-sync.service.template",
-          "digest": "sha256:8ab99b3b0de4cba0d488049fcea1571ee78854dc959563849683ee2d4350926d"
+          "digest": "sha256:fb46802b25dc513807a4e5b29b52202804300c5b86c3bf6cc32f98a295d39d42"
         },
         "timer": {
           "path": "distribution/keycenter/serveros-secrets-sync.timer",
@@ -51,7 +51,7 @@
         },
         "tool": {
           "path": "distribution/keycenter/serveros_secret.py",
-          "digest": "sha256:5d87ded7e2dd714c964e236419b490d293ef6dd86663dfc6bde125ea1b6ba425"
+          "digest": "sha256:8b7d1615d1198d20eaedb56eb5b97fd46078fa85d47be7a27c4d7a98fd1cfab8"
         }
       },
       "serverosd": {

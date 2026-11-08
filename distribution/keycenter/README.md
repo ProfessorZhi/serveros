@@ -59,7 +59,9 @@ python3 distribution/keycenter/serveros_secret.py import ~/collected --repo ~/se
 git -C ~/serveros-secrets push
 ```
 
-It prints only names: `added`, `replaced`, `unchanged`, and what it `skipped`
+Add `--per-file` when you collected several files that may share names (a
+test env's `LITELLM_MASTER_KEY` beside production's): each file becomes its own
+bundle, `vault/<file-name>`, so nothing is merged. It prints only names: `added`, `replaced`, `unchanged`, and what it `skipped`
 (nested values, unreadable lines, conflicting duplicates), never a value.
 `--shred` overwrites and deletes the collected files once they are encrypted
 (best effort on SSDs — keep the collection on a disk you trust, or delete it
