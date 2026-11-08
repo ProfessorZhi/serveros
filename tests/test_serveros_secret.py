@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("serveros_secret", ROOT / "distribution/secrets/serveros_secret.py")
+spec = importlib.util.spec_from_file_location("serveros_secret", ROOT / "distribution/keycenter/serveros_secret.py")
 ss = importlib.util.module_from_spec(spec)
 sys.modules.setdefault("serveros_secret", ss)
 spec.loader.exec_module(ss)
