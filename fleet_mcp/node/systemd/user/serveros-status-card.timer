@@ -1,0 +1,12 @@
+[Unit]
+Description=Write this machine's 资源播报 card every five minutes
+
+[Timer]
+# :02 :07 :12 ... — off the sampling minutes of the other monitors here.
+OnCalendar=*-*-* *:2/5:00
+AccuracySec=30s
+Persistent=false
+Unit=serveros-status-card.service
+
+[Install]
+WantedBy=timers.target

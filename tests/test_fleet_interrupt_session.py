@@ -717,8 +717,9 @@ class TheNodeTransportSignsAndCloses(unittest.TestCase):
         from fleet_mcp import node_protocol as np
 
         # The session routes, native mirror, core status, fresh projects and
-        # the one destructive project route, the model library pair.
-        self.assertEqual(len(np.ROUTES), 16)
+        # the one destructive project route, the model library pair, and the
+        # device's own 资源播报 card.
+        self.assertEqual(len(np.ROUTES), 17)
         # Named so that a future edit cannot add a second one under cover of
         # this count going up.
         self.assertEqual([r for r in np.ROUTES if "interrupt" in r],

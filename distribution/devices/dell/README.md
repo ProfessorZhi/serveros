@@ -12,6 +12,7 @@
 | 2 ability family | `dell-gpu-compute` from ProfessorZhi/ability-management, one pinned revision, read back after rollout |
 | 3 monitor · secrets_sync | key center: pull ProfessorZhi/serveros-secrets, decrypt this device's bundles (SOPS + age) into 0600 env files, restart what reads them |
 | 3 monitor · serverosd | basic: resources, anomalies, runtime status (python daemon) |
+| 3 monitor · status_card | the rich 资源播报 card this machine's serverosd renders, written every five minutes for the hub to send (the hub is the one sender) |
 | 3 monitor · core_lite | native: C++ collector → status.json (0600) every 30 s, observe only |
 | 3 monitor · node_connector | link: reports this device to the hub (tokyo) |
 

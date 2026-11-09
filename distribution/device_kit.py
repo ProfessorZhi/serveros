@@ -53,6 +53,8 @@ LAYERS = ("core", "family", "monitor", "commander")
 
 UNIT_TEMPLATES = {
     "serverosd": "runtime/serverosd.service",
+    "status_card": "fleet_mcp/node/systemd/user/serveros-status-card.service.in",
+    "status_card_timer": "fleet_mcp/node/systemd/user/serveros-status-card.timer",
     "core_lite_service": "native/node-core/core-lite/deploy/serveros-core-lite-publish.service",
     "core_lite_timer": "native/node-core/core-lite/deploy/serveros-core-lite-publish.timer",
     "core_lite_publish": "native/node-core/core-lite/deploy/publish-status.sh",
@@ -173,6 +175,13 @@ def kit(doc: dict, name: str) -> dict:
     if mon["serverosd"]:
         monitor["serverosd"] = {"what": "basic: resources, anomalies, runtime status (python daemon)",
                                 "unit": "serverosd.service", "template": _pin(UNIT_TEMPLATES["serverosd"])}
+        monitor["status_card"] = {
+            "what": "the rich 资源播报 card this machine's serverosd renders, written every five "
+                    "minutes for the hub to send (the hub is the one sender)",
+            "unit": "serveros-status-card.timer",
+            "template": _pin(UNIT_TEMPLATES["status_card"]),
+            "timer": _pin(UNIT_TEMPLATES["status_card_timer"]),
+            "writer": _pin("fleet_mcp/node/status_card.py")}
     if not mon["core_lite"]:
         monitor["core_lite"] = {
             "what": "GAP: no resource collector for this OS yet — the hub shows 未接入资源读数",
@@ -459,6 +468,19 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
     units: list[str] = []
     if "serverosd" in mon:
         units.append("serverosd.service")
+    if "status_card" in mon and core.get("composition"):
+        serverosctl = runtime_root / core["composition"] / "current" / "bin" / "serverosctl"
+        steps += [
+            Step("monitor", "status card: unit (renders this machine's 资源播报 card for the hub)",
+                 write=(ctx.unit_dir / "serveros-status-card.service",
+                        _render(UNIT_TEMPLATES["status_card"],
+                                {"PYTHON": py, "SERVEROSCTL": str(serverosctl),
+                                 "DEVICE_REF": k["device_ref"], "SERVEROS_ROOT": str(ROOT)}))),
+            Step("monitor", "status card: timer (every 5 minutes)",
+                 write=(ctx.unit_dir / "serveros-status-card.timer",
+                        (ROOT / UNIT_TEMPLATES["status_card_timer"]).read_text(encoding="utf-8"))),
+        ]
+        units.append("serveros-status-card.timer")
     if "core_lite" in mon:
         build = ctx.data_root / "build" / "node-core"
         out = ctx.state_dir / "core-lite" / "status.json"

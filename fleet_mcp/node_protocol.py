@@ -108,6 +108,12 @@ ROUTES = (
     # the output" forward: a caller that could name a path or a command would be
     # able to make a monitoring surface read the machine for it.
     "GET /v1/core/status",
+    # This machine's 资源播报 card, as its own node runtime rendered it
+    # (`fleet_mcp/node/status_card.py` writes it). Same discipline as the Core
+    # status: named, parameterless, the file chosen by the connector's own
+    # binding, the answer signed over the caller's nonce. The hub is the one
+    # sender; this only hands it the card.
+    "GET /v1/core/card",
     # What this device runs, as its last in-place update recorded it. Named and
     # parameterless for the same reason as the Core route above, and signed the
     # same way: the connector reads its own owner-fixed record and projects it.

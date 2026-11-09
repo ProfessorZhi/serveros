@@ -257,6 +257,7 @@ def main(argv: list[str] | None = None) -> int:
             lambda value: act_on_button(value, control, watcher.inbox))
         buttons.start()
     last_health = time.time()
+    rich_cache: dict = {}
     while True:
         started = time.time()
         try:
@@ -267,7 +268,20 @@ def main(argv: list[str] | None = None) -> int:
             now = datetime.now(timezone.utc)
             views = resources.sweep(service, principal, watcher.inbox, levels, thresholds,
                                     now_iso=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
-            sent = notifier.tick(views, now) if notifier else None
+            rich = None
+            if notifier is not None:
+                slot = notifier.slot(now)
+                if rich_cache.get("slot") != slot or time.time() - rich_cache.get("at", 0) > 600:
+                    # Each device's own 资源播报 card, fetched at most every ten
+                    # minutes; the hub is the one sender for all of them.
+                    try:
+                        rich_cache.update(slot=slot, at=time.time(),
+                                          cards=service.status_cards(principal))
+                    except Exception as exc:  # noqa: BLE001 - plain readings still go out
+                        print(f"status cards unreadable: {type(exc).__name__}", file=sys.stderr)
+                        rich_cache.update(slot=slot, at=time.time(), cards={})
+                rich = rich_cache.get("cards")
+            sent = notifier.tick(views, now, rich) if notifier else None
             if buttons is not None and time.time() - last_health > HEALTH_EVERY_SECONDS:
                 lark_state, last_health = feishu.health(), time.time()
             if buttons is not None and not _ready(lark_state.get("user")):

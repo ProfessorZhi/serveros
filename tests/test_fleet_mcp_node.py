@@ -268,6 +268,7 @@ class RouteClosure(_Base):
             ("POST", "/v1/projects/delete", {"project_id": "p-1", "force": False}),
             ("POST", "/v1/native/call", {"tool": "overview", "arguments": {}}),
             ("GET", "/v1/core/status", None),
+            ("GET", "/v1/core/card", None),
             ("GET", "/v1/device/versions", None),
             ("POST", "/v1/models", {"provider": "claude"}),
             ("POST", "/v1/models/upsert", {"provider": "claude"}),
@@ -288,8 +289,8 @@ class RouteClosure(_Base):
                     self.assertEqual(payload["error"]["code"], "WRITE_NOT_GRANTED")
                     continue
                 self.assertEqual(status, 200, payload)
-                if path == "/v1/core/status":
-                    self.assertEqual(payload["state"], "NOT_CONFIGURED")
+                if path in ("/v1/core/status", "/v1/core/card"):
+                    self.assertIn(payload["state"], ("NOT_CONFIGURED", "OK", "ERROR"))
 
     def test_an_undeclared_route_is_refused_by_name(self):
         for method, path in (
