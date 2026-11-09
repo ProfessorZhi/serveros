@@ -884,6 +884,10 @@ node_transport:
     # its OWN configuration, never from the request. A caller that could name
     # a path or a command could make a monitoring surface read the machine.
     - 'GET /v1/core/status'
+    # This machine's 资源播报 card, as its own node runtime rendered it. Named,
+    # parameterless, the file chosen by the connector's binding, signed over the
+    # caller's nonce. The hub is the one sender.
+    - 'GET /v1/core/card'
     # What the device runs, as its last update recorded it. Named and
     # parameterless like the Core route, and signed over the caller's nonce.
     - 'GET /v1/device/versions'
