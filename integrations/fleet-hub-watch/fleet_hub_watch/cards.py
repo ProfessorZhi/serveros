@@ -308,7 +308,10 @@ def batch_card(event: dict, *, now: datetime, runs: list[dict] | None = None,
     unread = sum(1 for r in runs if r.get("outcome") == "unknown")
     if not runs:
         failed = 1 if event.get("level") == "decide" else 0
-    if failed:
+    pending = sum(1 for r in runs if r.get("outcome") is None)
+    if pending:
+        template, verdict, tag = "blue", f"进行中 {len(runs) - pending}/{len(runs)}", ("进行中", "blue")
+    elif failed:
         template, verdict, tag = TEMPLATE[ALERT], f"{failed} 个失败", ("有失败", "red")
     elif unread:
         template, verdict, tag = TEMPLATE[WARN], f"{unread} 个没读到结果", ("待确认", "orange")

@@ -56,6 +56,11 @@ take the root from `fleet_status.owner_access`, and use the returned
 - Say **what you want and what "done" looks like**, and let the agent on the
   machine decide how. It can see the local checkout, the tests and the
   services; you cannot.
+- When the owner asked a **question**, rewrite it into a sharper prompt: the
+  goal in one or two sentences with the owner's intent intact, the facts the
+  agent cannot find itself, one line on what a useful answer contains — and
+  the method left to the agent (no plan, report path or list of don'ts). See
+  `fleet-commander-orchestration` for an example.
 - One bounded message may carry a **complete long delivery with internal
   steps**, or a **batch of independent short tasks**. What it must not do is
   dispatch one short task per message and wait for each in turn. If several

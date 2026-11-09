@@ -290,6 +290,8 @@ class Watcher:
                                                   device_ref=parts[0], runtime=parts[1],
                                                   project=row.get("project"), now=now):
                 added.append({"session_ref": ref, "run_id": row["run_id"]})
+                self._trace("watching", session_ref=ref, run_id=row["run_id"],
+                            origin="dispatched")
             self.inbox.forget_dispatch(ref, row["run_id"])
         return {"added": added, "unreachable": unreachable, "unreadable": unreadable}
 
@@ -317,6 +319,14 @@ class Watcher:
             "evidence": watch["session_ref"],
         }
 
+    def _trace(self, step: str, **fields: Any) -> None:
+        tracer = getattr(self.inbox, "trace", None)
+        if tracer is not None:
+            try:
+                tracer("monitor", step, **fields)
+            except Exception:  # noqa: BLE001 - the trace never stops the watch
+                pass
+
     def _dispatched(self, watch: dict[str, Any]) -> bool:
         check = getattr(self.inbox, "was_dispatched", None)
         return bool(check and check(watch["session_ref"], watch["run_id"]))
@@ -328,10 +338,14 @@ class Watcher:
         except Exception:  # noqa: BLE001 - an unreadable session is not an answer
             return False
         if last_assistant_text(read.get("transcript")) is not None:
+            self._trace("reply read from the session", session_ref=watch["session_ref"],
+                        run_id=watch["run_id"])
             return True
         # Keys only, never text: enough to see where a provider keeps its replies.
-        print(f"transcript without a readable reply: {shape(read.get('transcript'))}",
-              file=sys.stderr)
+        found = shape(read.get("transcript"))
+        print(f"transcript without a readable reply: {found}", file=sys.stderr)
+        self._trace("no reply in the session", session_ref=watch["session_ref"],
+                    run_id=watch["run_id"], shape=found)
         return False
 
     def observe(self) -> dict[str, Any]:
@@ -341,6 +355,8 @@ class Watcher:
             observation = self._observe(watch)
             status, reason = observation["status"], observation.get("reason")
             age = now - watch["discovered_at"]
+            self._trace("observed", session_ref=watch["session_ref"], run_id=watch["run_id"],
+                        status=status, reason=reason, age_s=int(age))
             event = None
             if status == STATUS_TERMINAL_VERIFIED:
                 event = self._event(watch, "run.completed", "notify",
@@ -355,6 +371,8 @@ class Watcher:
                     and not self._dispatched(watch):
                 # A resident session's own turn, unreadable: not news. Owner,
                 # 2026-11-09: these produced a 无法确认 card every few minutes.
+                self._trace("dropped: a session's own turn, unreadable",
+                            session_ref=watch["session_ref"], run_id=watch["run_id"])
                 self.store.drop(watch, now)
                 continue
             elif (status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY"

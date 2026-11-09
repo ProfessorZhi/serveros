@@ -17,7 +17,10 @@ devices never write it over a network share; they reach it through Fleet.
 from __future__ import annotations
 
 import hashlib
+import time
+import json
 import os
+import re
 import sqlite3
 import stat
 from contextlib import contextmanager
@@ -45,6 +48,9 @@ MAX_BATCH = 100
 LEVELS = frozenset({"auto", "notify", "decide"})
 
 MAX_LIMIT = 200
+#: Key-shaped strings: refused by memory, masked on cards.
+SECRETISH = re.compile(r"\b(?:sk|pk|ghp|gho|xox[abps]|AKIA)[-_A-Za-z0-9]{12,}|"
+                       r"\b[A-Za-z0-9+/_=-]{40,}\b|-----BEGIN [A-Z ]*PRIVATE KEY")
 MAX_SUMMARY = 500
 MAX_EVIDENCE = 300
 _SCAN_BATCH = 500
@@ -85,6 +91,32 @@ CREATE TABLE IF NOT EXISTS batch_members (
     PRIMARY KEY (batch_id, session_ref, run_id)
 );
 CREATE INDEX IF NOT EXISTS batch_member_run ON batch_members(session_ref, run_id);
+CREATE TABLE IF NOT EXISTS memory (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    topic       TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    source      TEXT,
+    by          TEXT,
+    forgotten   TEXT
+);
+CREATE INDEX IF NOT EXISTS memory_scope ON memory(scope);
+CREATE TABLE IF NOT EXISTS trace (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    step        TEXT NOT NULL,
+    session_ref TEXT,
+    run_id      TEXT,
+    batch_id    TEXT,
+    device_ref  TEXT,
+    ref         TEXT,
+    detail      TEXT
+);
+CREATE INDEX IF NOT EXISTS trace_run ON trace(run_id);
+CREATE INDEX IF NOT EXISTS trace_batch ON trace(batch_id);
+CREATE INDEX IF NOT EXISTS trace_at ON trace(at);
 CREATE TABLE IF NOT EXISTS run_labels (
     session_ref TEXT NOT NULL,
     run_id      TEXT NOT NULL,
@@ -227,6 +259,11 @@ class EventInbox:
                 f"INSERT INTO events ({','.join(names)}) VALUES ({','.join('?' * len(names))})",
                 [row[n] for n in names])
             seq = cursor.lastrowid
+            if row["run_id"] or kind.startswith("batch."):
+                self._trace(conn, "inbox", f"event {kind}", session_ref=row["session_ref"],
+                            run_id=row["run_id"], device_ref=row["device_ref"],
+                            batch_id=(row["work_ref"] or "").removeprefix("batch:") or None,
+                            seq=seq)
             if kind in TERMINAL and row["session_ref"] and row["run_id"]:
                 self._settle(conn, row["session_ref"], row["run_id"], kind, seq)
             conn.execute("COMMIT")
@@ -262,6 +299,11 @@ class EventInbox:
                          "VALUES (?,?,?,?,?)", (batch_id, name, opened_by, _now(), len(members)))
             conn.executemany("INSERT INTO batch_members(batch_id, session_ref, run_id) VALUES (?,?,?)",
                              [(batch_id, a, b) for a, b in members])
+            self._trace(conn, "fleet", "batch opened", batch_id=batch_id, by=opened_by,
+                        name=name, total=len(members))
+            for ref, rid in members:
+                self._trace(conn, "fleet", "joined batch", batch_id=batch_id,
+                            session_ref=ref, run_id=rid)
             for ref, rid in members:
                 done = conn.execute(
                     "SELECT seq, kind FROM events WHERE session_ref=? AND run_id=? AND kind IN "
@@ -309,6 +351,142 @@ class EventInbox:
                 f"VALUES ({','.join('?' * len(names))})", [values[n] for n in names])
             conn.execute("UPDATE batches SET closed_seq=? WHERE batch_id=?",
                          (cur.lastrowid, batch_id))
+            self._trace(conn, "inbox", "batch completed", batch_id=batch_id,
+                        counts=counts)
+
+    # -- batches, for reading back ----------------------------------------------
+
+    def recent_batches(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Open batches first, then the most recently closed ones."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT b.*, (SELECT COUNT(*) FROM batch_members m WHERE m.batch_id=b.batch_id "
+                "AND m.outcome IS NOT NULL) AS settled FROM batches b "
+                "ORDER BY (b.closed_seq IS NOT NULL), b.opened_at DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def find_batch(self, text: str) -> str | None:
+        """A batch by id, or the newest whose name contains `text`."""
+        text = (text or "").strip()
+        if not text:
+            return None
+        with self._connect() as conn:
+            row = conn.execute("SELECT batch_id FROM batches WHERE batch_id=?", (text,)).fetchone()
+            if row is None:
+                row = conn.execute("SELECT batch_id FROM batches WHERE name LIKE ? "
+                                   "ORDER BY opened_at DESC LIMIT 1", (f"%{text}%",)).fetchone()
+        return row["batch_id"] if row else None
+
+    # -- memory: what the fleet has learned, kept on the hub --------------------
+
+    MEMORY_MAX = 600
+
+    def remember(self, *, scope: str, topic: str, text: str, by: str,
+                 source: str | None = None) -> dict[str, Any]:
+        """One note: a confirmed finding, a rule the owner set, how a device is
+        used. Never a value — a secret-shaped string is refused, not stored."""
+        scope = _bounded(scope, "scope", 80, required=True)
+        if not re.fullmatch(r"fleet|device:[a-z0-9-]+|project:[\w .-]+", scope):
+            raise InboxError("scope is fleet, device:<id> or project:<name>")
+        topic = _bounded(topic, "topic", 80, required=True)
+        text = _bounded(text, "text", self.MEMORY_MAX, required=True)
+        if SECRETISH.search(text) or SECRETISH.search(topic):
+            raise InboxError("this looks like it contains a key or token; memory keeps "
+                             "findings and rules, never values (the key center keeps those)")
+        with self._connect() as conn:
+            cur = conn.execute("INSERT INTO memory(at, scope, topic, text, source, by) "
+                               "VALUES (?,?,?,?,?,?)",
+                               (_now(), scope, topic, text, _bounded(source, "source", 200), by))
+            self._trace(conn, "fleet", "memory added", ref=f"memory:{cur.lastrowid}",
+                        scope=scope, topic=topic, by=by)
+            return {"id": cur.lastrowid, "scope": scope, "topic": topic}
+
+    def recall(self, query: str | None = None, *, scope: str | None = None,
+               limit: int = 10) -> list[dict[str, Any]]:
+        """Notes matching every word of `query` (topic or text), newest first;
+        a device's notes come with the fleet-wide ones."""
+        where, args = ["forgotten IS NULL"], []
+        if scope:
+            where.append("(scope=? OR scope='fleet')")
+            args.append(scope)
+        for word in (query or "").split()[:6]:
+            where.append("(topic LIKE ? OR text LIKE ? OR scope LIKE ?)")
+            args += [f"%{word}%"] * 3
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id, at, scope, topic, text, source, by FROM memory WHERE "
+                                + " AND ".join(where) + " ORDER BY id DESC LIMIT ?",
+                                (*args, int(limit))).fetchall()
+        return [dict(r) for r in rows]
+
+    def forget(self, memory_id: int, *, by: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("UPDATE memory SET forgotten=? WHERE id=? AND forgotten IS NULL",
+                               (_now(), int(memory_id)))
+            if cur.rowcount:
+                self._trace(conn, "fleet", "memory forgotten", ref=f"memory:{memory_id}", by=by)
+            return bool(cur.rowcount)
+
+    # -- the trace: one timeline per task, kept on the hub ----------------------
+
+    TRACE_DAYS = 14
+    TRACE_SOURCES = ("fleet", "inbox", "monitor", "notify", "device")
+
+    def _trace(self, conn: sqlite3.Connection, source: str, step: str, *,
+               session_ref: str | None = None, run_id: str | None = None,
+               batch_id: str | None = None, device_ref: str | None = None,
+               ref: str | None = None, **detail: Any) -> None:
+        """One step. States, codes, ids and counts only — never a reply, an
+        instruction or a value: the trace is read by people and by agents."""
+        if device_ref is None and session_ref and "|" in session_ref:
+            device_ref = session_ref.split("|", 1)[0]
+        text = json.dumps({k: v for k, v in detail.items() if v is not None},
+                          ensure_ascii=False, default=str)[:1000] if detail else None
+        conn.execute("INSERT INTO trace(at, source, step, session_ref, run_id, batch_id, "
+                     "device_ref, ref, detail) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (_now(), source, step[:80], session_ref, run_id, batch_id, device_ref,
+                      (ref or "")[:300] or None, text))
+
+    def trace(self, source: str, step: str, **fields: Any) -> None:
+        """Append one step from outside the inbox (Fleet, monitor, notifier)."""
+        if source not in self.TRACE_SOURCES:
+            raise InboxError(f"unknown trace source {source!r}")
+        with self._connect() as conn:
+            self._trace(conn, source, step, **fields)
+            if int(time.time()) % 97 == 0:
+                conn.execute(f"DELETE FROM trace WHERE at < "
+                             f"strftime('%Y-%m-%dT%H:%M:%SZ','now','-{self.TRACE_DAYS} days')")
+
+    def read_trace(self, *, run_id: str | None = None, session_ref: str | None = None,
+                   batch_id: str | None = None, minutes: int | None = None,
+                   limit: int = 300) -> list[dict[str, Any]]:
+        """The steps for a run, a session, a batch (and its members), or the last
+        `minutes` across the fleet — oldest first."""
+        where, args = [], []
+        if batch_id:
+            with self._connect() as conn:
+                runs = [r["run_id"] for r in conn.execute(
+                    "SELECT run_id FROM batch_members WHERE batch_id=?", (batch_id,))]
+            where.append("(batch_id=?" + "".join(" OR run_id=?" for _ in runs)
+                         + " OR ref LIKE ?)")
+            args += [batch_id, *runs, f"%{batch_id}%"]
+        if run_id:
+            where.append("(run_id=? OR ref LIKE ?)")
+            args += [run_id, f"%{run_id}%"]
+        if session_ref:
+            where.append("(session_ref=? OR ref LIKE ?)")
+            args += [session_ref, f"%{session_ref}%"]
+        if minutes:
+            where.append("at >= strftime('%Y-%m-%dT%H:%M:%SZ','now',?)")
+            args.append(f"-{int(minutes)} minutes")
+        sql = "SELECT * FROM trace" + (" WHERE " + " AND ".join(where) if where else "")
+        sql += " ORDER BY seq DESC LIMIT ?"
+        args.append(int(limit))
+        with self._connect() as conn:
+            rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
+        for row in rows:
+            row["detail"] = json.loads(row["detail"]) if row.get("detail") else {}
+            row.pop("seq", None)
+        return list(reversed(rows))
 
     # -- runs to watch ----------------------------------------------------------
 

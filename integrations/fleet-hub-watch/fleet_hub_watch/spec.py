@@ -32,6 +32,9 @@ DEFAULT_SPEC: dict[str, Any] = {
         # episodes are counted into the 日报 and never interrupt anyone.
         "alert_debounce_seconds": 300,
         "daily_report_at": "18:00",
+        # Owner, 2026-11-09: resource cards are asked for (「资源 东京」), not
+        # pushed every half hour. Alerts, batch completions and the 日报 still push.
+        "resource_push": False,
     },
     "resource_card": {
         "title": "Fleet 资源播报",

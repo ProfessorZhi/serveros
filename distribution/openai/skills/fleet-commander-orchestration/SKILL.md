@@ -69,7 +69,9 @@ executable edge: mark it blocked and say what is missing. A Skill is not a sched
 
 ## 3. Choose the dispatch shape
 
-Use one of two shapes, deliberately:
+Use one of two shapes, deliberately. (A question the owner asked is neither:
+it is one rewritten message — see "Rewrite the owner's ask into a better
+prompt" below.)
 
 1. **Several complete long tasks, in parallel.** Each task is independently
    accept-or-refuse-able: it has its own deliverable, its own tests/evidence and
@@ -110,11 +112,57 @@ an unknown outcome. After the ACK:
    and UNCONFIRMED are reported as exactly that, never as "dispatched";
 3. return promptly to coordination.
 
-**Every dispatch goes into a batch — even a single task.** Right after the
-last ACK, call `fleet_batch` action `open` with a name the owner will recognise
-and each run's `session_ref` and `run_id` exactly as returned. Then **end your
-turn**: tell the owner in one or two lines what was dispatched and that the
-result will arrive as a Feishu 批次完成 card. Do not wait for it.
+**Rewrite the owner's ask into a better prompt — sharper, not longer.** Owner,
+2026-11-09: told "查一下 xx 问题" directly, the local agent answered in four
+minutes; the same question relayed by the commander became a long
+instruction — a four-layer plan, a report path, an execution order, a list of
+don'ts — and the device agent followed the plan instead of answering. Copying
+the owner's words verbatim is not the fix either: your job is to OPTIMISE the
+prompt, using what you know and the device agent does not.
+
+A good rewrite:
+
+- states the **question or goal in one or two sentences**, with the owner's
+  intent intact — what they actually want to know or have done;
+- **resolves what is ambiguous** from the conversation: the system, the date
+  or time range, the model or endpoint, an id the owner mentioned, what was
+  already ruled out — only the facts the agent could not find itself;
+- says **what a useful answer contains** in one line (e.g. "结论：是上游没有该字段，还是我们转换丢了；附关键证据").
+  That is the whole spec;
+- leaves the **method** to the agent: no step-by-step plan, no report path,
+  no output template, no list of don'ts — it has its own skills, its own
+  read-only production access and its own safety rules;
+- is **at most ~6 lines**, in the owner's language.
+
+Bad (what happened): "核对四层数据：1. 腾讯云原始响应… 2. LiteLLM 转换前… 3. …
+4. DailyUserSpend… 同时抽取同一渠道对照… 报告写到 C:\…\report.md … 不要修改…"
+
+Good: "北京生产 LiteLLM：11-06 起腾讯云 DeepSeek 的 Responses 请求缓存命中统计
+偏低。查清是腾讯云 /v1/responses 本身不返回 input_tokens_details.cached_tokens，
+还是 LiteLLM 转换时丢了。对比同模型走 /v1/chat/completions 的情况。
+先给结论，再给关键证据（几条 SpendLogs 或原始 usage）。"
+
+**Use the fleet's memory.** Before writing the prompt, `fleet_memory` search
+with two or three words of the topic (and `scope: device:<id>` for the target):
+put what is already established into the facts line, so the agent does not
+re-discover it. When a result confirms something worth keeping — a root cause,
+how a system behaves, a rule the owner just stated — `fleet_memory` add one
+short note (topic, at most a few sentences, `source` = the batch or run id).
+Never a key or token value; never a guess.
+
+Send it to the session on that device that already does this kind of work
+(`fleet_list_sessions`: an idle one in the right project) rather than a fresh
+one, so the agent starts with its context and skills warm. A follow-up is
+rewritten the same way and goes to the same session — never a correction of
+a plan you wrote.
+
+**Then dispatch and leave — every dispatch goes into a batch, even a single
+task.** A chat client times out on a long wait, so the result comes back as a
+card, not in this turn. Right after the last ACK, call `fleet_batch` action
+`open` with a name the owner will recognise and each run's `session_ref` and
+`run_id` exactly as returned. Then **end your turn**: tell the owner in one or
+two lines what was dispatched and that the result will arrive as a Feishu
+批次完成 card. Do not wait for it.
 
 - The hub watches every run Fleet starts, including ones that end in seconds;
   when the batch's last run has an outcome it sends ONE card listing each task,
@@ -125,8 +173,12 @@ result will arrive as a Feishu 批次完成 card. Do not wait for it.
 - When the owner comes back and asks, read `fleet_batch` (status) or
   `fleet_inbox` (kinds `[batch.completed]`) once, then accept or refuse each run
   on its evidence.
-- A new investigation gets a new session; reuse a session only to continue the
-  same thread of work (a long transcript makes every later turn slower).
+- When something looks wrong — no card came, a result says 没读到结果, a task
+  seems stuck — call `fleet_trace` with the batch or run id once and report its
+  `diagnosis` (where it stopped, what to check next). Do not re-dispatch or
+  guess before reading it.
+- Keep one thread of work in one session; a new, unrelated piece of work goes
+  to the session that fits it.
 - Write the instruction so the device agent answers with its conclusion first,
   in a few lines — that conclusion is what lands on the card.
 
