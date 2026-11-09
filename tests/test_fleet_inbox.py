@@ -254,3 +254,17 @@ class TheToolReadsTheHubInbox(unittest.TestCase):
         answer = self.call(self.harness.principal("fleet:read"), limit=500)
         self.assertTrue(answer.get("isError"))
         self.assertIn("BAD_REQUEST", str(answer))
+
+
+class ASentRunIsHandedToTheMonitor(unittest.TestCase):
+    def test_send_notes_the_run_so_a_quick_one_is_not_missed(self):
+        from fleet_mcp.identity import SessionKey
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp), allow_tokyo_send=True, send_allow=(f"{TOKYO}|claude|abc",))
+            inbox = EventInbox(Path(tmp) / "inbox.sqlite")
+            harness.service.inbox = inbox
+            result = harness.service.send_to_session(
+                harness.principal(), SessionKey.compose(TOKYO, "claude", "abc"), message="date")
+            self.assertEqual(inbox.runs_to_watch(),
+                             [{"session_ref": f"{TOKYO}|claude|abc", "run_id": result["run_id"],
+                               "project": None}])

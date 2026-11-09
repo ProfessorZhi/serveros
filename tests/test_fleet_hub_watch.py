@@ -335,3 +335,35 @@ class TheEntryPoint(unittest.TestCase):
         self.assertIn("last_tick_at", beat)
         self.assertTrue((self.dir / "inbox.sqlite").is_file())
         self.assertTrue((self.dir / "watch.sqlite").is_file())
+
+
+class DispatchedRunsAreWatched(WatcherTest):
+    """Owner, 2026-11-09: a batch of quick tasks never reported, because a run
+    that ended between two discovery ticks was never seen running."""
+
+    def test_a_run_that_ended_before_discovery_still_gets_its_outcome(self):
+        ref = f"{TOKYO}|claude|s-quick"
+        self.tokyo.answers["run-q"] = {"status": "completed", "runId": "run-q",
+                                       "lastAssistantMessage": {"content": "2026-11-09"}}
+        self.tokyo.finish("s-quick")                     # never seen running
+        self.inbox.note_dispatch(ref, "run-q", "serveros")
+        self.watcher.tick()
+        self.settle()
+        (event,) = [e for e in self.events() if e["kind"].startswith("run.")]
+        self.assertEqual((event["kind"], event["run_id"], event["project"]),
+                         ("run.completed", "run-q", "serveros"))
+        self.assertEqual(self.inbox.runs_to_watch(), [], "handed over once")
+
+    def test_a_batch_of_quick_runs_closes_and_reports(self):
+        refs = [f"{TOKYO}|claude|s-{i}" for i in range(2)]
+        for i, ref in enumerate(refs):
+            self.tokyo.answers[f"r{i}"] = {"status": "completed", "runId": f"r{i}",
+                                           "lastAssistantMessage": "ok"}
+        # opened by the commander after dispatching, with runs Fleet did not note
+        self.inbox.open_batch("quick x2", [{"session_ref": r, "run_id": f"r{i}"}
+                                           for i, r in enumerate(refs)], opened_by="commander")
+        self.watcher.tick()
+        self.settle()
+        closed = [e for e in self.events() if e["kind"] == "batch.completed"]
+        self.assertEqual(len(closed), 1)
+        self.assertIn("quick x2", closed[0]["summary"])

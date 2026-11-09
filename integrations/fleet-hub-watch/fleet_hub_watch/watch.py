@@ -209,6 +209,17 @@ class Watcher:
                                   runtime=row.get("provider"), project=row.get("project_id"),
                                   now=now):
                     added.append({"session_ref": key.ref, "run_id": run_id})
+        # Runs Fleet dispatched (and open batch members): watched even when they
+        # ended before this tick could see them running.
+        to_watch = getattr(self.inbox, "runs_to_watch", None)
+        for row in to_watch() if to_watch else []:
+            ref = row["session_ref"]
+            parts = ref.split("|")
+            if len(parts) >= 3 and self.store.add(session_ref=ref, run_id=row["run_id"],
+                                                  device_ref=parts[0], runtime=parts[1],
+                                                  project=row.get("project"), now=now):
+                added.append({"session_ref": ref, "run_id": row["run_id"]})
+            self.inbox.forget_dispatch(ref, row["run_id"])
         return {"added": added, "unreachable": unreachable, "unreadable": unreadable}
 
     # -- observation ---------------------------------------------------------

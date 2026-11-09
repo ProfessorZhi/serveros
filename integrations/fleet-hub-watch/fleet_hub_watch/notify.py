@@ -52,6 +52,47 @@ from . import spec as broadcast_spec
 from .levels import ALERT, OK, RANK, WARN, private_file
 
 SUBSCRIBER = "hub-notify"
+
+#: What a 批次完成 card masks in a reply excerpt: things shaped like keys.
+_SECRETISH = re.compile(r"\b(?:sk|pk|ghp|gho|xox[abps]|AKIA)[-_A-Za-z0-9]{12,}|\b[A-Za-z0-9+/_=-]{32,}\b")
+_OUTPUT_FIELDS = ("lastAssistantMessage", "last_assistant_message", "output", "result")
+
+
+def _as_text(value: Any) -> str | None:
+    """A reply as providers carry it: a string, {content|text}, or a list of blocks."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return _as_text(value.get("content") if value.get("content") is not None else value.get("text"))
+    if isinstance(value, list):
+        parts = [t for t in (_as_text(v) for v in value) if t]
+        return " ".join(parts) or None
+    return None
+
+
+def clip_excerpt(text: Any, chars: int) -> str | None:
+    """One line, key-shaped strings masked, at most `chars` characters."""
+    text = _as_text(text)
+    if not isinstance(text, str) or chars <= 0:
+        return None
+    flat = " ".join(text.split())
+    flat = _SECRETISH.sub("‹已遮蔽›", flat)
+    if not flat:
+        return None
+    return flat if len(flat) <= chars else flat[:chars - 1] + "…"
+
+
+def run_excerpt(service: Any, principal: Any, chars: int) -> Callable[[str, str], str | None] | None:
+    """(session_ref, run_id) -> the start of that run's final reply, read through
+    Fleet as the monitor's own read-only principal. None when `chars` is 0."""
+    if chars <= 0:
+        return None
+    from fleet_mcp.identity import SessionKey
+
+    def read(session_ref: str, run_id: str) -> str | None:
+        run = service.get_run(principal, SessionKey.parse(session_ref), run_id)
+        return clip_excerpt(next((run[f] for f in _OUTPUT_FIELDS if run.get(f)), None), chars)
+    return read
 PATCH_WINDOW = timedelta(days=13)          # Feishu allows 14; leave a day of slack
 MAX_SENDS_PER_TICK = 20
 SPACING_SECONDS = 0.25                      # under 5 QPS per recipient
@@ -180,7 +221,8 @@ class Notifier:
                  device_names: dict[str, str] | None = None,
                  sleep: Callable[[float], None] = time.sleep,
                  spec: dict | None = None, control: Any = None,
-                 alert_transport: Transport | None = None) -> None:
+                 alert_transport: Transport | None = None,
+                 excerpt: Callable[[str, str], str | None] | None = None) -> None:
         self.spec = spec or broadcast_spec.load(None)
         #: `fleet_mcp.monitor_control.MonitorControl`, or None: mutes and pauses
         #: that Fleet queued. A pause or a mute stops messages, never counting.
@@ -192,6 +234,9 @@ class Notifier:
         #: alerts to a group, the 日报 and completions to the owner).
         self.alert_transport = alert_transport
         self.device_names = device_names or {}
+        #: (session_ref, run_id) -> the start of the run's final reply, or None.
+        #: Used for the batch card only; the inbox itself never holds reply text.
+        self.excerpt = excerpt
         self.sleep = sleep
         self._sent_this_tick = 0
         with self._connect() as conn:
@@ -380,6 +425,23 @@ class Notifier:
             self.inbox.ack(SUBSCRIBER, handled_to)
         return len(page["events"])
 
+    def _batch_runs(self, event: dict) -> list[dict]:
+        batch_id = str(event.get("work_ref") or "").removeprefix("batch:")
+        try:
+            runs = self.inbox.batch(batch_id)["runs"]
+        except Exception:  # noqa: BLE001 - the card still goes out with the counts
+            return []
+        out = []
+        for run in runs[:20]:                       # a card stays well under 30 KB
+            text = None
+            if self.excerpt is not None:
+                try:
+                    text = self.excerpt(run["session_ref"], run["run_id"])
+                except Exception:  # noqa: BLE001 - one unreadable run is not the card's end
+                    text = None
+            out.append({**run, "excerpt": text})
+        return out
+
     def _note(self, event: dict, body: dict) -> None:
         """Count an event into the day it happened (CN date) for the 日报."""
         occurred = _parse(event.get("occurred_at") or _iso(datetime.now(timezone.utc)))
@@ -394,7 +456,9 @@ class Notifier:
         kind = event["kind"]
         name = self._name(event.get("device_ref"))
         if kind == "batch.completed":
-            self._send(f"batch:{event.get('work_ref')}", cards.batch_card(event, now=now), now)
+            self._send(f"batch:{event.get('work_ref')}",
+                       cards.batch_card(event, now=now, runs=self._batch_runs(event),
+                                        device_names=self.device_names), now)
             return
         if kind == "tuning.changed":
             self._send(f"tune:{event.get('event_id') or event.get('seq')}",
