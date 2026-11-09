@@ -61,10 +61,18 @@ def timings(steps: list[dict[str, Any]]) -> list[str]:
 
 
 def diagnose(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    """The stage it stopped at, and — per task — where the time went. Several
+    tasks in one window are timed separately (owner, 2026-11-09: mixing them
+    gave negative durations)."""
     verdict = _diagnose(steps)
-    took = timings(steps)
-    if took:
-        verdict["timings"] = took
+    runs = sorted({s["run_id"] for s in steps if s.get("run_id")})
+    if len(runs) <= 1:
+        took = timings(steps)
+        if took:
+            verdict["timings"] = took
+    else:
+        per = {run[:8]: timings([s for s in steps if s.get("run_id") == run]) for run in runs}
+        verdict["timings_by_run"] = {k: v for k, v in per.items() if v}
     return verdict
 
 

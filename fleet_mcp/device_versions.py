@@ -70,7 +70,35 @@ def project(document: Any, device_ref: str) -> dict[str, Any]:
     return {"state": "RECORDED", "versions": versions}
 
 
+SECRET_NAMES = Path("~/.local/state/serveros/secret-names.json")
+NAME_RE = __import__("re").compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
+
+
+def secret_names(path: Path | None = None) -> dict[str, Any]:
+    """What the key center delivered to THIS device, by name only — the state
+    file `serveros_secret.py sync` writes. Owner, 2026-11-09: the names were
+    only visible through the model library, which a hub or a device without
+    one cannot answer."""
+    target = (path or SECRET_NAMES).expanduser()
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"state": "NOT_SYNCED"}
+    if not isinstance(data, dict) or data.get("schema") != "serveros/secret-names.v1":
+        return {"state": "UNREADABLE"}
+    return {"state": "SYNCED",
+            "names": [n for n in data.get("names") or [] if isinstance(n, str) and NAME_RE.match(n)],
+            "synced_at": _text(data.get("synced_at")), "repo_commit": _text(data.get("repo_commit")),
+            "errors": len(data.get("errors") or [])}
+
+
 def read(path: Path, device_ref: str) -> dict[str, Any]:
+    answer = _read(path, device_ref)
+    answer["secrets"] = secret_names()
+    return answer
+
+
+def _read(path: Path, device_ref: str) -> dict[str, Any]:
     """Read and project the record at an owner-fixed `path`."""
     from .errors import FleetRefusal
     from .node.connector import _read_bounded_no_follow

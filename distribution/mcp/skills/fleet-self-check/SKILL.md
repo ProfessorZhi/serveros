@@ -37,12 +37,15 @@ Call `fleet_device_versions`. Read `distinct_serveros_commits` and each row.
 
 ## 3. Key center: are the variables there?
 
-For a device whose models you will use, `fleet_models_list` returns
-`variables`: the NAMES the key center delivered there (never values).
+The same `fleet_device_versions` answer carries, per device, `secrets`: the
+NAMES the key center delivered there (never values), `synced_at` and `errors`.
 
-- `state: SYNCED` and the names an entry's `envref` rows need are present → OK.
-- `NOT_SYNCED`, or a needed name missing → the owner adds it at their own
-  keyboard: `serveros-secret set <NAME> --device <device> --repo <serveros-secrets>`
+- `state: SYNCED`, `errors: 0`, and the names a model entry's `envref` rows
+  need are present → OK.
+- An empty list on the hub is expected: the hub is the key center's owner, not
+  a recipient.
+- `NOT_SYNCED`, errors, or a needed name missing → the owner adds it at their
+  own keyboard: `serveros-secret set <NAME> --device <device> --repo <serveros-secrets>`
   then pushes; the device picks it up within five minutes. You never see the value.
 
 ## 4. Report

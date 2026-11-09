@@ -464,6 +464,27 @@ class Notifier:
         if self._patch(current["card_key"], cards.alert_card(body, now=now, spec=self.spec), now):
             self._save_episode(episode, current["card_key"], current["generation"], "OPEN", body)
 
+    def expire_runs(self, now: datetime, *, older_than: timedelta = timedelta(hours=6)) -> int:
+        """A task alert still open after six hours is dropped from the open list,
+        silently — owner, 2026-11-09: 31 old 无法确认 episodes stayed open
+        forever and kept counting as 当前问题. Its card is left as it was."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT episode, body FROM episodes WHERE state='OPEN' "
+                                "AND episode LIKE 'run|%'").fetchall()
+        expired = 0
+        for row in rows:
+            body = json.loads(row["body"])
+            try:
+                first = _parse(body.get("first_seen") or "")
+            except ValueError:
+                first = None
+            if first is None or now - first > older_than:
+                with self._connect() as conn:
+                    conn.execute("UPDATE episodes SET state='EXPIRED' WHERE episode=?",
+                                 (row["episode"],))
+                expired += 1
+        return expired
+
     def _close(self, episode: str, now: datetime, *, text: str | None = None) -> None:
         current = self._episode(episode)
         if current is None or current["state"] != "OPEN":
@@ -754,6 +775,7 @@ class Notifier:
         consumed = self.consume(now)
         promoted = self.promote_pending(now)
         completions = self.flush_completions(now)
+        self.expire_runs(now)
         status = self.status(views, now, rich)
         daily = self.daily(now)
         return {"consumed": consumed, "alerts_opened": promoted, "completions_sent": completions,

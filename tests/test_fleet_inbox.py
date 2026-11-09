@@ -342,3 +342,20 @@ class TheMemoryToolIsSharedThroughTheHub(unittest.TestCase):
         body = found.get("structuredContent") or found
         self.assertEqual(body["notes"][0]["topic"], "LiteLLM 腾讯云 responses")
         self.assertTrue(refused.get("isError"), "adding needs fleet:send")
+
+
+class TimingsArePerTask(unittest.TestCase):
+    def test_two_runs_in_one_window_are_timed_apart(self):
+        from fleet_mcp.trace import diagnose
+        steps = [
+            {"at": "2026-11-09T08:10:00Z", "step": "card sent", "run_id": None},
+            {"at": "2026-11-09T08:20:00Z", "step": "dispatched (send)", "run_id": "aaaaaaaa1"},
+            {"at": "2026-11-09T08:20:02Z", "step": "watching", "run_id": "aaaaaaaa1"},
+            {"at": "2026-11-09T08:30:00Z", "step": "dispatched (send)", "run_id": "bbbbbbbb2"},
+            {"at": "2026-11-09T08:30:05Z", "step": "observed", "run_id": "bbbbbbbb2"},
+        ]
+        verdict = diagnose(steps)
+        self.assertNotIn("timings", verdict)
+        self.assertEqual(verdict["timings_by_run"], {"aaaaaaaa": ["监控接手 +2s"],
+                                                     "bbbbbbbb": ["第一次读到状态 +5s"]})
+        self.assertNotIn("-", " ".join(sum(verdict["timings_by_run"].values(), [])))
