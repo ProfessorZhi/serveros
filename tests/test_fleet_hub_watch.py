@@ -17,7 +17,7 @@ for extra in (ROOT, ROOT / "integrations" / "fleet-next-agent-monitor",
     if str(extra) not in sys.path:
         sys.path.insert(0, str(extra))
 
-from fleet_hub_watch.watch import BACKOFF_SECONDS, Watcher, WatchStore  # noqa: E402
+from fleet_hub_watch.watch import BACKOFF_SECONDS, UNREADABLE_GRACE_SECONDS, Watcher, WatchStore  # noqa: E402
 from fleet_mcp.errors import FleetRefusal  # noqa: E402
 from fleet_mcp.inbox import EventInbox  # noqa: E402
 from test_fleet_mcp_surface import FakeProvider, Harness, TOKYO, WINDOWS, _summary  # noqa: E402
@@ -161,7 +161,13 @@ class Classification(WatcherTest):
         self.watcher.tick()
         self.tokyo.answers["run-1"] = {"status": "completed", "runId": "run-1"}
         self.settle()
-        (event,) = self.events()
+        # Owner, 2026-11-09: read right after it started, a run had no activity
+        # record yet and was declared 无法确认 in the same minute. Not any more:
+        verdicts = lambda: [e for e in self.events() if e["kind"] != "run.stalled"]
+        self.assertEqual(verdicts(), [], "inside the grace window it is not a verdict")
+        self.clock.advance(UNREADABLE_GRACE_SECONDS)
+        self.settle()
+        (event,) = verdicts()
         self.assertEqual((event["kind"], event["level"]), ("run.unknown", "decide"))
         self.assertIn("NO_NATIVE_ACTIVITY", event["summary"])
 
@@ -358,7 +364,7 @@ class DispatchedRunsAreWatched(WatcherTest):
         refs = [f"{TOKYO}|claude|s-{i}" for i in range(2)]
         for i, ref in enumerate(refs):
             self.tokyo.answers[f"r{i}"] = {"status": "completed", "runId": f"r{i}",
-                                           "lastAssistantMessage": "ok"}
+                                           "lastAssistantMessage": {"content": "ok"}}
         # opened by the commander after dispatching, with runs Fleet did not note
         self.inbox.open_batch("quick x2", [{"session_ref": r, "run_id": f"r{i}"}
                                            for i, r in enumerate(refs)], opened_by="commander")

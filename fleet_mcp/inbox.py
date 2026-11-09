@@ -85,6 +85,13 @@ CREATE TABLE IF NOT EXISTS batch_members (
     PRIMARY KEY (batch_id, session_ref, run_id)
 );
 CREATE INDEX IF NOT EXISTS batch_member_run ON batch_members(session_ref, run_id);
+CREATE TABLE IF NOT EXISTS run_labels (
+    session_ref TEXT NOT NULL,
+    run_id      TEXT NOT NULL,
+    label       TEXT NOT NULL,
+    at          TEXT NOT NULL,
+    PRIMARY KEY (session_ref, run_id)
+);
 CREATE TABLE IF NOT EXISTS dispatched (
     session_ref TEXT NOT NULL,
     run_id      TEXT NOT NULL,
@@ -305,7 +312,8 @@ class EventInbox:
 
     # -- runs to watch ----------------------------------------------------------
 
-    def note_dispatch(self, session_ref: str, run_id: str, project: str | None = None) -> None:
+    def note_dispatch(self, session_ref: str, run_id: str, project: str | None = None,
+                      label: str | None = None) -> None:
         """Fleet started this run: the monitor watches it from the next tick.
 
         Without this the monitor only found runs still running when it looked
@@ -317,6 +325,29 @@ class EventInbox:
         with self._connect() as conn:
             conn.execute("INSERT OR IGNORE INTO dispatched(session_ref, run_id, project, at) "
                          "VALUES (?,?,?,?)", (session_ref, run_id, project, _now()))
+            if label:
+                # What the owner reads on a card instead of a run id: the first
+                # line of the instruction, bounded. Kept a week.
+                conn.execute("INSERT OR REPLACE INTO run_labels(session_ref, run_id, label, at) "
+                             "VALUES (?,?,?,?)", (session_ref, run_id, label[:60], _now()))
+                conn.execute("DELETE FROM run_labels WHERE at < datetime('now', '-7 days')")
+
+    def label_of(self, session_ref: str | None, run_id: str | None) -> str | None:
+        if not session_ref or not run_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute("SELECT label FROM run_labels WHERE session_ref=? AND run_id=?",
+                               (session_ref, run_id)).fetchone()
+        return row["label"] if row else None
+
+    def batch_of(self, session_ref: str | None, run_id: str | None) -> str | None:
+        """The batch a run belongs to, if any: its outcome is told on that card."""
+        if not session_ref or not run_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute("SELECT batch_id FROM batch_members WHERE session_ref=? AND run_id=? "
+                               "LIMIT 1", (session_ref, run_id)).fetchone()
+        return row["batch_id"] if row else None
 
     def runs_to_watch(self, limit: int = 500) -> list[dict[str, Any]]:
         """Dispatched runs not yet handed to the monitor, and every member of an

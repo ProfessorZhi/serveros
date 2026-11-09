@@ -2288,7 +2288,7 @@ class FleetService:
             "raw": payload,
         }
         self._record_delivery_ack(claim, record, expect_execution=True)
-        self._note_dispatch(key, run_id, None)
+        self._note_dispatch(key, run_id, None, message)
         state, hint = self._delivery_state(key, provider, payload, run_id)
         self.audit.record(
             "fleet.send",
@@ -2872,7 +2872,7 @@ class FleetService:
             adapter, key, permission_mode)
         readiness["run_started"] = bool(message and message.strip())
         if readiness["run_started"]:
-            self._note_dispatch(key, run_id, project)
+            self._note_dispatch(key, run_id, project, message)
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
@@ -2928,13 +2928,20 @@ class FleetService:
                     "sending to it is authorized here, which is a separate grant.",
         }
 
-    def _note_dispatch(self, key: SessionKey, run_id: Any, project: Any) -> None:
+    def _note_dispatch(self, key: SessionKey, run_id: Any, project: Any,
+                       message: Any = None) -> None:
         """Hand a started run to the monitor, so its outcome is recorded even when
-        it ends before the next discovery tick. Never fails the dispatch."""
+        it ends before the next discovery tick, with a short label (the first
+        line of the instruction) for the owner's cards. Never fails the dispatch."""
         if self.inbox is None or not isinstance(run_id, str) or not run_id:
             return
+        label = None
+        if isinstance(message, str):
+            first = next((ln.strip() for ln in message.splitlines() if ln.strip()), "")
+            label = (first[:39] + "…") if len(first) > 40 else (first or None)
         try:
-            self.inbox.note_dispatch(key.ref, run_id, project if isinstance(project, str) else None)
+            self.inbox.note_dispatch(key.ref, run_id, project if isinstance(project, str) else None,
+                                     label)
         except Exception:  # noqa: BLE001 - the run started; tracking is best effort
             pass
 

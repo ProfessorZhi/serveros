@@ -40,6 +40,10 @@ from fleet_next_agent_monitor.sources import Grant, LegacyFactsSource
 from .facts import FleetFactsClient
 
 BACKOFF_SECONDS = (10, 30, 120, 600)
+#: A run read right after it started can say `completed` with no activity
+#: record yet (serveros#531). Inside this window that is "not readable yet",
+#: not a verdict; only after it does the run become 无法确认.
+UNREADABLE_GRACE_SECONDS = 15 * 60
 DEFAULT_MAX_AGE = 24 * 3600
 DEFAULT_STALL_AFTER = 2 * 3600
 
@@ -259,6 +263,9 @@ class Watcher:
                                     "completed with readable output")
             elif status == STATUS_FAILED:
                 event = self._event(watch, "run.failed", "notify", f"failed ({reason})")
+            elif (status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY"
+                  and age < UNREADABLE_GRACE_SECONDS):
+                event = None                # not readable yet: look again later
             elif status == STATUS_DENIED or (status == STATUS_UNKNOWN
                                              and observation.get("retryable") is False):
                 # Not a success and not a failure: the outcome could not be

@@ -376,7 +376,8 @@ class AlertEpisodes(NotifierTest):
         (op, _mid, card, _key) = self.transport.ops[0]
         self.assertEqual(card["header"]["template"], "red")
         self.assertIn("任务失败 · serveros", card["header"]["title"]["content"])
-        self.assertIn("执行失败（RUN_FAILED）", card["body"]["elements"][0]["content"])
+        self.assertIn("执行出错，没有完成", card["body"]["elements"][0]["content"])
+        self.assertNotIn("RUN_FAILED", card["body"]["elements"][0]["content"], "codes stay in 技术详情")
 
     def test_a_stalled_run_that_completes_is_closed_and_counted(self):
         self.run_event("run.stalled")
@@ -467,19 +468,20 @@ class BatchesReportOnce(NotifierTest):
         self.run_event("run.completed", run_id="run-2")
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=11))
         (header,) = self.transport.headers()
-        self.assertIn("批次完成 · 回归 x3", header[3])
+        self.assertEqual("回归 x3 · 全部完成", header[3])
         self.assertEqual(header[2], "green")
 
-    def test_a_failed_member_alerts_at_once_and_the_batch_card_is_red(self):
+    def test_a_failed_member_is_a_line_on_the_red_batch_card_not_a_second_message(self):
         runs = [{"session_ref": f"{TOKYO}|claude|s-1", "run_id": f"run-{i}"} for i in range(2)]
         self.inbox.open_batch("部署 x2", runs, opened_by="commander")
         self.run_event("run.failed", run_id="run-0")
         self.notifier.tick([], THURSDAY_10)
-        self.assertEqual(len(self.transport.ops), 1, "the failure is not held for the batch")
+        self.assertEqual(self.transport.ops, [], "folded into the batch card")
         self.run_event("run.completed", run_id="run-1")
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=1))
-        self.assertIn("批次完成 · 部署 x2", self.transport.headers()[-1][3])
-        self.assertEqual(self.transport.headers()[-1][2], "red")
+        (header,) = self.transport.headers()
+        self.assertEqual(header[3], "部署 x2 · 1 个失败")
+        self.assertEqual(header[2], "red")
 
 
 class TheBatchCardCarriesTheResults(NotifierTest):
@@ -498,9 +500,11 @@ class TheBatchCardCarriesTheResults(NotifierTest):
         self.notifier.tick([], THURSDAY_10)
         (op, _mid, card, _) = self.transport.ops[-1]
         body = json.dumps(card, ensure_ascii=False)
-        self.assertIn("批次完成 · 东京排查", card["header"]["title"]["content"])
+        self.assertEqual("东京排查 · 全部完成", card["header"]["title"]["content"])
         self.assertIn("Swap 99% used", body)
-        self.assertIn("**1. Tokyo** · ✅ 完成", body)
+        self.assertIn("**1. 任务 1**　✅", body)
+        self.assertIn("Tokyo", body)
+        self.assertNotIn("run-0", body, "no run ids on the face")
         self.assertNotIn("sk-abcdefghijklmnop", body)
         self.assertIn("‹已遮蔽›", body)
 
@@ -512,7 +516,7 @@ class TheBatchCardCarriesTheResults(NotifierTest):
         self.inbox.open_batch("one", runs, opened_by="commander")
         self.run_event("run.completed", run_id="run-0")
         self.notifier.tick([], THURSDAY_10)
-        self.assertIn("批次完成 · one", self.transport.headers()[-1][3])
+        self.assertEqual("one · 全部完成", self.transport.headers()[-1][3])
 
     def test_excerpts_are_one_line_and_bounded(self):
         from fleet_hub_watch.notify import clip_excerpt
