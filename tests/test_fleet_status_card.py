@@ -141,3 +141,11 @@ class TheHubIsTheOneSender(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AccountsAreNamed(unittest.TestCase):
+    def test_uid_becomes_the_account_name_where_the_device_knows_it(self):
+        card = {"body": {"elements": [{"content": "uid:1007 · 账户内存占用；uid:4242 · 其它"}]}}
+        out = status_card.name_accounts(card, lookup=lambda uid: {1007: "fjd"}.get(uid))
+        self.assertEqual(out["body"]["elements"][0]["content"],
+                         "fjd（uid 1007） · 账户内存占用；uid:4242 · 其它")

@@ -489,6 +489,12 @@ class BatchesReportOnce(NotifierTest):
 class AResidentSessionsOwnTurnsAreNotTasks(NotifierTest):
     """Owner, 2026-11-09: every turn of a long-running session was carded."""
 
+    def test_an_unreadable_or_failed_turn_nobody_dispatched_is_not_carded(self):
+        self.run_event("run.unknown", run_id="turn-2", dispatched=False)
+        self.run_event("run.failed", run_id="turn-3", dispatched=False)
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=10))
+        self.assertEqual(self.transport.ops, [])
+
     def test_a_turn_nobody_dispatched_is_counted_not_carded(self):
         self.run_event("run.completed", run_id="turn-1", dispatched=False)
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=10))

@@ -394,3 +394,24 @@ class DispatchedRunsAreWatched(WatcherTest):
         closed = [e for e in self.events() if e["kind"] == "batch.completed"]
         self.assertEqual(len(closed), 1)
         self.assertIn("quick x2", closed[0]["summary"])
+
+
+class TheTranscriptShapesCloudCLIAnswersWith(unittest.TestCase):
+    """Owner, 2026-11-09: a 44-minute task read as 没读到结果 — session_read
+    answers {"content": [...]}, a key the reader did not look under."""
+
+    def test_content_list_of_claude_code_entries(self):
+        from fleet_hub_watch.watch import last_assistant_text
+        read = {"content": [
+            {"type": "user", "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "message": {"role": "assistant",
+                                              "content": [{"type": "text", "text": "结论：通过"}]}},
+        ], "cursor": None, "mode": "latest"}
+        self.assertEqual(last_assistant_text(read), "结论：通过")
+
+    def test_an_mcp_text_block_carrying_json(self):
+        import json as _json
+        from fleet_hub_watch.watch import last_assistant_text
+        inner = {"messages": [{"role": "assistant", "content": "ok"}]}
+        read = {"content": [{"type": "text", "text": _json.dumps(inner)}]}
+        self.assertEqual(last_assistant_text(read), "ok")

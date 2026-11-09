@@ -605,6 +605,10 @@ class Notifier:
         if in_batch and kind != "run.stalled":
             # Its outcome is a line on the batch card; one message, not two.
             return
+        if not dispatched and kind != "run.stalled":
+            # A resident session's own turn: nobody dispatched it, so nobody is
+            # waiting for a card about it. The 日报 counts it.
+            return
         self._open({"episode": run_episode, "key": f"run:{event.get('run_id')}", "kind": kind,
                     "device_ref": event.get("device_ref"),
                     "subject": f"{what} · {label}",
