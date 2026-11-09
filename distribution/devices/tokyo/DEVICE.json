@@ -75,7 +75,7 @@
         },
         "writer": {
           "path": "fleet_mcp/node/status_card.py",
-          "digest": "sha256:41b4783b8265fe0f22dad1c4b46fedac87e8c980c9337fd2ce077017358b0d0a"
+          "digest": "sha256:d1610ced3f5afb2e49c9de5b6d0fe6ada95a020e6f3c6def96f9e390fa621614"
         }
       },
       "core_lite": {

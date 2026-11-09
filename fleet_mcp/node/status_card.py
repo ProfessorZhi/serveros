@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -78,7 +79,28 @@ def build(serverosctl: str, device_ref: str, *, run=subprocess.run,
         return {**base, "state": "ERROR", "reason": "the answer is not a CardKit 2.0 card"}
     if len(json.dumps(card, ensure_ascii=False).encode("utf-8")) > MAX_CARD_BYTES:
         return {**base, "state": "ERROR", "reason": "the card is larger than Feishu accepts"}
-    return {**base, "state": "OK", "card": card}
+    return {**base, "state": "OK", "card": name_accounts(card)}
+
+
+_UID = re.compile(r"uid:(\d+)")
+
+
+def name_accounts(card: dict, lookup=None) -> dict:
+    """`uid:1007` -> `alice（uid 1007）`: the account names this machine knows.
+    Done here because only the device can resolve its own uids."""
+    if lookup is None:
+        import pwd
+
+        def lookup(uid: int) -> str | None:
+            try:
+                return pwd.getpwuid(uid).pw_name
+            except (KeyError, OverflowError):
+                return None
+
+    def swap(match: re.Match) -> str:
+        name = lookup(int(match.group(1)))
+        return f"{name}（uid {match.group(1)}）" if name else match.group(0)
+    return json.loads(_UID.sub(swap, json.dumps(card, ensure_ascii=False)))
 
 
 def write(document: dict, out: Path) -> None:

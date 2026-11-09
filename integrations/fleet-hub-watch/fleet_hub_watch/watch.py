@@ -22,6 +22,9 @@ discovery interval narrows it; it does not close it.
 """
 from __future__ import annotations
 
+import json
+import sys
+
 import os
 import sqlite3
 import stat
@@ -153,12 +156,31 @@ def _text(value: Any) -> str | None:
     return None
 
 
+def shape(value: Any, depth: int = 4) -> Any:
+    """The structure of a value — keys, list lengths, type names — and no content."""
+    if depth <= 0:
+        return type(value).__name__
+    if isinstance(value, dict):
+        return {str(k): shape(v, depth - 1) for k, v in list(value.items())[:12]}
+    if isinstance(value, list):
+        return [len(value)] + ([shape(value[-1], depth - 1)] if value else [])
+    return type(value).__name__
+
+
 def last_assistant_text(transcript: Any) -> str | None:
     """The last assistant reply in a transcript, whatever list the provider put
     its messages in. Used when a run reports `completed` with no activity record
     (CloudCLI without run receipts): the session itself still holds the answer."""
+    if isinstance(transcript, str):
+        # An MCP text block carrying the JSON answer.
+        try:
+            return last_assistant_text(json.loads(transcript))
+        except ValueError:
+            return None
     if isinstance(transcript, dict):
-        for key in ("messages", "items", "entries", "transcript", "data"):
+        # CloudCLI's session_read answers {"content": [...], "cursor", "mode"}.
+        for key in ("content", "messages", "items", "entries", "turns", "transcript",
+                    "data", "structuredContent"):
             if key in transcript:
                 found = last_assistant_text(transcript[key])
                 if found:
@@ -168,6 +190,12 @@ def last_assistant_text(transcript: Any) -> str | None:
         return None
     for message in reversed(transcript):
         if not isinstance(message, dict):
+            continue
+        if message.get("type") == "text" and isinstance(message.get("text"), str) \
+                and message["text"].lstrip().startswith(("{", "[")):
+            found = last_assistant_text(message["text"])
+            if found:
+                return found
             continue
         inner = message.get("message") if isinstance(message.get("message"), dict) else {}
         role = message.get("role") or inner.get("role") or message.get("type")
@@ -299,7 +327,12 @@ class Watcher:
                                              limit=5)
         except Exception:  # noqa: BLE001 - an unreadable session is not an answer
             return False
-        return last_assistant_text(read.get("transcript")) is not None
+        if last_assistant_text(read.get("transcript")) is not None:
+            return True
+        # Keys only, never text: enough to see where a provider keeps its replies.
+        print(f"transcript without a readable reply: {shape(read.get('transcript'))}",
+              file=sys.stderr)
+        return False
 
     def observe(self) -> dict[str, Any]:
         now = self.clock()
