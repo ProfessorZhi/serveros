@@ -50,7 +50,7 @@ and never let it change a row or the verdict.
 | 资源读数 | `fleet_status` → `core_lite` | each device's reading is from the last 3 minutes (the values themselves go to 设备现状) |
 | 监控/播报 | `fleet_monitor_status` | heartbeat under 2 minutes, broadcast not paused (mutes and open alerts go to 设备现状) |
 | 模型库 | `fleet_models_list`, one call per device | the device's **policy default model** (the answer's policy `default_model`) is listed and allowed — other entries being refused by policy is the policy working, not a failure; ➖ `CAPABILITY_UNSUPPORTED` where the device has no library; ❌ `UNKNOWN_ROUTE` means that device's connector runs older code — next: the local agent restarts the connector from the updated checkout |
-| 密钥中心 | same answer → `variables` | `state: SYNCED`; every `envref` an entry needs is present (names only) |
+| 密钥中心 | `fleet_device_versions` → each row's `secrets` | `state: SYNCED`, `errors: 0` (names only); ➖ an empty list on the hub (it owns the key center, it is not a recipient) |
 | 事件收件箱 | `fleet_inbox` limit 5 | readable |
 | 自调参记录 | `fleet_tune` action `history` | readable (do NOT `set` or `revert`) |
 | 需求看板 | `fleet_work_board` | readable |

@@ -180,3 +180,17 @@ class TheToolIsServed(unittest.TestCase):
         tool = {t.name: t for t in tools.TOOLS}["fleet_device_versions"]
         self.assertTrue(tool.annotations.get("readOnlyHint"))
         self.assertEqual(tool.input_schema["properties"], {})
+
+
+class KeyCenterNamesTravelWithTheVersions(unittest.TestCase):
+    def test_names_only_and_states(self):
+        with tempfile.TemporaryDirectory() as raw:
+            state = Path(raw) / "secret-names.json"
+            self.assertEqual(device_versions.secret_names(state)["state"], "NOT_SYNCED")
+            state.write_text(json.dumps({"schema": "serveros/secret-names.v1",
+                                         "names": ["GW0_TOKEN", "not a name"], "synced_at": "t",
+                                         "repo_commit": "abc", "errors": [{"bundle": "x"}],
+                                         "bundles": [{"names": ["GW0_TOKEN"]}]}))
+            got = device_versions.secret_names(state)
+        self.assertEqual(got, {"state": "SYNCED", "names": ["GW0_TOKEN"], "synced_at": "t",
+                               "repo_commit": "abc", "errors": 1})

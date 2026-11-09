@@ -299,7 +299,7 @@ class FleetSurfaceIsUnchangedTest(unittest.TestCase):
         # Core-lite remains an optional output block, without a new tool.
         # V6 adds the project-create and project-delete tools; V8 adds
         # `fleet_inbox`: 17 + 31 + 2 (fleet-mcp-10).
-        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-15")
+        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-16")
         self.assertEqual(len(fleet_tools.TOOLS), 24)
         self.assertEqual(len(fleet_tools.NATIVE_MIRROR_TOOLS), 31)
         self.assertEqual(len(fleet_tools.SERVED_TOOLS), 57)

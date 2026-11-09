@@ -53,7 +53,10 @@ SERVER_VERSION = "0.2.0"
 # `fleet-mcp-15`: `fleet_memory` (search / add / forget) — what the fleet has
 # learned, kept on the hub and shared by every commander and device.
 # Twenty-four authored, 57 total.
-TOOL_SURFACE_REVISION = "fleet-mcp-15"
+# `fleet-mcp-16`: `fleet_batch` open takes the owner's request (verbatim) and
+# the skills the commander used, kept in the hub's trace beside the prompts
+# sent and the answers. Same 57 tools.
+TOOL_SURFACE_REVISION = "fleet-mcp-16"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

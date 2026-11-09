@@ -328,7 +328,8 @@ _ENV_ROW = {
 
 def _batch(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.batch(ctx.principal, action=args.get("action"), name=args.get("name"),
-                             runs=args.get("runs"), batch_id=args.get("batch_id"))
+                             runs=args.get("runs"), batch_id=args.get("batch_id"),
+                             owner_request=args.get("owner_request"), skills=args.get("skills"))
 
 
 def _tune(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -977,6 +978,12 @@ TOOLS: tuple[Tool, ...] = (
                                    "required": ["session_ref", "run_id"],
                                    "additionalProperties": False}},
                 "batch_id": _string("For status: the id `open` returned."),
+                "owner_request": _string("For open: the owner's own message that led to this "
+                                         "work, verbatim. Kept in the hub's trace beside the "
+                                         "prompts sent and the answers, so the owner can see "
+                                         "what was asked, what was sent and what came back."),
+                "skills": {"type": "array", "items": {"type": "string"}, "maxItems": 20,
+                           "description": "For open: the skills you used for this request."},
             },
             "required": ["action"],
             "additionalProperties": False,

@@ -321,7 +321,9 @@ class TheTraceToolReadsTheHub(unittest.TestCase):
         body = answer.get("structuredContent") or answer
         self.assertEqual(body["steps"][0]["step"], "dispatched (send)")
         self.assertEqual(body["diagnosis"]["stage"], "DISPATCHED")
-        self.assertNotIn("date", json.dumps(body["steps"]), "never the instruction")
+        # Owner, 2026-11-09: the prompt sent IS kept (masked), beside the request and answer.
+        sent_text = [st["detail"]["text"] for st in body["steps"] if st["step"] == "prompt sent"]
+        self.assertEqual(sent_text, ["date"])
 
 
 class TheMemoryToolIsSharedThroughTheHub(unittest.TestCase):
@@ -342,3 +344,62 @@ class TheMemoryToolIsSharedThroughTheHub(unittest.TestCase):
         body = found.get("structuredContent") or found
         self.assertEqual(body["notes"][0]["topic"], "LiteLLM 腾讯云 responses")
         self.assertTrue(refused.get("isError"), "adding needs fleet:send")
+
+
+class TimingsArePerTask(unittest.TestCase):
+    def test_two_runs_in_one_window_are_timed_apart(self):
+        from fleet_mcp.trace import diagnose
+        steps = [
+            {"at": "2026-11-09T08:10:00Z", "step": "card sent", "run_id": None},
+            {"at": "2026-11-09T08:20:00Z", "step": "dispatched (send)", "run_id": "aaaaaaaa1"},
+            {"at": "2026-11-09T08:20:02Z", "step": "watching", "run_id": "aaaaaaaa1"},
+            {"at": "2026-11-09T08:30:00Z", "step": "dispatched (send)", "run_id": "bbbbbbbb2"},
+            {"at": "2026-11-09T08:30:05Z", "step": "observed", "run_id": "bbbbbbbb2"},
+        ]
+        verdict = diagnose(steps)
+        self.assertNotIn("timings", verdict)
+        self.assertEqual(verdict["timings_by_run"], {"aaaaaaaa": ["监控接手 +2s"],
+                                                     "bbbbbbbb": ["第一次读到状态 +5s"]})
+        self.assertNotIn("-", " ".join(sum(verdict["timings_by_run"].values(), [])))
+
+
+class TheCommanderSideIsTraced(unittest.TestCase):
+    def test_commander_calls_are_steps_and_do_not_set_the_stage(self):
+        from fleet_mcp.trace import diagnose
+        from fleet_mcp.identity import SessionKey
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp), allow_tokyo_send=True, send_allow=(f"{TOKYO}|claude|abc",))
+            harness.service.inbox = EventInbox(Path(tmp) / "inbox.sqlite")
+            sent = harness.service.send_to_session(
+                harness.principal(name="gpt"), SessionKey.compose(TOKYO, "claude", "abc"),
+                message="date")
+            steps = harness.service.inbox.read_trace(run_id=sent["run_id"])
+        sources = [(s["source"], s["step"]) for s in steps]
+        self.assertIn(("commander", "send"), sources)
+        self.assertEqual([s["detail"].get("by") for s in steps if s["source"] == "commander"], ["gpt"])
+        self.assertEqual(diagnose(steps)["stage"], "DISPATCHED")
+
+    def test_a_waiting_device_is_named(self):
+        from fleet_mcp.trace import diagnose
+        steps = [{"at": "2026-11-09T08:00:00Z", "source": "fleet", "step": "dispatched (send)"},
+                 {"at": "2026-11-09T08:10:00Z", "source": "device",
+                  "step": "device waiting for a person"}]
+        self.assertEqual(diagnose(steps)["stage"], "WAITING_FOR_PERSON")
+
+
+class TheThreeTextsAreKept(unittest.TestCase):
+    def test_request_prompt_and_answer_masked_and_in_order(self):
+        from fleet_mcp.trace import exchange
+        with tempfile.TemporaryDirectory() as raw:
+            inbox = EventInbox(Path(raw) / "i.sqlite")
+            ref = f"{TOKYO}|claude|s-1"
+            inbox.trace("fleet", "prompt sent", session_ref=ref, run_id="r1",
+                        text="查一下 token sk-" + "a" * 30 + " 是否有效")
+            batch = inbox.open_batch("查询", [{"session_ref": ref, "run_id": "r1"}], opened_by="gpt")
+            inbox.trace("commander", "owner request", batch_id=batch["batch_id"], text="帮我查一下")
+            inbox.trace("device", "result", session_ref=ref, run_id="r1", text="结论：有效")
+            texts = dict(exchange(inbox.read_trace(batch_id=batch["batch_id"])))
+        self.assertEqual(texts["主人的原话"], "帮我查一下")
+        self.assertIn("‹已遮蔽›", texts["发给设备的提示词"])
+        self.assertNotIn("sk-aaaa", texts["发给设备的提示词"])
+        self.assertEqual(texts["设备的最终回复"], "结论：有效")

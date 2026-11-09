@@ -260,6 +260,45 @@ _FINISHED = frozenset({"completed", "complete", "succeeded", "success", "settled
 _OUTPUT_FIELDS = ("lastAssistantMessage", "last_assistant_message", "output", "result")
 
 
+class _CommanderTrace:
+    """The audit log, plus one trace step per commander call on the hub.
+
+    Owner, 2026-11-09: the log should show what the commander (GPT, the local
+    agent) did, not only what Fleet and the monitor did — as metadata: which
+    call, by whom, on which device/session/run, and counts. The fields are the
+    audit's own reviewed projection; the monitor's own reads are left out, and
+    so is reading the trace itself.
+    """
+
+    _QUIET = {"fleet.trace"}
+    _KEEP = ("device", "device_ref", "session_ref", "run_id", "project", "provider",
+             "runtime", "sessions", "entries", "steps", "devices", "model_id", "action")
+
+    def __init__(self, audit: Any, service: "FleetService") -> None:
+        self._audit = audit
+        self._service = service
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._audit, name)
+
+    def record(self, event: str, **fields: Any) -> None:
+        self._audit.record(event, **fields)
+        inbox = getattr(self._service, "inbox", None)
+        who = fields.get("principal")
+        if inbox is None or event in self._QUIET or who in (None, "hub-watch"):
+            return
+        try:
+            from .disclosure import project_record
+            safe, _ = project_record({"event": event, **fields})
+            detail = {k: safe[k] for k in self._KEEP if safe.get(k) is not None
+                      and k not in ("session_ref", "run_id")}
+            inbox.trace("commander", event.removeprefix("fleet."), by=who,
+                        session_ref=safe.get("session_ref"), run_id=safe.get("run_id"),
+                        **detail)
+        except Exception:  # noqa: BLE001 - the trace never stops a call
+            pass
+
+
 def _with_delivery(run: dict[str, Any], *, waited: bool) -> dict[str, Any]:
     """Say whether a finished run's output was actually read.
 
@@ -297,7 +336,7 @@ class FleetService:
         #: trusted Core API yet, so every reading this surface could otherwise
         #: show would be one it made up. See `core_lite_status()`.
         self.core_lite_source = core_lite_source
-        self.audit = AuditLog(config.audit)
+        self.audit = _CommanderTrace(AuditLog(config.audit), self)
         self.limiter = RateLimiter(config.audit.rate_limit_per_minute) if config.audit else None
         self.dispatch = DispatchGuard(attempts)
         self.discovery = DiscoveryPool(config.policy.discovery_workers)
@@ -611,7 +650,8 @@ class FleetService:
 
     def batch(self, principal: Principal, *, action: str, name: str | None = None,
               runs: list[dict[str, str]] | None = None,
-              batch_id: str | None = None) -> dict[str, Any]:
+              batch_id: str | None = None, owner_request: str | None = None,
+              skills: list[str] | None = None) -> dict[str, Any]:
         """Open a batch of dispatched runs, or read one.
 
         `open` (fleet:send, the scope that dispatched them): the hub records
@@ -632,6 +672,13 @@ class FleetService:
                         raise refuse(BAD_REQUEST, "every run names a session_ref on an enrolled "
                                                   "device, exactly as the send or create returned it")
                 answer = self.inbox.open_batch(name, runs, opened_by=principal.name)
+                if isinstance(owner_request, str) and owner_request.strip():
+                    # What the owner asked the commander, in their words — Fleet
+                    # cannot see it otherwise (owner, 2026-11-09).
+                    used = [str(s)[:60] for s in (skills or []) if isinstance(s, str)][:20]
+                    self.inbox.trace("commander", "owner request", batch_id=answer["batch_id"],
+                                     by=principal.name, text=owner_request,
+                                     skills=", ".join(used) or None)
                 self.audit.record("fleet.batch_open", principal=principal.name,
                                   sessions=answer["total"])
             elif action == "status":
@@ -3069,6 +3116,9 @@ class FleetService:
                                      label)
             self.inbox.trace("fleet", f"dispatched ({verb})", session_ref=key.ref, run_id=run_id,
                              by=actor, delivery=state)
+            if isinstance(message, str) and message.strip():
+                self.inbox.trace("fleet", "prompt sent", session_ref=key.ref, run_id=run_id,
+                                 by=actor, text=message)
         except Exception:  # noqa: BLE001 - the run started; tracking is best effort
             pass
 

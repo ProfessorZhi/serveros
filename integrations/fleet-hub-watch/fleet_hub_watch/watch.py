@@ -209,6 +209,70 @@ def last_assistant_text(transcript: Any) -> str | None:
     return None
 
 
+def _entries(transcript: Any) -> list[dict]:
+    if isinstance(transcript, str):
+        try:
+            return _entries(json.loads(transcript))
+        except ValueError:
+            return []
+    if isinstance(transcript, dict):
+        for key in ("content", "messages", "items", "entries", "turns", "transcript", "data"):
+            if key in transcript:
+                found = _entries(transcript[key])
+                if found:
+                    return found
+        return []
+    if not isinstance(transcript, list):
+        return []
+    out = []
+    for item in transcript:
+        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str) \
+                and item["text"].lstrip().startswith(("{", "[")):
+            out += _entries(item["text"])
+        elif isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def work_summary(transcript: Any) -> dict[str, Any]:
+    """What the device agent did, as metadata only: turns, tool calls by name,
+    model, and whether it stopped to ask a person. Never text."""
+    turns, tools, model, asking = 0, {}, None, False
+    skills, mcp = [], []
+    for entry in _entries(transcript):
+        inner = entry.get("message") if isinstance(entry.get("message"), dict) else entry
+        role = inner.get("role") or entry.get("type")
+        if role != "assistant":
+            continue
+        turns += 1
+        model = inner.get("model") or entry.get("model") or model
+        content = inner.get("content")
+        for block in content if isinstance(content, list) else []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                name = str(block.get("name") or "tool")[:40]
+                given = block.get("input") if isinstance(block.get("input"), dict) else {}
+                if name == "Skill" and isinstance(given.get("skill"), str):
+                    skills.append(given["skill"][:60])
+                if name.startswith("mcp__"):
+                    mcp.append(name[:60])
+                tools[name] = tools.get(name, 0) + 1
+                asking = name in ("AskUserQuestion", "ask_user", "AskUser")
+            elif isinstance(block, dict) and block.get("type") == "text":
+                asking = False
+    summary: dict[str, Any] = {"turns": turns}
+    if tools:
+        summary["tools"] = ", ".join(f"{k}×{v}" for k, v in sorted(tools.items(), key=lambda kv: -kv[1])[:8])
+    if model:
+        summary["model"] = str(model)[:60]
+    if skills:
+        summary["skills"] = ", ".join(dict.fromkeys(skills))
+    if mcp:
+        summary["mcp"] = ", ".join(dict.fromkeys(mcp))[:300]
+    if asking:
+        summary["waiting_for_person"] = True
+    return summary
+
+
 def _current_run_id(detail: Any) -> str | None:
     """The run id a session detail names as current, wherever the provider put it."""
     if not isinstance(detail, dict):
@@ -331,6 +395,40 @@ class Watcher:
         check = getattr(self.inbox, "was_dispatched", None)
         return bool(check and check(watch["session_ref"], watch["run_id"]))
 
+    def _device_work(self, watch: dict[str, Any], *, final: bool) -> None:
+        """Record what the device agent has done so far — once at the end, and
+        while it runs only when it changed (every slower check)."""
+        try:
+            read = self.service.read_session(self.principal, SessionKey.parse(watch["session_ref"]),
+                                             limit=100)
+        except Exception:  # noqa: BLE001 - a session we cannot read has no summary
+            return
+        summary = work_summary(read.get("transcript"))
+        if not summary.get("turns"):
+            return
+        key = (watch["session_ref"], watch["run_id"])
+        seen = getattr(self, "_work_seen", {})
+        self._work_seen = seen
+        fingerprint = json.dumps(summary, sort_keys=True)
+        if not final and seen.get(key) == fingerprint:
+            return
+        seen[key] = fingerprint
+        step = ("device finished" if final else
+                "device waiting for a person" if summary.get("waiting_for_person") else
+                "device working")
+        tracer = getattr(self.inbox, "trace", None)
+        if tracer is not None:
+            try:
+                tracer("device", step, session_ref=watch["session_ref"], run_id=watch["run_id"],
+                       **summary)
+                if final:
+                    answer = last_assistant_text(read.get("transcript"))
+                    if answer:
+                        tracer("device", "result", session_ref=watch["session_ref"],
+                               run_id=watch["run_id"], text=answer)
+            except Exception:  # noqa: BLE001
+                pass
+
     def _answered(self, watch: dict[str, Any]) -> bool:
         try:
             read = self.service.read_session(self.principal, SessionKey.parse(watch["session_ref"]),
@@ -388,9 +486,14 @@ class Watcher:
                 event = self._event(watch, "run.unknown", "decide",
                                     f"still {status} after the observation window ({reason})")
             if event is not None:
+                if self._dispatched(watch):
+                    self._device_work(watch, final=True)
                 recorded.append(self.inbox.record(event))
                 self.store.drop(watch, now)
                 continue
+            if watch["checks"] >= 2 and self._dispatched(watch):
+                # Past the first quick checks: say what the device is doing.
+                self._device_work(watch, final=False)
             stalled = bool(watch["stall_reported"])
             if not stalled and age >= self.stall_after:
                 recorded.append(self.inbox.record(self._event(

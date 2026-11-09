@@ -281,6 +281,16 @@ class NotifierTest(unittest.TestCase):
                            "summary": f"serveros: run {run_id} failed (RUN_FAILED)"})
 
 
+class OldTaskAlertsExpire(NotifierTest):
+    def test_an_open_task_alert_older_than_six_hours_leaves_the_open_list_quietly(self):
+        self.run_event("run.failed", run_id="old", at="2026-10-29T02:00:00Z")
+        self.notifier.tick([], THURSDAY_10)
+        sent = len(self.transport.ops)
+        self.assertEqual(self.notifier.expire_runs(THURSDAY_10 + timedelta(hours=7)), 1)
+        self.assertEqual(len(self.transport.ops), sent, "no message, no patch")
+        self.assertEqual(self.notifier.day_summary("2026-10-29")["open_now"], [])
+
+
 class ResourceCardsAreAskedFor(NotifierTest):
     """Owner, 2026-11-09: 资源 cards come when asked (「资源 东京」), not every
     half hour; alerts, batch completions and the 日报 still push."""

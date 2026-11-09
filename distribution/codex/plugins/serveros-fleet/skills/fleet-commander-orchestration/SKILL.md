@@ -160,7 +160,7 @@ a plan you wrote.
 task.** A chat client times out on a long wait, so the result comes back as a
 card, not in this turn. Right after the last ACK, call `fleet_batch` action
 `open` with a name the owner will recognise and each run's `session_ref` and
-`run_id` exactly as returned. Then **end your turn**: tell the owner in one or
+`run_id` exactly as returned. Pass `owner_request` (the owner's own message, verbatim — not your rewrite) and `skills` (the skills you used); the hub keeps them beside the prompt you sent and the answer that comes back. Then **end your turn**: tell the owner in one or
 two lines what was dispatched and that the result will arrive as a Feishu
 批次完成 card. Do not wait for it.
 

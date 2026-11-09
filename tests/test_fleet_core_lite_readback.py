@@ -942,7 +942,7 @@ class NoFleetSurfaceIsTouchedTest(unittest.TestCase):
         from fleet_mcp import tools
         from fleet_mcp.version import TOOL_SURFACE_REVISION
         # Core-lite adds no tool. V5 includes the separate fresh-project entry.
-        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-15")
+        self.assertEqual(TOOL_SURFACE_REVISION, "fleet-mcp-16")
         self.assertEqual(len(tools.TOOLS), 24)
         self.assertEqual(len(tools.NATIVE_MIRROR_TOOLS), 31)
 
