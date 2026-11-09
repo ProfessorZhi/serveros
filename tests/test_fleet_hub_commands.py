@@ -82,8 +82,15 @@ class Answers(unittest.TestCase):
         return json.dumps(card, ensure_ascii=False)
 
     def test_status_is_one_line_per_device(self):
+        self.answerer.watching = lambda: [{"device_ref": TOKYO, "session_ref": f"{TOKYO}|claude|s"}]
+        self.answerer.views[1]["level"] = "ALERT"
+        self.answerer.views[1]["readings"].append(
+            {"key": "psi", "label": "内存压力", "text": "停顿 1.2%", "level": "ALERT"})
         card = self.answerer.answer("status", "", NOW)
-        self.assertEqual(card["header"]["title"]["content"], "Fleet 状态 · 1 台需要注意")
+        self.assertIn("内存压力 停顿 1.2%（报警）", self.body(card), "the reason for red is shown")
+        self.assertIn("任务 1 个在跑", self.body(card))
+        self.assertEqual(self.body(card).count("个在跑"), 1, "only runs still being watched")
+        self.assertEqual(card["header"]["title"]["content"], "Fleet 状态 · 2 台需要注意")
         self.assertIn("**Tokyo**", self.body(card))
         self.assertIn("Swap 99%（水位）（注意）", self.body(card))
 

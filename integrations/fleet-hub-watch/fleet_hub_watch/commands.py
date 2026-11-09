@@ -105,9 +105,12 @@ def status_card(views: list[dict], *, now: datetime, running: dict[str, int] | N
             if r and r.get("text"):
                 mark = "" if r.get("level") in (OK, None) else f"（{WORD[r['level']]}）"
                 parts.append(f"{label} {r['text']}{mark}")
-        worst_fs = [r for r in view.get("readings") or [] if str(r.get("key", "")).startswith("fs:")
-                    and r.get("level") in (WARN, ALERT)]
-        parts += [f"{r['label']} {r['text']}（{WORD[r['level']]}）" for r in worst_fs]
+        # Every other reading that is not normal — the one that made the line
+        # red must be on the line (owner, 2026-11-09: 🚨 with no reason shown).
+        shown = {"cpu", "memory", "swap"}
+        parts += [f"{r['label']} {r['text']}（{WORD[r['level']]}）"
+                  for r in view.get("readings") or []
+                  if r.get("key") not in shown and r.get("level") in (WARN, ALERT)]
         n = (running or {}).get(view.get("device_ref"), 0)
         if n:
             parts.append(f"任务 {n} 个在跑")
@@ -150,8 +153,10 @@ class Answerer:
     """Builds the card for one command from what the hub already holds."""
 
     def __init__(self, *, service: Any, principal: Any, inbox: Any, notifier: Any,
-                 names: dict[str, str]) -> None:
+                 names: dict[str, str], watching: Callable[[], list[dict]] | None = None) -> None:
         self.service, self.principal, self.inbox = service, principal, inbox
+        #: The monitor's live watch list: runs not yet finished, by device.
+        self.watching = watching or (lambda: [])
         self.notifier, self.names = notifier, names
         self.views: list[dict] = []
         self.rich: dict[str, dict] = {}
@@ -170,8 +175,8 @@ class Answerer:
     def answer(self, command: str, arg: str, now: datetime) -> dict:
         if command == "status":
             running: dict[str, int] = {}
-            for row in getattr(self.inbox, "runs_to_watch", lambda: [])():
-                ref = row["session_ref"].split("|", 1)[0]
+            for row in self.watching():
+                ref = row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]
                 running[ref] = running.get(ref, 0) + 1
             return status_card(self.views, now=now, running=running)
         if command == "tasks":

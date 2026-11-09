@@ -260,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     if notifier is not None and args.notify.startswith("lark:"):
         from .commands import Answerer, MessageListener
         answerer = Answerer(service=service, principal=principal, inbox=watcher.inbox,
-                            notifier=notifier, names=names)
+                            notifier=notifier, names=names, watching=watcher.store.all)
 
         def reply(message_id: str, command: str, arg: str) -> str:
             now = datetime.now(timezone.utc)
