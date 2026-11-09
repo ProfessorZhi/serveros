@@ -100,6 +100,15 @@ def main(argv: list[str] | None = None) -> int:
     from .config import load_config
     from .inbox import EventInbox
     config = load_config(args.config)
+    if config.inbox is None and args.config is None:
+        # The hub's Fleet binding, where the inbox and its trace live.
+        from pathlib import Path
+        for candidate in ("~/.config/serveros/fleet-v1.yaml", "~/.config/serveros/fleet.yaml"):
+            path = Path(candidate).expanduser()
+            if path.is_file():
+                config = load_config(str(path))
+                if config.inbox is not None:
+                    break
     if config.inbox is None:
         print("this binding has no inbox: nothing is traced here", file=sys.stderr)
         return 2

@@ -97,13 +97,16 @@ class DeviceLevels(unittest.TestCase):
         self.assertEqual(levels_of(self.view(memory=91))["memory"], WARN)
         self.assertEqual(levels_of(self.view(swap=95))["swap"], WARN)
         self.assertEqual(levels_of(self.view(psi_some=2.0))["psi"], WARN)
-        self.assertEqual(levels_of(self.view(psi_full=0.6))["psi"], ALERT)
+        # Owner, 2026-11-09: a light full stall is 注意 on 状态; 5% is an alert.
+        self.assertEqual(levels_of(self.view(psi_full=0.6))["psi"], WARN)
+        self.assertEqual(levels_of(self.view(psi_full=5.5))["psi"], ALERT)
         self.assertEqual(levels_of(self.view(service_state="FAILED"))["svc:serverosd"], ALERT)
 
     def test_psi_full_holds_until_it_is_past_its_own_margin(self):
         """0.5 opens; with the 0.25 margin it holds at 0.42 and leaves at 0.2.
         Without a margin a host hovering at the line chattered red/green."""
-        self.assertEqual(levels_of(self.view({"psi": ALERT}, psi_full=0.42))["psi"], ALERT)
+        self.assertEqual(levels_of(self.view({"psi": ALERT}, psi_full=4.9))["psi"], ALERT)
+        self.assertEqual(levels_of(self.view({"psi": WARN}, psi_full=0.42))["psi"], WARN)
         self.assertEqual(levels_of(self.view({"psi": ALERT}, psi_full=0.2))["psi"], OK)
         self.assertEqual(levels_of(self.view(psi_full=0.42))["psi"], OK)
 
@@ -234,12 +237,13 @@ class TheCardsFollowFeishuRules(unittest.TestCase):
         self.assertIn("🚨 报警 1", face)
         self.assertIn("需要关注", card["body"]["elements"][1]["content"])
 
-    def test_an_alert_card_says_impact_is_unconfirmed_and_suggests(self):
+    def test_an_alert_card_is_what_happened_and_what_to_do_in_two_lines(self):
         card = cards.alert_card({"episode": "e", "key": "fs:DATA", "subject": "Dell · 磁盘 DATA",
                                  "level": WARN, "text": "86%"}, now=THURSDAY_10)
         face = card["body"]["elements"][0]["content"]
-        self.assertIn("**影响** 待确认", face)
-        self.assertIn("**建议**", face)
+        self.assertEqual(face.split("\n")[0], "86%")
+        self.assertIn("清理或扩容", face)
+        self.assertNotIn("影响", face, "no 待确认 filler (owner, 2026-11-09)")
         self.assertEqual(card["header"]["template"], "yellow")
 
     def test_a_sample_says_so(self):

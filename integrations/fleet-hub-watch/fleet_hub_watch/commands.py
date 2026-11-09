@@ -93,30 +93,45 @@ def _reading(view: dict, key: str) -> dict | None:
     return next((r for r in view.get("readings") or [] if r.get("key") == key), None)
 
 
+def _short(text: str) -> str:
+    """'88% / 16 GiB' -> '88%', '100%（水位）' -> '100%': the number a phone needs."""
+    text = re.sub(r"（[^）]*）", "", str(text or ""))
+    return text.split(" / ")[0].split(" · ")[0].strip()
+
+
 def status_card(views: list[dict], *, now: datetime, running: dict[str, int] | None = None) -> dict:
+    """One block per device, two short lines each, the problem first:
+
+        ⚠️ **FJPCOS**　内存 88%
+        CPU 6% · 内存 88% · 2 个任务
+
+    Owner, 2026-11-09: the first version ran every reading into one long line
+    that wrapped mid-phrase, with （水位）（注意） brackets everywhere.
+    """
     level = worst(v.get("level") for v in views) if views else UNCONFIRMED
-    bad = [v for v in views if v.get("level") in (WARN, ALERT)]
-    head = "全部正常" if not bad else f"{len(bad)} 台需要注意"
-    lines = []
-    for view in views:
-        parts = []
-        for key, label in (("cpu", "CPU"), ("memory", "内存"), ("swap", "Swap")):
-            r = _reading(view, key)
-            if r and r.get("text"):
-                mark = "" if r.get("level") in (OK, None) else f"（{WORD[r['level']]}）"
-                parts.append(f"{label} {r['text']}{mark}")
-        worst_fs = [r for r in view.get("readings") or [] if str(r.get("key", "")).startswith("fs:")
-                    and r.get("level") in (WARN, ALERT)]
-        parts += [f"{r['label']} {r['text']}（{WORD[r['level']]}）" for r in worst_fs]
+    counts = {lv: sum(1 for v in views if v.get("level") == lv) for lv in (ALERT, WARN)}
+    head = " · ".join(f"{counts[lv]} {WORD[lv]}" for lv in (ALERT, WARN) if counts[lv]) or "全部正常"
+    blocks = []
+    order = {ALERT: 0, WARN: 1, UNCONFIRMED: 2, OK: 3}
+    for view in sorted(views, key=lambda v: order.get(v.get("level"), 4)):
+        readings = {r.get("key"): r for r in view.get("readings") or []}
+        bad = [r for r in view.get("readings") or [] if r.get("level") in (WARN, ALERT)]
+        reason = " · ".join(
+            f"<font color='{'red' if r['level'] == ALERT else 'orange'}'>{r['label']} {_short(r['text'])}</font>"
+            for r in bad[:3]) or "<font color='green'>正常</font>"
+        facts = [f"{label} {_short(readings[key]['text'])}" for key, label in
+                 (("cpu", "CPU"), ("memory", "内存"), ("swap", "Swap"))
+                 if key in readings and readings[key].get("text")]
         n = (running or {}).get(view.get("device_ref"), 0)
         if n:
-            parts.append(f"任务 {n} 个在跑")
-        lines.append(f"{ICON.get(view.get('level'), '⚪')} **{view.get('name')}**　"
-                     + (" · ".join(parts) or WORD.get(view.get("level"), "")))
-    elements = [cards._md("\n".join(lines) or "没有设备读数")]
-    elements.append(cards._md("<font color='grey'>发「资源 设备名」看完整卡，「任务」看在跑的</font>"))
-    return cards._card(TEMPLATE[level], f"Fleet 状态 · {head}", f"{cards._local(now, with_date=True)}",
-                       elements, summary=f"Fleet 状态 · {head}", width="default")
+            facts.append(f"{n} 个任务在跑")
+        blocks.append(f"{ICON.get(view.get('level'), '⚪')} **{view.get('name')}**　{reason}\n"
+                      f"<font color='grey'>{' · '.join(facts)}</font>")
+    elements = [cards._md("\n\n".join(blocks) or "没有设备读数"),
+                cards._md("<font color='grey'>「资源 设备名」看完整卡 · 「任务」看在跑的</font>")]
+    return cards._card(TEMPLATE[level], f"{len(views)} 台设备 · {head}",
+                       cards._local(now, with_date=True), elements,
+                       summary=f"Fleet 状态 · {head}", width="default")
 
 
 def tasks_card(batches: list[dict], *, now: datetime) -> dict:
@@ -150,8 +165,10 @@ class Answerer:
     """Builds the card for one command from what the hub already holds."""
 
     def __init__(self, *, service: Any, principal: Any, inbox: Any, notifier: Any,
-                 names: dict[str, str]) -> None:
+                 names: dict[str, str], watching: Callable[[], list[dict]] | None = None) -> None:
         self.service, self.principal, self.inbox = service, principal, inbox
+        #: The monitor's live watch list: runs not yet finished, by device.
+        self.watching = watching or (lambda: [])
         self.notifier, self.names = notifier, names
         self.views: list[dict] = []
         self.rich: dict[str, dict] = {}
@@ -170,8 +187,8 @@ class Answerer:
     def answer(self, command: str, arg: str, now: datetime) -> dict:
         if command == "status":
             running: dict[str, int] = {}
-            for row in getattr(self.inbox, "runs_to_watch", lambda: [])():
-                ref = row["session_ref"].split("|", 1)[0]
+            for row in self.watching():
+                ref = row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]
                 running[ref] = running.get(ref, 0) + 1
             return status_card(self.views, now=now, running=running)
         if command == "tasks":

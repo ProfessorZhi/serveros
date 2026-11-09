@@ -49,7 +49,7 @@ and never let it change a row or the verdict.
 | 设备在线 | `fleet_list_devices` | every company device reachable |
 | 资源读数 | `fleet_status` → `core_lite` | each device's reading is from the last 3 minutes (the values themselves go to 设备现状) |
 | 监控/播报 | `fleet_monitor_status` | heartbeat under 2 minutes, broadcast not paused (mutes and open alerts go to 设备现状) |
-| 模型库 | `fleet_models_list`, one call per device | the policy default model is listed and allowed; ➖ where the device has no library |
+| 模型库 | `fleet_models_list`, one call per device | the device's **policy default model** (the answer's policy `default_model`) is listed and allowed — other entries being refused by policy is the policy working, not a failure; ➖ `CAPABILITY_UNSUPPORTED` where the device has no library; ❌ `UNKNOWN_ROUTE` means that device's connector runs older code — next: the local agent restarts the connector from the updated checkout |
 | 密钥中心 | same answer → `variables` | `state: SYNCED`; every `envref` an entry needs is present (names only) |
 | 事件收件箱 | `fleet_inbox` limit 5 | readable |
 | 自调参记录 | `fleet_tune` action `history` | readable (do NOT `set` or `revert`) |
@@ -59,11 +59,12 @@ and never let it change a row or the verdict.
 
 ## 3. The acceptance batch (the only write)
 
-For every reachable device, `fleet_create_session` (no `model`, no project
-unless one is required — then the device's usual acceptance project) with
-this first message, exactly:
+For every reachable device, a NEW session — `fleet_create_session`, no
+`model`, no project unless one is required (then the device's usual acceptance
+project). Never reuse an earlier acceptance session: it may be waiting on a
+question and the batch would never close. First message, exactly:
 
-    只读验收：第一行用一句话写结论（主机名、运行时长、可用内存），然后输出 hostname、uptime、free -h 的结果。不要修改任何东西。
+    只读验收：用这台机器自己系统的只读命令，查主机名、运行时长、可用内存。第一行用一句话写结论，再列结果。不要提问，不要修改任何东西。
 
 Then `fleet_batch` action `open`, name `验收 <release.plugin_version> <MM-DD HH:MM>`,
 with every `session_ref` and `run_id` as returned. Do not wait for them.
