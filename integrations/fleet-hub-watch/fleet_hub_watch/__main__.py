@@ -270,7 +270,10 @@ def main(argv: list[str] | None = None) -> int:
                 from .commands import text_card
                 card = text_card("没能回答", [f"{command}：{type(exc).__name__}"], now=now,
                                  template="red")
-            sent = notifier.transport.send(card, idempotency_key=f"ask:{message_id}:{command}")
+            sent = True
+            for i, one in enumerate(card if isinstance(card, list) else [card]):
+                key = f"ask:{message_id}:{command}" + (f":{i}" if i else "")
+                sent = bool(notifier.transport.send(one, idempotency_key=key)) and sent
             watcher.inbox.trace("notify", f"answered 「{command}」" if sent else
                                 f"answer to 「{command}」 FAILED", ref=f"ask:{message_id}")
             return "SENT" if sent else "FAILED"
