@@ -34,6 +34,13 @@ Call `fleet_device_versions`. Read `distinct_serveros_commits` and each row.
   agent the exact command for it: Linux `python3 distribution/device_kit.py update --device <name> --ability-rev main --apply`, Windows `distribution/windows/update.ps1 -Device <name> -Apply`.
 - A row `NOT_RECORDED` or `UNREACHABLE` → say which device and that it has not
   reported, not that it is fine.
+- A row with `code_drift: true` → the update moved the checkout but the
+  process that answers (the connector on a device, Fleet on the hub) still runs
+  older code (`running.commit`, `running.tree`). Say so; the local agent points
+  that service at the updated checkout and restarts it — Windows: the
+  `ServerOS-FleetNode-Connector` task's action; Linux: the connector unit's
+  `ExecStart` (a drop-in), then restart. A device can look up to date and still
+  serve old routes (`UNKNOWN_ROUTE`) until this is fixed.
 
 ## 3. Key center: are the variables there?
 
