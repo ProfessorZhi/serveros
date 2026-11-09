@@ -19,6 +19,8 @@ from typing import Any
 
 #: What the last step means, and what to look at next.
 _NEXT = [
+    ("device waiting for a person", "WAITING_FOR_PERSON",
+     "设备上的 agent 停下来在问人：去那台设备的会话里回答，或让指挥端中断它重新派"),
     ("card sent", "DELIVERED", "飞书卡片已发出"),
     ("card send FAILED", "CARD_FAILED", "飞书发送失败：在东京查 lark-cli 登录（feishu 自检卡）和 hub-watch 日志"),
     ("card held", "CARD_HELD", "卡片被挂起：播报暂停或本轮发送已到上限，下一轮会再试"),
@@ -30,6 +32,8 @@ _NEXT = [
     ("no reply in the session", "UNREADABLE", "任务结束但读不到回复：看 detail.shape，告诉维护者实际格式"),
     ("reply read from the session", "READ", "从会话里读到了回复，下一步记录结果"),
     ("dropped", "DROPPED", "监控放弃了它（不是派出的任务）"),
+    ("device working", "WORKING", "设备上的 agent 在干活（看 detail.tools / turns）"),
+    ("device finished", "RECORDED", "设备上的 agent 已结束，等记录结果"),
     ("observed", "WATCHING", "监控在看，还没结束（看 detail.status / reason）"),
     ("watching", "WATCHING", "监控已接手，等第一次读取"),
     ("joined batch", "DISPATCHED", "已派发并编进批次，等监控接手（30 秒内）"),
@@ -39,6 +43,7 @@ _NEXT = [
 
 
 _MARKS = (("dispatched", "派发"), ("watching", "监控接手"), ("observed", "第一次读到状态"),
+          ("device finished", "设备干完"),
           ("reply read", "读到回复"), ("event run.", "结果记录"), ("card sent", "飞书卡发出"))
 
 
@@ -77,6 +82,8 @@ def diagnose(steps: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _diagnose(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    # The commander's own calls are context, not the task's stage.
+    steps = [s for s in steps if s.get("source") != "commander"] or steps
     if not steps:
         return {"stage": "NOT_FOUND",
                 "next": "东京没有这条记录：任务不是经 Fleet 派发的，或早于 1.11（之前没有 trace）"}

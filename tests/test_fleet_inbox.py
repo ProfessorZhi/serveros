@@ -359,3 +359,27 @@ class TimingsArePerTask(unittest.TestCase):
         self.assertEqual(verdict["timings_by_run"], {"aaaaaaaa": ["监控接手 +2s"],
                                                      "bbbbbbbb": ["第一次读到状态 +5s"]})
         self.assertNotIn("-", " ".join(sum(verdict["timings_by_run"].values(), [])))
+
+
+class TheCommanderSideIsTraced(unittest.TestCase):
+    def test_commander_calls_are_steps_and_do_not_set_the_stage(self):
+        from fleet_mcp.trace import diagnose
+        from fleet_mcp.identity import SessionKey
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp), allow_tokyo_send=True, send_allow=(f"{TOKYO}|claude|abc",))
+            harness.service.inbox = EventInbox(Path(tmp) / "inbox.sqlite")
+            sent = harness.service.send_to_session(
+                harness.principal(name="gpt"), SessionKey.compose(TOKYO, "claude", "abc"),
+                message="date")
+            steps = harness.service.inbox.read_trace(run_id=sent["run_id"])
+        sources = [(s["source"], s["step"]) for s in steps]
+        self.assertIn(("commander", "send"), sources)
+        self.assertEqual([s["detail"].get("by") for s in steps if s["source"] == "commander"], ["gpt"])
+        self.assertEqual(diagnose(steps)["stage"], "DISPATCHED")
+
+    def test_a_waiting_device_is_named(self):
+        from fleet_mcp.trace import diagnose
+        steps = [{"at": "2026-11-09T08:00:00Z", "source": "fleet", "step": "dispatched (send)"},
+                 {"at": "2026-11-09T08:10:00Z", "source": "device",
+                  "step": "device waiting for a person"}]
+        self.assertEqual(diagnose(steps)["stage"], "WAITING_FOR_PERSON")

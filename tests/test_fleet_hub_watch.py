@@ -415,3 +415,23 @@ class TheTranscriptShapesCloudCLIAnswersWith(unittest.TestCase):
         inner = {"messages": [{"role": "assistant", "content": "ok"}]}
         read = {"content": [{"type": "text", "text": _json.dumps(inner)}]}
         self.assertEqual(last_assistant_text(read), "ok")
+
+
+class TheDeviceSideIsSummarised(unittest.TestCase):
+    """Owner, 2026-11-09: the log should show what the device agent did, as
+    metadata — and a run stuck on a question should say so."""
+
+    def test_turns_tools_model_and_a_pending_question(self):
+        from fleet_hub_watch.watch import work_summary
+        read = {"content": [
+            {"type": "user", "message": {"role": "user", "content": "go"}},
+            {"type": "assistant", "message": {"role": "assistant", "model": "deepseek-v4.1",
+             "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "secret"}},
+                         {"type": "tool_use", "name": "Bash"}]}},
+            {"type": "assistant", "message": {"role": "assistant",
+             "content": [{"type": "tool_use", "name": "AskUserQuestion"}]}},
+        ]}
+        got = work_summary(read)
+        self.assertEqual(got, {"turns": 2, "tools": "Bash×2, AskUserQuestion×1",
+                               "model": "deepseek-v4.1", "waiting_for_person": True})
+        self.assertNotIn("secret", str(got), "metadata only")

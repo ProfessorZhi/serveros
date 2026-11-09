@@ -429,7 +429,7 @@ class EventInbox:
     # -- the trace: one timeline per task, kept on the hub ----------------------
 
     TRACE_DAYS = 14
-    TRACE_SOURCES = ("fleet", "inbox", "monitor", "notify", "device")
+    TRACE_SOURCES = ("fleet", "inbox", "monitor", "notify", "device", "commander")
 
     def _trace(self, conn: sqlite3.Connection, source: str, step: str, *,
                session_ref: str | None = None, run_id: str | None = None,
