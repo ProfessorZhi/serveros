@@ -256,6 +256,26 @@ def main(argv: list[str] | None = None) -> int:
             feishu.owner_open_id(),
             lambda value: act_on_button(value, control, watcher.inbox))
         buttons.start()
+    answerer = messages = None
+    if notifier is not None and args.notify.startswith("lark:"):
+        from .commands import Answerer, MessageListener
+        answerer = Answerer(service=service, principal=principal, inbox=watcher.inbox,
+                            notifier=notifier, names=names)
+
+        def reply(message_id: str, command: str, arg: str) -> str:
+            now = datetime.now(timezone.utc)
+            try:
+                card = answerer.answer(command, arg, now)
+            except Exception as exc:  # noqa: BLE001 - say so rather than stay silent
+                from .commands import text_card
+                card = text_card("没能回答", [f"{command}：{type(exc).__name__}"], now=now,
+                                 template="red")
+            sent = notifier.transport.send(card, idempotency_key=f"ask:{message_id}:{command}")
+            watcher.inbox.trace("notify", f"answered 「{command}」" if sent else
+                                f"answer to 「{command}」 FAILED", ref=f"ask:{message_id}")
+            return "SENT" if sent else "FAILED"
+        messages = MessageListener(feishu.owner_open_id(), reply)
+        messages.start()
     last_health = time.time()
     rich_cache: dict = {}
     while True:
@@ -281,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"status cards unreadable: {type(exc).__name__}", file=sys.stderr)
                         rich_cache.update(slot=slot, at=time.time(), cards={})
                 rich = rich_cache.get("cards")
+                if answerer is not None:
+                    answerer.views, answerer.rich = views, rich or {}
             sent = notifier.tick(views, now, rich) if notifier else None
             if buttons is not None and time.time() - last_health > HEALTH_EVERY_SECONDS:
                 lark_state, last_health = feishu.health(), time.time()
@@ -295,7 +317,9 @@ def main(argv: list[str] | None = None) -> int:
                               "notify": sent, "card_spec": specs.state,
                               "commands_applied": applied,
                               "feishu": ({**lark_state, "buttons": buttons.state,
-                                          "clicks_handled": buttons.handled}
+                                          "clicks_handled": buttons.handled,
+                                          "messages": messages.state if messages else None,
+                                          "asks_answered": messages.handled if messages else 0}
                                          if buttons is not None else None)})
         except Exception as exc:  # noqa: BLE001 - one bad tick must not end the watch
             _heartbeat(beat, {"last_tick_at": started, "ok": False,

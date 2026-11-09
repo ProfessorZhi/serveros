@@ -142,6 +142,14 @@ Good: "北京生产 LiteLLM：11-06 起腾讯云 DeepSeek 的 Responses 请求�
 还是 LiteLLM 转换时丢了。对比同模型走 /v1/chat/completions 的情况。
 先给结论，再给关键证据（几条 SpendLogs 或原始 usage）。"
 
+**Use the fleet's memory.** Before writing the prompt, `fleet_memory` search
+with two or three words of the topic (and `scope: device:<id>` for the target):
+put what is already established into the facts line, so the agent does not
+re-discover it. When a result confirms something worth keeping — a root cause,
+how a system behaves, a rule the owner just stated — `fleet_memory` add one
+short note (topic, at most a few sentences, `source` = the batch or run id).
+Never a key or token value; never a guess.
+
 Send it to the session on that device that already does this kind of work
 (`fleet_list_sessions`: an idle one in the right project) rather than a fresh
 one, so the agent starts with its context and skills warm. A follow-up is

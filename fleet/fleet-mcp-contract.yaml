@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-14
+tool_surface_revision: fleet-mcp-15
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -466,6 +466,20 @@ tools:
       fleet:read. Only steps for enrolled devices are returned. States, codes,
       ids and counts only; kept 14 days.
 
+  fleet_memory:
+    verb: write
+    answers: >-
+      search: notes matching the words, newest first (a device's notes with the
+      fleet-wide ones); add: the new note's id; forget: whether it was marked
+    answered_by: the memory table in this surface's own event inbox, on the hub
+    authorization: >-
+      search: fleet:read. add and forget: fleet:send. A key-, token- or
+      private-key-shaped string is refused; scope is fleet, device:<id> or
+      project:<name>.
+    effect: >-
+      Records only; forget marks a note and keeps it. Nothing on any device
+      changes.
+
   fleet_work_board:
     verb: read
     answers: >-
@@ -826,7 +840,7 @@ native_mirror:
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 56
+  served_total: 57
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.

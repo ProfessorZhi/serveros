@@ -277,7 +277,20 @@ class NotifierTest(unittest.TestCase):
                            "summary": f"serveros: run {run_id} failed (RUN_FAILED)"})
 
 
+class ResourceCardsAreAskedFor(NotifierTest):
+    """Owner, 2026-11-09: 资源 cards come when asked (「资源 东京」), not every
+    half hour; alerts, batch completions and the 日报 still push."""
+
+    def test_by_default_nothing_is_pushed(self):
+        self.assertEqual(self.notifier.status([view(WARN)], THURSDAY_10), "ON_DEMAND")
+        self.assertEqual(self.transport.ops, [])
+
+
 class TheDailyStatusCard(NotifierTest):
+    def setUp(self):
+        super().setUp()
+        self.notifier.spec["schedule"]["resource_push"] = True     # the opt-in push mode
+
     def test_nothing_outside_the_window_or_at_the_weekend(self):
         night = datetime(2026, 10, 29, 13, 0, tzinfo=timezone.utc)      # 21:00 Beijing
         saturday = datetime(2026, 10, 31, 2, 0, tzinfo=timezone.utc)

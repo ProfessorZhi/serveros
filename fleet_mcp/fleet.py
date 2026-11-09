@@ -831,6 +831,42 @@ class FleetService:
                     "NOT_RECORDED means no update has run there yet.",
         }
 
+    def memory(self, principal: Principal, *, action: str, query: str | None = None,
+               scope: str | None = None, topic: str | None = None, text: str | None = None,
+               source: str | None = None, memory_id: int | None = None,
+               limit: int = 10) -> dict[str, Any]:
+        """What the fleet has learned, kept on the hub and shared by every
+        commander and device: search, add, or forget a note."""
+        if self.inbox is None:
+            return {"memory": "NOT_CONFIGURED", "notes": []}
+        try:
+            if action == "search":
+                principal.require(SCOPE_READ)
+                self.admit(principal)
+                notes = self.inbox.recall(query, scope=scope,
+                                          limit=max(1, min(int(limit or 10), 50)))
+                self.audit.record("fleet.memory_search", principal=principal.name,
+                                  entries=len(notes))
+                return {"memory": "OK", "notes": notes}
+            if action == "add":
+                principal.require(SCOPE_SEND)
+                self.admit(principal)
+                answer = self.inbox.remember(scope=scope or "fleet", topic=topic or "",
+                                             text=text or "", by=principal.name, source=source)
+                self.audit.record("fleet.memory_add", principal=principal.name)
+                return {"memory": "OK", **answer}
+            if action == "forget":
+                principal.require(SCOPE_SEND)
+                self.admit(principal)
+                if not isinstance(memory_id, int):
+                    raise refuse(BAD_REQUEST, "memory_id is required to forget")
+                done = self.inbox.forget(memory_id, by=principal.name)
+                self.audit.record("fleet.memory_forget", principal=principal.name)
+                return {"memory": "OK", "forgotten": done}
+        except InboxError as exc:
+            raise refuse(BAD_REQUEST, str(exc)) from None
+        raise refuse(BAD_REQUEST, "action is search, add or forget")
+
     def trace(self, principal: Principal, *, run_id: str | None = None,
               batch_id: str | None = None, session_ref: str | None = None,
               minutes: int | None = None) -> dict[str, Any]:

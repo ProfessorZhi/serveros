@@ -322,3 +322,23 @@ class TheTraceToolReadsTheHub(unittest.TestCase):
         self.assertEqual(body["steps"][0]["step"], "dispatched (send)")
         self.assertEqual(body["diagnosis"]["stage"], "DISPATCHED")
         self.assertNotIn("date", json.dumps(body["steps"]), "never the instruction")
+
+
+class TheMemoryToolIsSharedThroughTheHub(unittest.TestCase):
+    def test_add_then_search_through_the_tool(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp))
+            harness.service.inbox = EventInbox(Path(tmp) / "inbox.sqlite")
+            writer = fleet_tools.ToolContext(service=harness.service,
+                                             principal=harness.principal("fleet:read", "fleet:send"))
+            reader = fleet_tools.ToolContext(service=harness.service,
+                                             principal=harness.principal("fleet:read", name="other"))
+            fleet_tools.call_tool(writer, "fleet_memory", {
+                "action": "add", "topic": "LiteLLM 腾讯云 responses",
+                "text": "腾讯云 /v1/responses 不返回 cached_tokens", "source": "batch x"})
+            found = fleet_tools.call_tool(reader, "fleet_memory", {"query": "腾讯云"})
+            refused = fleet_tools.call_tool(reader, "fleet_memory", {
+                "action": "add", "topic": "t", "text": "x"})
+        body = found.get("structuredContent") or found
+        self.assertEqual(body["notes"][0]["topic"], "LiteLLM 腾讯云 responses")
+        self.assertTrue(refused.get("isError"), "adding needs fleet:send")

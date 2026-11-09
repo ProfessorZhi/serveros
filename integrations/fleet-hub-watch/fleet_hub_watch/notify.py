@@ -382,6 +382,8 @@ class Notifier:
         made a fresh one, the plain readings for the rest. Returns what happened."""
         if not views and not rich:
             return "NO_VIEWS"
+        if not self.spec["schedule"].get("resource_push", False):
+            return "ON_DEMAND"
         if not self.in_window(now):
             return "OUTSIDE_WINDOW"
         outcomes = []

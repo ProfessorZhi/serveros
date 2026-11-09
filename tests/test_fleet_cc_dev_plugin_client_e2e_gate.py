@@ -56,11 +56,11 @@ _spec.loader.exec_module(cc)
 #: deliberate act: change the digest in the same commit as the text, and say in
 #: the message which source the new text was judged against.
 PINNED_SKILLS = {
-    "fleet-acceptance": "69ec1f7cc2dde01e29d3be87e626651de0cf27df36ce8f5dbca130cea630f2ce",
+    "fleet-acceptance": "0d10cbd64ad972c226e53404978925710113b679dbacb5873869eafc4088ece0",
     "fleet-ability-change": "74628d452c62b9fa5458305c16949dcf6f1f0c2e2ff40e1b1857ad42f6e031ec",
     "fleet-ability-inventory": "4eca875dd3d11903c4d2f0855dae21ea1015ee9f5fab7c0a553d831adce99e24",
     "fleet-async-dispatch": "910a1f84c1a9e78968cfdba8c92bf3f33636acef983a781ffca9af0d191e40c9",
-    "fleet-commander-orchestration": "5c68b5a7af3f429796f7a12231a1e8bfec17b7397b664de739cac1729c51e4c7",
+    "fleet-commander-orchestration": "73aff0c00b78a78566aeafa8f201e0a4d61def77ad33b3853619f3cd30a4a098",
     "fleet-create-with-grants": "7cc0a83d800677f8ded6a65fca995bddae84f8eb8b0627c090a60add9321b1e9",
     "fleet-device-and-session-discovery": "eb3046466fefa7acc8080e904c0aa29835b61326252641afd65d55a19bb6b0af",
     "fleet-evidence-review": "754fa0ab340bfc64fbf76939f8292e99b09ceb0017210bba74b122a428979d69",

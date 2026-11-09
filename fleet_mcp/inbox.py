@@ -20,6 +20,7 @@ import hashlib
 import time
 import json
 import os
+import re
 import sqlite3
 import stat
 from contextlib import contextmanager
@@ -47,6 +48,9 @@ MAX_BATCH = 100
 LEVELS = frozenset({"auto", "notify", "decide"})
 
 MAX_LIMIT = 200
+#: Key-shaped strings: refused by memory, masked on cards.
+SECRETISH = re.compile(r"\b(?:sk|pk|ghp|gho|xox[abps]|AKIA)[-_A-Za-z0-9]{12,}|"
+                       r"\b[A-Za-z0-9+/_=-]{40,}\b|-----BEGIN [A-Z ]*PRIVATE KEY")
 MAX_SUMMARY = 500
 MAX_EVIDENCE = 300
 _SCAN_BATCH = 500
@@ -87,6 +91,17 @@ CREATE TABLE IF NOT EXISTS batch_members (
     PRIMARY KEY (batch_id, session_ref, run_id)
 );
 CREATE INDEX IF NOT EXISTS batch_member_run ON batch_members(session_ref, run_id);
+CREATE TABLE IF NOT EXISTS memory (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    scope       TEXT NOT NULL,
+    topic       TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    source      TEXT,
+    by          TEXT,
+    forgotten   TEXT
+);
+CREATE INDEX IF NOT EXISTS memory_scope ON memory(scope);
 CREATE TABLE IF NOT EXISTS trace (
     seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     at          TEXT NOT NULL,
@@ -338,6 +353,78 @@ class EventInbox:
                          (cur.lastrowid, batch_id))
             self._trace(conn, "inbox", "batch completed", batch_id=batch_id,
                         counts=counts)
+
+    # -- batches, for reading back ----------------------------------------------
+
+    def recent_batches(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Open batches first, then the most recently closed ones."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT b.*, (SELECT COUNT(*) FROM batch_members m WHERE m.batch_id=b.batch_id "
+                "AND m.outcome IS NOT NULL) AS settled FROM batches b "
+                "ORDER BY (b.closed_seq IS NOT NULL), b.opened_at DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def find_batch(self, text: str) -> str | None:
+        """A batch by id, or the newest whose name contains `text`."""
+        text = (text or "").strip()
+        if not text:
+            return None
+        with self._connect() as conn:
+            row = conn.execute("SELECT batch_id FROM batches WHERE batch_id=?", (text,)).fetchone()
+            if row is None:
+                row = conn.execute("SELECT batch_id FROM batches WHERE name LIKE ? "
+                                   "ORDER BY opened_at DESC LIMIT 1", (f"%{text}%",)).fetchone()
+        return row["batch_id"] if row else None
+
+    # -- memory: what the fleet has learned, kept on the hub --------------------
+
+    MEMORY_MAX = 600
+
+    def remember(self, *, scope: str, topic: str, text: str, by: str,
+                 source: str | None = None) -> dict[str, Any]:
+        """One note: a confirmed finding, a rule the owner set, how a device is
+        used. Never a value — a secret-shaped string is refused, not stored."""
+        scope = _bounded(scope, "scope", 80, required=True)
+        if not re.fullmatch(r"fleet|device:[a-z0-9-]+|project:[\w .-]+", scope):
+            raise InboxError("scope is fleet, device:<id> or project:<name>")
+        topic = _bounded(topic, "topic", 80, required=True)
+        text = _bounded(text, "text", self.MEMORY_MAX, required=True)
+        if SECRETISH.search(text) or SECRETISH.search(topic):
+            raise InboxError("this looks like it contains a key or token; memory keeps "
+                             "findings and rules, never values (the key center keeps those)")
+        with self._connect() as conn:
+            cur = conn.execute("INSERT INTO memory(at, scope, topic, text, source, by) "
+                               "VALUES (?,?,?,?,?,?)",
+                               (_now(), scope, topic, text, _bounded(source, "source", 200), by))
+            self._trace(conn, "fleet", "memory added", ref=f"memory:{cur.lastrowid}",
+                        scope=scope, topic=topic, by=by)
+            return {"id": cur.lastrowid, "scope": scope, "topic": topic}
+
+    def recall(self, query: str | None = None, *, scope: str | None = None,
+               limit: int = 10) -> list[dict[str, Any]]:
+        """Notes matching every word of `query` (topic or text), newest first;
+        a device's notes come with the fleet-wide ones."""
+        where, args = ["forgotten IS NULL"], []
+        if scope:
+            where.append("(scope=? OR scope='fleet')")
+            args.append(scope)
+        for word in (query or "").split()[:6]:
+            where.append("(topic LIKE ? OR text LIKE ? OR scope LIKE ?)")
+            args += [f"%{word}%"] * 3
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id, at, scope, topic, text, source, by FROM memory WHERE "
+                                + " AND ".join(where) + " ORDER BY id DESC LIMIT ?",
+                                (*args, int(limit))).fetchall()
+        return [dict(r) for r in rows]
+
+    def forget(self, memory_id: int, *, by: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("UPDATE memory SET forgotten=? WHERE id=? AND forgotten IS NULL",
+                               (_now(), int(memory_id)))
+            if cur.rowcount:
+                self._trace(conn, "fleet", "memory forgotten", ref=f"memory:{memory_id}", by=by)
+            return bool(cur.rowcount)
 
     # -- the trace: one timeline per task, kept on the hub ----------------------
 

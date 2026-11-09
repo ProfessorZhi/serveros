@@ -41,15 +41,15 @@ class TheSurfaceIsTheOneTheDocumentsDescribe(unittest.TestCase):
     prose becomes wrong, which is the thing a test can catch and review cannot."""
 
     def test_forty_four_tools_are_served(self):
-        self.assertEqual(len(tools.SERVED_TOOLS), 56)
-        self.assertEqual(len(tools.TOOLS), 23)
+        self.assertEqual(len(tools.SERVED_TOOLS), 57)
+        self.assertEqual(len(tools.TOOLS), 24)
         self.assertEqual(len(tools.NATIVE_MIRROR_TOOLS) + 2, 33)
 
     def test_the_tool_surface_revision_is_the_one_the_contract_declares(self):
         import yaml
 
         # V5 retains core-lite output and adds the fresh-project entry.
-        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-14")
+        self.assertEqual(version.TOOL_SURFACE_REVISION, "fleet-mcp-15")
         contract = yaml.safe_load(
             (ROOT / "fleet" / "fleet-mcp-contract.yaml").read_text(encoding="utf-8"))
         self.assertEqual(contract["tool_surface_revision"], version.TOOL_SURFACE_REVISION)

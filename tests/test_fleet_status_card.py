@@ -110,6 +110,7 @@ class TheHubIsTheOneSender(unittest.TestCase):
                 return True
         self.notifier = Notifier(EventInbox(tmp / "inbox.sqlite"), tmp / "n.sqlite", Recorder(),
                                  sleep=lambda _s: None)
+        self.notifier.spec["schedule"]["resource_push"] = True     # the opt-in push mode
 
     def tearDown(self):
         self._td.cleanup()

@@ -209,6 +209,14 @@ def _inbox(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         limit=args.get("limit", 50), ack=bool(args.get("ack", False)))
 
 
+def _memory(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.memory(ctx.principal, action=args.get("action", "search"),
+                              query=args.get("query"), scope=args.get("scope"),
+                              topic=args.get("topic"), text=args.get("text"),
+                              source=args.get("source"), memory_id=args.get("memory_id"),
+                              limit=args.get("limit", 10))
+
+
 def _trace(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.trace(ctx.principal, run_id=args.get("run_id"),
                              batch_id=args.get("batch_id"), session_ref=args.get("session_ref"),
@@ -1063,6 +1071,40 @@ TOOLS: tuple[Tool, ...] = (
         },
         annotations=_read_only(),
         handler=_trace,
+    ),
+    Tool(
+        name="fleet_memory",
+        title="The fleet's shared memory",
+        description=(
+            "What the fleet has learned, kept on the hub and shared by every "
+            "commander and every device: confirmed findings (\"腾讯云 /v1/responses "
+            "不返回 cached_tokens\"), rules the owner set, how a device is used, "
+            "project background. `search` (fleet:read) before writing a prompt "
+            "for a device, so the agent starts from what is already known; `add` "
+            "(fleet:send) a short note once a finding is confirmed or the owner "
+            "states a rule; `forget` one that is no longer true. Never a key, "
+            "token or password — those are refused."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["search", "add", "forget"],
+                           "default": "search"},
+                "query": _string("search: words that must all appear (topic or text)."),
+                "scope": _string("fleet | device:<id> | project:<name>. search: a device "
+                                 "also gets the fleet-wide notes. add: default fleet."),
+                "topic": _string("add: a short title, e.g. 'LiteLLM 腾讯云 responses 缓存字段'."),
+                "text": _string("add: the finding or rule in at most 600 characters."),
+                "source": _string("add: where it was established (batch id, run id, the owner)."),
+                "memory_id": _integer("forget: the note's id.", minimum=1),
+                "limit": _integer("search: how many notes.", minimum=1, maximum=50, default=10),
+            },
+            "additionalProperties": False,
+        },
+        # `forget` only marks a note; nothing on any device changes.
+        annotations={"readOnlyHint": False, "destructiveHint": False,
+                     "idempotentHint": False, "openWorldHint": False},
+        handler=_memory,
     ),
     Tool(
         name="fleet_work_board",

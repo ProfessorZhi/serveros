@@ -50,7 +50,10 @@ SERVER_VERSION = "0.2.0"
 # Twenty-two authored, 55 total.
 # `fleet-mcp-14`: `fleet_trace` (read) — a task's way through the fleet as the
 # hub recorded it, and the step it stopped at. Twenty-three authored, 56 total.
-TOOL_SURFACE_REVISION = "fleet-mcp-14"
+# `fleet-mcp-15`: `fleet_memory` (search / add / forget) — what the fleet has
+# learned, kept on the hub and shared by every commander and device.
+# Twenty-four authored, 57 total.
+TOOL_SURFACE_REVISION = "fleet-mcp-15"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

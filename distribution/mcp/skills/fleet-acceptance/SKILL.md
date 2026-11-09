@@ -54,6 +54,8 @@ and never let it change a row or the verdict.
 | 事件收件箱 | `fleet_inbox` limit 5 | readable |
 | 自调参记录 | `fleet_tune` action `history` | readable (do NOT `set` or `revert`) |
 | 需求看板 | `fleet_work_board` | readable |
+| 共享记忆 | `fleet_memory` action `search`, limit 3 | readable |
+| 链路追踪 | `fleet_trace` minutes 60 | readable |
 
 ## 3. The acceptance batch (the only write)
 
@@ -73,6 +75,9 @@ One table, one line per row above plus the two update rows, each `✅` / `➖ <w
 (swap, memory, open alerts) — facts, not verdicts. Then one line for the batch:
 
     验收批次已派发：<n> 台设备。飞书会收到「验收 … · 全部完成」卡片，卡上每台设备一行结论——那张卡是最后一项。
+
+and one line for the owner to try themselves: 在飞书里给机器人发「状态」，应马上回一张
+设备状态卡（发「帮助」看全部命令）。
 
 Then a verdict: no ❌ → **全部通过（待飞书卡片）**; any ❌ → **未通过 — 下一步：<谁做什么>**.
 

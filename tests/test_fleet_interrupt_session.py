@@ -243,7 +243,7 @@ class TheToolIsOnTheSurfaceAndSaysWhatItIs(unittest.TestCase):
         names = fleet_tools.tool_names()
         self.assertEqual(names[8:], ["fleet_interrupt_session", "fleet_create_project",
                                      "fleet_delete_project", "fleet_models_list",
-                                     "fleet_model_upsert", "fleet_batch", "fleet_tune", "fleet_inbox", "fleet_trace",
+                                     "fleet_model_upsert", "fleet_batch", "fleet_tune", "fleet_inbox", "fleet_trace", "fleet_memory",
                                      "fleet_work_board", "fleet_project_understanding",
                                      "fleet_work_candidate_add", "fleet_device_versions",
                                      "fleet_monitor_status", "fleet_monitor_control"])

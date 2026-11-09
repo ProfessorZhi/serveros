@@ -210,9 +210,11 @@ def _spawn(argv: list[str]):
 class ButtonListener:
     """`lark-cli event consume card.action.trigger --as bot`, one thread, restarted."""
 
-    def __init__(self, owner: str | None, act: Callable[[dict[str, Any]], str]) -> None:
+    def __init__(self, owner: str | None, act: Callable[[dict[str, Any]], str],
+                 argv: list[str] | None = None) -> None:
         self.owner = owner
         self.act = act
+        self.argv = argv or CONSUME_CALLBACKS
         self.state = "NOT_STARTED"
         self.handled = 0
         self.last = ""
@@ -222,14 +224,15 @@ class ButtonListener:
         if self.owner is None:
             self.state = "NO_OWNER"
             return
-        self._thread = threading.Thread(target=self._loop, name="feishu-buttons", daemon=True)
+        self._thread = threading.Thread(target=self._loop, name=f"feishu-{self.argv[2]}",
+                                        daemon=True)
         self._thread.start()
 
     def _loop(self) -> None:
         import time
 
         while True:
-            proc = _spawn(CONSUME_CALLBACKS)
+            proc = _spawn(self.argv)
             if proc is None:
                 self.state = "CLI_MISSING"
                 return
