@@ -38,7 +38,37 @@ _NEXT = [
 ]
 
 
+_MARKS = (("dispatched", "派发"), ("watching", "监控接手"), ("observed", "第一次读到状态"),
+          ("reply read", "读到回复"), ("event run.", "结果记录"), ("card sent", "飞书卡发出"))
+
+
+def timings(steps: list[dict[str, Any]]) -> list[str]:
+    """Seconds from dispatch to each stage that happened — where the time went."""
+    from datetime import datetime
+
+    def at(step):
+        return datetime.strptime(step["at"], "%Y-%m-%dT%H:%M:%SZ")
+    firsts = {}
+    for step in steps:
+        for prefix, word in _MARKS:
+            if step["step"].startswith(prefix) and word not in firsts:
+                firsts[word] = at(step)
+    start = firsts.get("派发")
+    if start is None:
+        return []
+    return [f"{word} +{int((firsts[word] - start).total_seconds())}s"
+            for _, word in _MARKS if word in firsts and word != "派发"]
+
+
 def diagnose(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    verdict = _diagnose(steps)
+    took = timings(steps)
+    if took:
+        verdict["timings"] = took
+    return verdict
+
+
+def _diagnose(steps: list[dict[str, Any]]) -> dict[str, Any]:
     if not steps:
         return {"stage": "NOT_FOUND",
                 "next": "东京没有这条记录：任务不是经 Fleet 派发的，或早于 1.11（之前没有 trace）"}
@@ -82,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         for step in steps:
             print(line(step))
         print(f"\n→ {verdict['stage']}: {verdict['next']}")
+        if verdict.get("timings"):
+            print("  用时：" + " · ".join(verdict["timings"]))
     return 0
 
 

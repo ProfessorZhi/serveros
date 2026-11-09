@@ -110,18 +110,42 @@ an unknown outcome. After the ACK:
    and UNCONFIRMED are reported as exactly that, never as "dispatched";
 3. return promptly to coordination.
 
-**Every dispatch goes into a batch — even a single task.** Right after the
-last ACK, call `fleet_batch` action `open` with a name the owner will recognise
-and each run's `session_ref` and `run_id` exactly as returned. Then **end your
-turn**: tell the owner in one or two lines what was dispatched and that the
-result will arrive as a Feishu 批次完成 card. Do not wait for it.
+**First decide which of two modes the work is — it decides speed.**
+
+**A. Interactive investigation** — the owner asked a question that a few quick
+reads on one device can answer (look something up in production, check a log,
+compare two settings). Owner, 2026-11-09: the local agent answered such a
+question in four minutes with a dozen small reads; a commander that handed the
+whole question to a fresh agent and left took far longer and found nothing.
+So, like the local agent:
+
+- use ONE session on that device for the whole investigation — the device's
+  existing session for this kind of work if `fleet_list_sessions` shows one
+  idle, else create one and keep its `session_ref`;
+- send ONE small step at a time ("run this read-only query and print the
+  rows"), then `fleet_get_run` with `wait: true`, `wait_seconds: 45`; read the
+  answer, decide the next step, send it to the SAME session;
+- name the device's strongest allowed model for it (`fleet_models_list`), not
+  the default flash model;
+- stop as soon as the question is answered; report the conclusion with the
+  evidence rows. If a step is still running after one 45-second wait, say so
+  and move it to mode B.
+
+**B. Long work** — tests, deployments, builds, anything expected to take more
+than a few minutes, or several devices at once. **Every such dispatch goes into
+a batch — even a single task.** Right after the last ACK, call `fleet_batch`
+action `open` with a name the owner will recognise and each run's
+`session_ref` and `run_id` exactly as returned. Then **end your turn**: tell
+the owner in one or two lines what was dispatched and that the result will
+arrive as a Feishu 批次完成 card. Do not wait for it.
 
 - The hub watches every run Fleet starts, including ones that end in seconds;
   when the batch's last run has an outcome it sends ONE card listing each task,
   its outcome and the start of its final reply. A failure still alerts at once.
-- Do not call `fleet_get_run` with `wait`, do not loop on `fleet_inbox`, and do
-  not keep the turn open "until it finishes": a chat client times out long
-  before most tasks end, and the owner then has neither your answer nor a card.
+- In mode B, do not call `fleet_get_run` with `wait`, do not loop on
+  `fleet_inbox`, and do not keep the turn open "until it finishes": a chat
+  client times out long before such work ends, and the owner then has neither
+  your answer nor a card.
 - When the owner comes back and asks, read `fleet_batch` (status) or
   `fleet_inbox` (kinds `[batch.completed]`) once, then accept or refuse each run
   on its evidence.
@@ -129,8 +153,8 @@ result will arrive as a Feishu 批次完成 card. Do not wait for it.
   seems stuck — call `fleet_trace` with the batch or run id once and report its
   `diagnosis` (where it stopped, what to check next). Do not re-dispatch or
   guess before reading it.
-- A new investigation gets a new session; reuse a session only to continue the
-  same thread of work (a long transcript makes every later turn slower).
+- A new, unrelated piece of long work gets a new session; an interactive
+  investigation keeps its one session to the end.
 - Write the instruction so the device agent answers with its conclusion first,
   in a few lines — that conclusion is what lands on the card.
 
