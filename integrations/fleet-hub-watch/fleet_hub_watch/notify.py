@@ -710,6 +710,16 @@ class Notifier:
         batch = self.spec["schedule"]["completion_batch_seconds"]
         if not force and (now - oldest).total_seconds() < batch:
             return 0
+        # A run can join a batch after it was queued (the batch opened after the
+        # run finished): its batch card tells it, so it leaves this card.
+        late = [r for r in rows if self._batch_of(json.loads(r["body"])) is not None]
+        if late:
+            with self._connect() as conn:
+                conn.executemany("DELETE FROM pending_completions WHERE run_key=?",
+                                 [(r["run_key"],) for r in late])
+            rows = [r for r in rows if r not in late]
+            if not rows:
+                return 0
         runs = [json.loads(r["body"]) for r in rows]
         card_key = f"done:{_key(*[r['run_key'] for r in rows])}"
         if not self._send(card_key, cards.completion_card(runs, now=now, spec=self.spec), now):

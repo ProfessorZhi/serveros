@@ -428,6 +428,25 @@ class CompletionsAndPacing(NotifierTest):
         (header,) = self.transport.headers()
         self.assertIn("任务完成 · 3 个", header[3])
 
+    def test_a_run_that_joins_a_batch_after_queueing_leaves_the_card(self):
+        """Owner, 2026-11-10: a batch opened after its run finished got a
+        任务完成 card as well as the batch card."""
+        for i in range(2):
+            self.run_event("run.completed", run_id=f"run-{i}")
+        self.notifier.tick([], THURSDAY_10)
+        self.inbox.batch_of = lambda _s, run_id: "b1" if run_id == "run-0" else None
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=5))
+        (header,) = self.transport.headers()
+        self.assertIn("任务完成 · 1 个", header[3])
+
+    def test_a_queue_of_only_late_batch_members_sends_nothing(self):
+        self.run_event("run.completed", run_id="run-0")
+        self.notifier.tick([], THURSDAY_10)
+        self.inbox.batch_of = lambda *_a: "b1"
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=5))
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=10))
+        self.assertEqual(self.transport.ops, [])
+
     def test_a_tick_sends_at_most_the_cap_and_keeps_the_rest(self):
         for i in range(MAX_SENDS_PER_TICK + 5):
             self.run_event("run.failed", run_id=f"run-{i}")
