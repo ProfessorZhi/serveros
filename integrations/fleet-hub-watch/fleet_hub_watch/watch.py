@@ -23,6 +23,7 @@ discovery interval narrows it; it does not close it.
 from __future__ import annotations
 
 import json
+import re
 import sys
 
 import os
@@ -167,16 +168,46 @@ def shape(value: Any, depth: int = 4) -> Any:
     return type(value).__name__
 
 
+#: A plain-text transcript (CloudCLI's session_read on some devices): one entry
+#: per `[timestamp] label: text` or `[timestamp] tool Name({...})`.
+_ENTRY = re.compile(r"^\[[^\]\n]{4,48}\]\s+(?P<label>[^\s:(]{1,24})(?P<sep>:|\s|\()?", re.M)
+#: Labels that carry the agent's own words; everything else (thinking, tool,
+#: user, system, results) is not an answer.
+ANSWER_LABELS = {"assistant", "claude", "answer", "response", "reply",
+                 "final", "助手", "回复", "回答"}
+ASK_TOOLS = ("AskUserQuestion", "ask_user", "AskUser")
+
+
+def text_entries(text: str) -> list[dict[str, str]]:
+    """[{label, body}] from a plain-text transcript, in order; [] when it is not one."""
+    marks = list(_ENTRY.finditer(text or ""))
+    entries = []
+    for i, mark in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        body = text[mark.end():end].strip()
+        if mark.group("sep") == "(":
+            body = "(" + body
+        entries.append({"label": mark.group("label"), "body": body})
+    return entries
+
+
+def _plain_answer(text: str) -> str | None:
+    for entry in reversed(text_entries(text)):
+        if entry["label"].lower() in ANSWER_LABELS and entry["body"]:
+            return entry["body"]
+    return None
+
+
 def last_assistant_text(transcript: Any) -> str | None:
     """The last assistant reply in a transcript, whatever list the provider put
     its messages in. Used when a run reports `completed` with no activity record
     (CloudCLI without run receipts): the session itself still holds the answer."""
     if isinstance(transcript, str):
-        # An MCP text block carrying the JSON answer.
+        # An MCP text block carrying the JSON answer, or a plain-text transcript.
         try:
             return last_assistant_text(json.loads(transcript))
         except ValueError:
-            return None
+            return _plain_answer(transcript)
     if isinstance(transcript, dict):
         # CloudCLI's session_read answers {"content": [...], "cursor", "mode"}.
         for key in ("content", "messages", "items", "entries", "turns", "transcript",
@@ -234,12 +265,54 @@ def _entries(transcript: Any) -> list[dict]:
     return out
 
 
+def _plain_text(transcript: Any) -> str | None:
+    """The transcript's text when the provider sent it as one string, else None."""
+    if isinstance(transcript, dict):
+        transcript = transcript.get("content")
+    if isinstance(transcript, str) and not transcript.lstrip().startswith(("{", "[{")):
+        return transcript if text_entries(transcript) else None
+    return None
+
+
+#: How many entries to ask for when reading a reply: a device may cap the
+#: whole read (CloudCLI at 4000 characters, from the oldest entry), so the
+#: newest entry alone is tried first.
+REPLY_LIMITS = (1, 3, 5)
+
+
+def read_reply(service: Any, principal: Any, key: Any) -> str | None:
+    """The session's last answer, read the way that survives a capped read."""
+    for limit in REPLY_LIMITS:
+        found = last_assistant_text(service.read_session(principal, key, limit=limit).get("transcript"))
+        if found:
+            return found
+    return None
+
+
 def work_summary(transcript: Any) -> dict[str, Any]:
     """What the device agent did, as metadata only: turns, tool calls by name,
     model, and whether it stopped to ask a person. Never text."""
     turns, tools, model, asking = 0, {}, None, False
     skills, mcp = [], []
-    for entry in _entries(transcript):
+    plain = _plain_text(transcript)
+    for entry in text_entries(plain) if plain else []:
+        label = entry["label"]
+        if label.lower() in ("user", "human", "system"):
+            continue
+        turns += 1
+        if label.lower() == "tool":
+            name = re.match(r"[\w.:-]{1,60}", entry["body"])
+            name = name.group()[:40] if name else "tool"
+            tools[name] = tools.get(name, 0) + 1
+            skill = re.search(r'"skill"\s*:\s*"([^"]{1,60})"', entry["body"]) if name == "Skill" else None
+            if skill:
+                skills.append(skill.group(1))
+            if name.startswith("mcp__"):
+                mcp.append(name[:60])
+            asking = name in ASK_TOOLS
+        elif label.lower() in ANSWER_LABELS:
+            asking = False
+    for entry in [] if plain else _entries(transcript):
         inner = entry.get("message") if isinstance(entry.get("message"), dict) else entry
         role = inner.get("role") or entry.get("type")
         if role != "assistant":
@@ -256,7 +329,7 @@ def work_summary(transcript: Any) -> dict[str, Any]:
                 if name.startswith("mcp__"):
                     mcp.append(name[:60])
                 tools[name] = tools.get(name, 0) + 1
-                asking = name in ("AskUserQuestion", "ask_user", "AskUser")
+                asking = name in ASK_TOOLS
             elif isinstance(block, dict) and block.get("type") == "text":
                 asking = False
     summary: dict[str, Any] = {"turns": turns}
@@ -422,7 +495,8 @@ class Watcher:
                 tracer("device", step, session_ref=watch["session_ref"], run_id=watch["run_id"],
                        **summary)
                 if final:
-                    answer = last_assistant_text(read.get("transcript"))
+                    answer = read_reply(self.service, self.principal,
+                                        SessionKey.parse(watch["session_ref"]))
                     if answer:
                         tracer("device", "result", session_ref=watch["session_ref"],
                                run_id=watch["run_id"], text=answer)
@@ -430,17 +504,22 @@ class Watcher:
                 pass
 
     def _answered(self, watch: dict[str, Any]) -> bool:
+        key = SessionKey.parse(watch["session_ref"])
         try:
-            read = self.service.read_session(self.principal, SessionKey.parse(watch["session_ref"]),
-                                             limit=5)
+            if read_reply(self.service, self.principal, key) is not None:
+                self._trace("reply read from the session", session_ref=watch["session_ref"],
+                            run_id=watch["run_id"])
+                return True
+            read = self.service.read_session(self.principal, key, limit=1)
         except Exception:  # noqa: BLE001 - an unreadable session is not an answer
             return False
-        if last_assistant_text(read.get("transcript")) is not None:
-            self._trace("reply read from the session", session_ref=watch["session_ref"],
-                        run_id=watch["run_id"])
-            return True
         # Keys only, never text: enough to see where a provider keeps its replies.
         found = shape(read.get("transcript"))
+        plain = _plain_text(read.get("transcript"))
+        if plain:
+            # Entry labels are the transcript's own format words, not its text.
+            found = {"plain_text": len(plain),
+                     "labels": [e["label"][:24] for e in text_entries(plain)][-8:]}
         print(f"transcript without a readable reply: {found}", file=sys.stderr)
         self._trace("no reply in the session", session_ref=watch["session_ref"],
                     run_id=watch["run_id"], shape=found)
