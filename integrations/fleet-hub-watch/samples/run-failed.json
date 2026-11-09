@@ -37,7 +37,7 @@
       },
       {
         "tag": "markdown",
-        "content": "**现象** run-7f3a（Tokyo）执行失败（RUN_FAILED）\n**影响** 待确认\n**建议** 让指挥端看一下这个会话最后几轮，决定重试还是修"
+        "content": "run-7f3a（Tokyo）执行失败（RUN_FAILED）\n<font color='grey'>让指挥端看一下这个会话最后几轮，决定重试还是修</font>"
       },
       {
         "tag": "collapsible_panel",
@@ -69,10 +69,6 @@
             "content": "设备 device:tokyo-shared-dev-01\n对象 run:run-7f3a\n首次观测 10-29 14:25\n最近观测 10-29 14:25\n证据 device:tokyo-shared-dev-01|claude|s-1"
           }
         ]
-      },
-      {
-        "tag": "markdown",
-        "content": "<font color='grey'>只是提醒，没有自动停止或重启任何东西</font>"
       }
     ]
   }

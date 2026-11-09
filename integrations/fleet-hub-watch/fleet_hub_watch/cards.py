@@ -233,14 +233,15 @@ def alert_card(episode: dict, *, now: datetime, sample: bool = False,
     subtitle = (f"开始 {_local(episode.get('first_seen'), with_date=True)} · "
                 f"{'持续' if state == 'OPEN' else '历时'} {_minutes(episode.get('first_seen'), end)}")
 
-    face = [f"**{text['phenomenon']}** {episode['text']}"]
+    # Owner, 2026-11-09: say it in one or two short lines — what, and what to do
+    # (or that it is over); no 影响 待确认 line and no footer.
+    face = [episode["text"]]
     if state == "RECOVERED":
-        face.append(f"**{text['recovered']}** {_local(episode.get('recovered_at'), with_date=True)} 读数回到正常")
+        face = [f"已恢复 · {_local(episode.get('recovered_at'), with_date=True)} 读数回到正常"]
     elif state == "ESCALATED":
-        face.append(f"**状态** {text['escalated_line']}")
+        face.append(text["escalated_line"])
     else:
-        face.append(f"**{text['impact']}** {episode.get('impact') or text['impact_default']}")
-        face.append(f"**{text['advice']}** {_suggestion(episode, spec)}")
+        face.append(f"<font color='grey'>{_suggestion(episode, spec)}</font>")
 
     elements: list[dict] = []
     if sample:
@@ -254,7 +255,6 @@ def alert_card(episode: dict, *, now: datetime, sample: bool = False,
         detail.append(f"证据 {episode['evidence']}")
     elements.append(_panel(_eid("det", episode["episode"]), text["details_title"], detail,
                            expanded=False))
-    elements.append(_md(text["footer"]))
     if state == "OPEN" and not sample:
         from .feishu import button
         elements.append(button("这件事 1 小时内别再提醒", {"fleet": "mute", "subject": episode["episode"],

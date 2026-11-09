@@ -234,12 +234,13 @@ class TheCardsFollowFeishuRules(unittest.TestCase):
         self.assertIn("🚨 报警 1", face)
         self.assertIn("需要关注", card["body"]["elements"][1]["content"])
 
-    def test_an_alert_card_says_impact_is_unconfirmed_and_suggests(self):
+    def test_an_alert_card_is_what_happened_and_what_to_do_in_two_lines(self):
         card = cards.alert_card({"episode": "e", "key": "fs:DATA", "subject": "Dell · 磁盘 DATA",
                                  "level": WARN, "text": "86%"}, now=THURSDAY_10)
         face = card["body"]["elements"][0]["content"]
-        self.assertIn("**影响** 待确认", face)
-        self.assertIn("**建议**", face)
+        self.assertEqual(face.split("\n")[0], "86%")
+        self.assertIn("清理或扩容", face)
+        self.assertNotIn("影响", face, "no 待确认 filler (owner, 2026-11-09)")
         self.assertEqual(card["header"]["template"], "yellow")
 
     def test_a_sample_says_so(self):

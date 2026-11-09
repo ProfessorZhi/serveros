@@ -37,7 +37,7 @@
       },
       {
         "tag": "markdown",
-        "content": "**现象** 已用 80% · 余 800 GiB\n**恢复** 10-29 15:10 读数回到正常"
+        "content": "已恢复 · 10-29 15:10 读数回到正常"
       },
       {
         "tag": "collapsible_panel",
@@ -69,10 +69,6 @@
             "content": "设备 device:llm-lab-dell\n对象 fs:DATA\n首次观测 10-29 14:02\n最近观测 10-29 14:30\n证据 fs:DATA|ALERT"
           }
         ]
-      },
-      {
-        "tag": "markdown",
-        "content": "<font color='grey'>只是提醒，没有自动停止或重启任何东西</font>"
       }
     ]
   }

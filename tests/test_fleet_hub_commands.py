@@ -87,12 +87,12 @@ class Answers(unittest.TestCase):
         self.answerer.views[1]["readings"].append(
             {"key": "psi", "label": "内存压力", "text": "停顿 1.2%", "level": "ALERT"})
         card = self.answerer.answer("status", "", NOW)
-        self.assertIn("内存压力 停顿 1.2%（报警）", self.body(card), "the reason for red is shown")
-        self.assertIn("任务 1 个在跑", self.body(card))
-        self.assertEqual(self.body(card).count("个在跑"), 1, "only runs still being watched")
-        self.assertEqual(card["header"]["title"]["content"], "Fleet 状态 · 2 台需要注意")
+        self.assertIn("<font color='red'>内存压力 停顿 1.2%</font>", self.body(card), "the reason for red is shown")
+        self.assertIn("1 个任务在跑", self.body(card))
+        self.assertEqual(self.body(card).count("个任务在跑"), 1, "only runs still being watched")
+        self.assertEqual(card["header"]["title"]["content"], "2 台设备 · 1 报警 · 1 注意")
         self.assertIn("**Tokyo**", self.body(card))
-        self.assertIn("Swap 99%（水位）（注意）", self.body(card))
+        self.assertNotIn("（水位）", self.body(card))
 
     def test_tasks_and_a_batch_by_name(self):
         ref = f"{TOKYO}|claude|s-1"
