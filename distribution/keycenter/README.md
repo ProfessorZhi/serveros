@@ -82,6 +82,48 @@ changed. See what is where, names only, no key needed:
 python3 distribution/keycenter/serveros_secret.py inventory --repo ~/serveros-secrets
 ```
 
+## Windows devices
+
+The same tool, with Windows forms where Linux has systemd and mode bits:
+
+- private files (age key, env files, the names state, the temp file sops
+  encrypts from) carry an ACL naming only this account, set by SID with
+  `icacls` before anything is written; `doctor`/`sync` refuse a key anyone else
+  can read (SYSTEM and Administrators aside) and print the `icacls` fix;
+- env files are written with LF line ends (an older CRLF copy is rewritten once);
+- `restart:` takes scheduled tasks: `restart: ["task:\\ServerOS\\Some task"]`
+  (ended, then run; a failed run is reported under `errors`, not claimed);
+- the 5-minute sync is a scheduled task, not a timer:
+  `powershell -ExecutionPolicy Bypass -File distribution\keycenter\windows\register-sync-task.ps1`
+  (wscript launcher, no console window; `update.ps1 -Apply` re-registers it when
+  the device kit declares `secrets_sync`). Its log,
+  `%LOCALAPPDATA%\ServerOS\state\secrets-sync.log`, holds names only;
+- under a scheduled task the tool finds sops/age/git itself (Git for Windows,
+  WinGet, Scoop, `~/.local/bin`, plus `path:` in `secrets.yaml`) and sets
+  `HOME` for ssh.
+
+## Comparing and cleaning up — never by reading a value
+
+An agent never reads a value to compare it or to find where it was copied.
+These run where the key is, decrypt in that process only, and print names,
+bundles, counts and fingerprints:
+
+```bash
+# Is the value in this env file the one the key center holds?
+python3 distribution/keycenter/serveros_secret.py fingerprint GW0_TOKEN               # this device's bundles
+python3 distribution/keycenter/serveros_secret.py fingerprint GW0_TOKEN --of ~/old.env # the same name in a file
+# Owner side: --repo ~/serveros-secrets [--from vault/main] (key: SOPS_AGE_KEY_FILE)
+
+# Where do held values still sit in plain text? Then replace them with <redacted:NAME>.
+python3 distribution/keycenter/serveros_secret.py scan ~/.claude
+python3 distribution/keycenter/serveros_secret.py redact ~/.claude/settings.json.bak ~/archive --write
+```
+
+Equal fingerprints mean equal values (`fp1:` + 64 bits of an HMAC keyed by the
+name); they do not give a key back. `redact` without `--write` is a dry run; with
+it, files are rewritten in place (no backup copy holding the value) and `.git`
+folders are left alone. Values shorter than 8 characters are not searched.
+
 ## Every day
 
 - Rotate one value: `serveros_secret.py set GW0_TOKEN --device device:llm-lab-dell --repo …`

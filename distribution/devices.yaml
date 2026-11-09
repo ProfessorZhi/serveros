@@ -96,6 +96,7 @@ devices:
     family:
       profile: work-fj-windows
     monitor:
+      secrets_sync: true             # scheduled task (distribution/keycenter/windows)
       serverosd: false
       # The Windows collector (native/node-core/core-lite/windows): Win32 reads
       # into the same snapshot contract, a scheduled task publishes every minute.

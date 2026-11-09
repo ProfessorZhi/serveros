@@ -10,6 +10,7 @@
 |---|---|
 | 1 core plugin | core skills arrive as standalone skills through the family profile |
 | 2 ability family | `work-fj-windows` from ProfessorZhi/ability-management, one pinned revision, read back after rollout |
+| 3 monitor · secrets_sync | key center: pull the secrets repository, decrypt this device's bundles (SOPS + age) into env files only this account can read, restart named tasks |
 | 3 monitor · core_lite | native: C++ Windows collector (Win32) → status.json every minute, observe only |
 | 3 monitor · node_connector | link: reports this device to the hub (tokyo) |
 
@@ -37,6 +38,9 @@ Set-Content -NoNewline "$env:USERPROFILE\.config\serveros\node-identity" 'device
 powershell -ExecutionPolicy Bypass -File native\node-core\core-lite\windows\deploy\publish-status.ps1 -Bin $bin -ProfilePath $prof
 powershell -ExecutionPolicy Bypass -File native\node-core\core-lite\windows\deploy\register-publish-task.ps1 -Bin $bin -ProfilePath $prof
 # then set core_snapshot_path in the connector binding to %LOCALAPPDATA%\ServerOS\state\core-lite\status.json
+# key center (first time: python distribution\keycenter\serveros_secret.py keygen, send the public key to the owner, write %USERPROFILE%\.config\serveros\secrets.yaml)
+python distribution\keycenter\serveros_secret.py doctor
+powershell -ExecutionPolicy Bypass -File distribution\keycenter\windows\register-sync-task.ps1
 powershell -ExecutionPolicy Bypass -File fleet_mcp\node\install.ps1 -DeviceRef device:work-fj -CloudCliCredential <anchor>
 ```
 
