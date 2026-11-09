@@ -61,6 +61,9 @@ UNIT_TEMPLATES = {
     "secrets_sync": "distribution/keycenter/serveros-secrets-sync.service.template",
     "secrets_timer": "distribution/keycenter/serveros-secrets-sync.timer",
     "secrets_tool": "distribution/keycenter/serveros_secret.py",
+    "secrets_task_windows": "distribution/keycenter/windows/register-sync-task.ps1",
+    "secrets_sync_windows": "distribution/keycenter/windows/sync-secrets.ps1",
+    "secrets_launcher_windows": "distribution/keycenter/windows/run-hidden-wait.vbs",
     "node_connector_windows": "fleet_mcp/node/install.ps1",
     "core_lite_publish_windows": "native/node-core/core-lite/windows/deploy/publish-status.ps1",
     "core_lite_task_windows": "native/node-core/core-lite/windows/deploy/register-publish-task.ps1",
@@ -149,7 +152,17 @@ def kit(doc: dict, name: str) -> dict:
         layers["family"]["cloudcli"] = ("also rolled out into the Claude config dir a running "
                                         "CloudCLI uses (read from the process at install)")
     monitor: dict = {}
-    if mon.get("secrets_sync"):
+    if mon.get("secrets_sync") and dev["os"] == "windows":
+        monitor["secrets_sync"] = {
+            "what": "key center: pull the secrets repository, decrypt this device's bundles "
+                    "(SOPS + age) into env files only this account can read, restart named tasks",
+            "task": "\\ServerOS\\ServerOS Secrets sync (scheduled task, this user, every 5 minutes)",
+            "templates": [_pin(UNIT_TEMPLATES[k]) for k in ("secrets_task_windows",
+                                                             "secrets_sync_windows",
+                                                             "secrets_launcher_windows")],
+            "tool": _pin(UNIT_TEMPLATES["secrets_tool"]),
+            "log": "%LOCALAPPDATA%\\ServerOS\\state\\secrets-sync.log (names only)"}
+    elif mon.get("secrets_sync"):
         monitor["secrets_sync"] = {
             "what": "key center: pull ProfessorZhi/serveros-secrets, decrypt this device's "
                     "bundles (SOPS + age) into 0600 env files, restart what reads them",
@@ -564,6 +577,12 @@ def windows_plan(k: dict, rev: str) -> list[str]:
     ] if "profile" in core else [
         "# resource readings: none yet — no collector configured for this device",
     ]
+    secrets = [
+        "# key center (first time: python distribution\\keycenter\\serveros_secret.py keygen, send the "
+        "public key to the owner, write %USERPROFILE%\\.config\\serveros\\secrets.yaml)",
+        "python distribution\\keycenter\\serveros_secret.py doctor",
+        "powershell -ExecutionPolicy Bypass -File distribution\\keycenter\\windows\\register-sync-task.ps1",
+    ] if "secrets_sync" in k["layers"]["monitor"] else []
     return [
         "# run in PowerShell on the device, from a checkout of serveros and ability-management",
         f"python ..\\ability-management\\skills\\ability-management\\payload\\control_plane.py rollout "
@@ -571,6 +590,7 @@ def windows_plan(k: dict, rev: str) -> list[str]:
         f"python ..\\ability-management\\skills\\ability-management\\payload\\control_plane.py readback "
         f"--profile {fam['profile']} --agent all",
         *native,
+        *secrets,
         f"powershell -ExecutionPolicy Bypass -File fleet_mcp\\node\\install.ps1 -DeviceRef {k['device_ref']} "
         "-CloudCliCredential <anchor>",
     ]

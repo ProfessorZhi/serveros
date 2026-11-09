@@ -31,11 +31,24 @@ Commands:
     serveros-secret sync [--no-pull] [--no-restart]            (device) pull, decrypt, write, restart
     serveros-secret names                        (anyone) print the names this device holds
     serveros-secret doctor                       (device) check binaries, key, config, repo
+    serveros-secret fingerprint [NAME..]         (device/owner) non-reversible fingerprints, never values
+    serveros-secret scan PATH..                  (device/owner) which NAMES' values appear in files
+    serveros-secret redact PATH.. [--write]      (device/owner) replace those values with <redacted:NAME>
+
+Comparing or cleaning up values is what these three are for: an agent never
+reads a value into its context or a script to compare it by hand. They decrypt
+in this process only and print names, bundles, counts and fingerprints.
 
 Device config: ~/.config/serveros/secrets.yaml
     repo: /path/to/serveros-secrets checkout
     device: device:<id>
     key: ~/.config/serveros/age.key            (default)
+    path: [C:/Program Files/Git/cmd]           (optional) extra dirs for sops/age/git under a timer
+
+Target files (`devices/<id>/<bundle>.target.yaml`):
+    env_file: ~/.config/serveros/cloudcli.env
+    restart: [cloudcli.service]                systemd user units (Linux), or
+    restart: ["task:\\ServerOS\\Some task"]       scheduled tasks (Windows: ended, then run)
 
 The backend is this file's `decrypt_bundle`/`encrypt_bundle`; a device only
 relies on "a set of variables written to an env file". Moving to OpenBao later
@@ -44,8 +57,10 @@ replaces those two functions and nothing that reads the env files.
 from __future__ import annotations
 
 import argparse
+import functools
 import getpass
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -66,6 +81,13 @@ NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
 BUNDLE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 DEVICE_RE = re.compile(r"^device:([a-z0-9][a-z0-9-]{1,62})$")
 UNIT_RE = re.compile(r"^[A-Za-z0-9@_.:-]+\.(service|timer)$")
+TASK_RE = re.compile(r"^task:(\\?[A-Za-z0-9 _.()-]+(?:\\[A-Za-z0-9 _.()-]+)*)$")
+IS_WINDOWS = os.name == "nt"
+PRIVATE_TMP = Path("~/.config/serveros/tmp").expanduser()
+# SYSTEM and the local Administrators group can always take a file over, so
+# their presence on an ACL is not a leak; anyone else's is.
+WINDOWS_TRUSTED = {"S-1-5-18", "S-1-5-32-544"}
+MIN_SEARCH_LEN = 8          # shorter values match too much to scan or redact safely
 
 
 class SecretError(RuntimeError):
@@ -82,12 +104,18 @@ def _device_id(device: str) -> str:
 
 
 def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
+    """Write `text` with LF line ends; private files are 0600 on POSIX and carry
+    an ACL naming only this account on Windows, set while the file is still empty."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
-        if hasattr(os, "fchmod"):        # not on Windows; the owner's machine may be
+        if not IS_WINDOWS:
             os.fchmod(fd, mode)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        elif not mode & 0o077:
+            os.close(fd)
+            _restrict(Path(tmp))
+            fd = os.open(tmp, os.O_WRONLY | getattr(os, "O_BINARY", 0))
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)
         os.replace(tmp, path)
     except BaseException:
@@ -97,8 +125,96 @@ def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
 
 def _run(argv: list[str], *, stdin: str | None = None, env: dict | None = None,
          cwd: Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(argv, input=stdin, text=True, capture_output=True,
-                          env={**os.environ, **(env or {})}, cwd=cwd)
+    # sops, age and git speak UTF-8; the console code page (cp936 on a Chinese
+    # Windows) does not decode it.
+    return subprocess.run(argv, input=stdin, text=True, encoding="utf-8", errors="replace",
+                          capture_output=True, env={**os.environ, **(env or {})}, cwd=cwd)
+
+
+# -- Windows: ACLs instead of mode bits ---------------------------------------------
+
+@functools.lru_cache(maxsize=1)
+def _windows_sid() -> str:
+    done = _run(["whoami", "/user", "/fo", "csv", "/nh"])
+    match = re.search(r'"(S-1-[0-9-]+)"', done.stdout or "")
+    if not match:
+        raise SecretError("cannot find this account's SID (whoami /user)")
+    return match.group(1)
+
+
+def _restrict(path: Path, *, directory: bool = False) -> None:
+    """Windows: drop inherited entries; grant this account alone (by SID, so a
+    localized account name does not matter). No-op elsewhere — the caller chmods."""
+    if not IS_WINDOWS:
+        return
+    grant = f"*{_windows_sid()}:" + ("(OI)(CI)F" if directory else "F")
+    done = _run(["icacls", str(path), "/inheritance:r", "/grant:r", grant])
+    if done.returncode != 0:
+        raise SecretError(f"icacls could not make {path.name} private to this account")
+
+
+_ACL_SCRIPT = r"""
+$a = Get-Acl -LiteralPath $env:KC_ACL_PATH
+function Sid($r) { try { $r.Translate([Security.Principal.SecurityIdentifier]).Value } catch { '?' + $r.Value } }
+'owner ' + (Sid ([Security.Principal.NTAccount]$a.Owner))
+foreach ($e in $a.Access) { if ("$($e.AccessControlType)" -eq 'Allow') { 'allow ' + (Sid $e.IdentityReference) } }
+"""
+
+
+def _acl_problem(path: Path) -> str | None:
+    """Why `path` is not private to this account, or None."""
+    if not IS_WINDOWS:
+        st = path.stat()
+        if st.st_uid != os.getuid() or st.st_mode & 0o077:
+            return "must belong to this account and be mode 0600"
+        return None
+    done = _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _ACL_SCRIPT],
+                env={"KC_ACL_PATH": str(path)})
+    lines = [ln.split(None, 1) for ln in (done.stdout or "").splitlines() if ln.strip()]
+    if done.returncode != 0 or not lines:
+        return "its ACL could not be read"
+    me = _windows_sid()
+    owner = next((v for k, v in lines if k == "owner"), "?")
+    others = sorted({v for k, v in lines if k == "allow"} - {me} - WINDOWS_TRUSTED)
+    if owner not in {me, "S-1-5-32-544"}:
+        return f"is owned by {owner}, not this account"
+    if others:
+        return (f"is also readable by {', '.join(others)}; fix: "
+                f'icacls "{path}" /inheritance:r /grant:r "*{me}:F"')
+    return None
+
+
+def _private_tmp() -> Path:
+    """A temp dir only this account can enter (Windows has no pipe-as-file for sops)."""
+    PRIVATE_TMP.mkdir(parents=True, exist_ok=True)
+    if IS_WINDOWS:
+        _restrict(PRIVATE_TMP, directory=True)
+    else:
+        os.chmod(PRIVATE_TMP, 0o700)
+    return PRIVATE_TMP
+
+
+def tool_env(extra: list[str] | None = None) -> None:
+    """Make sops/age/git findable and give ssh a HOME when a timer or scheduled
+    task starts us with a bare environment. Existing PATH entries keep priority."""
+    home = Path.home()
+    if IS_WINDOWS:
+        os.environ.setdefault("HOME", os.environ.get("USERPROFILE", str(home)))
+        local = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+        pf = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+        sysroot = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        usual = [home / ".local" / "bin", local / "Microsoft" / "WinGet" / "Links",
+                 home / "scoop" / "shims", pf / "Git" / "cmd", pf / "Git" / "usr" / "bin",
+                 sysroot / "System32" / "OpenSSH"]
+    else:
+        os.environ.setdefault("HOME", str(home))
+        usual = [home / ".local" / "bin", Path("/usr/local/bin"), Path("/usr/bin"), Path("/bin")]
+    current = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    first = [str(Path(p).expanduser()) for p in (extra or [])]
+    rest = [str(d) for d in usual if d.is_dir()]
+    merged = first + [p for p in current if p not in first]
+    merged += [p for p in rest if p not in merged]
+    os.environ["PATH"] = os.pathsep.join(merged)
 
 
 def _need(binary: str) -> str:
@@ -154,17 +270,17 @@ def encrypt_bundle(repo: Path, rel: str, values: dict[str, str], key: Path | Non
     """Encrypt `values` to `rel` for exactly the recipients `recipients_for` names.
 
     POSIX: the plaintext reaches sops through a pipe only. Windows has no
-    /dev/stdin, so there it goes through a temporary file readable by this
-    account only, overwritten and deleted as soon as sops has read it.
+    /dev/stdin, so there it goes through a temporary file in a directory only
+    this account can enter, overwritten and deleted as soon as sops has read it.
     """
     plain = yaml.safe_dump(values, allow_unicode=True, sort_keys=True)
     env = {"SOPS_AGE_KEY_FILE": str(key)} if key else {}
     argv = [_need("sops"), "--encrypt", "--input-type", "yaml", "--output-type", "yaml",
             "--age", ",".join(recipients_for(repo, rel))]
-    if os.name == "nt":
-        fd, tmp = tempfile.mkstemp(prefix="kc-", suffix=".yaml")
+    if IS_WINDOWS:
+        fd, tmp = tempfile.mkstemp(prefix="kc-", suffix=".yaml", dir=str(_private_tmp()))
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(plain)
             done = _run(argv + [tmp], env=env, cwd=Path(tmp).parent)
         finally:
@@ -412,17 +528,20 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
     if not (repo / ".git").exists():
         raise SecretError(f"secrets repo checkout not found at {repo}")
     _device_id(str(data.get("device")))
+    extra = data.get("path") or []
+    if isinstance(extra, str):
+        extra = [extra]
     return {"repo": repo, "device": data["device"],
-            "key": Path(str(data.get("key") or DEFAULT_KEY)).expanduser()}
+            "key": Path(str(data.get("key") or DEFAULT_KEY)).expanduser(),
+            "path": [str(p) for p in extra]}
 
 
 def _check_key(key: Path) -> None:
-    try:
-        st = key.stat()
-    except OSError:
-        raise SecretError(f"no age key at {key}; run `serveros-secret keygen`") from None
-    if hasattr(os, "getuid") and (st.st_uid != os.getuid() or st.st_mode & 0o077):
-        raise SecretError(f"{key} must belong to this account and be mode 0600")
+    if not key.is_file():
+        raise SecretError(f"no age key at {key}; run `serveros-secret keygen`")
+    problem = _acl_problem(key)
+    if problem:
+        raise SecretError(f"{key} {problem}")
 
 
 def _target(path: Path) -> dict[str, Any]:
@@ -434,15 +553,30 @@ def _target(path: Path) -> dict[str, Any]:
     if not isinstance(env_file, str) or not env_file.strip():
         raise SecretError(f"{target.name}: env_file is required")
     units = data.get("restart") or []
-    if not isinstance(units, list) or not all(isinstance(u, str) and UNIT_RE.match(u) for u in units):
-        raise SecretError(f"{target.name}: restart is a list of systemd user units")
+    if not isinstance(units, list) or not all(
+            isinstance(u, str) and (UNIT_RE.match(u) or TASK_RE.match(u)) for u in units):
+        raise SecretError(f"{target.name}: restart is a list of systemd user units "
+                          "(x.service) or scheduled tasks (task:\\Folder\\Name)")
     return {"env_file": Path(env_file).expanduser(), "restart": units}
+
+
+def restart_commands(entry: str) -> list[list[str]]:
+    """How to restart one `restart:` entry. A scheduled task is ended (which
+    fails harmlessly when it is not running) and run again; only the run counts."""
+    task = TASK_RE.match(entry)
+    if task:
+        return [["schtasks", "/End", "/TN", task.group(1)], ["schtasks", "/Run", "/TN", task.group(1)]]
+    return [["systemctl", "--user", "restart", entry]]
+
+
+def _default_runner(argv: list[str]) -> subprocess.CompletedProcess:
+    return _run([shutil.which(argv[0]) or argv[0], *argv[1:]])
 
 
 def sync(config: dict[str, Any], *, pull: bool = True, restart: bool = True,
          state: Path = STATE, runner=None) -> dict[str, Any]:
     """Pull, decrypt this device's bundles, write env files, restart on change."""
-    runner = runner or (lambda argv: _run(argv))
+    runner = runner or _default_runner
     repo, key = config["repo"], config["key"]
     _check_key(key)
     if pull:
@@ -458,14 +592,21 @@ def sync(config: dict[str, Any], *, pull: bool = True, restart: bool = True,
             target = _target(path)
             text = dotenv(values)
             env_file = target["env_file"]
-            before = env_file.read_text(encoding="utf-8") if env_file.is_file() else None
-            changed = before != text
+            # bytes, not text: a CRLF copy left by an older version is rewritten once
+            before = env_file.read_bytes() if env_file.is_file() else None
+            changed = before != text.encode("utf-8")
             if changed:
                 _atomic_write(env_file, text, 0o600)
                 if restart:
                     for unit in target["restart"]:
-                        runner(["systemctl", "--user", "restart", unit])
-                        restarted.append(unit)
+                        done = None
+                        for argv in restart_commands(unit):
+                            done = runner(argv)
+                        if done is not None and done.returncode != 0:
+                            errors.append({"bundle": path.name,
+                                           "error": f"restart {unit} failed ({done.returncode})"})
+                        else:
+                            restarted.append(unit)
             bundles.append({"bundle": path.name.removesuffix(".sops.yaml"),
                             "env_file": str(env_file), "names": sorted(values),
                             "changed": changed,
@@ -513,6 +654,115 @@ def public_key(key: Path) -> str:
     return done.stdout.strip()
 
 
+# -- comparing and cleaning up without anyone seeing a value -------------------------
+
+FP_CONTEXT = b"serveros-secret fingerprint v1\x00"
+
+
+def fingerprint(name: str, value: str) -> str:
+    """A keyed, truncated digest: equal values give equal fingerprints, and the
+    fingerprint does not give the value back (a high-entropy key cannot be
+    guessed from 64 bits; a weak password could be — fingerprint keys, not those)."""
+    mac = hmac.new(FP_CONTEXT + name.encode("utf-8"), value.encode("utf-8"), hashlib.sha256)
+    return "fp1:" + mac.hexdigest()[:16]
+
+
+def held_values(*, repo: Path | None = None, sources: list[str] | None = None,
+                key: Path | None = None, config: Path = CONFIG,
+                file: Path | None = None) -> tuple[list[dict[str, str]], list[str]]:
+    """The values to compare against, in this process only.
+
+    `file`: an env/yaml/json file or vault folder (as `import` reads it).
+    `repo`: the owner's clone; `sources` are bundles (`vault/main`,
+    `devices/x/claude`) or `all` (every bundle `key` opens).
+    Neither: this device's own bundles, with its own key.
+    Returns entries {name, bundle, value} and the bundles that could not be opened.
+    """
+    entries: list[dict[str, str]] = []
+    unopened: list[str] = []
+    if file is not None:
+        values, _ = read_collected(file)
+        return [{"name": n, "bundle": file.name, "value": v} for n, v in sorted(values.items())], []
+    if repo is None:
+        cfg = load_config(config)
+        tool_env(cfg["path"])
+        _check_key(cfg["key"])
+        repo, key = cfg["repo"], cfg["key"]
+        paths = sorted((repo / "devices" / _device_id(cfg["device"])).glob("*.sops.yaml"))
+    elif not sources or "all" in sources:
+        paths = [repo / row["bundle"] for row in inventory(repo)]
+    else:
+        paths = [repo / (s if s.endswith(".sops.yaml") else f"{s}.sops.yaml") for s in sources]
+    if key is None:
+        raise SecretError("an age key is needed: --key or SOPS_AGE_KEY_FILE")
+    for path in paths:
+        rel = str(path.relative_to(repo)).replace("\\", "/").removesuffix(".sops.yaml")
+        try:
+            values = decrypt_bundle(path, key)
+        except SecretError:
+            unopened.append(rel)
+            continue
+        entries += [{"name": n, "bundle": rel, "value": v} for n, v in sorted(values.items())]
+    return entries, unopened
+
+
+def _needles(value: str) -> list[bytes]:
+    """The value as it sits in a file: raw, and JSON-escaped when that differs."""
+    raw = value.encode("utf-8")
+    escaped = json.dumps(value, ensure_ascii=False)[1:-1].encode("utf-8")
+    return [raw] if escaped == raw else [raw, escaped]
+
+
+def _files(paths: list[Path]) -> list[Path]:
+    out = []
+    for path in paths:
+        if path.is_dir():
+            out += sorted(f for f in path.rglob("*") if f.is_file()
+                          and ".git" not in f.relative_to(path).parts)
+        elif path.is_file():
+            out.append(path)
+    return out
+
+
+def scan(paths: list[Path], entries: list[dict[str, str]], *, write: bool = False,
+         max_bytes: int = 64 << 20) -> dict[str, Any]:
+    """Which NAMES' values occur in which files, by count; with `write`, replace
+    each occurrence with `<redacted:NAME>` in place (keeping the file and its
+    ACL — no copy holding the value is left behind). Never returns a value."""
+    usable = [e for e in entries if len(e["value"]) >= MIN_SEARCH_LEN]
+    too_short = sorted({f"{e['bundle']}:{e['name']}" for e in entries if e not in usable})
+    usable.sort(key=lambda e: -len(e["value"]))       # longest first: no partial overlaps
+    files, skipped = [], []
+    for f in _files(paths):
+        try:
+            if f.stat().st_size > max_bytes:
+                skipped.append(f"{f} (larger than {max_bytes >> 20} MB)")
+                continue
+            data = f.read_bytes()
+        except OSError as exc:
+            skipped.append(f"{f} ({type(exc).__name__})")
+            continue
+        hits, new = [], data
+        for e in usable:
+            count = 0
+            for needle in _needles(e["value"]):
+                n = new.count(needle)
+                if n:
+                    count += n
+                    new = new.replace(needle, f"<redacted:{e['name']}>".encode("ascii"))
+            if count:
+                hits.append({"name": e["name"], "bundle": e["bundle"], "count": count})
+        if hits:
+            if write:
+                with open(f, "r+b") as fh:
+                    fh.write(new)
+                    fh.truncate()
+            files.append({"file": str(f), "hits": hits})
+    return {"files": files, "occurrences": sum(h["count"] for f in files for h in f["hits"]),
+            "redacted": write and bool(files), "too_short_to_search": too_short,
+            "skipped": skipped}
+
+
 # -- CLI ---------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
@@ -547,7 +797,25 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--no-restart", action="store_true"); s.add_argument("--config", default=str(CONFIG))
     sub.add_parser("names")
     d = sub.add_parser("doctor"); d.add_argument("--config", default=str(CONFIG))
+    for name in ("fingerprint", "scan", "redact"):
+        c = sub.add_parser(name)
+        c.add_argument("names" if name == "fingerprint" else "paths",
+                       nargs="*" if name == "fingerprint" else "+")
+        c.add_argument("--repo", default=None, help="owner clone; omit on a device (its own bundles)")
+        c.add_argument("--from", dest="sources", action="append", default=None,
+                       help="bundle(s) with --repo, e.g. vault/main; default: every bundle the key opens")
+        c.add_argument("--key", default=os.environ.get("SOPS_AGE_KEY_FILE"),
+                       help="age key for --repo (default SOPS_AGE_KEY_FILE)")
+        c.add_argument("--file", default=None,
+                       help="compare against an env/yaml/json file or folder instead of the key center")
+        c.add_argument("--config", default=str(CONFIG))
+        if name == "fingerprint":
+            c.add_argument("--of", dest="of", default=None,
+                           help="fingerprint the values in this env/yaml/json file (names only out)")
+        if name == "redact":
+            c.add_argument("--write", action="store_true", help="rewrite the files (default: dry run)")
     args = parser.parse_args(argv)
+    tool_env()
     try:
         if args.cmd == "keygen":
             print(keygen(Path(args.key).expanduser()))
@@ -594,17 +862,48 @@ def main(argv: list[str] | None = None) -> int:
         elif args.cmd == "inventory":
             print(json.dumps(inventory(Path(args.repo).expanduser()), ensure_ascii=False, indent=2))
         elif args.cmd == "sync":
-            result = sync(load_config(Path(args.config).expanduser()), pull=not args.no_pull,
-                          restart=not args.no_restart)
+            cfg = load_config(Path(args.config).expanduser())
+            tool_env(cfg["path"])
+            result = sync(cfg, pull=not args.no_pull, restart=not args.no_restart)
             print(json.dumps({k: result[k] for k in ("device", "names", "changed", "restarted",
                                                     "errors", "repo_commit")}, ensure_ascii=False))
             return 1 if result["errors"] else 0
         elif args.cmd == "names":
             print(json.dumps(read_names() or {"names": [], "state": "NOT_SYNCED"}, ensure_ascii=False))
+        elif args.cmd in ("fingerprint", "scan", "redact"):
+            def source(file_arg):
+                return held_values(
+                    repo=Path(args.repo).expanduser() if args.repo else None, sources=args.sources,
+                    key=Path(args.key).expanduser() if args.key else None,
+                    config=Path(args.config).expanduser(),
+                    file=Path(file_arg).expanduser() if file_arg else None)
+            if args.cmd == "fingerprint":
+                entries, unopened = source(getattr(args, "of", None) or args.file)
+                wanted = set(args.names)
+                rows = [{"name": e["name"], "bundle": e["bundle"],
+                         "fingerprint": fingerprint(e["name"], e["value"])}
+                        for e in entries if not wanted or e["name"] in wanted]
+                missing = sorted(wanted - {r["name"] for r in rows})
+                print(json.dumps({"fingerprints": rows, "not_found": missing,
+                                  "unopened": unopened}, ensure_ascii=False, indent=2))
+            else:
+                entries, unopened = source(args.file)
+                result = scan([Path(p).expanduser() for p in args.paths], entries,
+                              write=args.cmd == "redact" and args.write)
+                if args.cmd == "redact" and not args.write:
+                    result["note"] = "dry run: add --write to replace these with <redacted:NAME>"
+                result["unopened"] = unopened
+                print(json.dumps(result, ensure_ascii=False, indent=2))
         elif args.cmd == "doctor":
-            report = {b: bool(shutil.which(b)) for b in ("sops", "age", "age-keygen", "git")}
             try:
                 cfg = load_config(Path(args.config).expanduser())
+                tool_env(cfg["path"])
+            except SecretError:
+                cfg = None
+            report = {b: bool(shutil.which(b)) for b in ("sops", "age", "age-keygen", "git")}
+            try:
+                if cfg is None:
+                    cfg = load_config(Path(args.config).expanduser())
                 _check_key(cfg["key"])
                 report.update(config="OK", device=cfg["device"], public_key=public_key(cfg["key"]))
             except SecretError as exc:

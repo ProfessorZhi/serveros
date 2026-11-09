@@ -52,7 +52,7 @@
         },
         "tool": {
           "path": "distribution/keycenter/serveros_secret.py",
-          "digest": "sha256:8b7d1615d1198d20eaedb56eb5b97fd46078fa85d47be7a27c4d7a98fd1cfab8"
+          "digest": "sha256:679faf93820ac6e2a1c85581470b2c9ccf1b25ab699982ecbe0868685776b6d9"
         }
       },
       "serverosd": {

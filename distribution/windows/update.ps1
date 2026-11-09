@@ -11,6 +11,8 @@ node connector runs from (the script finds the checkout from its own path).
   5 connector    print the restart of the ServerOS-FleetNode-Connector task (run it to
                  pick up the new code; the update itself stops nothing)
   6 versions     write %LOCALAPPDATA%\ServerOS\state\device-versions.json
+  7 key center   when the kit declares secrets_sync: doctor (names and checks only),
+                 then (re-)register the 5-minute "ServerOS Secrets sync" task
 
 Without -Apply it prints the steps and changes nothing. It never reads, prints or
 copies a credential, and stops at the first failing step.
@@ -46,6 +48,7 @@ $kit = Get-Content -LiteralPath $kitPath -Raw | ConvertFrom-Json
 if ($kit.os -ne 'windows') { throw "$Device is a $($kit.os) device; use device_kit.py update" }
 $family = $kit.layers.family.profile
 $coreLite = $kit.layers.monitor.core_lite
+$secretsSync = $kit.layers.monitor.secrets_sync
 $state = Join-Path $env:LOCALAPPDATA 'ServerOS\state'
 $binRelease = Join-Path $env:LOCALAPPDATA 'ServerOS\bin\core-lite'
 $buildDir = Join-Path $env:LOCALAPPDATA 'ServerOS\build\core-lite'
@@ -63,6 +66,9 @@ if ($coreLite.profile) {
 }
 Write-Host " 5. print the connector restart (if the task is registered)"
 Write-Host " 6. write $state\device-versions.json"
+if ($secretsSync) {
+    Write-Host " 7. key center: doctor, then re-register the 'ServerOS Secrets sync' task (every 5 minutes)"
+}
 if (-not $Apply) { Write-Host "`n(dry run - add -Apply to run these steps)"; return }
 if (-not (Test-Path -LiteralPath (Join-Path $AbilityRepo '.git'))) {
     throw "no ability-management checkout at $AbilityRepo; pass -AbilityRepo <path>"
@@ -120,6 +126,18 @@ try {
             powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $deploy 'register-publish-task.ps1') -Bin $bin -ProfilePath $prof
         }
         $collectorVersion = (& (Join-Path $bin 'serveros-node-resource-snapshot.exe') --version | Out-String).Trim()
+    }
+
+    if ($secretsSync) {
+        $keycenter = Join-Path $root 'distribution\keycenter'
+        Write-Host '== key center doctor (binaries, age key ACL, config; never a value)'
+        python (Join-Path $keycenter 'serveros_secret.py') doctor
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'key center doctor is not OK; the sync task is registered anyway and logs to %LOCALAPPDATA%\ServerOS\state\secrets-sync.log'
+        }
+        Invoke-Step 'register key-center sync task' {
+            powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $keycenter 'windows\register-sync-task.ps1')
+        }
     }
 
     $connectorTask = Get-ScheduledTask -TaskName 'ServerOS-FleetNode-Connector' -ErrorAction SilentlyContinue

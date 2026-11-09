@@ -25,6 +25,29 @@
       "revision": "pinned at install (--ability-rev)"
     },
     "monitor": {
+      "secrets_sync": {
+        "what": "key center: pull the secrets repository, decrypt this device's bundles (SOPS + age) into env files only this account can read, restart named tasks",
+        "task": "\\ServerOS\\ServerOS Secrets sync (scheduled task, this user, every 5 minutes)",
+        "templates": [
+          {
+            "path": "distribution/keycenter/windows/register-sync-task.ps1",
+            "digest": "sha256:eacd20ba3ffbb1d80cc2cde1cbe9991e8fc2934b763120bf2fa0cd3e8a27397d"
+          },
+          {
+            "path": "distribution/keycenter/windows/sync-secrets.ps1",
+            "digest": "sha256:cb761f83f8d83d802425065acbc6a47eb984e3895fc07c66d60c0a3048d70aa4"
+          },
+          {
+            "path": "distribution/keycenter/windows/run-hidden-wait.vbs",
+            "digest": "sha256:bbac967507420bd1df299fcfd9e7188b884e7546befb68cb8ab9cedefd5cf191"
+          }
+        ],
+        "tool": {
+          "path": "distribution/keycenter/serveros_secret.py",
+          "digest": "sha256:679faf93820ac6e2a1c85581470b2c9ccf1b25ab699982ecbe0868685776b6d9"
+        },
+        "log": "%LOCALAPPDATA%\\ServerOS\\state\\secrets-sync.log (names only)"
+      },
       "core_lite": {
         "what": "native: C++ Windows collector (Win32) → status.json every minute, observe only",
         "profile": {
