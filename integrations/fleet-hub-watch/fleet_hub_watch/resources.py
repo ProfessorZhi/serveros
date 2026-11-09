@@ -48,6 +48,10 @@ THRESHOLD_KEYS = (
 )
 
 
+#: Full memory stall (every task waiting) that makes the hub push an alert card.
+PSI_FULL_ALERT_PERCENT = 5.0
+
+
 def load_thresholds(contract_path: str | Path) -> dict[str, float]:
     import yaml
     document = yaml.safe_load(Path(contract_path).read_text(encoding="utf-8")) or {}
@@ -148,8 +152,12 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
                             previous=previous.get("psi"))
         # `full` carries its own recovery margin: without one a reading that
         # hovers on the line opens and closes an alert every pass.
+        # Owner, 2026-11-09: a 0.1-1% stall sent a red card. The contract's bar
+        # (0.5%) is where the hub starts saying 注意 on 状态; a card is pushed
+        # only from PSI_FULL_ALERT_PERCENT, a stall a person would feel.
         full_level = (OK if full is None else
-                      _level(full, warn=None, alert=t["psi_memory_full_avg60_percent_high"],
+                      _level(full, warn=t["psi_memory_full_avg60_percent_high"],
+                             alert=max(PSI_FULL_ALERT_PERCENT, t["psi_memory_full_avg60_percent_high"]),
                              margin=t["psi_memory_full_avg60_percent_recovery_margin"],
                              previous=previous.get("psi")))
         if some is not None or full is not None:

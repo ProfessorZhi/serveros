@@ -97,13 +97,16 @@ class DeviceLevels(unittest.TestCase):
         self.assertEqual(levels_of(self.view(memory=91))["memory"], WARN)
         self.assertEqual(levels_of(self.view(swap=95))["swap"], WARN)
         self.assertEqual(levels_of(self.view(psi_some=2.0))["psi"], WARN)
-        self.assertEqual(levels_of(self.view(psi_full=0.6))["psi"], ALERT)
+        # Owner, 2026-11-09: a light full stall is 注意 on 状态; 5% is an alert.
+        self.assertEqual(levels_of(self.view(psi_full=0.6))["psi"], WARN)
+        self.assertEqual(levels_of(self.view(psi_full=5.5))["psi"], ALERT)
         self.assertEqual(levels_of(self.view(service_state="FAILED"))["svc:serverosd"], ALERT)
 
     def test_psi_full_holds_until_it_is_past_its_own_margin(self):
         """0.5 opens; with the 0.25 margin it holds at 0.42 and leaves at 0.2.
         Without a margin a host hovering at the line chattered red/green."""
-        self.assertEqual(levels_of(self.view({"psi": ALERT}, psi_full=0.42))["psi"], ALERT)
+        self.assertEqual(levels_of(self.view({"psi": ALERT}, psi_full=4.9))["psi"], ALERT)
+        self.assertEqual(levels_of(self.view({"psi": WARN}, psi_full=0.42))["psi"], WARN)
         self.assertEqual(levels_of(self.view({"psi": ALERT}, psi_full=0.2))["psi"], OK)
         self.assertEqual(levels_of(self.view(psi_full=0.42))["psi"], OK)
 

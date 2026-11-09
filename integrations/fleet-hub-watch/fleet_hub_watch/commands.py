@@ -131,7 +131,7 @@ def status_card(views: list[dict], *, now: datetime, running: dict[str, int] | N
                 cards._md("<font color='grey'>「资源 设备名」看完整卡 · 「任务」看在跑的</font>")]
     return cards._card(TEMPLATE[level], f"{len(views)} 台设备 · {head}",
                        cards._local(now, with_date=True), elements,
-                       summary=f"Fleet 状态 · {head}", width="compact")
+                       summary=f"Fleet 状态 · {head}", width="default")
 
 
 def tasks_card(batches: list[dict], *, now: datetime) -> dict:
