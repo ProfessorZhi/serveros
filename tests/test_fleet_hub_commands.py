@@ -38,6 +38,16 @@ class Parsing(unittest.TestCase):
         self.assertEqual(commands.parse("批次 验收 1.12"), ("batch", "验收 1.12"))
         self.assertIsNone(commands.parse("你好"))
 
+    def test_free_sentences_find_their_command(self):
+        """Owner, 2026-11-10: 「资源情况」「资源缺口」 should bring the full
+        resource cards, not a parse miss."""
+        self.assertEqual(commands.parse("资源情况")[0], "resource")
+        self.assertEqual(commands.parse("资源缺口")[0], "resource")
+        self.assertEqual(commands.parse("东京内存怎么样")[0], "resource")
+        self.assertEqual(commands.parse("看看显卡占用")[0], "resource")
+        self.assertEqual(commands.parse("任务跑完了吗")[0], "tasks")
+        self.assertEqual(commands.parse("设备都正常吗")[0], "status")
+
     def test_only_the_owners_text_is_taken(self):
         self.assertEqual(commands.message_of(event("状态"), OWNER), ("om_1", "状态"))
         self.assertIsNone(commands.message_of(event("状态", sender="ou_someone_else"), OWNER))
@@ -103,10 +113,24 @@ class Answers(unittest.TestCase):
         self.assertIn("只读：hostname 和 uptime", self.body(card))
         self.assertEqual(card["header"]["title"]["content"], "验收 1.12 · 进行中 0/1")
 
-    def test_resource_falls_back_to_the_plain_card_and_asks_which_device(self):
+    def test_resource_falls_back_to_the_plain_card(self):
         self.assertIn("Tokyo", self.body(self.answerer.answer("resource", "东京", NOW)))
-        self.assertEqual(self.answerer.answer("resource", "", NOW)["header"]["title"]["content"],
-                         "哪台设备？")
+        self.assertIn("Tokyo", self.body(self.answerer.answer("resource", "东京内存怎么样", NOW)))
+
+    def test_resource_with_no_device_is_every_devices_full_card(self):
+        for asked in ("", "情况", "缺口", "资源情况"):
+            got = self.answerer.answer("resource", asked, NOW)
+            self.assertIsInstance(got, list, asked)
+            self.assertEqual(len(got), 2, asked)
+            self.assertIn("Tokyo", self.body(got[0]))
+            self.assertIn("Dell A6000", self.body(got[1]))
+
+    def test_the_device_made_rich_card_is_preferred(self):
+        rich = {"schema": "x", "header": {"title": {"tag": "plain_text", "content": "东京 · 资源播报"}},
+                "body": {"elements": []}}
+        self.answerer.rich = {TOKYO: {"state": "OK", "made_at": "2026-11-09T06:50:00Z", "card": rich}}
+        got = self.answerer.answer("resource", "", NOW)
+        self.assertEqual(got[0]["header"]["title"]["content"], "东京 · 资源播报")
 
     def test_trace_and_memory_and_help(self):
         self.inbox.trace("fleet", "dispatched (send)", session_ref=f"{TOKYO}|claude|s", run_id="r9")
