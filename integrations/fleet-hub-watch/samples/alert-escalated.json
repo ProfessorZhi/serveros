@@ -72,7 +72,7 @@
       },
       {
         "tag": "markdown",
-        "content": "只读 · 未自动停止、重启或清理任何东西"
+        "content": "<font color='grey'>只是提醒，没有自动停止或重启任何东西</font>"
       }
     ]
   }

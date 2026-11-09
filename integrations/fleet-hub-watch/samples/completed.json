@@ -37,11 +37,11 @@
       },
       {
         "tag": "markdown",
-        "content": "- serveros · run-11ab（Tokyo）\n- ability-management · run-11ac（Tokyo）\n- lab-notes · run-90fe（Dell A6000）"
+        "content": "- **serveros**　<font color='grey'>Tokyo</font>\n- **ability-management**　<font color='grey'>Tokyo</font>\n- **lab-notes**　<font color='grey'>Dell A6000</font>"
       },
       {
         "tag": "markdown",
-        "content": "判定依据：读到了 agent 的实际输出 · 详细结果用 fleet_read_session 查看"
+        "content": "<font color='grey'>每个都读到了实际输出；要看全文，问指挥端</font>"
       }
     ]
   }

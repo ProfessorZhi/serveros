@@ -70,6 +70,13 @@ def _as_text(value: Any) -> str | None:
     return None
 
 
+_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-|^[0-9a-f]{16,}$|^run-", re.I)
+
+
+def _looks_like_id(text: str) -> bool:
+    return bool(_ID_RE.match(text.strip()))
+
+
 def clip_excerpt(text: Any, chars: int) -> str | None:
     """One line, key-shaped strings masked, at most `chars` characters."""
     text = _as_text(text)
@@ -90,8 +97,14 @@ def run_excerpt(service: Any, principal: Any, chars: int) -> Callable[[str, str]
     from fleet_mcp.identity import SessionKey
 
     def read(session_ref: str, run_id: str) -> str | None:
-        run = service.get_run(principal, SessionKey.parse(session_ref), run_id)
-        return clip_excerpt(next((run[f] for f in _OUTPUT_FIELDS if run.get(f)), None), chars)
+        key = SessionKey.parse(session_ref)
+        run = service.get_run(principal, key, run_id)
+        text = next((run[f] for f in _OUTPUT_FIELDS if run.get(f)), None)
+        if not _as_text(text):
+            # No run receipt on this device: the session still holds the reply.
+            from .watch import last_assistant_text
+            text = last_assistant_text(service.read_session(principal, key, limit=5).get("transcript"))
+        return clip_excerpt(text, chars)
     return read
 PATCH_WINDOW = timedelta(days=13)          # Feishu allows 14; leave a day of slack
 MAX_SENDS_PER_TICK = 20
@@ -425,12 +438,27 @@ class Notifier:
             self.inbox.ack(SUBSCRIBER, handled_to)
         return len(page["events"])
 
-    def _batch_runs(self, event: dict) -> list[dict]:
+    def _label(self, event: dict) -> str:
+        """What the owner calls this task: the instruction's first line, else the
+        project when it is a name (not an id), else 一个任务."""
+        finder = getattr(self.inbox, "label_of", None)
+        label = finder(event.get("session_ref"), event.get("run_id")) if finder else None
+        project = event.get("project")
+        if not label and isinstance(project, str) and project and not _looks_like_id(project):
+            label = project
+        return label or "一个任务"
+
+    def _batch_of(self, event: dict) -> str | None:
+        finder = getattr(self.inbox, "batch_of", None)
+        return finder(event.get("session_ref"), event.get("run_id")) if finder else None
+
+    def _batch_runs(self, event: dict) -> tuple[list[dict], str | None]:
         batch_id = str(event.get("work_ref") or "").removeprefix("batch:")
         try:
-            runs = self.inbox.batch(batch_id)["runs"]
+            head = self.inbox.batch(batch_id)
         except Exception:  # noqa: BLE001 - the card still goes out with the counts
-            return []
+            return [], None
+        runs = head["runs"]
         out = []
         for run in runs[:20]:                       # a card stays well under 30 KB
             text = None
@@ -439,8 +467,9 @@ class Notifier:
                     text = self.excerpt(run["session_ref"], run["run_id"])
                 except Exception:  # noqa: BLE001 - one unreadable run is not the card's end
                     text = None
-            out.append({**run, "excerpt": text})
-        return out
+            label = getattr(self.inbox, "label_of", lambda *_a: None)(run["session_ref"], run["run_id"])
+            out.append({**run, "excerpt": text, "label": label})
+        return out, head.get("opened_at")
 
     def _note(self, event: dict, body: dict) -> None:
         """Count an event into the day it happened (CN date) for the 日报."""
@@ -456,8 +485,9 @@ class Notifier:
         kind = event["kind"]
         name = self._name(event.get("device_ref"))
         if kind == "batch.completed":
+            runs, opened_at = self._batch_runs(event)
             self._send(f"batch:{event.get('work_ref')}",
-                       cards.batch_card(event, now=now, runs=self._batch_runs(event),
+                       cards.batch_card(event, now=now, runs=runs, opened_at=opened_at,
                                         device_names=self.device_names), now)
             return
         if kind == "tuning.changed":
@@ -500,37 +530,48 @@ class Notifier:
         if not kind.startswith("run."):
             return
         run_episode = f"run|{event.get('session_ref')}|{event.get('run_id')}"
-        project = event.get("project") or "未分配项目"
+        label = self._label(event)
+        in_batch = (str(event.get("work_ref") or "").startswith("batch:")
+                    or self._batch_of(event) is not None)
+        dispatched = getattr(self.inbox, "was_dispatched", lambda *_a: True)(
+            event.get("session_ref"), event.get("run_id"))
         if kind == "run.completed":
             self._note(event, {"episode": run_episode})
             self._close(run_episode, now, text="任务已完成，读到了实际输出")
-            if str(event.get("work_ref") or "").startswith("batch:"):
-                # Part of a dispatched batch: reported once, when the batch closes.
+            if in_batch or not dispatched:
+                # A batch member is told on its batch card; a resident session's
+                # own turn is not a task anyone dispatched — the 日报 counts it.
                 return
             with self._connect() as conn:
                 conn.execute("INSERT OR IGNORE INTO pending_completions(run_key, body, first_at)"
                              " VALUES (?,?,?)",
-                             (run_episode, json.dumps({"run_id": event["run_id"], "project": project,
+                             (run_episode, json.dumps({"run_id": event["run_id"], "label": label,
+                                                       "session_ref": event.get("session_ref"),
                                                        "device_ref": event.get("device_ref"),
                                                        "device_name": name}, ensure_ascii=False),
                               _iso(now)))
             return
         level, what, detail = {
-            "run.failed": (ALERT, "任务失败", "执行失败"),
-            "run.unknown": (WARN, "任务结果无法确认", "没能确认它完成了，也没能确认它失败了"),
-            "run.stalled": (WARN, "任务运行时间过长", "仍在运行，已超过 2 小时"),
+            "run.failed": (ALERT, "任务失败", "执行出错，没有完成"),
+            "run.unknown": (WARN, "任务没读到结果", "已经结束，但读不到它的输出"),
+            "run.stalled": (WARN, "任务跑了很久", "已运行超过 2 小时，还没结束"),
         }.get(kind, (WARN, kind, kind))
         reason = re.search(r"\(([A-Z0-9_]+)\)\s*$", event["summary"])
-        if reason and kind != "run.stalled":
-            detail += f"（{reason.group(1)}）"
-        self._note(event, {"episode": run_episode, "subject": f"{what} · {project}",
-                           "text": f"{event['run_id']}（{name}）{detail}", "level": level})
+        self._note(event, {"episode": run_episode, "subject": f"{what} · {label}",
+                           "text": f"{name}：{detail}", "level": level})
+        if in_batch and kind != "run.stalled":
+            # Its outcome is a line on the batch card; one message, not two.
+            return
         self._open({"episode": run_episode, "key": f"run:{event.get('run_id')}", "kind": kind,
                     "device_ref": event.get("device_ref"),
-                    "subject": f"{what} · {project}",
-                    "text": f"{event['run_id']}（{name}）{detail}",
+                    "subject": f"{what} · {label}",
+                    "text": f"{name}：{detail}",
                     "level": level, "first_seen": event["occurred_at"],
-                    "last_seen": event["occurred_at"], "evidence": event.get("session_ref")}, now)
+                    "last_seen": event["occurred_at"],
+                    "evidence": " · ".join(x for x in (event.get("session_ref"),
+                                                       f"run {event.get('run_id')}",
+                                                       reason.group(1) if reason else None) if x)},
+                   now)
 
     # -- debounce -------------------------------------------------------------
 

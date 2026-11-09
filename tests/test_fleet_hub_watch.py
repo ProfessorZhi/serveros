@@ -17,7 +17,7 @@ for extra in (ROOT, ROOT / "integrations" / "fleet-next-agent-monitor",
     if str(extra) not in sys.path:
         sys.path.insert(0, str(extra))
 
-from fleet_hub_watch.watch import BACKOFF_SECONDS, Watcher, WatchStore  # noqa: E402
+from fleet_hub_watch.watch import BACKOFF_SECONDS, UNREADABLE_GRACE_SECONDS, Watcher, WatchStore  # noqa: E402
 from fleet_mcp.errors import FleetRefusal  # noqa: E402
 from fleet_mcp.inbox import EventInbox  # noqa: E402
 from test_fleet_mcp_surface import FakeProvider, Harness, TOKYO, WINDOWS, _summary  # noqa: E402
@@ -156,12 +156,39 @@ class Classification(WatcherTest):
         self.assertNotIn("3 files changed", event["summary"], "no transcript text in the inbox")
         self.assertEqual(self.store.all(), [])
 
-    def test_completed_without_output_is_unknown_not_success(self):
+    def test_a_resident_sessions_unreadable_turn_is_dropped_quietly(self):
         self.tokyo.start("s-1", "run-1")
         self.watcher.tick()
         self.tokyo.answers["run-1"] = {"status": "completed", "runId": "run-1"}
         self.settle()
-        (event,) = self.events()
+        self.assertEqual([e for e in self.events() if e["kind"] != "run.stalled"], [])
+        self.assertEqual(self.store.all(), [], "not watched any more")
+
+    def test_no_receipt_but_the_session_holds_the_reply_is_completed(self):
+        self.tokyo.start("s-1", "run-1")
+        self.inbox.note_dispatch(f"{TOKYO}|claude|s-1", "run-1")
+        self.watcher.tick()
+        self.tokyo.answers["run-1"] = {"status": "completed", "runId": "run-1"}
+        self.harness.service.read_session = lambda principal, key, **kw: {
+            "transcript": {"messages": [{"role": "user", "content": "q"},
+                                        {"role": "assistant", "content": [{"type": "text", "text": "done"}]}]}}
+        self.settle()
+        (event,) = [e for e in self.events() if e["kind"] != "run.stalled"]
+        self.assertEqual(event["kind"], "run.completed")
+
+    def test_completed_without_output_is_unknown_not_success(self):
+        self.tokyo.start("s-1", "run-1")
+        self.inbox.note_dispatch(f"{TOKYO}|claude|s-1", "run-1")   # Fleet started it
+        self.watcher.tick()
+        self.tokyo.answers["run-1"] = {"status": "completed", "runId": "run-1"}
+        self.settle()
+        # Owner, 2026-11-09: read right after it started, a run had no activity
+        # record yet and was declared 无法确认 in the same minute. Not any more:
+        verdicts = lambda: [e for e in self.events() if e["kind"] != "run.stalled"]
+        self.assertEqual(verdicts(), [], "inside the grace window it is not a verdict")
+        self.clock.advance(UNREADABLE_GRACE_SECONDS)
+        self.settle()
+        (event,) = verdicts()
         self.assertEqual((event["kind"], event["level"]), ("run.unknown", "decide"))
         self.assertIn("NO_NATIVE_ACTIVITY", event["summary"])
 
@@ -352,13 +379,13 @@ class DispatchedRunsAreWatched(WatcherTest):
         (event,) = [e for e in self.events() if e["kind"].startswith("run.")]
         self.assertEqual((event["kind"], event["run_id"], event["project"]),
                          ("run.completed", "run-q", "serveros"))
-        self.assertEqual(self.inbox.runs_to_watch(), [], "handed over once")
+        self.assertEqual(self.watcher.discover()["added"], [], "handed over once")
 
     def test_a_batch_of_quick_runs_closes_and_reports(self):
         refs = [f"{TOKYO}|claude|s-{i}" for i in range(2)]
         for i, ref in enumerate(refs):
             self.tokyo.answers[f"r{i}"] = {"status": "completed", "runId": f"r{i}",
-                                           "lastAssistantMessage": "ok"}
+                                           "lastAssistantMessage": {"content": "ok"}}
         # opened by the commander after dispatching, with runs Fleet did not note
         self.inbox.open_batch("quick x2", [{"session_ref": r, "run_id": f"r{i}"}
                                            for i, r in enumerate(refs)], opened_by="commander")

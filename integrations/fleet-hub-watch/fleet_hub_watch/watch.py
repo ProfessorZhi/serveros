@@ -40,6 +40,10 @@ from fleet_next_agent_monitor.sources import Grant, LegacyFactsSource
 from .facts import FleetFactsClient
 
 BACKOFF_SECONDS = (10, 30, 120, 600)
+#: A run read right after it started can say `completed` with no activity
+#: record yet (serveros#531). Inside this window that is "not readable yet",
+#: not a verdict; only after it does the run become 无法确认.
+UNREADABLE_GRACE_SECONDS = 15 * 60
 DEFAULT_MAX_AGE = 24 * 3600
 DEFAULT_STALL_AFTER = 2 * 3600
 
@@ -136,6 +140,45 @@ class WatchStore:
             conn.execute("DELETE FROM finished WHERE finished_at < ?",
                          (now - FINISHED_RETENTION,))
             conn.execute("COMMIT")
+
+
+def _text(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        return _text(value.get("content") if value.get("content") is not None else value.get("text"))
+    if isinstance(value, list):
+        parts = [t for t in (_text(v) for v in value) if t]
+        return " ".join(parts) or None
+    return None
+
+
+def last_assistant_text(transcript: Any) -> str | None:
+    """The last assistant reply in a transcript, whatever list the provider put
+    its messages in. Used when a run reports `completed` with no activity record
+    (CloudCLI without run receipts): the session itself still holds the answer."""
+    if isinstance(transcript, dict):
+        for key in ("messages", "items", "entries", "transcript", "data"):
+            if key in transcript:
+                found = last_assistant_text(transcript[key])
+                if found:
+                    return found
+        return None
+    if not isinstance(transcript, list):
+        return None
+    for message in reversed(transcript):
+        if not isinstance(message, dict):
+            continue
+        inner = message.get("message") if isinstance(message.get("message"), dict) else {}
+        role = message.get("role") or inner.get("role") or message.get("type")
+        if role != "assistant":
+            continue
+        text = _text(message.get("content") if message.get("content") is not None
+                     else inner.get("content") if inner.get("content") is not None
+                     else message.get("text"))
+        if text:
+            return text
+    return None
 
 
 def _current_run_id(detail: Any) -> str | None:
@@ -246,6 +289,18 @@ class Watcher:
             "evidence": watch["session_ref"],
         }
 
+    def _dispatched(self, watch: dict[str, Any]) -> bool:
+        check = getattr(self.inbox, "was_dispatched", None)
+        return bool(check and check(watch["session_ref"], watch["run_id"]))
+
+    def _answered(self, watch: dict[str, Any]) -> bool:
+        try:
+            read = self.service.read_session(self.principal, SessionKey.parse(watch["session_ref"]),
+                                             limit=5)
+        except Exception:  # noqa: BLE001 - an unreadable session is not an answer
+            return False
+        return last_assistant_text(read.get("transcript")) is not None
+
     def observe(self) -> dict[str, Any]:
         now = self.clock()
         recorded, still = [], 0
@@ -259,6 +314,19 @@ class Watcher:
                                     "completed with readable output")
             elif status == STATUS_FAILED:
                 event = self._event(watch, "run.failed", "notify", f"failed ({reason})")
+            elif status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY" and self._answered(watch):
+                # No run receipt, but the session holds the reply: that is output.
+                event = self._event(watch, "run.completed", "notify",
+                                    "completed; reply read from the session")
+            elif status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY" \
+                    and not self._dispatched(watch):
+                # A resident session's own turn, unreadable: not news. Owner,
+                # 2026-11-09: these produced a 无法确认 card every few minutes.
+                self.store.drop(watch, now)
+                continue
+            elif (status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY"
+                  and age < UNREADABLE_GRACE_SECONDS):
+                event = None                # not readable yet: look again later
             elif status == STATUS_DENIED or (status == STATUS_UNKNOWN
                                              and observation.get("retryable") is False):
                 # Not a success and not a failure: the outcome could not be

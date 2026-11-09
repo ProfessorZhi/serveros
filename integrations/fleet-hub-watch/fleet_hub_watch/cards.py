@@ -29,6 +29,7 @@ spec existed. Facts — levels, colours, which reading is wrong — stay here.
 from __future__ import annotations
 
 import hashlib
+import re
 import importlib.util
 import sys
 from datetime import datetime, timezone
@@ -256,9 +257,8 @@ def alert_card(episode: dict, *, now: datetime, sample: bool = False,
     elements.append(_md(text["footer"]))
     if state == "OPEN" and not sample:
         from .feishu import button
-        elements.append(button("静音 1 小时", {"fleet": "mute", "subject": episode["episode"],
-                                               "minutes": 60}))
-        elements.append(button("暂停播报 2 小时", {"fleet": "pause_broadcast", "minutes": 120}))
+        elements.append(button("这件事 1 小时内别再提醒", {"fleet": "mute", "subject": episode["episode"],
+                                                     "minutes": 60}))
     return _card(template, head, subtitle, elements, tags=[tag],
                  summary=f"{tag[0]} · {subject}：{episode['text']}", width="compact")
 
@@ -272,7 +272,8 @@ def completion_card(runs: list[dict], *, now: datetime, sample: bool = False,
     if sample:
         title += f" · {SAMPLE_TITLE}"
     shown = runs[:text["max_rows"]]
-    lines = [f"- {r.get('project') or '未分配项目'} · {r['run_id']}（{r.get('device_name') or r.get('device_ref')}）"
+    lines = [f"- **{r.get('label') or r.get('project') or '一个任务'}**　"
+             f"<font color='grey'>{r.get('device_name') or r.get('device_ref')}</font>"
              for r in shown]
     if len(runs) > len(shown):
         lines.append("- " + text["more"].format(count=len(runs) - len(shown)))
@@ -284,38 +285,52 @@ def completion_card(runs: list[dict], *, now: datetime, sample: bool = False,
     return _card(TEMPLATE[OK], title, f"{_local(now, with_date=True)}（北京时间）", elements,
                  tags=[(f"{len(runs)} 个", "green")],
                  summary=f"任务完成 {len(runs)} 个：" + "、".join(
-                     str(r.get("project") or r["run_id"]) for r in runs[:3]))
+                     str(r.get("label") or r.get("project") or "任务") for r in runs[:3]))
 
 
-OUTCOME_WORD = {"completed": "✅ 完成", "failed": "❌ 失败", "unknown": "⚪ 无法确认", None: "… 未结束"}
+OUTCOME_WORD = {"completed": "✅", "failed": "❌ 失败", "unknown": "⚪ 没读到结果", None: "⏳ 未结束"}
 
 
 def batch_card(event: dict, *, now: datetime, runs: list[dict] | None = None,
+               opened_at: str | None = None,
                device_names: dict[str, str] | None = None) -> dict:
-    """One card when every run of a dispatched batch has an outcome.
+    """The one message a dispatched batch produces, when every task has an outcome.
 
-    The members' own completions were not carded one by one; a member that
-    failed already raised its own alert, so this card is the whole picture.
-    `runs` ({session_ref, outcome, excerpt}) adds one line per task with the
-    start of its final reply, so the owner reads the result here and does not
-    have to go back to the commander.
+    Written for the owner reading it on a phone: the title says how it went,
+    each task is its own name (the instruction's first line), where it ran and
+    what it answered. No run ids, no tool names, no codes on the face.
     """
-    failed = event.get("level") == "decide"
-    template = TEMPLATE[ALERT] if failed else TEMPLATE[OK]
+    runs = runs or []
     name, _, rest = (event.get("summary") or "").partition("：")
-    elements = [_md(rest or event.get("summary") or "")]
+    counted = re.search(r"(\d+) 个任务", rest)
+    total = len(runs) or (int(counted.group(1)) if counted else 0)
+    failed = sum(1 for r in runs if r.get("outcome") == "failed")
+    unread = sum(1 for r in runs if r.get("outcome") == "unknown")
+    if not runs:
+        failed = 1 if event.get("level") == "decide" else 0
+    if failed:
+        template, verdict, tag = TEMPLATE[ALERT], f"{failed} 个失败", ("有失败", "red")
+    elif unread:
+        template, verdict, tag = TEMPLATE[WARN], f"{unread} 个没读到结果", ("待确认", "orange")
+    else:
+        template, verdict, tag = TEMPLATE[OK], "全部完成", ("完成", "green")
+    took = f" · 用时 {_minutes(opened_at, now)}" if opened_at else ""
+    subtitle = f"{total} 个任务{took} · {_local(now, with_date=True)}"
     names = device_names or {}
-    for i, run in enumerate(runs or [], 1):
+    elements: list[dict] = []
+    for i, run in enumerate(runs, 1):
         device = str(run.get("session_ref") or "").split("|", 1)[0]
-        line = f"**{i}. {names.get(device, device)}** · {OUTCOME_WORD.get(run.get('outcome'), run.get('outcome'))}"
-        if run.get("excerpt"):
-            line += f"\n{run['excerpt']}"
-        elements.append(_md(line))
-    elements.append(_md("完整结果：指挥端 `fleet_batch`（status）或 `fleet_get_run`。"))
-    return _card(template, f"批次完成 · {name}", f"{_local(now, with_date=True)}（北京时间）",
-                 elements,
-                 tags=[("有失败" if failed else "全部完成", "red" if failed else "green")],
-                 summary=f"批次完成：{event.get('summary') or ''}", width="compact")
+        where = names.get(device, device.removeprefix("device:"))
+        head = f"**{i}. {run.get('label') or '任务 ' + str(i)}**　{OUTCOME_WORD.get(run.get('outcome'), '')}"
+        body = run.get("excerpt")
+        if not body:
+            body = {"unknown": "任务结束了，但读不到它的输出；可以让指挥端读一下会话再判断",
+                    "failed": "执行出错，没有完成"}.get(run.get("outcome"), "没有输出")
+        elements.append(_md(f"{head}\n<font color='grey'>{where}</font>\n{body}"))
+    if not runs:
+        elements.append(_md(rest or event.get("summary") or ""))
+    return _card(template, f"{name} · {verdict}", subtitle, elements,
+                 tags=[tag], summary=f"{name} · {verdict}", width="default")
 
 
 def _revert_button(event: dict) -> list[dict]:

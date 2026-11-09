@@ -26,6 +26,9 @@ What it is careful about
 from __future__ import annotations
 
 import datetime as dt
+import functools
+import subprocess
+from pathlib import Path
 import json
 import os
 import threading
@@ -210,6 +213,28 @@ class Principal:
 def _served_tool_count() -> int:
     from .tools import SERVED_TOOLS
     return len(SERVED_TOOLS)
+
+
+@functools.lru_cache(maxsize=1)
+def _release() -> dict[str, Any]:
+    """Which release this server runs: the plugin version its checkout ships and
+    the commit. What the owner uploaded to a chat client should match it."""
+    root = Path(__file__).resolve().parent.parent
+    version = None
+    try:
+        manifest = json.loads((root / "integrations/fleet-v1-first-install/plugin/plugin.json")
+                              .read_text(encoding="utf-8"))
+        version = manifest.get("version")
+    except (OSError, ValueError):
+        pass
+    commit = None
+    try:
+        done = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                              text=True, timeout=5)
+        commit = done.stdout.strip() or None if done.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {"plugin_version": version, "serveros_commit": commit}
 
 
 def _served_tool_names() -> list[str]:
@@ -2288,7 +2313,7 @@ class FleetService:
             "raw": payload,
         }
         self._record_delivery_ack(claim, record, expect_execution=True)
-        self._note_dispatch(key, run_id, None)
+        self._note_dispatch(key, run_id, None, message)
         state, hint = self._delivery_state(key, provider, payload, run_id)
         self.audit.record(
             "fleet.send",
@@ -2872,7 +2897,7 @@ class FleetService:
             adapter, key, permission_mode)
         readiness["run_started"] = bool(message and message.strip())
         if readiness["run_started"]:
-            self._note_dispatch(key, run_id, project)
+            self._note_dispatch(key, run_id, project, message)
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
@@ -2928,13 +2953,20 @@ class FleetService:
                     "sending to it is authorized here, which is a separate grant.",
         }
 
-    def _note_dispatch(self, key: SessionKey, run_id: Any, project: Any) -> None:
+    def _note_dispatch(self, key: SessionKey, run_id: Any, project: Any,
+                       message: Any = None) -> None:
         """Hand a started run to the monitor, so its outcome is recorded even when
-        it ends before the next discovery tick. Never fails the dispatch."""
+        it ends before the next discovery tick, with a short label (the first
+        line of the instruction) for the owner's cards. Never fails the dispatch."""
         if self.inbox is None or not isinstance(run_id, str) or not run_id:
             return
+        label = None
+        if isinstance(message, str):
+            first = next((ln.strip() for ln in message.splitlines() if ln.strip()), "")
+            label = (first[:39] + "…") if len(first) > 40 else (first or None)
         try:
-            self.inbox.note_dispatch(key.ref, run_id, project if isinstance(project, str) else None)
+            self.inbox.note_dispatch(key.ref, run_id, project if isinstance(project, str) else None,
+                                     label)
         except Exception:  # noqa: BLE001 - the run started; tracking is best effort
             pass
 
@@ -3727,6 +3759,9 @@ class FleetService:
                 }
             )
         return {
+            # The release the hub runs: the plugin a client should have
+            # uploaded, and the commit every device should be on.
+            "release": _release(),
             "surface": {
                 "server_name": "serveros-fleet-mcp",
                 "version": SERVER_VERSION,
