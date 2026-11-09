@@ -125,8 +125,8 @@ def run_excerpt(service: Any, principal: Any, chars: int) -> Callable[[str, str]
         text = next((run[f] for f in _OUTPUT_FIELDS if run.get(f)), None)
         if not _as_text(text):
             # No run receipt on this device: the session still holds the reply.
-            from .watch import last_assistant_text
-            text = last_assistant_text(service.read_session(principal, key, limit=5).get("transcript"))
+            from .watch import read_reply
+            text = read_reply(service, principal, key)
         return clip_excerpt(text, chars)
     return read
 PATCH_WINDOW = timedelta(days=13)          # Feishu allows 14; leave a day of slack

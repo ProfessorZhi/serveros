@@ -417,6 +417,57 @@ class TheTranscriptShapesCloudCLIAnswersWith(unittest.TestCase):
         self.assertEqual(last_assistant_text(read), "ok")
 
 
+class APlainTextTranscriptIsRead(unittest.TestCase):
+    """Owner, 2026-11-09: work-fj's session_read answers one string,
+    `[timestamp] label: text` per entry, capped at 4000 characters from the
+    oldest entry — so the reply sat past the cap and read as 没读到结果."""
+
+    TEXT = ('[2026-11-09T10:40:01.123Z] tool Bash({"command":"dir"})\n'
+            '[2026-11-09T10:40:05.000Z] thinking: checking the folder\n'
+            '[2026-11-09T10:41:00.000Z] tool Skill({"skill":"fleet-self-check"})\n'
+            '[2026-11-09T10:41:30.000Z] tool mcp__fleet__fleet_status({})\n'
+            '[2026-11-09T10:42:00.000Z] assistant: 结论：通过\n第二行')
+
+    def test_the_last_assistant_entry_is_the_answer(self):
+        from fleet_hub_watch.watch import last_assistant_text
+        read = {"session": "s", "mode": "latest", "content": self.TEXT, "cursor": "c"}
+        self.assertEqual(last_assistant_text(read), "结论：通过\n第二行")
+
+    def test_thinking_and_tools_alone_are_not_an_answer(self):
+        from fleet_hub_watch.watch import last_assistant_text
+        head = self.TEXT.rsplit("\n[", 1)[0]
+        self.assertIsNone(last_assistant_text({"content": head}))
+        self.assertIsNone(last_assistant_text({"content": "just words, no entries"}))
+
+    def test_tools_skills_and_mcp_are_summarised(self):
+        from fleet_hub_watch.watch import work_summary
+        got = work_summary({"content": self.TEXT})
+        self.assertEqual(got["turns"], 5)
+        self.assertIn("Bash×1", got["tools"])
+        self.assertEqual(got["skills"], "fleet-self-check")
+        self.assertEqual(got["mcp"], "mcp__fleet__fleet_status")
+        self.assertNotIn("waiting_for_person", got)
+
+    def test_a_question_left_open_is_waiting(self):
+        from fleet_hub_watch.watch import work_summary
+        text = self.TEXT + '\n[2026-11-09T10:43:00.000Z] tool AskUserQuestion({"q":1})'
+        self.assertTrue(work_summary({"content": text})["waiting_for_person"])
+
+    def test_the_newest_entry_is_read_first(self):
+        from fleet_hub_watch.watch import read_reply
+        oldest_first_cap = self.TEXT[:90]   # what a capped limit=5 read keeps
+        calls = []
+
+        class Service:
+            def read_session(self, principal, key, limit):
+                calls.append(limit)
+                return {"transcript": {"content": self_text if limit == 1 else oldest_first_cap}}
+
+        self_text = "[2026-11-09T10:42:00.000Z] assistant: 结论：通过"
+        self.assertEqual(read_reply(Service(), None, None), "结论：通过")
+        self.assertEqual(calls, [1])
+
+
 class TheDeviceSideIsSummarised(unittest.TestCase):
     """Owner, 2026-11-09: the log should show what the device agent did, as
     metadata — and a run stuck on a question should say so."""
