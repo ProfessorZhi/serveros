@@ -92,9 +92,48 @@ def secret_names(path: Path | None = None) -> dict[str, Any]:
             "errors": len(data.get("errors") or [])}
 
 
+def running_code() -> dict[str, Any]:
+    """Which code THIS process runs — the connector on a device, Fleet on the hub.
+
+    Owner, 2026-11-09: updates moved the checkout while the Windows connector
+    kept running a tree laid on 11-05 and the A6000 one a v1.3.1 worktree, so
+    every "updated" device still served old routes. The commit the update
+    recorded is not the commit that answers; this says which one does.
+    """
+    import re
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    commit = None
+    try:
+        done = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                              text=True, timeout=5)
+        commit = done.stdout.strip() or None if done.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if commit is None:
+        # A tree laid with `git archive` has no .git; the installers name its
+        # directory after the commit (runtime\fleet-node\<commit>).
+        match = re.fullmatch(r"[0-9a-f]{7,40}", root.name)
+        commit = match.group(0) if match else None
+    return {"commit": commit, "tree": root.name}
+
+
+def drift(answer: dict[str, Any]) -> bool | None:
+    """True when the code that answers is not the commit the last update recorded."""
+    recorded = ((answer.get("versions") or {}).get("serveros_commit") or "")
+    running = ((answer.get("running") or {}).get("commit") or "")
+    if not recorded or not running:
+        return None
+    n = min(len(recorded), len(running), 40)
+    return recorded[:n] != running[:n]
+
+
 def read(path: Path, device_ref: str) -> dict[str, Any]:
     answer = _read(path, device_ref)
     answer["secrets"] = secret_names()
+    answer["running"] = running_code()
+    answer["code_drift"] = drift(answer)
     return answer
 
 

@@ -194,3 +194,20 @@ class KeyCenterNamesTravelWithTheVersions(unittest.TestCase):
             got = device_versions.secret_names(state)
         self.assertEqual(got, {"state": "SYNCED", "names": ["GW0_TOKEN"], "synced_at": "t",
                                "repo_commit": "abc", "errors": 1})
+
+
+class TheAnsweringCodeIsNamed(unittest.TestCase):
+    """Owner, 2026-11-09: devices recorded the new commit while their connector
+    still ran an old tree; the versions answer now says which code answers."""
+
+    def test_drift_compares_recorded_and_running(self):
+        self.assertTrue(device_versions.drift({"versions": {"serveros_commit": "54ee8312aa"},
+                                               "running": {"commit": "f794820"}}))
+        self.assertFalse(device_versions.drift({"versions": {"serveros_commit": "54ee8312aa"},
+                                                "running": {"commit": "54ee8312"}}))
+        self.assertIsNone(device_versions.drift({"versions": {}, "running": {"commit": "x"}}))
+
+    def test_this_process_names_its_code(self):
+        running = device_versions.running_code()
+        self.assertIn("tree", running)
+        self.assertIn("commit", running)
