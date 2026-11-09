@@ -482,6 +482,46 @@ class BatchesReportOnce(NotifierTest):
         self.assertEqual(self.transport.headers()[-1][2], "red")
 
 
+class TheBatchCardCarriesTheResults(NotifierTest):
+    """Owner, 2026-11-09: GPT does not wait; the monitor reports the batch, so
+    the card itself says what each task found."""
+
+    def test_each_task_has_a_line_with_its_reply_and_keys_are_masked(self):
+        replies = {"run-0": "Swap 99% used; top user: java (42 GiB)",
+                   "run-1": {"content": "token sk-abcdefghijklmnopqrstuv leaked? no"}}
+        from fleet_hub_watch.notify import clip_excerpt
+        self.notifier.excerpt = lambda ref, rid: clip_excerpt(replies[rid], 200)
+        runs = [{"session_ref": f"{TOKYO}|claude|s-1", "run_id": f"run-{i}"} for i in range(2)]
+        self.inbox.open_batch("东京排查", runs, opened_by="commander")
+        self.run_event("run.completed", run_id="run-0")
+        self.run_event("run.completed", run_id="run-1")
+        self.notifier.tick([], THURSDAY_10)
+        (op, _mid, card, _) = self.transport.ops[-1]
+        body = json.dumps(card, ensure_ascii=False)
+        self.assertIn("批次完成 · 东京排查", card["header"]["title"]["content"])
+        self.assertIn("Swap 99% used", body)
+        self.assertIn("**1. Tokyo** · ✅ 完成", body)
+        self.assertNotIn("sk-abcdefghijklmnop", body)
+        self.assertIn("‹已遮蔽›", body)
+
+    def test_an_unreadable_reply_still_sends_the_card(self):
+        def broken(ref, rid):
+            raise RuntimeError("device gone")
+        self.notifier.excerpt = broken
+        runs = [{"session_ref": f"{TOKYO}|claude|s-1", "run_id": "run-0"}]
+        self.inbox.open_batch("one", runs, opened_by="commander")
+        self.run_event("run.completed", run_id="run-0")
+        self.notifier.tick([], THURSDAY_10)
+        self.assertIn("批次完成 · one", self.transport.headers()[-1][3])
+
+    def test_excerpts_are_one_line_and_bounded(self):
+        from fleet_hub_watch.notify import clip_excerpt
+        self.assertEqual(clip_excerpt("a\n\n b", 10), "a b")
+        self.assertEqual(len(clip_excerpt("x " * 300, 50)), 50)
+        self.assertIsNone(clip_excerpt("text", 0))
+        self.assertEqual(clip_excerpt([{"type": "text", "text": "hi"}, {"text": "there"}], 20), "hi there")
+
+
 class TheInboxClosesABatchOnce(unittest.TestCase):
     def test_runs_already_finished_settle_at_open_and_close_once(self):
         with tempfile.TemporaryDirectory() as d:

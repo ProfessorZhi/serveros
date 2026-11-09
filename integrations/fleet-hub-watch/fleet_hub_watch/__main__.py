@@ -47,7 +47,7 @@ from datetime import datetime, timezone
 from . import resources
 from . import spec as broadcast_spec
 from . import cards, feishu
-from .notify import JournalTransport, LarkTransport, Notifier, resolve_recipient
+from .notify import JournalTransport, LarkTransport, Notifier, resolve_recipient, run_excerpt
 from .watch import Watcher, WatchStore
 
 DEFAULT_CONTRACT = Path(__file__).resolve().parents[3] / "runtime" / "attribution-contract.yaml"
@@ -153,6 +153,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=30.0, help="seconds between ticks")
     parser.add_argument("--instance-id", default="tokyo-hub")
     parser.add_argument("--once", action="store_true", help="one tick, then exit")
+    parser.add_argument("--batch-excerpt-chars", type=int, default=200,
+                        help="characters of each task's final reply on a 批次完成 card "
+                             "(0: counts only); long tokens in it are masked")
     parser.add_argument("--notify", default=None,
                         help="required: lark:user:<open_id> | lark:chat:<chat_id> sends for "
                              "real, journal writes the cards and sends nothing, off runs "
@@ -218,7 +221,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.notify == "journal":
         notifier = Notifier(watcher.inbox, directory / "notify.sqlite",
                             JournalTransport(directory / "notify.journal.jsonl"), device_names=names,
-                            spec=specs.spec, control=control)
+                            spec=specs.spec, control=control,
+                            excerpt=run_excerpt(service, principal, args.batch_excerpt_chars))
     elif args.notify.startswith("lark:"):
         try:
             recipient = resolve_recipient(args.notify[len("lark:"):])
@@ -238,7 +242,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"cards go to {recipient}", file=sys.stderr)
         notifier = Notifier(watcher.inbox, directory / "notify.sqlite",
                             LarkTransport(recipient), device_names=names,
-                            spec=specs.spec, control=control, alert_transport=alert_transport)
+                            spec=specs.spec, control=control, alert_transport=alert_transport,
+                            excerpt=run_excerpt(service, principal, args.batch_excerpt_chars))
     elif args.notify != "off":
         print(f"unknown --notify {args.notify!r}", file=sys.stderr)
         return EXIT_NO_INBOX

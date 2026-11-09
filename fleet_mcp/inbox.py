@@ -85,6 +85,13 @@ CREATE TABLE IF NOT EXISTS batch_members (
     PRIMARY KEY (batch_id, session_ref, run_id)
 );
 CREATE INDEX IF NOT EXISTS batch_member_run ON batch_members(session_ref, run_id);
+CREATE TABLE IF NOT EXISTS dispatched (
+    session_ref TEXT NOT NULL,
+    run_id      TEXT NOT NULL,
+    project     TEXT,
+    at          TEXT NOT NULL,
+    PRIMARY KEY (session_ref, run_id)
+);
 CREATE TABLE IF NOT EXISTS cursors (
     subscriber TEXT PRIMARY KEY,
     seq        INTEGER NOT NULL,
@@ -295,6 +302,38 @@ class EventInbox:
                 f"VALUES ({','.join('?' * len(names))})", [values[n] for n in names])
             conn.execute("UPDATE batches SET closed_seq=? WHERE batch_id=?",
                          (cur.lastrowid, batch_id))
+
+    # -- runs to watch ----------------------------------------------------------
+
+    def note_dispatch(self, session_ref: str, run_id: str, project: str | None = None) -> None:
+        """Fleet started this run: the monitor watches it from the next tick.
+
+        Without this the monitor only found runs still running when it looked
+        (every 30 s), so a task that finished in seconds never got an outcome,
+        and a batch holding it never closed and never reported.
+        """
+        session_ref = _bounded(session_ref, "session_ref", 256, required=True)
+        run_id = _bounded(run_id, "run_id", 256, required=True)
+        with self._connect() as conn:
+            conn.execute("INSERT OR IGNORE INTO dispatched(session_ref, run_id, project, at) "
+                         "VALUES (?,?,?,?)", (session_ref, run_id, project, _now()))
+
+    def runs_to_watch(self, limit: int = 500) -> list[dict[str, Any]]:
+        """Dispatched runs not yet handed to the monitor, and every member of an
+        open batch that has no outcome yet (a batch may name runs Fleet did not
+        start itself)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT session_ref, run_id, project FROM dispatched "
+                "UNION SELECT m.session_ref, m.run_id, NULL FROM batch_members m "
+                "JOIN batches b ON b.batch_id = m.batch_id "
+                "WHERE m.outcome IS NULL AND b.closed_seq IS NULL LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def forget_dispatch(self, session_ref: str, run_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM dispatched WHERE session_ref=? AND run_id=?",
+                         (session_ref, run_id))
 
     def batch(self, batch_id: str) -> dict[str, Any]:
         """One batch: its members, their outcomes so far, and whether it closed."""

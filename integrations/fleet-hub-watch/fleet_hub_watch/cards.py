@@ -287,18 +287,33 @@ def completion_card(runs: list[dict], *, now: datetime, sample: bool = False,
                      str(r.get("project") or r["run_id"]) for r in runs[:3]))
 
 
-def batch_card(event: dict, *, now: datetime) -> dict:
+OUTCOME_WORD = {"completed": "✅ 完成", "failed": "❌ 失败", "unknown": "⚪ 无法确认", None: "… 未结束"}
+
+
+def batch_card(event: dict, *, now: datetime, runs: list[dict] | None = None,
+               device_names: dict[str, str] | None = None) -> dict:
     """One card when every run of a dispatched batch has an outcome.
 
     The members' own completions were not carded one by one; a member that
     failed already raised its own alert, so this card is the whole picture.
+    `runs` ({session_ref, outcome, excerpt}) adds one line per task with the
+    start of its final reply, so the owner reads the result here and does not
+    have to go back to the commander.
     """
     failed = event.get("level") == "decide"
     template = TEMPLATE[ALERT] if failed else TEMPLATE[OK]
     name, _, rest = (event.get("summary") or "").partition("：")
+    elements = [_md(rest or event.get("summary") or "")]
+    names = device_names or {}
+    for i, run in enumerate(runs or [], 1):
+        device = str(run.get("session_ref") or "").split("|", 1)[0]
+        line = f"**{i}. {names.get(device, device)}** · {OUTCOME_WORD.get(run.get('outcome'), run.get('outcome'))}"
+        if run.get("excerpt"):
+            line += f"\n{run['excerpt']}"
+        elements.append(_md(line))
+    elements.append(_md("完整结果：指挥端 `fleet_batch`（status）或 `fleet_get_run`。"))
     return _card(template, f"批次完成 · {name}", f"{_local(now, with_date=True)}（北京时间）",
-                 [_md(rest or event.get("summary") or ""),
-                  _md("指挥端可用 `fleet_batch`（status）读每个任务的结果。")],
+                 elements,
                  tags=[("有失败" if failed else "全部完成", "red" if failed else "green")],
                  summary=f"批次完成：{event.get('summary') or ''}", width="compact")
 
