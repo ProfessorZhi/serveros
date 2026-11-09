@@ -156,8 +156,29 @@ class Classification(WatcherTest):
         self.assertNotIn("3 files changed", event["summary"], "no transcript text in the inbox")
         self.assertEqual(self.store.all(), [])
 
+    def test_a_resident_sessions_unreadable_turn_is_dropped_quietly(self):
+        self.tokyo.start("s-1", "run-1")
+        self.watcher.tick()
+        self.tokyo.answers["run-1"] = {"status": "completed", "runId": "run-1"}
+        self.settle()
+        self.assertEqual([e for e in self.events() if e["kind"] != "run.stalled"], [])
+        self.assertEqual(self.store.all(), [], "not watched any more")
+
+    def test_no_receipt_but_the_session_holds_the_reply_is_completed(self):
+        self.tokyo.start("s-1", "run-1")
+        self.inbox.note_dispatch(f"{TOKYO}|claude|s-1", "run-1")
+        self.watcher.tick()
+        self.tokyo.answers["run-1"] = {"status": "completed", "runId": "run-1"}
+        self.harness.service.read_session = lambda principal, key, **kw: {
+            "transcript": {"messages": [{"role": "user", "content": "q"},
+                                        {"role": "assistant", "content": [{"type": "text", "text": "done"}]}]}}
+        self.settle()
+        (event,) = [e for e in self.events() if e["kind"] != "run.stalled"]
+        self.assertEqual(event["kind"], "run.completed")
+
     def test_completed_without_output_is_unknown_not_success(self):
         self.tokyo.start("s-1", "run-1")
+        self.inbox.note_dispatch(f"{TOKYO}|claude|s-1", "run-1")   # Fleet started it
         self.watcher.tick()
         self.tokyo.answers["run-1"] = {"status": "completed", "runId": "run-1"}
         self.settle()
@@ -358,7 +379,7 @@ class DispatchedRunsAreWatched(WatcherTest):
         (event,) = [e for e in self.events() if e["kind"].startswith("run.")]
         self.assertEqual((event["kind"], event["run_id"], event["project"]),
                          ("run.completed", "run-q", "serveros"))
-        self.assertEqual(self.inbox.runs_to_watch(), [], "handed over once")
+        self.assertEqual(self.watcher.discover()["added"], [], "handed over once")
 
     def test_a_batch_of_quick_runs_closes_and_reports(self):
         refs = [f"{TOKYO}|claude|s-{i}" for i in range(2)]

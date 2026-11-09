@@ -362,9 +362,21 @@ class EventInbox:
         return [dict(r) for r in rows]
 
     def forget_dispatch(self, session_ref: str, run_id: str) -> None:
+        """Kept for callers of 1.8; the record now stays two days so the monitor
+        can tell a task Fleet started from a resident session's own turn."""
         with self._connect() as conn:
-            conn.execute("DELETE FROM dispatched WHERE session_ref=? AND run_id=?",
-                         (session_ref, run_id))
+            conn.execute("DELETE FROM dispatched WHERE at < datetime('now', '-2 days')")
+
+    def was_dispatched(self, session_ref: str | None, run_id: str | None) -> bool:
+        """Fleet started this run (send or create), or a batch names it."""
+        if not session_ref or not run_id:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM dispatched WHERE session_ref=? AND run_id=? UNION "
+                "SELECT 1 FROM batch_members WHERE session_ref=? AND run_id=? LIMIT 1",
+                (session_ref, run_id, session_ref, run_id)).fetchone()
+        return row is not None
 
     def batch(self, batch_id: str) -> dict[str, Any]:
         """One batch: its members, their outcomes so far, and whether it closed."""

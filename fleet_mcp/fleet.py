@@ -26,6 +26,9 @@ What it is careful about
 from __future__ import annotations
 
 import datetime as dt
+import functools
+import subprocess
+from pathlib import Path
 import json
 import os
 import threading
@@ -210,6 +213,28 @@ class Principal:
 def _served_tool_count() -> int:
     from .tools import SERVED_TOOLS
     return len(SERVED_TOOLS)
+
+
+@functools.lru_cache(maxsize=1)
+def _release() -> dict[str, Any]:
+    """Which release this server runs: the plugin version its checkout ships and
+    the commit. What the owner uploaded to a chat client should match it."""
+    root = Path(__file__).resolve().parent.parent
+    version = None
+    try:
+        manifest = json.loads((root / "integrations/fleet-v1-first-install/plugin/plugin.json")
+                              .read_text(encoding="utf-8"))
+        version = manifest.get("version")
+    except (OSError, ValueError):
+        pass
+    commit = None
+    try:
+        done = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True,
+                              text=True, timeout=5)
+        commit = done.stdout.strip() or None if done.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return {"plugin_version": version, "serveros_commit": commit}
 
 
 def _served_tool_names() -> list[str]:
@@ -3734,6 +3759,9 @@ class FleetService:
                 }
             )
         return {
+            # The release the hub runs: the plugin a client should have
+            # uploaded, and the commit every device should be on.
+            "release": _release(),
             "surface": {
                 "server_name": "serveros-fleet-mcp",
                 "version": SERVER_VERSION,

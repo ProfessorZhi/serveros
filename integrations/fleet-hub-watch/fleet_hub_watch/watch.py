@@ -142,6 +142,45 @@ class WatchStore:
             conn.execute("COMMIT")
 
 
+def _text(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        return _text(value.get("content") if value.get("content") is not None else value.get("text"))
+    if isinstance(value, list):
+        parts = [t for t in (_text(v) for v in value) if t]
+        return " ".join(parts) or None
+    return None
+
+
+def last_assistant_text(transcript: Any) -> str | None:
+    """The last assistant reply in a transcript, whatever list the provider put
+    its messages in. Used when a run reports `completed` with no activity record
+    (CloudCLI without run receipts): the session itself still holds the answer."""
+    if isinstance(transcript, dict):
+        for key in ("messages", "items", "entries", "transcript", "data"):
+            if key in transcript:
+                found = last_assistant_text(transcript[key])
+                if found:
+                    return found
+        return None
+    if not isinstance(transcript, list):
+        return None
+    for message in reversed(transcript):
+        if not isinstance(message, dict):
+            continue
+        inner = message.get("message") if isinstance(message.get("message"), dict) else {}
+        role = message.get("role") or inner.get("role") or message.get("type")
+        if role != "assistant":
+            continue
+        text = _text(message.get("content") if message.get("content") is not None
+                     else inner.get("content") if inner.get("content") is not None
+                     else message.get("text"))
+        if text:
+            return text
+    return None
+
+
 def _current_run_id(detail: Any) -> str | None:
     """The run id a session detail names as current, wherever the provider put it."""
     if not isinstance(detail, dict):
@@ -250,6 +289,18 @@ class Watcher:
             "evidence": watch["session_ref"],
         }
 
+    def _dispatched(self, watch: dict[str, Any]) -> bool:
+        check = getattr(self.inbox, "was_dispatched", None)
+        return bool(check and check(watch["session_ref"], watch["run_id"]))
+
+    def _answered(self, watch: dict[str, Any]) -> bool:
+        try:
+            read = self.service.read_session(self.principal, SessionKey.parse(watch["session_ref"]),
+                                             limit=5)
+        except Exception:  # noqa: BLE001 - an unreadable session is not an answer
+            return False
+        return last_assistant_text(read.get("transcript")) is not None
+
     def observe(self) -> dict[str, Any]:
         now = self.clock()
         recorded, still = [], 0
@@ -263,6 +314,16 @@ class Watcher:
                                     "completed with readable output")
             elif status == STATUS_FAILED:
                 event = self._event(watch, "run.failed", "notify", f"failed ({reason})")
+            elif status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY" and self._answered(watch):
+                # No run receipt, but the session holds the reply: that is output.
+                event = self._event(watch, "run.completed", "notify",
+                                    "completed; reply read from the session")
+            elif status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY" \
+                    and not self._dispatched(watch):
+                # A resident session's own turn, unreadable: not news. Owner,
+                # 2026-11-09: these produced a 无法确认 card every few minutes.
+                self.store.drop(watch, now)
+                continue
             elif (status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY"
                   and age < UNREADABLE_GRACE_SECONDS):
                 event = None                # not readable yet: look again later

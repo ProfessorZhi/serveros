@@ -28,6 +28,7 @@ CC_DEV = ROOT / "integrations" / "fleet-cc-dev-plugin"
 FIRST_INSTALL = ROOT / "integrations" / "fleet-v1-first-install"
 
 EXPECTED_SKILLS = {
+    "fleet-acceptance",
     "fleet-ability-change",
     "fleet-ability-inventory",
     "fleet-async-dispatch",

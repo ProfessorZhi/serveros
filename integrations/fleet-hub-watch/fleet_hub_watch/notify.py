@@ -97,8 +97,14 @@ def run_excerpt(service: Any, principal: Any, chars: int) -> Callable[[str, str]
     from fleet_mcp.identity import SessionKey
 
     def read(session_ref: str, run_id: str) -> str | None:
-        run = service.get_run(principal, SessionKey.parse(session_ref), run_id)
-        return clip_excerpt(next((run[f] for f in _OUTPUT_FIELDS if run.get(f)), None), chars)
+        key = SessionKey.parse(session_ref)
+        run = service.get_run(principal, key, run_id)
+        text = next((run[f] for f in _OUTPUT_FIELDS if run.get(f)), None)
+        if not _as_text(text):
+            # No run receipt on this device: the session still holds the reply.
+            from .watch import last_assistant_text
+            text = last_assistant_text(service.read_session(principal, key, limit=5).get("transcript"))
+        return clip_excerpt(text, chars)
     return read
 PATCH_WINDOW = timedelta(days=13)          # Feishu allows 14; leave a day of slack
 MAX_SENDS_PER_TICK = 20
@@ -527,11 +533,14 @@ class Notifier:
         label = self._label(event)
         in_batch = (str(event.get("work_ref") or "").startswith("batch:")
                     or self._batch_of(event) is not None)
+        dispatched = getattr(self.inbox, "was_dispatched", lambda *_a: True)(
+            event.get("session_ref"), event.get("run_id"))
         if kind == "run.completed":
             self._note(event, {"episode": run_episode})
             self._close(run_episode, now, text="任务已完成，读到了实际输出")
-            if in_batch:
-                # Part of a dispatched batch: reported once, when the batch closes.
+            if in_batch or not dispatched:
+                # A batch member is told on its batch card; a resident session's
+                # own turn is not a task anyone dispatched — the 日报 counts it.
                 return
             with self._connect() as conn:
                 conn.execute("INSERT OR IGNORE INTO pending_completions(run_key, body, first_at)"

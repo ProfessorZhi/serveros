@@ -268,7 +268,9 @@ class NotifierTest(unittest.TestCase):
                            "evidence": f"{key}|{'OK' if recovered else level}",
                            "event_id": f"{key}{level}{at}{recovered}"})
 
-    def run_event(self, kind, run_id="run-1", at="2026-10-29T02:00:00Z"):
+    def run_event(self, kind, run_id="run-1", at="2026-10-29T02:00:00Z", dispatched=True):
+        if dispatched:
+            self.inbox.note_dispatch(f"{TOKYO}|claude|s-1", run_id, "serveros")
         self.inbox.record({"kind": kind, "level": "notify", "device_ref": TOKYO,
                            "session_ref": f"{TOKYO}|claude|s-1", "run_id": run_id,
                            "project": "serveros", "occurred_at": at,
@@ -482,6 +484,16 @@ class BatchesReportOnce(NotifierTest):
         (header,) = self.transport.headers()
         self.assertEqual(header[3], "部署 x2 · 1 个失败")
         self.assertEqual(header[2], "red")
+
+
+class AResidentSessionsOwnTurnsAreNotTasks(NotifierTest):
+    """Owner, 2026-11-09: every turn of a long-running session was carded."""
+
+    def test_a_turn_nobody_dispatched_is_counted_not_carded(self):
+        self.run_event("run.completed", run_id="turn-1", dispatched=False)
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=10))
+        self.assertEqual(self.transport.ops, [])
+        self.assertEqual(self.notifier.day_summary("2026-10-29")["runs"]["completed"], 1)
 
 
 class TheBatchCardCarriesTheResults(NotifierTest):
