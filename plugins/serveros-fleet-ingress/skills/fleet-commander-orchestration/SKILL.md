@@ -125,6 +125,10 @@ result will arrive as a Feishu 批次完成 card. Do not wait for it.
 - When the owner comes back and asks, read `fleet_batch` (status) or
   `fleet_inbox` (kinds `[batch.completed]`) once, then accept or refuse each run
   on its evidence.
+- When something looks wrong — no card came, a result says 没读到结果, a task
+  seems stuck — call `fleet_trace` with the batch or run id once and report its
+  `diagnosis` (where it stopped, what to check next). Do not re-dispatch or
+  guess before reading it.
 - A new investigation gets a new session; reuse a session only to continue the
   same thread of work (a long transcript makes every later turn slower).
 - Write the instruction so the device agent answers with its conclusion first,

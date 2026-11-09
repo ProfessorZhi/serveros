@@ -75,5 +75,10 @@ One table, one line per row above plus the two update rows, each `✅` / `➖ <w
     验收批次已派发：<n> 台设备。飞书会收到「验收 … · 全部完成」卡片，卡上每台设备一行结论——那张卡是最后一项。
 
 Then a verdict: no ❌ → **全部通过（待飞书卡片）**; any ❌ → **未通过 — 下一步：<谁做什么>**.
+
+If the owner later says the Feishu card did not come, or a row is ❌, call
+`fleet_trace` (the batch id, or the run id) once and quote its `diagnosis`
+(`stage` and `next`) — the hub recorded every step, so name the step it stopped
+at instead of guessing.
 Nothing else: no background, no repeated numbers, no tables of IDs. If the
 owner later asks for the result, read `fleet_batch` status once.

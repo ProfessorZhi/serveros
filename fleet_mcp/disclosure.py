@@ -291,6 +291,7 @@ KIND_BY_FIELD: dict[str, str] = {
     "source": CODE,
     "gateway": REF,
     "entries": COUNT,
+    "steps": COUNT,
     "verified": FLAG,
 }
 """The audit vocabulary, closed twice over: the names, and for each name the

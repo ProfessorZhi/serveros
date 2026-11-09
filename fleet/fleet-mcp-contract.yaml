@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-13
+tool_surface_revision: fleet-mcp-14
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -454,6 +454,18 @@ tools:
       caller, which is why this stays a read. A surface with no inbox bound
       answers `inbox: NOT_CONFIGURED` rather than an empty list.
 
+  fleet_trace:
+    verb: read
+    answers: >-
+      one run's, batch's or session's steps as the hub recorded them, oldest
+      first, and the step it stopped at with what to check next
+    answered_by: the trace table in this surface's own event inbox, written by
+      Fleet (dispatch), the inbox (events, batches), the monitor (observations,
+      reply reads) and the notifier (cards sent, held or skipped)
+    authorization: >-
+      fleet:read. Only steps for enrolled devices are returned. States, codes,
+      ids and counts only; kept 14 days.
+
   fleet_work_board:
     verb: read
     answers: >-
@@ -814,7 +826,7 @@ native_mirror:
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 55
+  served_total: 56
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.

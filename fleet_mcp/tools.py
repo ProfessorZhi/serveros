@@ -209,6 +209,12 @@ def _inbox(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         limit=args.get("limit", 50), ack=bool(args.get("ack", False)))
 
 
+def _trace(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.trace(ctx.principal, run_id=args.get("run_id"),
+                             batch_id=args.get("batch_id"), session_ref=args.get("session_ref"),
+                             minutes=args.get("minutes"))
+
+
 def _work_board(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.work_board(ctx.principal, args.get("project"))
 
@@ -1032,6 +1038,31 @@ TOOLS: tuple[Tool, ...] = (
         # device, session or other caller changes, so this stays a read.
         annotations=_read_only(),
         handler=_inbox,
+    ),
+    Tool(
+        name="fleet_trace",
+        title="Trace a task through the fleet",
+        description=(
+            "Where a task, batch or session got to, step by step, as the hub "
+            "recorded it: dispatched, picked up by the monitor, each observation "
+            "(status and reason), reply read or not, result recorded, batch "
+            "closed, Feishu card sent / held / skipped and why. `diagnosis` names "
+            "the step it stopped at and what to check next. Use it whenever a "
+            "card did not arrive or a result looks wrong, instead of guessing. "
+            "States, codes and ids only; kept 14 days."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "run_id": _string("A run id, as a send or create returned it."),
+                "batch_id": _string("A batch id from fleet_batch; includes its members."),
+                "session_ref": _string(SESSION_REF_DOC),
+                "minutes": _integer("Everything in the last N minutes.", minimum=1, maximum=1440),
+            },
+            "additionalProperties": False,
+        },
+        annotations=_read_only(),
+        handler=_trace,
     ),
     Tool(
         name="fleet_work_board",

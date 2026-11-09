@@ -3,6 +3,7 @@ and a cursor only moves forward. Offline: a temporary SQLite file, nothing else.
 """
 from __future__ import annotations
 
+import json
 import os
 import stat
 import sys
@@ -268,3 +269,56 @@ class ASentRunIsHandedToTheMonitor(unittest.TestCase):
             self.assertEqual(inbox.runs_to_watch(),
                              [{"session_ref": f"{TOKYO}|claude|abc", "run_id": result["run_id"],
                                "project": None}])
+
+
+class TheTraceIsOneTimelinePerTask(unittest.TestCase):
+    """Owner, 2026-11-09: logs kept on Tokyo, so a task can be followed from the
+    command side to the device and back to the card, and the stuck step named."""
+
+    def test_a_run_from_dispatch_to_card(self):
+        from fleet_mcp.trace import diagnose
+        with tempfile.TemporaryDirectory() as raw:
+            inbox = EventInbox(Path(raw) / "i.sqlite")
+            ref = f"{TOKYO}|claude|s-1"
+            inbox.trace("fleet", "dispatched (create)", session_ref=ref, run_id="r1", by="gpt")
+            self.assertEqual(diagnose(inbox.read_trace(run_id="r1"))["stage"], "DISPATCHED")
+            batch = inbox.open_batch("验收", [{"session_ref": ref, "run_id": "r1"}], opened_by="gpt")
+            inbox.trace("monitor", "observed", session_ref=ref, run_id="r1", status="RUNNING")
+            inbox.record({"kind": "run.completed", "level": "notify", "device_ref": TOKYO,
+                          "session_ref": ref, "run_id": "r1", "summary": "x"})
+            inbox.trace("notify", "card sent", ref=f"batch:batch:{batch['batch_id']}",
+                        message_id="om_1")
+            steps = inbox.read_trace(batch_id=batch["batch_id"])
+            names = [s["step"] for s in steps]
+            self.assertEqual(names[0], "dispatched (create)")
+            self.assertIn("batch opened", names)
+            self.assertIn("event run.completed", names)
+            self.assertIn("batch completed", names)
+            self.assertEqual(diagnose(steps)["stage"], "DELIVERED")
+            self.assertEqual(steps[0]["device_ref"], TOKYO)
+
+    def test_nothing_recorded_says_so(self):
+        from fleet_mcp.trace import diagnose
+        self.assertEqual(diagnose([])["stage"], "NOT_FOUND")
+
+    def test_an_unknown_source_is_refused(self):
+        with tempfile.TemporaryDirectory() as raw:
+            with self.assertRaises(InboxError):
+                EventInbox(Path(raw) / "i.sqlite").trace("anyone", "x")
+
+
+class TheTraceToolReadsTheHub(unittest.TestCase):
+    def test_send_is_traced_and_the_tool_returns_the_timeline(self):
+        from fleet_mcp.identity import SessionKey
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = Harness(Path(tmp), allow_tokyo_send=True, send_allow=(f"{TOKYO}|claude|abc",))
+            harness.service.inbox = EventInbox(Path(tmp) / "inbox.sqlite")
+            sent = harness.service.send_to_session(
+                harness.principal(), SessionKey.compose(TOKYO, "claude", "abc"), message="date")
+            ctx = fleet_tools.ToolContext(service=harness.service,
+                                          principal=harness.principal("fleet:read"))
+            answer = fleet_tools.call_tool(ctx, "fleet_trace", {"run_id": sent["run_id"]})
+        body = answer.get("structuredContent") or answer
+        self.assertEqual(body["steps"][0]["step"], "dispatched (send)")
+        self.assertEqual(body["diagnosis"]["stage"], "DISPATCHED")
+        self.assertNotIn("date", json.dumps(body["steps"]), "never the instruction")

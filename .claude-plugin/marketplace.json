@@ -10,7 +10,7 @@
       "name": "serveros-fleet",
       "source": "./distribution/claude-code/plugins/serveros-fleet",
       "description": "Reach your ServerOS devices and their Claude Code / Codex sessions through the Fleet MCP server, with the operator Skills that teach how.",
-      "version": "1.10.0",
+      "version": "1.11.0",
       "category": "productivity"
     }
   ]

@@ -831,6 +831,31 @@ class FleetService:
                     "NOT_RECORDED means no update has run there yet.",
         }
 
+    def trace(self, principal: Principal, *, run_id: str | None = None,
+              batch_id: str | None = None, session_ref: str | None = None,
+              minutes: int | None = None) -> dict[str, Any]:
+        """One task's (or batch's) way through the fleet, from the hub's trace,
+        and the step it stopped at."""
+        from .trace import diagnose
+
+        principal.require(SCOPE_READ)
+        self.admit(principal)
+        if self.inbox is None:
+            return {"trace": "NOT_CONFIGURED", "steps": [],
+                    "diagnosis": {"stage": "NOT_CONFIGURED",
+                                  "next": "this surface keeps no trace (no inbox bound)"}}
+        if not (run_id or batch_id or session_ref or minutes):
+            raise refuse(BAD_REQUEST, "name a run_id, batch_id, session_ref or minutes")
+        if minutes is not None and not (isinstance(minutes, int) and 1 <= minutes <= 1440):
+            raise refuse(BAD_REQUEST, "minutes is 1-1440")
+        enrolled = {e.device_ref.ref for e in self.registry.all()}
+        steps = [s for s in self.inbox.read_trace(run_id=run_id, batch_id=batch_id,
+                                                  session_ref=session_ref, minutes=minutes)
+                 if not s.get("device_ref") or s["device_ref"] in enrolled]
+        self.audit.record("fleet.trace", principal=principal.name, steps=len(steps))
+        return {"trace": "OK", "steps": steps, "diagnosis": diagnose(steps),
+                "note": "kept on the hub for 14 days; states, codes and ids only"}
+
     def status_cards(self, principal: Principal) -> dict[str, dict[str, Any]]:
         """Each device's 资源播报 card, as the device's own node runtime made it.
 
@@ -2349,8 +2374,9 @@ class FleetService:
             "raw": payload,
         }
         self._record_delivery_ack(claim, record, expect_execution=True)
-        self._note_dispatch(key, run_id, None, message)
         state, hint = self._delivery_state(key, provider, payload, run_id)
+        self._note_dispatch(key, run_id, None, message, actor=principal.name, verb="send",
+                            state=state)
         self.audit.record(
             "fleet.send",
             principal=principal.name,
@@ -2933,7 +2959,8 @@ class FleetService:
             adapter, key, permission_mode)
         readiness["run_started"] = bool(message and message.strip())
         if readiness["run_started"]:
-            self._note_dispatch(key, run_id, project, message)
+            self._note_dispatch(key, run_id, project, message, actor=principal.name,
+                                verb="create")
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
@@ -2990,7 +3017,8 @@ class FleetService:
         }
 
     def _note_dispatch(self, key: SessionKey, run_id: Any, project: Any,
-                       message: Any = None) -> None:
+                       message: Any = None, *, actor: str | None = None,
+                       verb: str = "send", state: str | None = None) -> None:
         """Hand a started run to the monitor, so its outcome is recorded even when
         it ends before the next discovery tick, with a short label (the first
         line of the instruction) for the owner's cards. Never fails the dispatch."""
@@ -3003,6 +3031,8 @@ class FleetService:
         try:
             self.inbox.note_dispatch(key.ref, run_id, project if isinstance(project, str) else None,
                                      label)
+            self.inbox.trace("fleet", f"dispatched ({verb})", session_ref=key.ref, run_id=run_id,
+                             by=actor, delivery=state)
         except Exception:  # noqa: BLE001 - the run started; tracking is best effort
             pass
 

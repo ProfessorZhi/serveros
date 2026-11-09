@@ -57,7 +57,7 @@ class TheContractDescribesThisCode(unittest.TestCase):
         change to what it read even when the set is identical."""
         declared = list(contract()["tools"])
         self.assertEqual(declared, tools_module.tool_names())
-        self.assertEqual(len(declared), 22)
+        self.assertEqual(len(declared), 23)
 
     def test_each_declared_verb_matches_the_annotation_the_tool_carries(self):
         declared = contract()["tools"]

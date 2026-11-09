@@ -48,7 +48,9 @@ SERVER_VERSION = "0.2.0"
 # `fleet-mcp-13`: `fleet_batch` (one report when a dispatched batch is done) and
 # `fleet_tune` (an agent adjusts a tunable setting inside the owner's bounds).
 # Twenty-two authored, 55 total.
-TOOL_SURFACE_REVISION = "fleet-mcp-13"
+# `fleet-mcp-14`: `fleet_trace` (read) — a task's way through the fleet as the
+# hub recorded it, and the step it stopped at. Twenty-three authored, 56 total.
+TOOL_SURFACE_REVISION = "fleet-mcp-14"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

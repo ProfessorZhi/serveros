@@ -307,13 +307,26 @@ class Notifier:
             return False
         return self._send(card_key, card, now)
 
+    def _trace(self, step: str, **fields: Any) -> None:
+        tracer = getattr(self.inbox, "trace", None)
+        if tracer is not None:
+            try:
+                tracer("notify", step, **fields)
+            except Exception:  # noqa: BLE001 - the trace never stops a card
+                pass
+
     def _send(self, card_key: str, card: dict, now: datetime, *, slot: str | None = None) -> bool:
         if self._sent_this_tick >= MAX_SENDS_PER_TICK or self._paused(now):
+            self._trace("card held: broadcast paused" if self._paused(now)
+                        else "card held: per-tick cap", ref=card_key)
             return False
         if self._sent_this_tick:
             self.sleep(SPACING_SECONDS)
         message_id = self._route(card_key).send(card, idempotency_key=_key(card_key, _version(card)))
         self._sent_this_tick += 1
+        self._trace("card sent" if message_id else "card send FAILED", ref=card_key,
+                    message_id=message_id,
+                    title=((card.get("header") or {}).get("title") or {}).get("content"))
         if not message_id:
             return False
         with self._connect() as conn:
@@ -584,7 +597,12 @@ class Notifier:
             if in_batch or not dispatched:
                 # A batch member is told on its batch card; a resident session's
                 # own turn is not a task anyone dispatched — the 日报 counts it.
+                self._trace("no card: " + ("told on the batch card" if in_batch
+                                           else "a session's own turn"),
+                            session_ref=event.get("session_ref"), run_id=event.get("run_id"))
                 return
+            self._trace("queued for the 任务完成 card", session_ref=event.get("session_ref"),
+                        run_id=event.get("run_id"))
             with self._connect() as conn:
                 conn.execute("INSERT OR IGNORE INTO pending_completions(run_key, body, first_at)"
                              " VALUES (?,?,?)",
@@ -604,8 +622,12 @@ class Notifier:
                            "text": f"{name}：{detail}", "level": level})
         if in_batch and kind != "run.stalled":
             # Its outcome is a line on the batch card; one message, not two.
+            self._trace("no card: told on the batch card", session_ref=event.get("session_ref"),
+                        run_id=event.get("run_id"))
             return
         if not dispatched and kind != "run.stalled":
+            self._trace("no card: a session's own turn", session_ref=event.get("session_ref"),
+                        run_id=event.get("run_id"))
             # A resident session's own turn: nobody dispatched it, so nobody is
             # waiting for a card about it. The 日报 counts it.
             return
