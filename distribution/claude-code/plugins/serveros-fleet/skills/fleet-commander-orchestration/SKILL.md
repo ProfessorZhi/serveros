@@ -70,8 +70,8 @@ executable edge: mark it blocked and say what is missing. A Skill is not a sched
 ## 3. Choose the dispatch shape
 
 Use one of two shapes, deliberately. (A question the owner asked is neither:
-it is one message in the owner's words — see "Write the instruction the way
-the owner said it" below.)
+it is one rewritten message — see "Rewrite the owner's ask into a better
+prompt" below.)
 
 1. **Several complete long tasks, in parallel.** Each task is independently
    accept-or-refuse-able: it has its own deliverable, its own tests/evidence and
@@ -112,25 +112,41 @@ an unknown outcome. After the ACK:
    and UNCONFIRMED are reported as exactly that, never as "dispatched";
 3. return promptly to coordination.
 
-**Write the instruction the way the owner said it.** Owner, 2026-11-09: told
-"查一下 xx 问题" directly, the local agent answered in four minutes; the same
-question relayed by the commander became a long instruction — a four-layer
-plan, a report path, an execution order, a list of don'ts — and the device
-agent spent its time following the plan instead of answering. So:
+**Rewrite the owner's ask into a better prompt — sharper, not longer.** Owner,
+2026-11-09: told "查一下 xx 问题" directly, the local agent answered in four
+minutes; the same question relayed by the commander became a long
+instruction — a four-layer plan, a report path, an execution order, a list of
+don'ts — and the device agent followed the plan instead of answering. Copying
+the owner's words verbatim is not the fix either: your job is to OPTIMISE the
+prompt, using what you know and the device agent does not.
 
-- pass the owner's question in the owner's own words, first;
-- add at most three short lines of facts the device agent cannot know (which
-  system, which date, an id the owner gave) — nothing it can find itself;
-- no plans, steps, checklists, report paths, output formats or lists of things
-  not to do: the device agent has its own skills (e.g. its read-only
-  production access) and its own safety rules, and knows how to investigate;
-- end with one line: "先给结论，再给关键证据。";
-- send it to the session on that device that already does this kind of work
-  (`fleet_list_sessions`: an idle one in the right project) rather than a fresh
-  one, so the agent starts with its context and skills warm.
+A good rewrite:
 
-A follow-up is also one line in the owner's words, to the same session —
-never a correction of a plan you wrote.
+- states the **question or goal in one or two sentences**, with the owner's
+  intent intact — what they actually want to know or have done;
+- **resolves what is ambiguous** from the conversation: the system, the date
+  or time range, the model or endpoint, an id the owner mentioned, what was
+  already ruled out — only the facts the agent could not find itself;
+- says **what a useful answer contains** in one line (e.g. "结论：是上游没有该字段，还是我们转换丢了；附关键证据").
+  That is the whole spec;
+- leaves the **method** to the agent: no step-by-step plan, no report path,
+  no output template, no list of don'ts — it has its own skills, its own
+  read-only production access and its own safety rules;
+- is **at most ~6 lines**, in the owner's language.
+
+Bad (what happened): "核对四层数据：1. 腾讯云原始响应… 2. LiteLLM 转换前… 3. …
+4. DailyUserSpend… 同时抽取同一渠道对照… 报告写到 C:\…\report.md … 不要修改…"
+
+Good: "北京生产 LiteLLM：11-06 起腾讯云 DeepSeek 的 Responses 请求缓存命中统计
+偏低。查清是腾讯云 /v1/responses 本身不返回 input_tokens_details.cached_tokens，
+还是 LiteLLM 转换时丢了。对比同模型走 /v1/chat/completions 的情况。
+先给结论，再给关键证据（几条 SpendLogs 或原始 usage）。"
+
+Send it to the session on that device that already does this kind of work
+(`fleet_list_sessions`: an idle one in the right project) rather than a fresh
+one, so the agent starts with its context and skills warm. A follow-up is
+rewritten the same way and goes to the same session — never a correction of
+a plan you wrote.
 
 **Then dispatch and leave — every dispatch goes into a batch, even a single
 task.** A chat client times out on a long wait, so the result comes back as a
