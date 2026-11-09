@@ -141,7 +141,8 @@ def test_open_alert_cards_carry_buttons_and_still_validate():
                              "text": "95%", "first_seen": "2026-11-07T01:00:00Z",
                              "device_ref": "device:x"}, now=NOW)
     tags = json.dumps(card, ensure_ascii=False)
-    assert '"tag": "button"' in tags and "静音 1 小时" in tags
+    assert '"tag": "button"' in tags and "1 小时内别再提醒" in tags
+    assert "暂停播报" not in tags, "one button per card, not two"
 
 
 def test_the_tuning_card_offers_revert():
