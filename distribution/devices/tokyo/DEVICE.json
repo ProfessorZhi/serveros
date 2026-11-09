@@ -66,11 +66,11 @@
         "what": "the rich 资源播报 card this machine's serverosd renders, written every five minutes for the hub to send (the hub is the one sender)",
         "unit": "serveros-status-card.timer",
         "template": {
-          "path": "fleet_mcp/node/systemd/user/serveros-status-card.service.in",
+          "path": "distribution/status-card/serveros-status-card.service.in",
           "digest": "sha256:9c34d92f7f217ba7af4cd007c2ef4fb264dc7c62c2db2e8de58831ebad6f35cc"
         },
         "timer": {
-          "path": "fleet_mcp/node/systemd/user/serveros-status-card.timer",
+          "path": "distribution/status-card/serveros-status-card.timer",
           "digest": "sha256:19a74cd6eeba705554bc36e56f93292fcfc6b1d1cdd544464305c5744e603074"
         },
         "writer": {

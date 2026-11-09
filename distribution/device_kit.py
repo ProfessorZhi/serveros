@@ -53,8 +53,8 @@ LAYERS = ("core", "family", "monitor", "commander")
 
 UNIT_TEMPLATES = {
     "serverosd": "runtime/serverosd.service",
-    "status_card": "fleet_mcp/node/systemd/user/serveros-status-card.service.in",
-    "status_card_timer": "fleet_mcp/node/systemd/user/serveros-status-card.timer",
+    "status_card": "distribution/status-card/serveros-status-card.service.in",
+    "status_card_timer": "distribution/status-card/serveros-status-card.timer",
     "core_lite_service": "native/node-core/core-lite/deploy/serveros-core-lite-publish.service",
     "core_lite_timer": "native/node-core/core-lite/deploy/serveros-core-lite-publish.timer",
     "core_lite_publish": "native/node-core/core-lite/deploy/publish-status.sh",
