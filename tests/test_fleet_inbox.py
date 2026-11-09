@@ -321,7 +321,9 @@ class TheTraceToolReadsTheHub(unittest.TestCase):
         body = answer.get("structuredContent") or answer
         self.assertEqual(body["steps"][0]["step"], "dispatched (send)")
         self.assertEqual(body["diagnosis"]["stage"], "DISPATCHED")
-        self.assertNotIn("date", json.dumps(body["steps"]), "never the instruction")
+        # Owner, 2026-11-09: the prompt sent IS kept (masked), beside the request and answer.
+        sent_text = [st["detail"]["text"] for st in body["steps"] if st["step"] == "prompt sent"]
+        self.assertEqual(sent_text, ["date"])
 
 
 class TheMemoryToolIsSharedThroughTheHub(unittest.TestCase):
@@ -383,3 +385,21 @@ class TheCommanderSideIsTraced(unittest.TestCase):
                  {"at": "2026-11-09T08:10:00Z", "source": "device",
                   "step": "device waiting for a person"}]
         self.assertEqual(diagnose(steps)["stage"], "WAITING_FOR_PERSON")
+
+
+class TheThreeTextsAreKept(unittest.TestCase):
+    def test_request_prompt_and_answer_masked_and_in_order(self):
+        from fleet_mcp.trace import exchange
+        with tempfile.TemporaryDirectory() as raw:
+            inbox = EventInbox(Path(raw) / "i.sqlite")
+            ref = f"{TOKYO}|claude|s-1"
+            inbox.trace("fleet", "prompt sent", session_ref=ref, run_id="r1",
+                        text="查一下 token sk-" + "a" * 30 + " 是否有效")
+            batch = inbox.open_batch("查询", [{"session_ref": ref, "run_id": "r1"}], opened_by="gpt")
+            inbox.trace("commander", "owner request", batch_id=batch["batch_id"], text="帮我查一下")
+            inbox.trace("device", "result", session_ref=ref, run_id="r1", text="结论：有效")
+            texts = dict(exchange(inbox.read_trace(batch_id=batch["batch_id"])))
+        self.assertEqual(texts["主人的原话"], "帮我查一下")
+        self.assertIn("‹已遮蔽›", texts["发给设备的提示词"])
+        self.assertNotIn("sk-aaaa", texts["发给设备的提示词"])
+        self.assertEqual(texts["设备的最终回复"], "结论：有效")

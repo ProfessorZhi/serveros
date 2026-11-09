@@ -220,7 +220,7 @@ class Answerer:
             return cards.resource_card(view, now=now) if view else text_card(
                 "没有这台设备的读数", [self.names.get(ref, ref)], now=now)
         if command == "trace":
-            from fleet_mcp.trace import diagnose, line
+            from fleet_mcp.trace import diagnose, exchange, line
             if not arg:
                 return text_card("追踪什么？", ["发「追踪 批次名或id」或「追踪 任务id」"], now=now)
             batch_id = self.inbox.find_batch(arg)
@@ -230,6 +230,7 @@ class Answerer:
             body = [f"**{verdict['stage']}**　{verdict['next']}"]
             if verdict.get("timings"):
                 body.append("用时　" + " · ".join(verdict["timings"]))
+            body += [f"**{label}**\n{text[:800]}" for label, text in exchange(steps)]
             body += [f"<font color='grey'>{line(s)}</font>" for s in steps[-15:]]
             return text_card(f"追踪 · {arg[:24]}", body, now=now,
                              template="green" if verdict["stage"] == "DELIVERED" else "orange")

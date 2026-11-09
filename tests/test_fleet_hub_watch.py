@@ -427,11 +427,15 @@ class TheDeviceSideIsSummarised(unittest.TestCase):
             {"type": "user", "message": {"role": "user", "content": "go"}},
             {"type": "assistant", "message": {"role": "assistant", "model": "deepseek-v4.1",
              "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "secret"}},
-                         {"type": "tool_use", "name": "Bash"}]}},
+                         {"type": "tool_use", "name": "Bash"},
+                         {"type": "tool_use", "name": "Skill", "input": {"skill": "prod-research"}},
+                         {"type": "tool_use", "name": "mcp__lark__send"}]}},
             {"type": "assistant", "message": {"role": "assistant",
              "content": [{"type": "tool_use", "name": "AskUserQuestion"}]}},
         ]}
         got = work_summary(read)
-        self.assertEqual(got, {"turns": 2, "tools": "Bash×2, AskUserQuestion×1",
-                               "model": "deepseek-v4.1", "waiting_for_person": True})
+        self.assertEqual(got, {"turns": 2,
+                               "tools": "Bash×2, Skill×1, mcp__lark__send×1, AskUserQuestion×1",
+                               "model": "deepseek-v4.1", "skills": "prod-research",
+                               "mcp": "mcp__lark__send", "waiting_for_person": True})
         self.assertNotIn("secret", str(got), "metadata only")

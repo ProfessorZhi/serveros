@@ -238,6 +238,7 @@ def work_summary(transcript: Any) -> dict[str, Any]:
     """What the device agent did, as metadata only: turns, tool calls by name,
     model, and whether it stopped to ask a person. Never text."""
     turns, tools, model, asking = 0, {}, None, False
+    skills, mcp = [], []
     for entry in _entries(transcript):
         inner = entry.get("message") if isinstance(entry.get("message"), dict) else entry
         role = inner.get("role") or entry.get("type")
@@ -249,6 +250,11 @@ def work_summary(transcript: Any) -> dict[str, Any]:
         for block in content if isinstance(content, list) else []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 name = str(block.get("name") or "tool")[:40]
+                given = block.get("input") if isinstance(block.get("input"), dict) else {}
+                if name == "Skill" and isinstance(given.get("skill"), str):
+                    skills.append(given["skill"][:60])
+                if name.startswith("mcp__"):
+                    mcp.append(name[:60])
                 tools[name] = tools.get(name, 0) + 1
                 asking = name in ("AskUserQuestion", "ask_user", "AskUser")
             elif isinstance(block, dict) and block.get("type") == "text":
@@ -258,6 +264,10 @@ def work_summary(transcript: Any) -> dict[str, Any]:
         summary["tools"] = ", ".join(f"{k}×{v}" for k, v in sorted(tools.items(), key=lambda kv: -kv[1])[:8])
     if model:
         summary["model"] = str(model)[:60]
+    if skills:
+        summary["skills"] = ", ".join(dict.fromkeys(skills))
+    if mcp:
+        summary["mcp"] = ", ".join(dict.fromkeys(mcp))[:300]
     if asking:
         summary["waiting_for_person"] = True
     return summary
@@ -411,6 +421,11 @@ class Watcher:
             try:
                 tracer("device", step, session_ref=watch["session_ref"], run_id=watch["run_id"],
                        **summary)
+                if final:
+                    answer = last_assistant_text(read.get("transcript"))
+                    if answer:
+                        tracer("device", "result", session_ref=watch["session_ref"],
+                               run_id=watch["run_id"], text=answer)
             except Exception:  # noqa: BLE001
                 pass
 

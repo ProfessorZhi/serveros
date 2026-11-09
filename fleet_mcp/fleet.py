@@ -650,7 +650,8 @@ class FleetService:
 
     def batch(self, principal: Principal, *, action: str, name: str | None = None,
               runs: list[dict[str, str]] | None = None,
-              batch_id: str | None = None) -> dict[str, Any]:
+              batch_id: str | None = None, owner_request: str | None = None,
+              skills: list[str] | None = None) -> dict[str, Any]:
         """Open a batch of dispatched runs, or read one.
 
         `open` (fleet:send, the scope that dispatched them): the hub records
@@ -671,6 +672,13 @@ class FleetService:
                         raise refuse(BAD_REQUEST, "every run names a session_ref on an enrolled "
                                                   "device, exactly as the send or create returned it")
                 answer = self.inbox.open_batch(name, runs, opened_by=principal.name)
+                if isinstance(owner_request, str) and owner_request.strip():
+                    # What the owner asked the commander, in their words — Fleet
+                    # cannot see it otherwise (owner, 2026-11-09).
+                    used = [str(s)[:60] for s in (skills or []) if isinstance(s, str)][:20]
+                    self.inbox.trace("commander", "owner request", batch_id=answer["batch_id"],
+                                     by=principal.name, text=owner_request,
+                                     skills=", ".join(used) or None)
                 self.audit.record("fleet.batch_open", principal=principal.name,
                                   sessions=answer["total"])
             elif action == "status":
@@ -3108,6 +3116,9 @@ class FleetService:
                                      label)
             self.inbox.trace("fleet", f"dispatched ({verb})", session_ref=key.ref, run_id=run_id,
                              by=actor, delivery=state)
+            if isinstance(message, str) and message.strip():
+                self.inbox.trace("fleet", "prompt sent", session_ref=key.ref, run_id=run_id,
+                                 by=actor, text=message)
         except Exception:  # noqa: BLE001 - the run started; tracking is best effort
             pass
 

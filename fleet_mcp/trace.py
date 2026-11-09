@@ -36,7 +36,9 @@ _NEXT = [
     ("device finished", "RECORDED", "设备上的 agent 已结束，等记录结果"),
     ("observed", "WATCHING", "监控在看，还没结束（看 detail.status / reason）"),
     ("watching", "WATCHING", "监控已接手，等第一次读取"),
+    ("result", "RECORDED", "设备已回复，结果已记下"),
     ("joined batch", "DISPATCHED", "已派发并编进批次，等监控接手（30 秒内）"),
+    ("prompt sent", "DISPATCHED", "已派发，等监控接手（30 秒内；超过说明 hub-watch 没在跑）"),
     ("batch opened", "DISPATCHED", "批次已建立"),
     ("dispatched", "DISPATCHED", "已派发，等监控接手（30 秒内；超过说明 hub-watch 没在跑）"),
 ]
@@ -94,10 +96,25 @@ def _diagnose(steps: list[dict[str, Any]]) -> dict[str, Any]:
     return {"stage": "UNKNOWN", "last_step": last, "at": steps[-1]["at"], "next": "看完整时间线"}
 
 
+_TEXTS = (("owner request", "主人的原话"), ("prompt sent", "发给设备的提示词"),
+          ("result", "设备的最终回复"))
+
+
+def exchange(steps: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """The three texts that matter, in order: what the owner asked, what was
+    sent, what came back."""
+    out = []
+    for step in steps:
+        for name, label in _TEXTS:
+            if step["step"] == name and (step.get("detail") or {}).get("text"):
+                out.append((label, step["detail"]["text"]))
+    return out
+
+
 def line(step: dict[str, Any]) -> str:
     who = step.get("run_id") or step.get("batch_id") or step.get("ref") or ""
     device = (step.get("device_ref") or "").removeprefix("device:")
-    detail = ", ".join(f"{k}={v}" for k, v in (step.get("detail") or {}).items())
+    detail = ", ".join(f"{k}={v}" for k, v in (step.get("detail") or {}).items() if k != "text")
     return (f"{step['at'][11:19]}  {step['source']:<7} {step['step']}"
             + (f"  [{device}]" if device else "") + (f"  {who[:12]}" if who else "")
             + (f"  ({detail})" if detail else ""))
@@ -133,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps({"steps": steps, "diagnosis": verdict}, ensure_ascii=False, indent=2))
     else:
+        for label, text in exchange(steps):
+            print(f"── {label} ──\n{text}\n")
         for step in steps:
             print(line(step))
         print(f"\n→ {verdict['stage']}: {verdict['next']}")

@@ -48,6 +48,8 @@ MAX_BATCH = 100
 LEVELS = frozenset({"auto", "notify", "decide"})
 
 MAX_LIMIT = 200
+#: The owner's request, the prompt sent and the final answer, per trace step.
+TRACE_TEXT_MAX = 4000
 #: Key-shaped strings: refused by memory, masked on cards.
 SECRETISH = re.compile(r"\b(?:sk|pk|ghp|gho|xox[abps]|AKIA)[-_A-Za-z0-9]{12,}|"
                        r"\b[A-Za-z0-9+/_=-]{40,}\b|-----BEGIN [A-Z ]*PRIVATE KEY")
@@ -439,8 +441,17 @@ class EventInbox:
         instruction or a value: the trace is read by people and by agents."""
         if device_ref is None and session_ref and "|" in session_ref:
             device_ref = session_ref.split("|", 1)[0]
-        text = json.dumps({k: v for k, v in detail.items() if v is not None},
-                          ensure_ascii=False, default=str)[:1000] if detail else None
+        clean = {}
+        for key, value in detail.items():
+            if value is None:
+                continue
+            if key == "text" and isinstance(value, str):
+                # The owner's words, the prompt sent, the final answer: kept
+                # (owner, 2026-11-09), masked for anything key-shaped.
+                clean[key] = SECRETISH.sub("‹已遮蔽›", value)[:TRACE_TEXT_MAX]
+            else:
+                clean[key] = value if not isinstance(value, str) else value[:300]
+        text = json.dumps(clean, ensure_ascii=False, default=str) if clean else None
         conn.execute("INSERT INTO trace(at, source, step, session_ref, run_id, batch_id, "
                      "device_ref, ref, detail) VALUES (?,?,?,?,?,?,?,?,?)",
                      (_now(), source, step[:80], session_ref, run_id, batch_id, device_ref,
