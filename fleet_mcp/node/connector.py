@@ -264,6 +264,9 @@ class NodeConfig:
     # (`fleet_mcp/device_versions.py`). Owner-fixed like the Core path; unset
     # means the place those tools write for this account.
     device_versions_path: Path | None = None
+    # Where `fleet_mcp/node/status_card.py` writes this machine's 资源播报 card.
+    # Owner-fixed; unset means that tool's default for this account.
+    status_card_path: Path | None = None
     connect_timeout: float = 5.0
     read_timeout: float = 45.0
     # Native session ids or full `device:<id>|<provider>|<id>` refs. Empty is
@@ -801,6 +804,7 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         core_snapshot_path=_core_snapshot_path(raw.get("core_snapshot_path")),
         device_versions_path=_owner_fixed_path(raw.get("device_versions_path"),
                                                "device_versions_path"),
+        status_card_path=_owner_fixed_path(raw.get("status_card_path"), "status_card_path"),
         notes=str(raw.get("notes") or ""),
         model_library_token_path=_owner_fixed_path(raw.get("model_library_token_path"),
                                                    "model_library_token_path"),
@@ -974,6 +978,8 @@ class Connector:
             return 200, self._run(parts[2], args)
         if parts == ["v1", "core", "status"]:
             return 200, self._core_status()
+        if parts == ["v1", "core", "card"]:
+            return 200, self._status_card()
         if parts == ["v1", "device", "versions"]:
             return 200, self._device_versions()
         if parts == ["v1", "native", "call"]:
@@ -1034,6 +1040,26 @@ class Connector:
 
         path = self.config.device_versions_path or device_versions.default_path()
         return device_versions.read(path, self.config.device_ref)
+
+    def _status_card(self) -> dict[str, Any]:
+        """This machine's 资源播报 card, read the way the Core status is read:
+        one bounded, no-follow open of the owner's own file."""
+        from .status_card import DEFAULT_OUT
+
+        path = self.config.status_card_path or DEFAULT_OUT
+        if not path.exists():
+            return {"state": "NOT_CONFIGURED",
+                    "reason": "this machine writes no 资源播报 card (no serverosd, or its "
+                              "status-card timer is not installed)"}
+        raw = _read_bounded_no_follow(path, CORE_SNAPSHOT_MAX_BYTES)
+        try:
+            document = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise FleetRefusal("BAD_REQUEST",
+                               f"the status card file is not JSON: {type(exc).__name__}") from None
+        if not isinstance(document, dict):
+            raise FleetRefusal("BAD_REQUEST", "the status card file is not a JSON object")
+        return document
 
     def _core_status(self) -> dict[str, Any]:
         """This machine's Core-Lite status, read from the owner's own file.
@@ -1645,6 +1671,7 @@ class _Handler(BaseHTTPRequestHandler):
         # Both read-only answers that describe this machine are signed over the
         # caller's nonce, so neither can be supplied by something else on the URL.
         is_core = split_path_and_query(self.path or "")[0] in ("/v1/core/status",
+                                                                "/v1/core/card",
                                                                 "/v1/device/versions")
         self._respond(status, payload, sign_core=is_core)
 

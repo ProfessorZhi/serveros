@@ -831,6 +831,42 @@ class FleetService:
                     "NOT_RECORDED means no update has run there yet.",
         }
 
+    def status_cards(self, principal: Principal) -> dict[str, dict[str, Any]]:
+        """Each device's 资源播报 card, as the device's own node runtime made it.
+
+        The hub's own device is read from this account's file; a device on the
+        node channel answers over `GET /v1/core/card` (signed). A device with no
+        card (no serverosd: Windows) or no route is absent, and the monitor
+        shows it with the plain readings instead. Read-only; used by the hub's
+        monitor, which is the one sender.
+        """
+        from .node.status_card import DEFAULT_OUT
+
+        principal.require(SCOPE_READ)
+        self.admit(principal)
+        cards: dict[str, dict[str, Any]] = {}
+        for entry in self.registry.all():
+            ref = entry.device_ref.ref
+            if getattr(entry, "ownership", None) != "company":
+                continue
+            document = None
+            if ref == self.config.local_device_ref:
+                try:
+                    document = json.loads(DEFAULT_OUT.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    document = None
+            else:
+                provider = self._provider(ref, self._own_runtime(ref))
+                reader = getattr(provider, "status_card", None)
+                if reader is not None:
+                    try:
+                        document = reader()
+                    except FleetRefusal:
+                        document = None
+            if isinstance(document, dict) and document.get("state") in ("OK", "ERROR"):
+                cards[ref] = document
+        return cards
+
     # -- CloudCLI model library ----------------------------------------------
 
     def _library_has(self, device_ref: str, runtime: str, family: str, model_id: str) -> bool:

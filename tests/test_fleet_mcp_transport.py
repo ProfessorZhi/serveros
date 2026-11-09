@@ -196,6 +196,7 @@ class NodeSignature(unittest.TestCase):
             "GET /v1/runs/{run_id}",
             "POST /v1/native/call",
             "GET /v1/core/status",
+            "GET /v1/core/card",
             "GET /v1/device/versions",
             "POST /v1/models",
             "POST /v1/models/upsert",

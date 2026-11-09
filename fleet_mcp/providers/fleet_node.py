@@ -287,6 +287,30 @@ class FleetNodeProvider(DeviceProvider):
                 f"response signature bound to this request's nonce.")
         return document
 
+    def status_card(self) -> dict[str, Any]:
+        """This device's 资源播报 card — verified like `core_status`."""
+        import secrets
+
+        nonce = secrets.token_hex(16)
+        capture: dict[str, Any] = {}
+        document = self._request("GET", "/v1/core/card", max_bytes=CORE_LITE_MAX_BYTES,
+                                 nonce=nonce, capture=capture)
+        secret = self.binding.credential()
+        if not secret:
+            raise refuse(PROVIDER_UNAUTHORIZED, "no node secret is configured")
+        if not verify_core_response(
+                secret,
+                device_ref=self.device_ref,
+                runtime=getattr(self.binding, "runtime", BASE_RUNTIME),
+                request_nonce=nonce,
+                body=capture.get("body") or b"",
+                signature=capture.get("headers", {}).get(CORE_SIGNATURE_HEADER.lower())):
+            raise refuse(
+                PROVIDER_UNAUTHORIZED,
+                f"the status card from {self.binding.endpoint} carries no valid "
+                f"response signature bound to this request's nonce.")
+        return document
+
     def core_lite_source(self) -> "NodeCoreLiteSource | None":
         """This device as a `CoreLiteStatusSource`, or `None` when it cannot be.
 

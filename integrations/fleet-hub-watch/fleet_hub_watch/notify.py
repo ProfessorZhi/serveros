@@ -73,6 +73,29 @@ def _as_text(value: Any) -> str | None:
 _ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-|^[0-9a-f]{16,}$|^run-", re.I)
 
 
+#: A device's own card older than this is not shown as current: the device
+#: falls back to the plain readings until it writes a fresh one.
+RICH_MAX_AGE = timedelta(minutes=20)
+
+
+def rich_card(document: dict, now: datetime) -> dict | None:
+    """The card a device made, ready to send and patch, or None when it is
+    missing, failed or stale."""
+    if not isinstance(document, dict) or document.get("state") != "OK":
+        return None
+    card = document.get("card")
+    try:
+        made = _parse(str(document.get("made_at")))
+    except ValueError:
+        return None
+    if not isinstance(card, dict) or now - made > RICH_MAX_AGE:
+        return None
+    card = json.loads(json.dumps(card))
+    config = card.setdefault("config", {})
+    config["update_multi"] = True          # patched in place all day
+    return card
+
+
 def _looks_like_id(text: str) -> bool:
     return bool(_ID_RE.match(text.strip()))
 
@@ -341,22 +364,42 @@ class Notifier:
         start = (local.hour * 60 + local.minute) // size * size
         return f"{local:%Y-%m-%d} {start // 60:02d}:{start % 60:02d}"
 
-    def status(self, views: list[dict], now: datetime) -> str:
-        """Send or patch today's 资源播报卡. Returns what happened."""
-        if not views or not self.in_window(now):
-            return "OUTSIDE_WINDOW" if views else "NO_VIEWS"
-        card_key = f"status:{now.astimezone(cards.CN):%Y-%m-%d}"
-        card = cards.resource_card(views, now=now, spec=self.spec)
+    def status(self, views: list[dict], now: datetime, rich: dict[str, dict] | None = None) -> str:
+        """Send or patch today's 资源播报: the device's own rich card where it
+        made a fresh one, the plain readings for the rest. Returns what happened."""
+        if not views and not rich:
+            return "NO_VIEWS"
+        if not self.in_window(now):
+            return "OUTSIDE_WINDOW"
+        outcomes = []
+        covered = set()
+        for device_ref, document in sorted((rich or {}).items()):
+            card = rich_card(document, now)
+            if card is None:
+                continue
+            covered.add(device_ref)
+            outcomes.append(self._daily_card(f"rich:{device_ref}:{now.astimezone(cards.CN):%Y-%m-%d}",
+                                             card, now, urgent=card["header"].get("template") == "red"))
+        rest = [v for v in views if v.get("device_ref") not in covered]
+        if rest:
+            outcomes.append(self._plain_status(rest, now))
+        return ",".join(outcomes) or "NO_VIEWS"
+
+    def _daily_card(self, card_key: str, card: dict, now: datetime, *, urgent: bool) -> str:
         slot = self.slot(now)
         existing = self._card(card_key)
         if existing is None:
             return "SENT" if self._send(card_key, card, now, slot=slot) else "SEND_FAILED"
         if existing["version"] == _version(card):
             return "UNCHANGED"
-        urgent = cards.overall(views) == ALERT
         if existing["slot"] == slot and not urgent:
             return "WAITING_FOR_SLOT"
         return "PATCHED" if self._patch(card_key, card, now, slot=slot) else "PATCH_FAILED"
+
+    def _plain_status(self, views: list[dict], now: datetime) -> str:
+        card_key = f"status:{now.astimezone(cards.CN):%Y-%m-%d}"
+        card = cards.resource_card(views, now=now, spec=self.spec)
+        return self._daily_card(card_key, card, now, urgent=cards.overall(views) == ALERT)
 
     # -- 报警卡 ---------------------------------------------------------------
 
@@ -677,12 +720,13 @@ class Notifier:
 
     # -- one pass -------------------------------------------------------------
 
-    def tick(self, views: list[dict], now: datetime) -> dict[str, Any]:
+    def tick(self, views: list[dict], now: datetime,
+             rich: dict[str, dict] | None = None) -> dict[str, Any]:
         self._sent_this_tick = 0
         consumed = self.consume(now)
         promoted = self.promote_pending(now)
         completions = self.flush_completions(now)
-        status = self.status(views, now)
+        status = self.status(views, now, rich)
         daily = self.daily(now)
         return {"consumed": consumed, "alerts_opened": promoted, "completions_sent": completions,
                 "status": status, "daily": daily, "messages": self._sent_this_tick}

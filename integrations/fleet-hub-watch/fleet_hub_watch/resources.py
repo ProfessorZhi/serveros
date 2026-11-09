@@ -153,8 +153,11 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
                              margin=t["psi_memory_full_avg60_percent_recovery_margin"],
                              previous=previous.get("psi")))
         if some is not None or full is not None:
+            def pct(x):
+                return "?" if x is None else f"{x:.1f}%"
             add("psi", "内存压力",
-                f"some {some if some is not None else '?'}% · full {full if full is not None else '?'}%",
+                f"最近 1 分钟，有进程因等内存而停顿的时间占 {pct(some)}，"
+                f"全部进程一起停顿占 {pct(full)}",
                 worst([some_level, full_level]))
 
     storage = _present(summary, "storage.readonly")

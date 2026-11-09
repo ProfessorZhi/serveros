@@ -1,0 +1,14 @@
+[Unit]
+Description=ServerOS: write this machine's 资源播报 card for the hub to send
+After=serverosd.service
+
+[Service]
+Type=oneshot
+# Renders the card with this machine's own node runtime and writes it,
+# owner-only, to ~/.local/state/serveros/status-card.json. Sends nothing: the
+# hub fetches it over the node connector (GET /v1/core/card) and is the one
+# sender for every device.
+ExecStart=@PYTHON@ -m fleet_mcp.node.status_card --serverosctl @SERVEROSCTL@ --device-ref @DEVICE_REF@
+WorkingDirectory=@SERVEROS_ROOT@
+TimeoutStartSec=120
+NoNewPrivileges=yes

@@ -62,6 +62,22 @@
           "digest": "sha256:b026513ac1000122950bfee62be2ba915224225afc6a6800083a63610b949e23"
         }
       },
+      "status_card": {
+        "what": "the rich 资源播报 card this machine's serverosd renders, written every five minutes for the hub to send (the hub is the one sender)",
+        "unit": "serveros-status-card.timer",
+        "template": {
+          "path": "distribution/status-card/serveros-status-card.service.in",
+          "digest": "sha256:9c34d92f7f217ba7af4cd007c2ef4fb264dc7c62c2db2e8de58831ebad6f35cc"
+        },
+        "timer": {
+          "path": "distribution/status-card/serveros-status-card.timer",
+          "digest": "sha256:19a74cd6eeba705554bc36e56f93292fcfc6b1d1cdd544464305c5744e603074"
+        },
+        "writer": {
+          "path": "fleet_mcp/node/status_card.py",
+          "digest": "sha256:41b4783b8265fe0f22dad1c4b46fedac87e8c980c9337fd2ce077017358b0d0a"
+        }
+      },
       "core_lite": {
         "what": "native: C++ collector → status.json (0600) every 30 s, observe only",
         "profile": {
