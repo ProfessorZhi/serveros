@@ -62,6 +62,94 @@ def _md(text: str) -> dict:
     return {"tag": "markdown", "content": _fmc()._wrap_lines(text)}
 
 
+# -- the house style ------------------------------------------------------------
+#
+# Owner, 2026-11-10 («飞书卡片太丑了»), read on a desktop: every card uses the
+# same few parts — a one-line verdict, grey rounded boxes for things that belong
+# together, coloured inline tags for state, large numbers in tiles, small grey
+# captions. Text is not hard-wrapped (that was for phones).
+
+TAG_WORD_COLOR = {OK: "green", WARN: "orange", ALERT: "red", UNCONFIRMED: "neutral"}
+
+
+def _text(content: str, *, size: str | None = None, align: str | None = None) -> dict:
+    """A markdown block, not hard-wrapped. `size`: heading / normal / notation."""
+    element: dict[str, Any] = {"tag": "markdown", "content": content}
+    if size:
+        element["text_size"] = size
+    if align:
+        element["text_align"] = align
+    return element
+
+
+def _itag(word: str, color: str) -> str:
+    """A coloured tag inside a line of text."""
+    return f"<text_tag color='{color}'>{word}</text_tag>"
+
+
+def _caption(content: str) -> dict:
+    return _text(f"<font color='grey'>{content}</font>", size="notation")
+
+
+def _box(eid: str, columns: list[list[dict]], *, weights: list[int] | None = None,
+         background: str = "grey") -> dict:
+    """A row of rounded boxes, one per column."""
+    weights = weights or [1] * len(columns)
+    return {
+        "tag": "column_set", "element_id": eid[:20], "flex_mode": "none",
+        "horizontal_spacing": "8px", "margin": "4px 0px 4px 0px",
+        "columns": [{"tag": "column", "width": "weighted", "weight": w,
+                     "background_style": background, "padding": "10px 12px 10px 12px",
+                     "vertical_spacing": "2px", "vertical_align": "top",
+                     "elements": elements or [_text(" ")]}
+                    for elements, w in zip(columns, weights)],
+    }
+
+
+def _tile(label: str, value: str, color: str = "default", note: str = "") -> list[dict]:
+    """A number tile: small grey label, large value, optional grey note."""
+    shown = f"<font color='{color}'>{value}</font>" if color != "default" else value
+    out = [_caption(label), _text(f"**{shown}**", size="heading")]
+    if note:
+        out.append(_caption(note))
+    return out
+
+
+def plain(card: dict) -> dict:
+    """The same card in the plainest vocabulary — no boxes, no chart, no inline
+    tags or sizes — sent when Feishu refuses the styled one."""
+    import copy
+    card = copy.deepcopy(card)
+
+    def flat(elements: list) -> list:
+        out = []
+        for e in elements:
+            if not isinstance(e, dict):
+                continue
+            if e.get("tag") == "chart":
+                continue
+            if e.get("tag") == "column_set":
+                parts = []
+                for column in e.get("columns") or []:
+                    parts += [c.get("content", "") for c in flat(column.get("elements") or [])
+                              if c.get("tag") == "markdown"]
+                text = "\n".join(p for p in parts if p.strip())
+                if text:
+                    out.append({"tag": "markdown", "content": text})
+                continue
+            e = {k: v for k, v in e.items() if k not in ("text_size", "text_align")}
+            if e.get("tag") == "markdown":
+                e["content"] = re.sub(r"<text_tag color='[^']*'>(.*?)</text_tag>", r"【\1】",
+                                      e.get("content", ""))
+            if e.get("tag") == "collapsible_panel":
+                e["elements"] = flat(e.get("elements") or [])
+            out.append(e)
+        return out
+    body = card.get("body") or {}
+    body["elements"] = flat(body.get("elements") or [])
+    return card
+
+
 def _hr() -> dict:
     return {"tag": "hr"}
 
