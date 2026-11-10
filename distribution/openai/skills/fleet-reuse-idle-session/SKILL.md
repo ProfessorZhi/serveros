@@ -1,24 +1,34 @@
 ---
 name: fleet-reuse-idle-session
-description: Continue an existing idle Claude/Codex session instead of starting a new one, and send to it precisely. Use before any fleet_create_session call, and whenever the task is "carry on with" or "ask the agent on that machine".
+description: Decide between a new session and one this commander already started, and send to it precisely. A new task gets a new session; only a session Fleet created for this work, or one the owner names, is ever sent to again. Use before any fleet_create_session call, and whenever the task is "carry on with" or "ask the agent on that machine".
 ---
 
-# Reuse the session that is already there
+# New work, new session; reuse only what you started
 
 ## At a glance
 
 - **Use when:** before any create, and for "carry on with" / "ask the agent on that machine".
+- **Rule:** a new task goes to a **new session** (`fleet_create_session`). Send to an existing session only when you created it for this same work (you hold its `session_ref` from your own create or batch) or the owner names it. Never pick an idle-looking session from a listing: a person may be working in it.
 - **Input:** a `session_ref`, or a device plus the project the work belongs to.
 - **Steps:** (1) resolve the session (named → read it; else filtered listing, pick by project and state); (2) `fleet_read_session` to confirm it is really idle; (3) `fleet_send_to_session` with a self-contained message and a stable `idempotency_key`; (4) keep the ACK references and return.
 - **Done when:** the ACK references are recorded; the result is read later via `fleet-evidence-review`.
-- **Never:** pick by recency alone; interrupt a quiet session; resend under a new key after an unknown outcome.
+- **Never:** send into a session you did not create and the owner did not name; pick by recency alone; interrupt a quiet session; resend under a new key after an unknown outcome.
 
 The sections below are the full contract behind each line.
 
-Prefer an idle session that already owns the context; reusing it avoids a
-cold start. Inside the owner-max managed profile, creating a new session is also
-a routine, pre-authorized action when no idle session carries the task: do not
-ask a human to approve each ordinary create.
+A listed session that looks idle may be a person's live conversation — the
+owner's own Claude Code window on that machine is one. A task sent into it
+lands in the middle of their work, and its answer is mixed with theirs
+(Owner, 2026-11-10: a batch sent into the owner's Windows session came back
+with the owner's own conversation as its «result»). So a **new task gets a new
+session**. Inside the owner-max managed profile creating one is routine and
+pre-authorized: do not ask a human to approve each ordinary create.
+
+Send to an existing session only when:
+
+- **you created it for this same work** — a follow-up or correction to a task
+  you dispatched, with the `session_ref` from your own create or batch; or
+- **the owner names it** («continue in that session», a `session_ref` they gave).
 
 ## Resolve the session before sending
 
@@ -27,10 +37,10 @@ Use the coordinates you already have:
 1. If a checkpoint or the request already names a `session_ref`, read that
    session directly with `fleet_get_session` or `fleet_read_session`. Do not
    start with a global listing to rediscover an address you were given.
-2. If you know the device but not the session, call `fleet_list_sessions` with
-   that `device` filter. Pick by **project** and **state**, not by recency
-   alone. A session whose project is not the one you need is not made suitable
-   by being idle.
+2. If you know the device but not the session, **create one** on that device
+   (`fleet-create-with-grants`). A listing is for reading what exists, not for
+   choosing a session to send into: an idle one you did not create is not
+   yours to use.
 3. `fleet_read_session` to confirm what the session is actually doing before
    you add to it. A session that looks idle in a listing may be between turns
    of a long run.

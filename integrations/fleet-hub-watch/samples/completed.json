@@ -36,12 +36,108 @@
         "content": "⚠️ 示例数据 · 非实时采集"
       },
       {
-        "tag": "markdown",
-        "content": "- **serveros**　<font color='grey'>Tokyo</font>\n- **ability-management**　<font color='grey'>Tokyo</font>\n- **lab-notes**　<font color='grey'>Dell A6000</font>"
+        "tag": "column_set",
+        "element_id": "task70712b5b8e",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**Tokyo**　<text_tag color='green'>完成</text_tag>"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>serveros</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "没有输出"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "column_set",
+        "element_id": "taskad8a20e68c",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**Tokyo**　<text_tag color='green'>完成</text_tag>"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>ability-management</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "没有输出"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "column_set",
+        "element_id": "task638ff69be5",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**Dell A6000**　<text_tag color='green'>完成</text_tag>"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>lab-notes</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "没有输出"
+              }
+            ]
+          }
+        ]
       },
       {
         "tag": "markdown",
-        "content": "<font color='grey'>每个都读到了实际输出；要看全文，问指挥端</font>"
+        "content": "<font color='grey'>要看全文：问指挥端，或在飞书发「追踪 任务id」</font>",
+        "text_size": "notation"
       }
     ]
   }

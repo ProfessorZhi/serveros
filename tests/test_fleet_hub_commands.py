@@ -100,8 +100,10 @@ class Answers(unittest.TestCase):
         self.assertIn("<font color='red'>内存压力 停顿 1.2%</font>", self.body(card), "the reason for red is shown")
         self.assertIn("1 个任务在跑", self.body(card))
         self.assertEqual(self.body(card).count("个任务在跑"), 1, "only runs still being watched")
-        self.assertEqual(card["header"]["title"]["content"], "2 台设备 · 1 报警 · 1 注意")
+        self.assertEqual(card["header"]["title"]["content"], "Fleet · 2 台设备")
+        self.assertEqual(card["header"]["text_tag_list"][0]["text"]["content"], "1 报警 · 1 注意")
         self.assertIn("**Tokyo**", self.body(card))
+        self.assertIn("column_set", self.body(card), "each device in its own box")
         self.assertNotIn("（水位）", self.body(card))
 
     def test_tasks_and_a_batch_by_name(self):
@@ -132,12 +134,13 @@ class Answers(unittest.TestCase):
         self.answerer.views[0]["readings"].append(
             {"key": "memory", "label": "内存", "text": "89% / 16 GiB", "level": "WARN", "value": 89})
         card = self.answerer.answer("resource", "东京", NOW)
-        self.assertEqual(card["header"]["title"]["content"], "Tokyo · 资源播报")
+        self.assertEqual(card["header"]["title"]["content"], "Tokyo · 资源")
         self.assertEqual(card["header"]["template"], "yellow")
         body = self.body(card)
         self.assertIn("column_set", body)
         self.assertIn("▰▰▰▰▰▰▰▰▰▱", body)
-        self.assertIn("**⚠️ 注意**　Swap 99%（水位）　内存 89% / 16 GiB", body)
+        self.assertIn("<text_tag color='orange'>注意</text_tag>　Swap <font color='orange'>99%（水位）</font>", body)
+        self.assertIn("**<font color='orange'>99%</font>**", body, "the number large, the remark small")
 
     def test_six_hours_of_readings_become_a_curve(self):
         """Owner, 2026-11-10: the earlier cards had curves; the resource card
@@ -162,6 +165,18 @@ class Answers(unittest.TestCase):
         plain = commands.cards.without_charts(card)
         self.assertNotIn('"chart"', self.body(plain))
 
+    def test_a_refused_styled_card_has_a_plain_twin(self):
+        """If Feishu ever refuses the boxes, tags or chart, the same content goes
+        out plainly instead of not at all."""
+        card = commands.status_card(self.answerer.views, now=NOW)
+        self.assertTrue(commands.cards.is_styled(card))
+        flat = commands.cards.plain(card)
+        body = self.body(flat)
+        self.assertFalse(commands.cards.is_styled(flat))
+        self.assertIn("**Tokyo**", body)
+        self.assertIn("【注意】", body)
+        commands.cards._fmc().validate(flat)
+
     def test_one_reading_draws_no_curve(self):
         card = self.answerer.answer("resource", "东京", NOW)
         self.assertNotIn('"chart"', self.body(card))
@@ -174,7 +189,7 @@ class Answers(unittest.TestCase):
                 "body": {"elements": []}}
         self.answerer.rich = {TOKYO: {"state": "OK", "made_at": "2026-11-09T06:50:00Z", "card": rich}}
         got = self.answerer.answer("resource", "", NOW)
-        self.assertEqual(got[0]["header"]["title"]["content"], "Tokyo · 资源播报")
+        self.assertEqual(got[0]["header"]["title"]["content"], "Tokyo · 资源")
         detail = self.answerer.answer("resource", "东京 详细", NOW)
         self.assertEqual(detail["header"]["title"]["content"], "东京 · 设备长卡")
 

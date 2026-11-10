@@ -37,11 +37,11 @@
       },
       {
         "tag": "markdown",
-        "content": "**⚠️ 今天 8 个任务，6 个完成，2 个要看一眼，资源波动 1 次，都已恢复，现在还有 1 项没结束**"
+        "content": "<text_tag color='orange'>仍有要看的</text_tag>　**今天 8 个任务，6 个完成，2 个要看一眼，资源波动 1 次，都已恢复，现在还有 1 项没结束**"
       },
       {
         "tag": "markdown",
-        "content": "**现在仍要看**\n- ⚠️ 任务运行时间过长 · lab-notes<font color='grey'>　run-22c1（Dell\nA6000）仍在运行，已超过 2 小时</font>"
+        "content": "**现在仍要看**\n- ⚠️ 任务运行时间过长 · lab-notes<font color='grey'>　run-22c1（Dell A6000）仍在运行，已超过 2 小时</font>"
       },
       {
         "tag": "markdown",
@@ -51,17 +51,27 @@
         "tag": "column_set",
         "element_id": "daykpi5ef2d8c8a9",
         "flex_mode": "none",
-        "background_style": "default",
-        "horizontal_spacing": "default",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
         "columns": [
           {
             "tag": "column",
             "width": "weighted",
             "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
             "elements": [
               {
                 "tag": "markdown",
-                "content": "<font color='grey'>完成</font>\n**<font color='green'>6</font>**"
+                "content": "<font color='grey'>完成</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "**<font color='green'>6</font>**",
+                "text_size": "heading"
               }
             ]
           },
@@ -69,10 +79,20 @@
             "tag": "column",
             "width": "weighted",
             "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
             "elements": [
               {
                 "tag": "markdown",
-                "content": "<font color='grey'>失败</font>\n**<font color='red'>1</font>**"
+                "content": "<font color='grey'>失败</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "**<font color='red'>1</font>**",
+                "text_size": "heading"
               }
             ]
           },
@@ -80,10 +100,20 @@
             "tag": "column",
             "width": "weighted",
             "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
             "elements": [
               {
                 "tag": "markdown",
-                "content": "<font color='grey'>没读到结果</font>\n**<font color='grey'>1</font>**"
+                "content": "<font color='grey'>没读到结果</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "**<font color='grey'>1</font>**",
+                "text_size": "heading"
               }
             ]
           },
@@ -91,10 +121,20 @@
             "tag": "column",
             "width": "weighted",
             "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
             "elements": [
               {
                 "tag": "markdown",
-                "content": "<font color='grey'>超时</font>\n**<font color='grey'>0</font>**"
+                "content": "<font color='grey'>超时</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "**<font color='grey'>0</font>**",
+                "text_size": "heading"
               }
             ]
           }
@@ -102,7 +142,7 @@
       },
       {
         "tag": "markdown",
-        "content": "**需要看一眼的任务**\n- 🚨 任务失败 · serveros<font\ncolor='grey'>　run-7f3a（Tokyo）执行失败（RUN_FAILED）</font>\n- ⚠️ 任务结果无法确认 · litellm<font\ncolor='grey'>　run-5b20（Tokyo）没能确认它完成了，也没能确认它失败了</font>"
+        "content": "**需要看一眼的任务**\n- 🚨 任务失败 · serveros<font color='grey'>　run-7f3a（Tokyo）执行失败（RUN_FAILED）</font>\n- ⚠️ 任务结果无法确认 · litellm<font color='grey'>　run-5b20（Tokyo）没能确认它完成了，也没能确认它失败了</font>"
       },
       {
         "tag": "collapsible_panel",

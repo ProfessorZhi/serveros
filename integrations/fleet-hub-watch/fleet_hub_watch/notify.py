@@ -357,6 +357,12 @@ class Notifier:
         if self._sent_this_tick:
             self.sleep(SPACING_SECONDS)
         message_id = self._route(card_key).send(card, idempotency_key=_key(card_key, _version(card)))
+        if not message_id and cards.is_styled(card):
+            # Feishu refused the styled card: the same content, plainly, still arrives.
+            message_id = self._route(card_key).send(
+                cards.plain(card), idempotency_key=_key(card_key, _version(card), "plain"))
+            self._trace("styled card refused; sent plain" if message_id
+                        else "plain card also refused", ref=card_key)
         self._sent_this_tick += 1
         self._trace("card sent" if message_id else "card send FAILED", ref=card_key,
                     message_id=message_id,

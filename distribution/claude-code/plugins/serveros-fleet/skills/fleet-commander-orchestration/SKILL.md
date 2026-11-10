@@ -88,10 +88,11 @@ on each other is a chain wearing a batch's clothes.
 ## 4. Dispatch and return
 
 Before a write, resolve the five coordinates: **device × runtime × project ×
-grant × effective model**. Prefer an idle session that already owns the
-context; when none can carry the task, create inside the owner-max profile
-without a fresh human approval. Use `fleet_send_to_session` for an existing
-session and `fleet_create_session` for a new one.
+grant × effective model**. A new task gets a **new session**
+(`fleet_create_session`, inside the owner-max profile, without a fresh human
+approval). `fleet_send_to_session` is only for a session you created for the
+same work, or one the owner names — never an idle-looking session from a
+listing, which may be a person's live conversation.
 
 For a **new project**, confirm the capability in the actual tool list, then
 take a root ref from `fleet_status.owner_access` and call
@@ -150,11 +151,10 @@ how a system behaves, a rule the owner just stated — `fleet_memory` add one
 short note (topic, at most a few sentences, `source` = the batch or run id).
 Never a key or token value; never a guess.
 
-Send it to the session on that device that already does this kind of work
-(`fleet_list_sessions`: an idle one in the right project) rather than a fresh
-one, so the agent starts with its context and skills warm. A follow-up is
-rewritten the same way and goes to the same session — never a correction of
-a plan you wrote.
+Send it to a new session on that device (see `fleet-reuse-idle-session`: a
+listed idle session may be the owner's own window). A follow-up to a task you
+dispatched is rewritten the same way and goes to the session you created for
+it — never a correction of a plan you wrote.
 
 **Then dispatch and leave — every dispatch goes into a batch, even a single
 task.** A chat client times out on a long wait, so the result comes back as a

@@ -455,7 +455,24 @@ class CompletionsAndPacing(NotifierTest):
         self.notifier.tick([], THURSDAY_10)
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=5))
         (op, _mid, card, _key) = self.transport.ops[0]
-        self.assertIn("↳ 答复-run-0", json.dumps(card, ensure_ascii=False))
+        self.assertIn('"content": "答复-run-0"', json.dumps(card, ensure_ascii=False))
+
+    def test_a_refused_styled_card_is_sent_plain(self):
+        sent = []
+        real = self.transport.send
+
+        def picky(card, *, idempotency_key):
+            if '"column_set"' in json.dumps(card):
+                return None
+            sent.append(card)
+            return real(card, idempotency_key=idempotency_key)
+        self.transport.send = picky
+        self.notifier.excerpt = lambda ref, rid: "OK"
+        self.run_event("run.completed", run_id="run-0")
+        self.notifier.tick([], THURSDAY_10)
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=5))
+        self.assertEqual(len(sent), 1)
+        self.assertIn("任务完成 · 1 个", sent[0]["header"]["title"]["content"])
 
     def test_a_tick_sends_at_most_the_cap_and_keeps_the_rest(self):
         for i in range(MAX_SENDS_PER_TICK + 5):
@@ -576,7 +593,7 @@ class TheBatchCardCarriesTheResults(NotifierTest):
         body = json.dumps(card, ensure_ascii=False)
         self.assertEqual("东京排查 · 全部完成", card["header"]["title"]["content"])
         self.assertIn("Swap 99% used", body)
-        self.assertIn("**1. 任务 1**　✅", body)
+        self.assertIn("**Tokyo**　<text_tag color='green'>完成</text_tag>", body)
         self.assertIn("Tokyo", body)
         self.assertNotIn("run-0", body, "no run ids on the face")
         self.assertNotIn("sk-abcdefghijklmnop", body)
