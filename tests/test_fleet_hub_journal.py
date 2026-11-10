@@ -128,6 +128,48 @@ class TheJournal(unittest.TestCase):
         self.finish(a, "r2")
         self.assertEqual(journal.tick(NOW), {"written": 1, "pushed": True}, "then tracks main")
 
+    def test_the_answer_is_this_runs_even_when_the_session_moved_on(self):
+        """Owner, 2026-11-10: a back-filled batch showed A6000 answering 「OK」 —
+        the session's latest reply, from a later task — instead of its hostname."""
+        a = f"{DELL}|claude|s-2"
+        self.inbox.note_dispatch(a, "r1", label="只输出 hostname")
+        self.inbox.trace("device", "result", session_ref=a, run_id="r1", text="FJ-NJ-SER-1009")
+        self.finish(a, "r1")
+        self.replies["r1"] = "OK"                    # what the session says now
+        self.journal.tick(NOW)
+        (path,) = [p for p in (self.clone / "runs").rglob("*.md") if p.name != "INDEX.md"]
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("FJ-NJ-SER-1009", text)
+        self.assertNotIn("```text\nOK\n```", text)
+
+    def test_a_long_run_keeps_its_prompt_and_folds_repeated_observations(self):
+        a = f"{TOKYO}|claude|s-1"
+        self.inbox.note_dispatch(a, "r1", label="长任务")
+        self.inbox.trace("fleet", "prompt sent", session_ref=a, run_id="r1", text="请做一件很长的事")
+        for _ in range(400):
+            self.inbox.trace("monitor", "observed", session_ref=a, run_id="r1",
+                             status="RUNNING", age_s=1)
+        self.finish(a, "r1")
+        self.journal.tick(NOW)
+        (path,) = [p for p in (self.clone / "runs").rglob("*.md") if p.name != "INDEX.md"]
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("请做一件很长的事", text)
+        self.assertIn("…同样的观测又 399 次", text)
+        self.assertIn("北京时间", text)
+
+    def test_nothing_written_means_no_push_attempt(self):
+        tmp = Path(self._td.name)
+        empty = tmp / "e.git"
+        git(tmp, "init", "-q", "--bare", str(empty))
+        clone = tmp / "e-clone"
+        git(tmp, "clone", "-q", str(empty), str(clone))
+        calls = []
+        journal = Journal(self.inbox, clone, push_every=0)
+        real = journal._git
+        journal._git = lambda *args: (calls.append(args[0]), real(*args))[1]
+        self.assertEqual(journal.tick(NOW), {"written": 0, "pushed": False})
+        self.assertNotIn("push", calls)
+
     def test_the_cursor_is_its_own(self):
         a = f"{TOKYO}|claude|s-1"
         self.inbox.note_dispatch(a, "r1", label="x")
