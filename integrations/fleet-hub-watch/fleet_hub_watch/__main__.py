@@ -229,7 +229,8 @@ def main(argv: list[str] | None = None) -> int:
         notifier = Notifier(watcher.inbox, directory / "notify.sqlite",
                             JournalTransport(directory / "notify.journal.jsonl"), device_names=names,
                             spec=specs.spec, control=control,
-                            excerpt=run_excerpt(service, principal, args.batch_excerpt_chars))
+                            excerpt=run_excerpt(service, principal, args.batch_excerpt_chars,
+                                                watcher.inbox))
     elif args.notify.startswith("lark:"):
         try:
             recipient = resolve_recipient(args.notify[len("lark:"):])
@@ -250,7 +251,8 @@ def main(argv: list[str] | None = None) -> int:
         notifier = Notifier(watcher.inbox, directory / "notify.sqlite",
                             LarkTransport(recipient), device_names=names,
                             spec=specs.spec, control=control, alert_transport=alert_transport,
-                            excerpt=run_excerpt(service, principal, args.batch_excerpt_chars))
+                            excerpt=run_excerpt(service, principal, args.batch_excerpt_chars,
+                                                watcher.inbox))
     elif args.notify != "off":
         print(f"unknown --notify {args.notify!r}", file=sys.stderr)
         return EXIT_NO_INBOX
