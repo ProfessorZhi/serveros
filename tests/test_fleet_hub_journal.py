@@ -109,6 +109,25 @@ class TheJournal(unittest.TestCase):
         self.assertTrue(self.journal.flush(force=True))
         self.assertIn("fleet:", git(self.remote, "log", "--oneline").stdout)
 
+    def test_the_first_push_to_an_empty_repository_creates_main(self):
+        """Owner, 2026-11-10: fleet-journal was created empty; a clone of it has
+        no upstream, so the first push has to create `main`."""
+        tmp = Path(self._td.name)
+        empty = tmp / "empty.git"
+        git(tmp, "init", "-q", "--bare", str(empty))
+        clone = tmp / "empty-clone"
+        git(tmp, "clone", "-q", str(empty), str(clone))
+        journal = Journal(self.inbox, clone, reply=lambda ref, rid: "OK", push_every=0)
+        a = f"{TOKYO}|claude|s-1"
+        self.inbox.note_dispatch(a, "r1", label="只输出 OK")
+        self.finish(a, "r1")
+        self.assertEqual(journal.tick(NOW), {"written": 1, "pushed": True})
+        self.assertIn("main", git(empty, "branch", "--list").stdout)
+        self.assertIn("fleet:", git(empty, "log", "--oneline", "main").stdout)
+        self.inbox.note_dispatch(a, "r2", label="再来一次")
+        self.finish(a, "r2")
+        self.assertEqual(journal.tick(NOW), {"written": 1, "pushed": True}, "then tracks main")
+
     def test_the_cursor_is_its_own(self):
         a = f"{TOKYO}|claude|s-1"
         self.inbox.note_dispatch(a, "r1", label="x")
