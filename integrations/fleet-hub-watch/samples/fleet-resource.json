@@ -1,0 +1,387 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default",
+    "summary": {
+      "content": "Fleet 资源 · 2 台要看"
+    }
+  },
+  "header": {
+    "template": "yellow",
+    "title": {
+      "tag": "plain_text",
+      "content": "Fleet 资源 · 3 台 · [示例]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "10-29 14:30"
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "2 台要看"
+        },
+        "color": "orange"
+      }
+    ]
+  },
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "⚠️ 示例数据 · 非实时采集"
+      },
+      {
+        "tag": "column_set",
+        "element_id": "dev336a07a1d6",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**FJPCOS**　<font color='orange'>内存用了 87%</font>"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>CPU 63% · 系统盘 74% · 2 个任务在跑</font>",
+                "text_size": "notation"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "column_set",
+        "element_id": "devaa6c4f4755",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**Tokyo**　<font color='orange'>交换区用了 100%</font>；<font color='orange'>内存吃紧（2.1% 的时间在等内存）</font>"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>CPU 18% · 内存 61% · 系统盘 41% · 数据盘 57%</font>",
+                "text_size": "notation"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "column_set",
+        "element_id": "dev7d895145e0",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**Dell A6000**　<font color='grey'>正常</font>"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>CPU 72% · 内存 67% · 数据盘 78% · GPU0 显存 41/48 GiB · GPU1 显存 12/48 GiB</font>",
+                "text_size": "notation"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "chart",
+        "element_id": "fleetmem4e07408562",
+        "aspect_ratio": "2:1",
+        "chart_spec": {
+          "type": "line",
+          "title": {
+            "text": "内存 · 近 6 小时（%）"
+          },
+          "data": {
+            "values": [
+              {
+                "time": "08:00",
+                "value": 78.3,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "08:30",
+                "value": 79.0,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "09:00",
+                "value": 79.7,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "09:30",
+                "value": 80.5,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "10:00",
+                "value": 81.2,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "10:30",
+                "value": 81.9,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "11:00",
+                "value": 82.6,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "11:30",
+                "value": 83.3,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "12:00",
+                "value": 84.1,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "12:30",
+                "value": 84.8,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "13:00",
+                "value": 85.5,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "13:30",
+                "value": 86.2,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "14:00",
+                "value": 86.7,
+                "type": "FJPCOS"
+              },
+              {
+                "time": "08:00",
+                "value": 57.2,
+                "type": "Tokyo"
+              },
+              {
+                "time": "08:30",
+                "value": 55.4,
+                "type": "Tokyo"
+              },
+              {
+                "time": "09:00",
+                "value": 53.6,
+                "type": "Tokyo"
+              },
+              {
+                "time": "09:30",
+                "value": 51.9,
+                "type": "Tokyo"
+              },
+              {
+                "time": "10:00",
+                "value": 50.1,
+                "type": "Tokyo"
+              },
+              {
+                "time": "10:30",
+                "value": 48.2,
+                "type": "Tokyo"
+              },
+              {
+                "time": "11:00",
+                "value": 46.4,
+                "type": "Tokyo"
+              },
+              {
+                "time": "11:30",
+                "value": 44.6,
+                "type": "Tokyo"
+              },
+              {
+                "time": "12:00",
+                "value": 42.9,
+                "type": "Tokyo"
+              },
+              {
+                "time": "12:30",
+                "value": 41.1,
+                "type": "Tokyo"
+              },
+              {
+                "time": "13:00",
+                "value": 39.2,
+                "type": "Tokyo"
+              },
+              {
+                "time": "13:30",
+                "value": 37.5,
+                "type": "Tokyo"
+              },
+              {
+                "time": "14:00",
+                "value": 36.2,
+                "type": "Tokyo"
+              },
+              {
+                "time": "08:00",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "08:30",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "09:00",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "09:30",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "10:00",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "10:30",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "11:00",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "11:30",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "12:00",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "12:30",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "13:00",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "13:30",
+                "value": 67.0,
+                "type": "Dell A6000"
+              },
+              {
+                "time": "14:00",
+                "value": 66.5,
+                "type": "Dell A6000"
+              }
+            ]
+          },
+          "xField": "time",
+          "yField": "value",
+          "seriesField": "type",
+          "point": {
+            "visible": false
+          },
+          "label": {
+            "visible": false
+          },
+          "line": {
+            "style": {
+              "curveType": "monotone",
+              "lineWidth": 2
+            }
+          },
+          "axes": [
+            {
+              "orient": "left",
+              "min": 0,
+              "max": 100,
+              "tick": {
+                "tickCount": 3
+              }
+            },
+            {
+              "orient": "bottom",
+              "label": {
+                "autoRotate": false,
+                "autoHide": true,
+                "autoLimit": true
+              }
+            }
+          ],
+          "legends": {
+            "visible": true,
+            "orient": "bottom"
+          },
+          "color": [
+            "#3370FF",
+            "#F5A623",
+            "#00B2A9",
+            "#7F3BF5",
+            "#8F959E",
+            "#F54A45"
+          ]
+        }
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>「资源 东京」看单台的全部读数和曲线 · 只读，不会动任何东西</font>",
+        "text_size": "notation"
+      }
+    ]
+  }
+}

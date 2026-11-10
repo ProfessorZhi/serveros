@@ -40,7 +40,7 @@ COMMANDS = {
 }
 
 HELP = [("状态", "每台设备一行：是否正常、关键读数"),
-        ("资源", "每台设备的完整资源播报卡（也可以直接问「资源情况」「东京内存怎么样」）"),
+        ("资源", "所有设备在一张卡上：哪台要看、各项读数、内存曲线（也可以直接问「资源情况」）"),
         ("任务", "进行中的批次，和刚完成的"),
         ("批次 名字", "一个批次里每个任务的结论"),
         ("资源 设备", "只看那一台；加「详细」看设备自己的长卡（账户、时间线）"),
@@ -295,11 +295,22 @@ class Answerer:
             ref = self._device(arg.strip())
             if ref is not None:
                 return self._resource(ref, now, detailed=detailed)
-            # No device named (资源 / 资源情况 / 资源缺口): every device's full card.
+            # No device named (资源 / 资源情况 / 资源缺口): every device on ONE card
+            # (owner, 2026-11-11: a large card per device filled the screen).
+            # 「资源 详细」 still sends each device's own long card.
             refs = [v.get("device_ref") for v in self.views if v.get("device_ref")] \
                 or list(self.rich) or list(self.names)
-            return [self._resource(r, now, detailed=detailed) for r in dict.fromkeys(refs)] or text_card(
-                "还没有读数", ["设备读数还没到，稍后再问"], now=now)
+            if detailed or not self.views:
+                return [self._resource(r, now, detailed=detailed) for r in dict.fromkeys(refs)] or text_card(
+                    "还没有读数", ["设备读数还没到，稍后再问"], now=now)
+            running: dict[str, int] = {}
+            for row in self.watching():
+                ref = row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]
+                running[ref] = running.get(ref, 0) + 1
+            return cards.fleet_resource_card(
+                self.views, now=now, running=running,
+                histories={v["device_ref"]: self._history(v["device_ref"], now)
+                           for v in self.views if v.get("device_ref")})
         if command == "trace":
             from fleet_mcp.trace import diagnose, exchange, line
             if not arg:

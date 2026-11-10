@@ -390,19 +390,41 @@ def sparkline(values: list[float], cells: int = 24) -> str:
     return "".join(SPARK[min(7, int(v / high * 7.999))] for v in points)
 
 
-def trend_chart(eid: str, history: dict[str, list[tuple[str, float]]],
-                labels: dict[str, str], *, title: str) -> dict | None:
-    """A CardKit line chart of the shares over time (VChart spec), or None
-    when fewer than three points were recorded."""
-    values = []
-    for key in CHART_KEYS:
-        for slot, value in history.get(key) or []:
-            values.append({"time": _local(slot), "value": round(float(value), 1),
-                           "type": labels.get(key, key)})
+#: Points on a curve. Owner, 2026-11-11: 72 five-minute points made a wall of
+#: vertical time labels; six hours read fine as thirteen half-hour points.
+CHART_BUCKET_MINUTES = 30
+CHART_MAX_POINTS = 13
+
+
+def _bucketed(points: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    """Half-hour means of (slot, value) points, labelled HH:MM Beijing time."""
+    sums: dict[datetime, list[float]] = {}
+    for slot, value in points:
+        try:
+            at = datetime.fromisoformat(str(slot).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        at = at.replace(minute=at.minute - at.minute % CHART_BUCKET_MINUTES, second=0, microsecond=0)
+        sums.setdefault(at, []).append(float(value))
+    return [(_local(at), round(sum(v) / len(v), 1)) for at, v in sorted(sums.items())]
+
+
+def line_chart(eid: str, series: list[tuple[str, list[tuple[str, float]]]], *,
+               title: str) -> dict | None:
+    """A compact CardKit line chart (VChart spec) of shares over time, one line
+    per (name, points), or None when fewer than three points were recorded."""
+    # A short history is drawn as it is; a long one as half-hour means.
+    dense = len({slot for _, points in series for slot, _ in points}) > CHART_MAX_POINTS
+    values = [{"time": time, "value": value, "type": name}
+              for name, points in series
+              for time, value in (_bucketed(points) if dense else
+                                  [(_local(slot), round(float(v), 1)) for slot, v in points])]
     if len({v["time"] for v in values}) < 3:
         return None
     return {
-        "tag": "chart", "element_id": eid, "aspect_ratio": "16:9",
+        "tag": "chart", "element_id": eid[:20], "aspect_ratio": "2:1",
         "chart_spec": {
             "type": "line",
             "title": {"text": title},
@@ -411,13 +433,21 @@ def trend_chart(eid: str, history: dict[str, list[tuple[str, float]]],
             "point": {"visible": False},
             "label": {"visible": False},
             "line": {"style": {"curveType": "monotone", "lineWidth": 2}},
-            "axes": [{"orient": "left", "min": 0, "max": 100},
-                     {"orient": "bottom", "label": {"autoHide": True}}],
+            "axes": [{"orient": "left", "min": 0, "max": 100, "tick": {"tickCount": 3}},
+                     {"orient": "bottom", "label": {"autoRotate": False, "autoHide": True,
+                                                    "autoLimit": True}}],
             "legends": {"visible": True, "orient": "bottom"},
             # Far apart on purpose: two blues could not be told apart.
             "color": CHART_COLORS,
         },
     }
+
+
+def trend_chart(eid: str, history: dict[str, list[tuple[str, float]]],
+                labels: dict[str, str], *, title: str) -> dict | None:
+    """One device's readings over time, a line per reading."""
+    return line_chart(eid, [(labels.get(key, key), history[key]) for key in CHART_KEYS
+                            if history.get(key)], title=title)
 
 
 def _reading_tile(reading: dict) -> list[dict]:
@@ -477,6 +507,64 @@ def device_card(view: dict, *, now: datetime, running: int | None = None,
                  f"{local:%m-%d} 周{WEEKDAYS[local.weekday()]} {local:%H:%M}",
                  elements, tags=[(WORD[level], TAG_COLOR[level])],
                  summary=f"{name} · {WORD[level]} · {plain_head}")
+
+
+# -- 所有设备的资源卡 --------------------------------------------------------
+
+#: The readings a device's line lists, in this order, when they are healthy.
+ROW_KEYS = ("cpu", "memory", "swap")
+
+
+def fleet_resource_card(views: list[dict], *, now: datetime,
+                        running: dict[str, int] | None = None,
+                        histories: dict[str, dict] | None = None) -> dict:
+    """「资源」 with no device named: every device on ONE card.
+
+    Owner, 2026-11-11 («多卡片 很丑陋 很大»): one large card per device, each
+    with its own tall chart, filled the screen. Here a device is one grey row —
+    what is wrong as a coloured sentence, every other reading in one grey line —
+    and there is one small chart: memory, a line per device. A single device's
+    full card and curves are 「资源 东京」."""
+    order = {ALERT: 0, WARN: 1, UNCONFIRMED: 2, OK: 3}
+    level = worst(v.get("level") for v in views) if views else UNCONFIRMED
+    flagged_devices = sum(1 for v in views if v.get("level") in (ALERT, WARN))
+    head = f"{flagged_devices} 台要看" if flagged_devices else "全部正常"
+    elements: list[dict] = []
+    for view in sorted(views, key=lambda v: order.get(v.get("level"), 4)):
+        name = view.get("name") or view.get("device_ref")
+        readings = shown(view.get("readings") or [])
+        bad = sorted((r for r in readings if r.get("level") in (WARN, ALERT)),
+                     key=lambda r: order.get(r["level"], 4))
+        rest = [f"{r['label']} {number_of(r)}" for r in readings
+                if r.get("level") == OK and (r["key"] in ROW_KEYS or r["key"].startswith(("fs:", "gpu:")))]
+        n = (running or {}).get(view.get("device_ref"), 0)
+        if n:
+            rest.append(f"{n} 个任务在跑")
+        if bad:
+            said = "；".join(_colored(say(r), VALUE_COLOR[r["level"]]) for r in bad[:3])
+            rows = [_text(f"**{name}**　{said}")]
+        elif (view.get("level") or UNCONFIRMED) == UNCONFIRMED:
+            why = next((r["text"] for r in view.get("readings") or []
+                        if r.get("level") == UNCONFIRMED), "这次没读到读数")
+            rows = [_text(f"**{name}**　<font color='grey'>{why}</font>")]
+        else:
+            rows = [_text(f"**{name}**　<font color='grey'>正常</font>")]
+        if rest:
+            rows.append(_caption(" · ".join(rest)))
+        elements.append(_box(_eid("dev", view.get("device_ref")), [rows]))
+    if not views:
+        elements.append(_text("还没有设备读数"))
+    chart = line_chart(_eid("fleetmem", len(views)),
+                       [(v.get("name") or v.get("device_ref"),
+                         ((histories or {}).get(v.get("device_ref")) or {}).get("memory") or [])
+                        for v in views], title="内存 · 近 6 小时（%）")
+    if chart is not None:
+        elements.append(chart)
+    elements.append(_caption("「资源 东京」看单台的全部读数和曲线 · 只读，不会动任何东西"))
+    return _card(TEMPLATE[level], f"Fleet 资源 · {len(views)} 台",
+                 _local(now, with_date=True), elements,
+                 tags=[(head, TAG_COLOR[level] if flagged_devices else "green")],
+                 summary=f"Fleet 资源 · {head}")
 
 
 # -- 报警卡 -------------------------------------------------------------------
