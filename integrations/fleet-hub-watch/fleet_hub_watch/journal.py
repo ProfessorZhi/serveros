@@ -46,6 +46,8 @@ ServerOS Fleet 的任务记录，由东京 hub 自动写入（`fleet_hub_watch.j
 - `runs/YYYY/MM/DD/` 每个批次或单个任务一个文件：主人的原话、发给设备的提示词、
   设备的最终回复（原文）、设备做了什么（只有元数据），以及过程的时间线。
 - 每天的 `INDEX.md` 一行一条。
+- `chat/YYYY/MM/DD.md` 主人在飞书里和管家的每一次对话：问了什么、怎么理解的、
+  管家说了什么、用了多久。
 - 设备的具体执行过程留在设备本地的会话里；文件里写了会话的 `session_ref`。
 - 不含任何密钥：文本写入前按密钥的样子遮蔽，不复制会话原文。
 """
@@ -93,6 +95,7 @@ class Journal:
         self._git = git or self._run_git
         self._last_push = 0.0
         self._pending = 0
+        self._chat_lock = __import__("threading").Lock()
         #: Events older than a day before this process started are not back-filled.
         self._born = datetime.now(timezone.utc)
 
@@ -262,6 +265,33 @@ class Journal:
         if not readme.exists():
             readme.write_text(README, encoding="utf-8")
         self._pending += 1
+        return path
+
+    # -- the owner's conversation with the butler ---------------------------------
+
+    def note_chat(self, record: dict, now: datetime | None = None) -> Path:
+        """One exchange in Feishu, appended to the day's `chat/YYYY/MM/DD.md`:
+        what the owner asked, how it was understood, what the butler said.
+        Called from the message listener's thread; pushed with the next flush."""
+        at = (now or datetime.now(timezone.utc)).astimezone(CN)
+        day = self.root / "chat" / f"{at:%Y}" / f"{at:%m}"
+        path = day / f"{at:%d}.md"
+        answer = record.get("command") or "—"
+        if record.get("argument"):
+            answer += f" {record['argument']}"
+        lines = [f"## {at:%H:%M:%S} {_mask(record.get('asked'))}", "",
+                 f"- 理解方式：{record.get('understood_by') or '—'}　回答：{_mask(answer)}"
+                 f"　用时：{record.get('total_seconds', '—')} 秒（想了 {record.get('seconds', '—')} 秒）"
+                 f"　发送：{record.get('sent') or '—'}"]
+        if record.get("said"):
+            lines += ["", _mask(record["said"])]
+        with self._chat_lock:
+            day.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text(f"# {at:%Y-%m-%d} 与管家的对话\n\n", encoding="utf-8")
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n\n")
+            self._pending += 1
         return path
 
     # -- the tick ---------------------------------------------------------------

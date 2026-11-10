@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
@@ -278,7 +279,22 @@ class Answerer:
     #: Words that ask for the device's own long card instead of the hub's.
     DETAIL_WORDS = ("详细", "完整", "全部", "detail")
 
-    def _resource(self, ref: str, now: datetime, *, detailed: bool = False) -> dict:
+    #: The words that say which reading a question is about.
+    FOCUS_WORDS = {"cpu": ("cpu", "处理器", "负载"), "memory": ("内存",),
+                   "swap": ("交换区", "交换", "swap"), "disk": ("磁盘", "硬盘", "系统盘", "数据盘", "存储"),
+                   "gpu": ("显存", "显卡", "gpu")}
+
+    def _focus(self, text: str) -> tuple[str | None, str]:
+        """(the reading asked about, the text without its word)."""
+        low = (text or "").lower()
+        for focus, words in self.FOCUS_WORDS.items():
+            for word in words:
+                if word in low:
+                    return focus, re.sub(re.escape(word), " ", text, flags=re.IGNORECASE)
+        return None, text or ""
+
+    def _resource(self, ref: str, now: datetime, *, detailed: bool = False,
+                  focus: str | None = None) -> dict:
         """One device's 资源播报. Every device gets the same hub-drawn card
         (state, tiles, six-hour curve) — Owner, 2026-11-10: the device-made
         cards differed per machine and led with collection gaps. Its own long
@@ -295,7 +311,7 @@ class Answerer:
             return text_card("没有这台设备的读数", [self.names.get(ref, ref)], now=now)
         running = sum(1 for row in self.watching()
                       if (row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]) == ref)
-        return cards.device_card(view, now=now, running=running, history=history)
+        return cards.device_card(view, now=now, running=running, history=history, focus=focus)
 
     def digest(self, now: datetime) -> str:
         """What is true right now, as a few lines of text for the butler to
@@ -354,9 +370,10 @@ class Answerer:
             detailed = any(w in (arg or "").lower() for w in self.DETAIL_WORDS)
             for word in self.DETAIL_WORDS:
                 arg = (arg or "").replace(word, " ")
-            ref = self._device(arg.strip())
+            focus, named = self._focus(arg)
+            ref = self._device(named.strip()) or self._device(arg.strip())
             if ref is not None:
-                return self._resource(ref, now, detailed=detailed)
+                return self._resource(ref, now, detailed=detailed, focus=focus)
             # No device named (资源 / 资源情况 / 资源缺口): every device on ONE card
             # (owner, 2026-11-11: a large card per device filled the screen).
             # 「资源 详细」 still sends each device's own long card.
@@ -370,7 +387,7 @@ class Answerer:
                 ref = row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]
                 running[ref] = running.get(ref, 0) + 1
             return cards.fleet_resource_card(
-                self.views, now=now, running=running,
+                self.views, now=now, running=running, focus=focus,
                 histories={v["device_ref"]: self._history(v["device_ref"], now)
                            for v in self.views if v.get("device_ref")})
         if command == "trace":
@@ -409,8 +426,10 @@ class MessageListener(_listener_base()):
     def __init__(self, owner: str | None, reply: Callable[[str, str, str], str], *,
                  recognize: Callable[..., tuple[str, str] | None] | None = None,
                  devices: Callable[[], dict[str, str]] | None = None,
-                 facts: Callable[[], str] | None = None) -> None:
+                 facts: Callable[[], str] | None = None,
+                 log: Callable[[dict], None] | None = None) -> None:
         super().__init__(owner, lambda value: "", argv=CONSUME_MESSAGES)
+        self.log = log
         self.reply = reply
         self.recognize = recognize
         self.devices = devices or (lambda: {})
@@ -425,13 +444,38 @@ class MessageListener(_listener_base()):
         if got is None:
             return None
         message_id, text = got
+        started = time.monotonic()
         asked_model = self.recognize is not None and exact(text) is None
         try:
             facts = self.facts() if asked_model else ""
         except Exception:  # noqa: BLE001 - the butler answers without facts rather than not at all
             facts = ""
-        command, arg = understand(text, self.recognize, self.devices(), facts) or ("help", "")
+        failed_before = getattr(self.recognize, "failed", 0)
+        understood_before = getattr(self.recognize, "understood", 0)
+        meant = understand(text, self.recognize, self.devices(), facts)
+        command, arg = meant or ("help", "")
         words = getattr(self.recognize, "words", "") if asked_model else ""
+        if not asked_model:
+            how = "command-word"
+        elif getattr(self.recognize, "failed", 0) > failed_before:
+            how = "model-failed:keywords" if meant else "model-failed:none"
+        elif getattr(self.recognize, "understood", 0) > understood_before and command != "help" \
+                and (meant is None or meant != intent(_clean(text)) or words):
+            how = "model"
+        else:
+            how = "keywords" if meant else "none"
+        thought = round(time.monotonic() - started, 1)
         self.handled += 1
-        return self.reply(message_id, command, arg, words) if words else \
+        sent = self.reply(message_id, command, arg, words) if words else \
             self.reply(message_id, command, arg)
+        if self.log is not None:
+            # Every exchange with the owner is kept: what was asked, how it was
+            # understood, what the butler said, and whether the answer went out.
+            try:
+                self.log({"message_id": message_id, "asked": _clean(text), "understood_by": how,
+                          "command": command, "argument": arg, "said": words,
+                          "seconds": thought, "total_seconds": round(time.monotonic() - started, 1),
+                          "sent": sent})
+            except Exception:  # noqa: BLE001 - a log line is not worth an answer
+                pass
+        return sent

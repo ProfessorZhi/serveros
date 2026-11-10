@@ -444,10 +444,14 @@ def line_chart(eid: str, series: list[tuple[str, list[tuple[str, float]]]], *,
 
 
 def trend_chart(eid: str, history: dict[str, list[tuple[str, float]]],
-                labels: dict[str, str], *, title: str) -> dict | None:
-    """One device's readings over time, a line per reading."""
-    return line_chart(eid, [(labels.get(key, key), history[key]) for key in CHART_KEYS
-                            if history.get(key)], title=title)
+                labels: dict[str, str], *, title: str, every: bool = False) -> dict | None:
+    """One device's readings over time, a line per reading. `every` draws each
+    key in `history` (a question about disks draws the disks), not only the
+    usual ones."""
+    keys = [key for key in CHART_KEYS if history.get(key)]
+    if every:
+        keys += sorted(key for key in history if key not in keys and history[key])
+    return line_chart(eid, [(labels.get(key, key), history[key]) for key in keys], title=title)
 
 
 def _reading_tile(reading: dict) -> list[dict]:
@@ -466,7 +470,8 @@ def _reading_tile(reading: dict) -> list[dict]:
 
 
 def device_card(view: dict, *, now: datetime, running: int | None = None,
-                history: dict[str, list[tuple[str, float]]] | None = None) -> dict:
+                history: dict[str, list[tuple[str, float]]] | None = None,
+                focus: str | None = None) -> dict:
     """One device's 资源播报, drawn by the hub: one sentence, every reading as a
     tile in a grey box, the six-hour curve, and one grey caption.
 
@@ -486,14 +491,18 @@ def device_card(view: dict, *, now: datetime, running: int | None = None,
     else:
         plain_head = headline = "各项读数都在正常范围"
     elements: list[dict] = [_text(f"**{headline}**")]
-    tiles = [_reading_tile(r) for r in readings]
+    # What was asked about is the first tile.
+    tiles = [_reading_tile(r) for r in sorted(readings, key=lambda r: not _is_focus(r["key"], focus))]
     for i in range(0, len(tiles), 3):
         row = tiles[i:i + 3]
         row += [[]] * (3 - len(row))
         elements.append(_box(_eid("tile", view.get("device_ref"), i), row))
     history = history or {}
+    if focus:               # only the curve that was asked about
+        history = {key: points for key, points in history.items() if _is_focus(key, focus)}
     chart = trend_chart(_eid("trend", view.get("device_ref")), history,
-                        {r["key"]: r["label"] for r in readings}, title="近 6 小时（%）")
+                        {r["key"]: r["label"] for r in readings}, every=bool(focus),
+                        title=(f"{FOCUS[focus][1]} · " if focus else "") + "近 6 小时（%）")
     if chart is not None:
         elements.append(chart)
     facts = []
@@ -515,9 +524,26 @@ def device_card(view: dict, *, now: datetime, running: int | None = None,
 ROW_KEYS = ("cpu", "memory", "swap")
 
 
+#: A question's subject -> (reading keys it means, the chart's title word).
+FOCUS = {"cpu": (("cpu",), "CPU"), "memory": (("memory",), "内存"), "swap": (("swap",), "交换区"),
+         "disk": (("fs:",), "磁盘"), "gpu": (("gpu",), "显存")}
+
+
+def _is_focus(key: str, focus: str | None) -> bool:
+    return bool(focus) and any(key == k or (k.endswith(":") and key.startswith(k))
+                               or key.startswith(k + ":") for k in FOCUS[focus][0])
+
+
+def _focus_points(history: dict, focus: str) -> list[tuple[str, float]]:
+    """One device's curve for the asked reading; for disks, the fullest one."""
+    series = [points for key, points in (history or {}).items() if _is_focus(key, focus) and points]
+    return max(series, key=lambda points: points[-1][1]) if series else []
+
+
 def fleet_resource_card(views: list[dict], *, now: datetime,
                         running: dict[str, int] | None = None,
-                        histories: dict[str, dict] | None = None) -> dict:
+                        histories: dict[str, dict] | None = None,
+                        focus: str | None = None) -> dict:
     """「资源」 with no device named: every device on ONE card.
 
     Owner, 2026-11-11 («多卡片 很丑陋 很大»): one large card per device, each
@@ -535,8 +561,12 @@ def fleet_resource_card(views: list[dict], *, now: datetime,
         readings = shown(view.get("readings") or [])
         bad = sorted((r for r in readings if r.get("level") in (WARN, ALERT)),
                      key=lambda r: order.get(r["level"], 4))
-        rest = [f"{r['label']} {number_of(r)}" for r in readings
-                if r.get("level") == OK and (r["key"] in ROW_KEYS or r["key"].startswith(("fs:", "gpu:")))]
+        listed = [r for r in readings if r.get("level") == OK
+                  and (r["key"] in ROW_KEYS or r["key"].startswith(("fs:", "gpu:")))]
+        # What was asked about leads the line, in plain ink rather than grey.
+        listed.sort(key=lambda r: not _is_focus(r["key"], focus))
+        asked = [f"{r['label']} {number_of(r)}" for r in listed if _is_focus(r["key"], focus)]
+        rest = [f"{r['label']} {number_of(r)}" for r in listed if not _is_focus(r["key"], focus)]
         n = (running or {}).get(view.get("device_ref"), 0)
         if n:
             rest.append(f"{n} 个任务在跑")
@@ -549,15 +579,19 @@ def fleet_resource_card(views: list[dict], *, now: datetime,
             rows = [_text(f"**{name}**　<font color='grey'>{why}</font>")]
         else:
             rows = [_text(f"**{name}**　<font color='grey'>正常</font>")]
+        if asked:
+            rows.append(_text(" · ".join(asked)))
         if rest:
             rows.append(_caption(" · ".join(rest)))
         elements.append(_box(_eid("dev", view.get("device_ref")), [rows]))
     if not views:
         elements.append(_text("还没有设备读数"))
-    chart = line_chart(_eid("fleetmem", len(views)),
+    # The curve is of what was asked: «CPU 怎么样» is not answered with memory.
+    drawn = focus or "memory"
+    chart = line_chart(_eid("fleet" + drawn, len(views)),
                        [(v.get("name") or v.get("device_ref"),
-                         ((histories or {}).get(v.get("device_ref")) or {}).get("memory") or [])
-                        for v in views], title="内存 · 近 6 小时（%）")
+                         _focus_points((histories or {}).get(v.get("device_ref")) or {}, drawn))
+                        for v in views], title=f"{FOCUS[drawn][1]} · 近 6 小时（%）")
     if chart is not None:
         elements.append(chart)
     elements.append(_caption("「资源 东京」看单台的全部读数和曲线 · 只读，不会动任何东西"))

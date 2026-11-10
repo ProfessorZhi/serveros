@@ -42,6 +42,8 @@ COMMANDS = {
     "memory": "指挥中心记下的结论和规矩；query 填要查的关键词",
     "help": "问的是这个助手能做什么，或者以上都不是",
 }
+#: The reading a question is about -> the word the answerer reads it back from.
+FOCUS_WORD = {"cpu": "CPU", "memory": "内存", "swap": "交换区", "disk": "磁盘", "gpu": "显存"}
 #: Commands whose argument is free text taken from the sentence.
 TAKES_QUERY = ("batch", "trace", "memory")
 MAX_TEXT = 500
@@ -60,6 +62,9 @@ JSON 的字段：
   "command": 上面的某一个
   "device":  上面的某一个设备，或 null
   "detail":  true 表示他明确要详细/完整的内容，否则 false
+  "focus":   他问的是哪一项读数："cpu" / "memory"（内存）/ "swap"（交换区）/
+             "disk"（磁盘）/ "gpu"（显卡、显存）；没有专指某一项就填 null。
+             问 CPU 就答 CPU，不要拿别的读数当主角。
   "query":   command 是 batch / trace / memory 时，从句子里原样摘出要查的名字或 id，
              一个字都不要删改（「别等测试那批」的名字是「别等测试」）；否则 ""
 
@@ -139,7 +144,9 @@ def read_reply(reply: str, devices: dict[str, str]) -> tuple[str, str] | None:
         return command, ""
     device = doc.get("device")
     name = device if isinstance(device, str) and device in devices.values() else ""
-    return command, (name + (" 详细" if doc.get("detail") is True else "")).strip()
+    focus = FOCUS_WORD.get(doc.get("focus")) if isinstance(doc.get("focus"), str) else None
+    return command, " ".join(x for x in (name, focus, "详细" if doc.get("detail") is True else "")
+                             if x)
 
 
 class Recognizer:

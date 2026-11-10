@@ -218,5 +218,136 @@ class TheButlerAnswersInWordsAboveTheFacts(unittest.TestCase):
         cards._fmc().validate(spoken)
 
 
+class AQuestionAboutOneReadingIsAnsweredWithThatReading(unittest.TestCase):
+    """Owner, 2026-11-11: «问 cpu 也回复内存，很笨» — «CPU 怎么样» got the card
+    with the memory curve."""
+
+    def test_the_model_says_which_reading_and_it_reaches_the_answerer(self):
+        reply = json.dumps({"command": "resource", "device": None, "focus": "cpu"})
+        self.assertEqual(intent.read_reply(reply, DEVICES), ("resource", "CPU"))
+        reply = json.dumps({"command": "resource", "device": "Tokyo", "focus": "disk", "detail": False})
+        self.assertEqual(intent.read_reply(reply, DEVICES), ("resource", "Tokyo 磁盘"))
+        reply = json.dumps({"command": "resource", "device": "Tokyo", "focus": "voltage"})
+        self.assertEqual(intent.read_reply(reply, DEVICES), ("resource", "Tokyo"), "an unknown one is dropped")
+        self.assertIn('"focus"', intent.prompt_for("cpu 怎么样", DEVICES))
+
+    def _views(self):
+        def reading(key, label, text, value):
+            return {"key": key, "label": label, "text": text, "level": "OK", "value": value}
+        return [{"device_ref": ref, "name": name, "level": "OK", "readings": [
+            reading("cpu", "CPU", "13%", 13), reading("memory", "内存", "55% / 64 GiB", 55),
+            reading("fs:ROOT_FS", "系统盘", "41% · 余 118 GiB", 41)]}
+            for ref, name in list(DEVICES.items())[:2]]
+
+    def _histories(self):
+        slots = [f"2026-11-10T1{h}:00:00Z" for h in range(4)]
+        return {ref: {"cpu": [(t, 10 + i) for i, t in enumerate(slots)],
+                      "memory": [(t, 50 + i) for i, t in enumerate(slots)],
+                      "fs:ROOT_FS": [(t, 41) for t in slots]} for ref in DEVICES}
+
+    def test_the_fleet_card_draws_the_curve_that_was_asked(self):
+        from datetime import datetime, timezone
+        from fleet_hub_watch import cards
+        now = datetime(2026, 11, 10, 14, 0, tzinfo=timezone.utc)
+        for focus, title, value in (("cpu", "CPU", 10.0), ("memory", "内存", 50.0), ("disk", "磁盘", 41.0),
+                                    (None, "内存", 50.0)):
+            card = cards.fleet_resource_card(self._views(), now=now, histories=self._histories(),
+                                             focus=focus)
+            (chart,) = [e for e in card["body"]["elements"] if e.get("tag") == "chart"]
+            with self.subTest(focus=focus):
+                self.assertTrue(chart["chart_spec"]["title"]["text"].startswith(title))
+                self.assertEqual(chart["chart_spec"]["data"]["values"][0]["value"], value)
+        asked = cards.fleet_resource_card(self._views(), now=now, histories=self._histories(), focus="cpu")
+        row = asked["body"]["elements"][0]["columns"][0]["elements"]
+        self.assertEqual(row[1]["content"], "CPU 13%", "what was asked leads the row, in plain ink")
+        self.assertNotIn("CPU", row[2]["content"])
+
+    def test_one_device_draws_only_that_curve_and_leads_with_that_tile(self):
+        from datetime import datetime, timezone
+        from fleet_hub_watch import cards
+        view = self._views()[0]
+        card = cards.device_card(view, now=datetime(2026, 11, 10, 14, 0, tzinfo=timezone.utc),
+                                 history=self._histories()[view["device_ref"]], focus="disk")
+        (chart,) = [e for e in card["body"]["elements"] if e.get("tag") == "chart"]
+        self.assertEqual({v["type"] for v in chart["chart_spec"]["data"]["values"]}, {"系统盘"})
+        first_tile = card["body"]["elements"][1]["columns"][0]["elements"][0]["content"]
+        self.assertIn("系统盘", first_tile)
+
+    def test_the_keyword_path_reads_the_same_word(self):
+        answerer = commands.Answerer.__new__(commands.Answerer)
+        self.assertEqual(answerer._focus("东京 CPU")[0], "cpu")
+        self.assertEqual(answerer._focus("戴尔显卡还空着吗")[0], "gpu")
+        self.assertEqual(answerer._focus("资源情况"), (None, "资源情况"))
+
+
+class EveryExchangeIsKept(unittest.TestCase):
+    """Owner, 2026-11-11: «管家交互过程也要留日志记录»."""
+
+    def _listener(self, recognize, log):
+        return commands.MessageListener("ou_owner", lambda m, c, a, words="": "SENT",
+                                        recognize=recognize, devices=lambda: DEVICES,
+                                        facts=lambda: "- Tokyo：正常", log=log.append)
+
+    def _say(self, listener, text, who="ou_owner"):
+        listener.feed(json.dumps({"event": {
+            "sender": {"sender_id": {"open_id": who}},
+            "message": {"message_id": "om_9", "message_type": "text",
+                        "content": json.dumps({"text": text})}}}))
+
+    def test_what_was_asked_how_it_was_understood_and_what_was_said(self):
+        log: list = []
+        ask = intent.Recognizer(["x"], run=model(json.dumps(
+            {"command": "resource", "device": "Tokyo", "focus": "cpu", "reply": "东京 CPU 13%，正常。"},
+            ensure_ascii=False)))
+        listener = self._listener(ask, log)
+        self._say(listener, "东京 cpu 高不高")
+        self._say(listener, "状态")
+        self._say(listener, "别人的消息", who="ou_other")
+        self.assertEqual(len(log), 2, "the owner's two messages; nobody else's")
+        first, second = log
+        self.assertEqual((first["asked"], first["understood_by"], first["command"], first["argument"]),
+                         ("东京 cpu 高不高", "model", "resource", "Tokyo CPU"))
+        self.assertEqual(first["said"], "东京 CPU 13%，正常。")
+        self.assertEqual(first["sent"], "SENT")
+        self.assertIn("seconds", first)
+        self.assertEqual((second["understood_by"], second["said"]), ("command-word", ""))
+
+    def test_a_model_that_failed_is_recorded_as_such(self):
+        log: list = []
+        listener = self._listener(intent.Recognizer(["x"], run=model("", code=1)), log)
+        self._say(listener, "东京内存怎么样")
+        self._say(listener, "今天吃什么")
+        self.assertEqual([r["understood_by"] for r in log], ["model-failed:keywords", "model-failed:none"])
+
+    def test_a_log_that_cannot_be_written_does_not_stop_the_answer(self):
+        class Broken(list):
+            def append(self, record):
+                raise OSError("disk full")
+        sent: list = []
+        listener = commands.MessageListener("ou_owner", lambda m, c, a, words="": sent.append(c) or "SENT",
+                                            log=Broken().append)
+        self._say(listener, "状态")
+        self.assertEqual(sent, ["status"])
+
+    def test_the_journal_keeps_a_page_a_day_with_keys_masked(self):
+        import tempfile
+        from datetime import datetime, timezone
+        from fleet_hub_watch.journal import Journal
+        with tempfile.TemporaryDirectory() as raw:
+            journal = Journal(inbox=None, root=Path(raw))
+            at = datetime(2026, 11, 10, 19, 25, tzinfo=timezone.utc)
+            for asked in ("东京 cpu 高不高", "key 是 sk-abcdefghijklmnopqrstuv 吗"):
+                path = journal.note_chat({"asked": asked, "understood_by": "model", "command": "resource",
+                                          "argument": "Tokyo CPU", "said": "东京 CPU 13%，正常。",
+                                          "seconds": 1.2, "total_seconds": 1.9, "sent": "SENT"}, at)
+            text = path.read_text(encoding="utf-8")
+        self.assertEqual(path.name, "11.md")
+        self.assertEqual(path.parent.name, "11")
+        self.assertEqual(text.count("## 03:25:00"), 2)
+        self.assertIn("东京 CPU 13%，正常。", text)
+        self.assertIn("理解方式：model", text)
+        self.assertNotIn("sk-abcdefghijklmnop", text)
+
+
 if __name__ == "__main__":
     unittest.main()
