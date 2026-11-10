@@ -109,6 +109,17 @@ under them. «我能在戴尔上再跑一个大模型吗» gets «显卡还空�
 不建议…» above Dell's resource card. It can only look: asked to restart
 something, it says it cannot.
 
+A question about one reading is answered with that reading: «cpu 都怎么样»
+gets the card whose rows lead with CPU and whose curve is CPU, not the default
+memory curve (the model returns a `focus`; the keyword path reads the same
+words).
+
+Every exchange is kept: `butler.jsonl` beside the hub's state (what was asked,
+whether a command word, the model or the keywords understood it, the answer
+chosen, what the butler said, how long it took, whether it was sent), a trace
+line under `ask:<message id>`, and — when the hub has a journal repository — a
+page a day at `chat/YYYY/MM/DD.md`. Key-shaped text is masked in all three.
+
 The command gets a prompt on stdin and prints a JSON intent (`intent.py`). So
 «东京是不是快撑不住了» is 「资源 Tokyo」 and «刚才派的活干完没» is 「任务」, which
 no keyword table reads. The model only chooses among the hub's read-only

@@ -323,7 +323,24 @@ def main(argv: list[str] | None = None) -> int:
             from .intent import Recognizer
             recognize = Recognizer(intent_command, timeout=args.intent_timeout,
                                    aliases=Answerer.ALIASES)
-        messages = MessageListener(feishu.owner_open_id(), reply, recognize=recognize,
+        chat_log = directory / "butler.jsonl"
+
+        def log_chat(record: dict) -> None:
+            """Every exchange, kept twice: a local line (always) and the day's
+            page in the journal repository (when there is one)."""
+            from fleet_mcp.inbox import SECRETISH
+            at = datetime.now(timezone.utc)
+            line = {"at": at.isoformat(timespec="seconds"), **{
+                k: SECRETISH.sub("‹已遮蔽›", v) if isinstance(v, str) else v
+                for k, v in record.items()}}
+            fd = os.open(chat_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+            watcher.inbox.trace("notify", f"butler: 「{record.get('command')}」 by {record.get('understood_by')}"
+                                f" in {record.get('total_seconds')}s", ref=f"ask:{record.get('message_id')}")
+            if journal is not None:
+                journal.note_chat(record, at)
+        messages = MessageListener(feishu.owner_open_id(), reply, recognize=recognize, log=log_chat,
                                    devices=lambda: dict(names),
                                    facts=lambda: answerer.digest(datetime.now(timezone.utc)))
         messages.start()
