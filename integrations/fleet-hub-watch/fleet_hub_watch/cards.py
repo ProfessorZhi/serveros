@@ -200,6 +200,86 @@ def resource_card(views: list[dict], *, now: datetime, sample: bool = False,
                  summary=summary)
 
 
+# -- 单台设备的资源卡 ---------------------------------------------------------
+
+#: The colour a value is printed in, by its level (Feishu markdown colours).
+VALUE_COLOR = {OK: "green", WARN: "orange", ALERT: "red", UNCONFIRMED: "grey"}
+BAR_CELLS = 10
+
+
+def _bar(value: Any) -> str:
+    """A ten-cell bar for a percentage, or '' when the reading is not one."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return ""
+    filled = max(0, min(BAR_CELLS, round(float(value) / 100 * BAR_CELLS)))
+    return "▰" * filled + "▱" * (BAR_CELLS - filled)
+
+
+def _cell(reading: dict) -> str:
+    """One metric tile: the name small and grey, the value large and coloured,
+    a bar under it when the value is a share."""
+    color = VALUE_COLOR.get(reading["level"], "grey")
+    mark = "" if reading["level"] == OK else f"{ICON[reading['level']]} "
+    lines = [f"<font color='grey'>{reading['label']}</font>",
+             f"{mark}**<font color='{color}'>{reading['text']}</font>**"]
+    bar = _bar(reading.get("value"))
+    if bar:
+        lines.append(f"<font color='{color}'>{bar}</font>")
+    return "\n".join(lines)
+
+
+def _grid(prefix: str, cells: list[str], per_row: int = 3) -> list[dict]:
+    rows = []
+    for i in range(0, len(cells), per_row):
+        row = cells[i:i + per_row]
+        row += [""] * (per_row - len(row))           # tiles keep one width per card
+        rows.append({
+            "tag": "column_set", "element_id": _eid(prefix, i), "flex_mode": "none",
+            "horizontal_spacing": "default", "background_style": "default",
+            "columns": [{"tag": "column", "width": "weighted", "weight": 1,
+                         "vertical_align": "top",
+                         "elements": [{"tag": "markdown", "content": c or " "}]}
+                        for c in row]})
+    return rows
+
+
+def device_card(view: dict, *, now: datetime, running: int | None = None) -> dict:
+    """One device's 资源播报, drawn by the hub from its own readings — for a
+    device that does not make its own rich card (Windows), in the same spirit:
+    the state first, then every reading as a tile, then what to look at."""
+    level = view.get("level") or UNCONFIRMED
+    name = view.get("name") or view.get("device_ref") or "设备"
+    local = now.astimezone(CN)
+    readings = [r for r in view.get("readings") or []
+                if not (r["key"] == "reach" and r["level"] == OK)]
+    flagged = sorted((r for r in readings if r["level"] in (WARN, ALERT)),
+                     key=lambda r: -RANK[r["level"]])
+    if flagged:
+        headline = "　".join(f"{r['label']} {r['text']}" for r in flagged[:3])
+    elif level == UNCONFIRMED:
+        headline = "这次没读到完整的读数"
+    else:
+        headline = "各项读数都在正常范围"
+    elements: list[dict] = [_md(f"**{ICON[level]} {WORD[level]}**　{headline}")]
+    elements += _grid(_eid("grid", view.get("device_ref")), [_cell(r) for r in readings])
+    facts = []
+    if running:
+        facts.append(f"🛠 {running} 个任务在跑")
+    if view.get("observed_at"):
+        facts.append(f"🕒 读数 {_local(view['observed_at'], with_date=True)}")
+    if facts:
+        elements.append(_md("<font color='grey'>" + "　·　".join(facts) + "</font>"))
+    elements.append(_hr())
+    elements.append(_md("<font color='grey'>只读，不会停止、重启或清理任何东西 · "
+                        "发「状态」看所有设备 · 「任务」看在跑的</font>"))
+    tags = [(WORD[level], TAG_COLOR[level])]
+    if flagged:
+        tags.append((f"{len(flagged)} 项要看", "neutral"))
+    return _card(TEMPLATE[level], f"{name} · 资源播报",
+                 f"{local:%m-%d} 周{WEEKDAYS[local.weekday()]} · {local:%H:%M} 更新（北京时间）",
+                 elements, tags=tags, summary=f"{name} · {WORD[level]} · {headline}")
+
+
 # -- 报警卡 -------------------------------------------------------------------
 
 def _suggestion(episode: dict, spec: dict) -> str:
