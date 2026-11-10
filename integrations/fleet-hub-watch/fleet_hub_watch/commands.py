@@ -48,20 +48,53 @@ HELP = [("状态", "每台设备一行：是否正常、关键读数"),
         ("记忆 关键词", "指挥中心记下的结论和规矩")]
 
 
-def parse(text: str) -> tuple[str, str] | None:
-    """(command, argument) from what the owner typed, or None."""
-    text = re.sub(r"@_user_\d+|@\S+", " ", text or "").strip()
+def _clean(text: str) -> str:
+    return re.sub(r"@_user_\d+|@\S+", " ", text or "").strip()
+
+
+def exact(text: str) -> tuple[str, str] | None:
+    """(command, argument) when the message starts with a command word —
+    answered at once, with no model asked."""
+    text = _clean(text)
     if not text:
         return None
     head, _, rest = text.partition(" ")
     command = COMMANDS.get(head.strip().lower())
-    if command is None:
-        # "资源东京" without a space
-        for word, name in COMMANDS.items():
-            if len(word) > 1 and text.startswith(word):
-                return name, text[len(word):].strip()
-        return intent(text)
-    return command, rest.strip()
+    if command is not None:
+        return command, rest.strip()
+    # "资源东京" without a space
+    for word, name in COMMANDS.items():
+        if len(word) > 1 and text.startswith(word):
+            return name, text[len(word):].strip()
+    return None
+
+
+def parse(text: str) -> tuple[str, str] | None:
+    """(command, argument) from what the owner typed, by words alone, or None."""
+    return exact(text) or (intent(_clean(text)) if _clean(text) else None)
+
+
+def understand(text: str, recognize: Callable[..., tuple[str, str] | None] | None = None,
+               devices: dict[str, str] | None = None, facts: str = "") -> tuple[str, str] | None:
+    """What the owner meant. A command word is taken as typed; any other
+    sentence is read by the model when one is configured (`intent.py`), and by
+    the keyword table when it is not or when the model has no answer."""
+    said = exact(text)
+    if said is not None:
+        return said
+    cleaned = _clean(text)
+    if not cleaned:
+        return None
+    if recognize is not None:
+        meant = recognize(cleaned, devices or {}, facts) if facts else recognize(cleaned, devices or {})
+        if meant is not None and meant[0] != "help":
+            return meant
+        by_words = intent(cleaned)
+        # Nothing to show a card for, but the butler said something: say it.
+        if by_words is None and getattr(recognize, "words", ""):
+            return "say", ""
+        return by_words
+    return intent(cleaned)
 
 
 #: Words that mean "show me the resources" in what the owner types freely:
@@ -264,7 +297,36 @@ class Answerer:
                       if (row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]) == ref)
         return cards.device_card(view, now=now, running=running, history=history)
 
+    def digest(self, now: datetime) -> str:
+        """What is true right now, as a few lines of text for the butler to
+        answer from: each device's state and readings, and the batches open."""
+        lines = []
+        running: dict[str, int] = {}
+        for row in self.watching():
+            ref = row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]
+            running[ref] = running.get(ref, 0) + 1
+        for view in self.views:
+            readings = cards.shown(view.get("readings") or [])
+            bad = [cards.say(r) for r in readings if r.get("level") in (WARN, ALERT)]
+            rest = [f"{r['label']} {r['text']}" for r in readings if r.get("level") == OK]
+            n = running.get(view.get("device_ref"), 0)
+            lines.append(f"- {view.get('name')}：{WORD.get(view.get('level'), '无法确认')}"
+                         + (f"；要看：{'，'.join(bad)}" if bad else "")
+                         + (f"；其余：{'，'.join(rest)}" if rest else "")
+                         + (f"；{n} 个任务在跑" if n else ""))
+        try:
+            batches = self.inbox.recent_batches(8)
+        except Exception:  # noqa: BLE001
+            batches = []
+        for b in batches:
+            state = "进行中" if b.get("closed_seq") is None else "已结束"
+            lines.append(f"- 批次「{b.get('name')}」{state}：{b.get('settled')}/{b.get('total')} 个有结果")
+        return f"时间 {cards._local(now, with_date=True)}（北京时间）\n" + "\n".join(lines)
+
     def answer(self, command: str, arg: str, now: datetime) -> dict:
+        if command == "say":
+            return cards._card("blue", "Fleet 管家", cards._local(now, with_date=True),
+                               [cards._caption("发「帮助」看我能查什么")], summary="Fleet 管家")
         if command == "status":
             running: dict[str, int] = {}
             for row in self.watching():
@@ -344,9 +406,15 @@ class MessageListener(_listener_base()):
     restarted — the card-button listener's process discipline, with its own
     parsing: owner only, text only, one card back per message."""
 
-    def __init__(self, owner: str | None, reply: Callable[[str, str, str], str]) -> None:
+    def __init__(self, owner: str | None, reply: Callable[[str, str, str], str], *,
+                 recognize: Callable[..., tuple[str, str] | None] | None = None,
+                 devices: Callable[[], dict[str, str]] | None = None,
+                 facts: Callable[[], str] | None = None) -> None:
         super().__init__(owner, lambda value: "", argv=CONSUME_MESSAGES)
         self.reply = reply
+        self.recognize = recognize
+        self.devices = devices or (lambda: {})
+        self.facts = facts or (lambda: "")
 
     def feed(self, line: str) -> str | None:
         try:
@@ -357,6 +425,13 @@ class MessageListener(_listener_base()):
         if got is None:
             return None
         message_id, text = got
-        command, arg = parse(text) or ("help", "")
+        asked_model = self.recognize is not None and exact(text) is None
+        try:
+            facts = self.facts() if asked_model else ""
+        except Exception:  # noqa: BLE001 - the butler answers without facts rather than not at all
+            facts = ""
+        command, arg = understand(text, self.recognize, self.devices(), facts) or ("help", "")
+        words = getattr(self.recognize, "words", "") if asked_model else ""
         self.handled += 1
-        return self.reply(message_id, command, arg)
+        return self.reply(message_id, command, arg, words) if words else \
+            self.reply(message_id, command, arg)

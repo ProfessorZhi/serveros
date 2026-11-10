@@ -901,6 +901,22 @@ def render_samples(spec: dict) -> list[dict]:
     ]
 
 
+def with_words(card: dict, words: str) -> dict:
+    """The card with the butler's sentences as its first lines. The sentences
+    are a model's reading of the facts; the rest of the card is the facts."""
+    words = (words or "").strip()
+    if not words:
+        return card
+    import copy
+    card = copy.deepcopy(card)
+    elements = card.setdefault("body", {}).setdefault("elements", [])
+    elements.insert(0, {"tag": "markdown", "content": words})
+    summary = card.get("config", {}).get("summary")
+    if isinstance(summary, dict):
+        summary["content"] = words.replace("\n", " ")[:120]
+    return card
+
+
 def without_charts(card: dict) -> dict:
     """The same card with its chart elements taken out — what is sent when a
     client refuses a chart, so the answer still arrives."""

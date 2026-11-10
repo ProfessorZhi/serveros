@@ -170,6 +170,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-spec", metavar="SPEC",
                         help="prove a broadcast spec and exit (0 good, 2 refused)")
     parser.add_argument("--config", help="the Fleet binding file")
+    parser.add_argument("--intent-command", default=None,
+                        help="a command that reads a prompt on stdin and prints a JSON intent "
+                             "(e.g. 'claude -p --model haiku'); free sentences in Feishu are "
+                             "understood by it instead of by keywords. Also "
+                             "SERVEROS_FLEET_INTENT_COMMAND. Unset: keywords only")
+    parser.add_argument("--intent-timeout", type=float, default=20.0,
+                        help="seconds to wait for --intent-command before using keywords")
     parser.add_argument("--journal", metavar="DIR",
                         help="a clone of the private fleet-journal repository: every "
                              "finished batch and task is written there and pushed")
@@ -283,10 +290,15 @@ def main(argv: list[str] | None = None) -> int:
         answerer = Answerer(service=service, principal=principal, inbox=watcher.inbox,
                             notifier=notifier, names=names, watching=watcher.store.all)
 
-        def reply(message_id: str, command: str, arg: str) -> str:
+        def reply(message_id: str, command: str, arg: str, words: str = "") -> str:
             now = datetime.now(timezone.utc)
             try:
                 card = answerer.answer(command, arg, now)
+                if words:           # the butler's own sentences, above the facts
+                    if isinstance(card, list):
+                        card = [cards.with_words(card[0], words)] + card[1:]
+                    else:
+                        card = cards.with_words(card, words)
             except Exception as exc:  # noqa: BLE001 - say so rather than stay silent
                 from .commands import text_card
                 card = text_card("没能回答", [f"{command}：{type(exc).__name__}"], now=now,
@@ -305,7 +317,15 @@ def main(argv: list[str] | None = None) -> int:
             watcher.inbox.trace("notify", f"answered 「{command}」" if sent else
                                 f"answer to 「{command}」 FAILED", ref=f"ask:{message_id}")
             return "SENT" if sent else "FAILED"
-        messages = MessageListener(feishu.owner_open_id(), reply)
+        recognize = None
+        intent_command = args.intent_command or os.environ.get("SERVEROS_FLEET_INTENT_COMMAND")
+        if intent_command:
+            from .intent import Recognizer
+            recognize = Recognizer(intent_command, timeout=args.intent_timeout,
+                                   aliases=Answerer.ALIASES)
+        messages = MessageListener(feishu.owner_open_id(), reply, recognize=recognize,
+                                   devices=lambda: dict(names),
+                                   facts=lambda: answerer.digest(datetime.now(timezone.utc)))
         messages.start()
     last_health = time.time()
     rich_cache: dict = {}
