@@ -721,6 +721,14 @@ class Notifier:
             if not rows:
                 return 0
         runs = [json.loads(r["body"]) for r in rows]
+        if self.excerpt is not None:
+            # The device's own answer under each task, as on the batch card.
+            for run in runs:
+                if run.get("session_ref") and run.get("run_id") and not run.get("excerpt"):
+                    try:
+                        run["excerpt"] = self.excerpt(run["session_ref"], run["run_id"])
+                    except Exception:  # noqa: BLE001 - the card still goes out
+                        run["excerpt"] = None
         card_key = f"done:{_key(*[r['run_key'] for r in rows])}"
         if not self._send(card_key, cards.completion_card(runs, now=now, spec=self.spec), now):
             return 0

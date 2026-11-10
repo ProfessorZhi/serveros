@@ -274,6 +274,7 @@ def completion_card(runs: list[dict], *, now: datetime, sample: bool = False,
     shown = runs[:text["max_rows"]]
     lines = [f"- **{r.get('label') or r.get('project') or '一个任务'}**　"
              f"<font color='grey'>{r.get('device_name') or r.get('device_ref')}</font>"
+             + (f"\n  ↳ {r['excerpt']}" if r.get("excerpt") else "")
              for r in shown]
     if len(runs) > len(shown):
         lines.append("- " + text["more"].format(count=len(runs) - len(shown)))

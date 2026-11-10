@@ -447,6 +447,16 @@ class CompletionsAndPacing(NotifierTest):
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=10))
         self.assertEqual(self.transport.ops, [])
 
+    def test_the_completion_card_carries_each_devices_answer(self):
+        """Owner, 2026-11-10: the 任务完成 card named the task but not what the
+        device answered."""
+        self.notifier.excerpt = lambda session_ref, run_id: f"答复-{run_id}"
+        self.run_event("run.completed", run_id="run-0")
+        self.notifier.tick([], THURSDAY_10)
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=5))
+        (op, _mid, card, _key) = self.transport.ops[0]
+        self.assertIn("↳ 答复-run-0", json.dumps(card, ensure_ascii=False))
+
     def test_a_tick_sends_at_most_the_cap_and_keeps_the_rest(self):
         for i in range(MAX_SENDS_PER_TICK + 5):
             self.run_event("run.failed", run_id=f"run-{i}")
