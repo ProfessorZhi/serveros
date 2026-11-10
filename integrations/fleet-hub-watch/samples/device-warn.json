@@ -1,0 +1,321 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default",
+    "summary": {
+      "content": "FJPCOS · 注意 · 内存用了 87%"
+    }
+  },
+  "header": {
+    "template": "yellow",
+    "title": {
+      "tag": "plain_text",
+      "content": "FJPCOS · 资源 · [示例]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "10-29 周四 14:30"
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "注意"
+        },
+        "color": "orange"
+      }
+    ]
+  },
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "⚠️ 示例数据 · 非实时采集"
+      },
+      {
+        "tag": "markdown",
+        "content": "**<font color='orange'>内存用了 87%</font>**"
+      },
+      {
+        "tag": "column_set",
+        "element_id": "tiled5f1596354",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>CPU</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "**63%**",
+                "text_size": "heading"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>▰▰▰▰▰▰▱▱▱▱</font>",
+                "text_size": "notation"
+              }
+            ]
+          },
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>内存</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "**<font color='orange'>87%</font>**",
+                "text_size": "heading"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>16 GiB</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='orange'>▰▰▰▰▰▰▰▰▰▱</font>",
+                "text_size": "notation"
+              }
+            ]
+          },
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>系统盘</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "**74%**",
+                "text_size": "heading"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>余 61 GiB</font>",
+                "text_size": "notation"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>▰▰▰▰▰▰▰▱▱▱</font>",
+                "text_size": "notation"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "chart",
+        "element_id": "trend336a07a1d6",
+        "aspect_ratio": "16:9",
+        "chart_spec": {
+          "type": "line",
+          "title": {
+            "text": "近 6 小时（%）"
+          },
+          "data": {
+            "values": [
+              {
+                "time": "09:00",
+                "value": 40.0,
+                "type": "CPU"
+              },
+              {
+                "time": "09:30",
+                "value": 47.0,
+                "type": "CPU"
+              },
+              {
+                "time": "10:00",
+                "value": 54.0,
+                "type": "CPU"
+              },
+              {
+                "time": "10:30",
+                "value": 61.0,
+                "type": "CPU"
+              },
+              {
+                "time": "11:00",
+                "value": 68.0,
+                "type": "CPU"
+              },
+              {
+                "time": "11:30",
+                "value": 45.0,
+                "type": "CPU"
+              },
+              {
+                "time": "12:00",
+                "value": 52.0,
+                "type": "CPU"
+              },
+              {
+                "time": "12:30",
+                "value": 59.0,
+                "type": "CPU"
+              },
+              {
+                "time": "13:00",
+                "value": 66.0,
+                "type": "CPU"
+              },
+              {
+                "time": "13:30",
+                "value": 43.0,
+                "type": "CPU"
+              },
+              {
+                "time": "14:00",
+                "value": 50.0,
+                "type": "CPU"
+              },
+              {
+                "time": "14:30",
+                "value": 57.0,
+                "type": "CPU"
+              },
+              {
+                "time": "09:00",
+                "value": 78.0,
+                "type": "内存"
+              },
+              {
+                "time": "09:30",
+                "value": 78.8,
+                "type": "内存"
+              },
+              {
+                "time": "10:00",
+                "value": 79.6,
+                "type": "内存"
+              },
+              {
+                "time": "10:30",
+                "value": 80.4,
+                "type": "内存"
+              },
+              {
+                "time": "11:00",
+                "value": 81.2,
+                "type": "内存"
+              },
+              {
+                "time": "11:30",
+                "value": 82.0,
+                "type": "内存"
+              },
+              {
+                "time": "12:00",
+                "value": 82.8,
+                "type": "内存"
+              },
+              {
+                "time": "12:30",
+                "value": 83.6,
+                "type": "内存"
+              },
+              {
+                "time": "13:00",
+                "value": 84.4,
+                "type": "内存"
+              },
+              {
+                "time": "13:30",
+                "value": 85.2,
+                "type": "内存"
+              },
+              {
+                "time": "14:00",
+                "value": 86.0,
+                "type": "内存"
+              },
+              {
+                "time": "14:30",
+                "value": 86.8,
+                "type": "内存"
+              }
+            ]
+          },
+          "xField": "time",
+          "yField": "value",
+          "seriesField": "type",
+          "point": {
+            "visible": false
+          },
+          "label": {
+            "visible": false
+          },
+          "line": {
+            "style": {
+              "curveType": "monotone",
+              "lineWidth": 2
+            }
+          },
+          "axes": [
+            {
+              "orient": "left",
+              "min": 0,
+              "max": 100
+            },
+            {
+              "orient": "bottom",
+              "label": {
+                "autoHide": true
+              }
+            }
+          ],
+          "legends": {
+            "visible": true,
+            "orient": "bottom"
+          },
+          "color": [
+            "#3370FF",
+            "#F5A623",
+            "#00B2A9",
+            "#7F3BF5",
+            "#8F959E",
+            "#F54A45"
+          ]
+        }
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>2 个任务在跑 · 读数 10-29 14:29 · 只读，不会动任何东西</font>",
+        "text_size": "notation"
+      }
+    ]
+  }
+}

@@ -39,10 +39,10 @@ DEFAULT_SPEC: dict[str, Any] = {
     "resource_card": {
         "title": "Fleet 资源播报",
         "subtitle": "{date} 周{weekday} · {time} 更新（北京时间）",
-        "summary": "**{devices} 台设备** · 🚨 报警 {alert} · ⚠️ 注意 {warn} · ✅ 正常 {ok} · ⚪ 无法确认 {unknown}",
+        "summary": "**{devices} 台设备** · {counts}",
         "attention_heading": "需要关注",
         "reading_time": "读数时间 {time}",
-        "footer": "只读 · 未自动停止、重启或清理任何东西 · 工作日 08:00–20:00 每 30 分钟原位更新，出现报警立即更新",
+        "footer": "只读，不会自动处理 · 工作日每 30 分钟更新，有报警立即更新",
     },
     "alert_card": {
         "phenomenon": "现象",
@@ -56,8 +56,8 @@ DEFAULT_SPEC: dict[str, Any] = {
         "suggestions": {
             "fs": "看该盘最近增长的目录，清理或扩容；确认没有任务在持续写日志",
             "memory": "看占用最高的进程与会话；确认是否有任务泄漏或并发过多",
-            "swap": "Swap 是水位：结合「内存压力」判断是否真的在换页",
-            "psi": "内存压力在升高：减少并发任务，或查看占用最高的会话",
+            "swap": "交换区用得多不一定有事：再看有没有「内存吃紧」，有才说明程序真的变慢了",
+            "psi": "程序在等内存，会变慢：减少同时跑的任务，或看哪个会话占得最多",
             "svc": "查看该服务的 systemd 日志；确认是否需要人工重启",
             "reach": "确认设备在线、Tailscale/隧道连通、Fleet 节点连接器在运行",
             "run.failed": "让指挥端看一下这个会话最后几轮，决定重试还是修",
@@ -81,11 +81,11 @@ DEFAULT_SPEC: dict[str, Any] = {
             "runs": "今日任务",
             "problems": "需要看一眼的任务",
             "resources": "还没恢复的资源问题",
-            "open_now": "现在仍要看",
+            "open_now": "要看的",
         },
         "empty": "无",
         "max_rows": 15,
-        "footer": "数字由程序统计 · 只读，未自动处理任何事项",
+        "footer": "数字由程序统计 · 只读，不会自动处理",
     },
 }
 

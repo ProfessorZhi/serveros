@@ -95,13 +95,17 @@ class Answers(unittest.TestCase):
         self.answerer.watching = lambda: [{"device_ref": TOKYO, "session_ref": f"{TOKYO}|claude|s"}]
         self.answerer.views[1]["level"] = "ALERT"
         self.answerer.views[1]["readings"].append(
-            {"key": "psi", "label": "内存压力", "text": "停顿 1.2%", "level": "ALERT"})
+            {"key": "psi", "label": "内存吃紧", "text": "程序有 1.2% 的时间在等内存", "level": "ALERT",
+             "short": "1.2%"})
         card = self.answerer.answer("status", "", NOW)
-        self.assertIn("<font color='red'>内存压力 停顿 1.2%</font>", self.body(card), "the reason for red is shown")
+        self.assertIn("<font color='red'>内存吃紧（1.2% 的时间在等内存）</font>", self.body(card),
+                      "the reason for red is shown")
+        self.assertNotIn("color='green'", self.body(card), "only a problem is coloured")
+        self.assertNotIn("<text_tag", self.body(card), "the state is not said again in each row")
         self.assertIn("1 个任务在跑", self.body(card))
         self.assertEqual(self.body(card).count("个任务在跑"), 1, "only runs still being watched")
         self.assertEqual(card["header"]["title"]["content"], "Fleet · 2 台设备")
-        self.assertEqual(card["header"]["text_tag_list"][0]["text"]["content"], "1 报警 · 1 注意")
+        self.assertEqual(card["header"]["text_tag_list"][0]["text"]["content"], "2 台要看")
         self.assertIn("**Tokyo**", self.body(card))
         self.assertIn("column_set", self.body(card), "each device in its own box")
         self.assertNotIn("（水位）", self.body(card))
@@ -139,8 +143,11 @@ class Answers(unittest.TestCase):
         body = self.body(card)
         self.assertIn("column_set", body)
         self.assertIn("▰▰▰▰▰▰▰▰▰▱", body)
-        self.assertIn("<text_tag color='orange'>注意</text_tag>　Swap <font color='orange'>99%（水位）</font>", body)
-        self.assertIn("**<font color='orange'>99%</font>**", body, "the number large, the remark small")
+        self.assertIn("<font color='orange'>内存用了 89%</font>", body, "what is wrong, as a sentence")
+        self.assertNotIn("<text_tag", body, "the state is the header's tag, not said again in the body")
+        self.assertEqual([t["text"]["content"] for t in card["header"]["text_tag_list"]], ["注意"])
+        self.assertIn("**<font color='orange'>89%</font>**", body, "the number large, the remark small")
+        self.assertIn("**14%**", body, "a healthy number carries no colour")
 
     def test_six_hours_of_readings_become_a_curve(self):
         """Owner, 2026-11-10: the earlier cards had curves; the resource card
@@ -174,7 +181,7 @@ class Answers(unittest.TestCase):
         body = self.body(flat)
         self.assertFalse(commands.cards.is_styled(flat))
         self.assertIn("**Tokyo**", body)
-        self.assertIn("【注意】", body)
+        self.assertIn("Swap 用了 99%", body)
         commands.cards._fmc().validate(flat)
 
     def test_one_reading_draws_no_curve(self):

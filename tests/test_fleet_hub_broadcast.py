@@ -148,7 +148,7 @@ class TheDailyReport(NotifierTest):
         daily = [op for op in self.transport.ops if op[0] == "send"][sends_before:]
         self.assertEqual(len(daily), 1)
         body = str(daily[0][2])
-        self.assertIn("失败 1", body)
+        self.assertIn("1 个失败", body)
         self.assertIn("已恢复", body)
         # The run failure is still open, so the report is not green.
         self.assertNotEqual(daily[0][2]["header"]["template"], "green")
@@ -161,9 +161,10 @@ class TheDailyReport(NotifierTest):
         card = cards.daily_card({"runs": {}, "open_now": [{"subject": "Y", "text": "t", "level": WARN}]},
                                 now=THURSDAY_1830, spec=spec)
         texts = [e.get("content", "") for e in card["body"]["elements"] if e.get("tag") == "markdown"]
-        self.assertIn("现在还有 1 项没结束", texts[0], "one sentence first")
-        self.assertTrue(texts[1].startswith("**现在仍要看**"))
-        self.assertTrue(texts[2].startswith("**今日任务**"))
+        self.assertIn("今天没有派发任务", texts[0], "one sentence first")
+        self.assertTrue(texts[1].startswith("**要看的**"))
+        self.assertNotIn("今日任务", str(card), "the counts are in the sentence, not in tiles again")
+        self.assertEqual(card["header"]["text_tag_list"][0]["text"]["content"], "1 项要看")
         card = cards.daily_card({"runs": {}, "open_now": []}, now=THURSDAY_1830, spec=spec)
         self.assertEqual(card["header"]["template"], "green")
 
@@ -181,7 +182,60 @@ class TheDailyReport(NotifierTest):
         self.assertEqual(body.count("只输出hostname"), 1)
         self.assertIn("×2", body)
         self.assertIn("已恢复的资源波动 · 1 次", body)
-        self.assertIn("今天 14 个任务，10 个完成，4 个要看一眼", body)
+        self.assertIn("今天 14 个任务：10 个完成，4 个结果不明", body)
+        self.assertNotRegex(body, r"(?<!\d)0 个", "a kind of outcome with none is not mentioned")
+        self.assertNotIn("column_set", body, "no tiles repeating the sentence")
+
+    def test_what_is_open_and_what_went_wrong_are_one_list_and_the_count_adds_up(self):
+        """Owner, 2026-11-10: «现在仍要看» and «需要看一眼的任务» listed the same
+        thing twice, and «4 个要看 / 1 项没结束» could not be reconciled."""
+        stalled = {"subject": "任务跑了很久 · lab", "text": "Dell：已运行超过 2 小时，还没结束", "level": WARN}
+        unread = {"subject": "任务结果不明 · probe", "text": "FJ：已经结束，但读不到它的输出", "level": WARN}
+        card = cards.daily_card({"runs": {"completed": 3, "unknown": 2, "stalled": 1},
+                                 "problems": [unread, unread, stalled], "resources": [],
+                                 "open_now": [stalled]}, now=THURSDAY_1830)
+        body = json.dumps(card, ensure_ascii=False)
+        self.assertEqual(body.count("任务跑了很久 · lab"), 1)
+        self.assertEqual(body.count("**要看的**"), 1)
+        self.assertEqual(card["header"]["text_tag_list"][0]["text"]["content"], "3 项要看")
+        self.assertIn("2 个结果不明，1 个跑了很久", body)
+
+    def test_a_quiet_day_says_so_once(self):
+        card = cards.daily_card({"runs": {"completed": 9}, "problems": [], "resources": [],
+                                 "open_now": []}, now=THURSDAY_1830)
+        body = json.dumps(card, ensure_ascii=False)
+        self.assertIn("今天 9 个任务：9 个完成", body)
+        self.assertEqual(card["header"]["text_tag_list"][0]["text"]["content"], "没有要看的")
+
+    def test_the_samples_use_the_words_a_person_reads(self):
+        """Owner, 2026-11-10: «Swap 水位», «内存压力 停顿», «ROOT_FS», «没读到结果»
+        and error codes had to be translated before a card could be read; a
+        healthy number was large and green; a count of zero was a line."""
+        import re
+        here = ROOT / "integrations" / "fleet-hub-watch" / "samples"
+
+        def face(element):          # what is on the card's face: folds are details
+            if isinstance(element, dict):
+                if element.get("tag") == "collapsible_panel":
+                    return
+                for key in ("content",):
+                    if isinstance(element.get(key), str):
+                        yield element[key]
+                for value in element.values():
+                    yield from face(value)
+            elif isinstance(element, list):
+                for value in element:
+                    yield from face(value)
+        for path in sorted(here.glob("*.json")):
+            card = json.loads(path.read_text(encoding="utf-8"))
+            text = "\n".join(face(card))
+            with self.subTest(sample=path.stem):
+                for word in ("Swap", "水位", "内存压力", "停顿", "ROOT_FS", "没读到结果", "无法确认 0"):
+                    self.assertNotIn(word, text)
+                self.assertNotRegex(text, r"[A-Z]{3,}_[A-Z_]{3,}", "no error code on the face")
+                self.assertNotRegex(text, r"(?<![\d.])0 (个|次|项|台)", "nothing is counted as zero")
+                self.assertNotIn("color='green'>", re.sub(r"<text_tag color='green'>", "", text),
+                                 "a healthy number is not coloured")
 
     def test_a_recovered_red_is_a_line_not_a_red_report(self):
         card = cards.daily_card({"runs": {"completed": 2},

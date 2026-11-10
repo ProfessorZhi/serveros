@@ -259,9 +259,11 @@ def resource_card(views: list[dict], *, now: datetime, sample: bool = False,
     elements: list[dict] = []
     if sample:
         elements.append(_md(SAMPLE_LINE))
+    said = " · ".join(f"{ICON[lv]} {WORD[lv]} {counts[lv]}"
+                     for lv in (ALERT, WARN, OK, UNCONFIRMED) if counts[lv])
     elements.append(_md(text["summary"].format(
         devices=len(views), alert=counts[ALERT], warn=counts[WARN], ok=counts[OK],
-        unknown=counts[UNCONFIRMED])))
+        unknown=counts[UNCONFIRMED], counts=said)))
 
     attention = sorted(
         ((v, r) for v in views for r in v["readings"] if r["level"] in (WARN, ALERT)),
@@ -275,8 +277,7 @@ def resource_card(views: list[dict], *, now: datetime, sample: bool = False,
     for view in views:
         # One reading per line: a phone wraps a joined line in the middle of a
         # number. A healthy connection is not a finding, so it is not a line (R1).
-        lines = [_reading_text(r) for r in view["readings"]
-                 if not (r["key"] == "reach" and r["level"] == OK)]
+        lines = [_reading_text(r) for r in shown(view["readings"])]
         if view.get("observed_at"):
             lines.append(text["reading_time"].format(time=_local(view["observed_at"], with_date=True)))
         elements.append(_panel(
@@ -298,7 +299,41 @@ def resource_card(views: list[dict], *, now: datetime, sample: bool = False,
 # -- 单台设备的资源卡 ---------------------------------------------------------
 
 #: The colour a value is printed in, by its level (Feishu markdown colours).
-VALUE_COLOR = {OK: "green", WARN: "orange", ALERT: "red", UNCONFIRMED: "grey"}
+#: Owner, 2026-11-10: a card where the healthy numbers are large and green
+#: «shouts» everywhere; only a problem carries a colour.
+VALUE_COLOR = {OK: "default", WARN: "orange", ALERT: "red", UNCONFIRMED: "grey"}
+
+
+def _colored(text: str, color: str) -> str:
+    return text if color == "default" else f"<font color='{color}'>{text}</font>"
+
+
+def number_of(reading: dict) -> str:
+    """The bare number of a reading: '88% / 16 GiB' -> '88%'."""
+    if reading.get("short"):
+        return str(reading["short"])
+    text = re.sub(r"（[^）]*）", "", str(reading.get("text") or ""))
+    return text.split(" / ")[0].split(" · ")[0].strip()
+
+
+def say(reading: dict) -> str:
+    """One reading as a person would say it: 「内存用了 87%」."""
+    key, label, text = str(reading.get("key") or ""), reading.get("label") or "", str(reading.get("text") or "")
+    gap = " " if label and label[-1].isascii() else ""      # 「Swap 用了」, 「内存用了」
+    if key in ("memory", "swap"):
+        return f"{label}{gap}用了 {number_of(reading)}"
+    if key == "psi":
+        return f"{label}（{reading['short']} 的时间在等内存）" if reading.get("short") else f"{label}，{text}"
+    if key.startswith("fs:"):
+        _, _, left = text.partition(" · 余 ")
+        return f"{label}{gap}用了 {number_of(reading)}" + (f"，只剩 {left}" if left else "")
+    return f"{label} {text}".strip()
+
+
+def shown(readings: list[dict]) -> list[dict]:
+    """The readings worth a tile or a line: a healthy connection and a healthy
+    「内存吃紧」 are not findings."""
+    return [r for r in readings if not (r.get("key") in ("reach", "psi") and r.get("level") == OK)]
 BAR_CELLS = 10
 
 
@@ -316,10 +351,10 @@ def _cell(reading: dict, spark: str = "") -> str:
     color = VALUE_COLOR.get(reading["level"], "grey")
     mark = "" if reading["level"] == OK else f"{ICON[reading['level']]} "
     lines = [f"<font color='grey'>{reading['label']}</font>",
-             f"{mark}**<font color='{color}'>{reading['text']}</font>**"]
+             f"{mark}**{_colored(reading['text'], color)}**"]
     bar = _bar(reading.get("value"))
     if bar:
-        lines.append(f"<font color='{color}'>{bar}</font>")
+        lines.append(_colored(bar, "grey" if color == "default" else color))
     if spark:
         lines.append(f"<font color='grey'>{spark}</font>")
     return "\n".join(lines)
@@ -341,6 +376,7 @@ def _grid(prefix: str, cells: list[str], per_row: int = 3) -> list[dict]:
 
 
 SPARK = "▁▂▃▄▅▆▇█"
+CHART_COLORS = ["#3370FF", "#F5A623", "#00B2A9", "#7F3BF5", "#8F959E", "#F54A45"]
 #: Which readings get a line on the chart, and in which order.
 CHART_KEYS = ("cpu", "memory", "gpu", "gpu_memory", "swap", "disk")
 
@@ -378,6 +414,8 @@ def trend_chart(eid: str, history: dict[str, list[tuple[str, float]]],
             "axes": [{"orient": "left", "min": 0, "max": 100},
                      {"orient": "bottom", "label": {"autoHide": True}}],
             "legends": {"visible": True, "orient": "bottom"},
+            # Far apart on purpose: two blues could not be told apart.
+            "color": CHART_COLORS,
         },
     }
 
@@ -388,35 +426,36 @@ def _reading_tile(reading: dict) -> list[dict]:
     value, _, note = text.partition(" / ")
     if not note:
         value, _, note = text.partition(" · ")
-    aside = re.match(r"(.*?)（(.*)）$", value)
-    if aside:                                   # 「99%（水位）」: the number large, the remark small
-        value, note = aside.group(1), " · ".join(x for x in (aside.group(2), note) if x)
+    if reading.get("short"):                    # the text is a sentence: number large, rest small
+        value, note = str(reading["short"]), text.replace(str(reading["short"]), "").replace("  ", " ").strip()
     tile = _tile(reading["label"], value, color, note)
     bar = _bar(reading.get("value"))
     if bar:
-        tile.append(_text(f"<font color='{color}'>{bar}</font>", size="notation"))
+        tile.append(_text(_colored(bar, "grey" if color == "default" else color), size="notation"))
     return tile
 
 
 def device_card(view: dict, *, now: datetime, running: int | None = None,
                 history: dict[str, list[tuple[str, float]]] | None = None) -> dict:
-    """One device's 资源播报, drawn by the hub: the verdict, every reading as a
-    tile in a grey box, the six-hour curve, and one grey caption."""
+    """One device's 资源播报, drawn by the hub: one sentence, every reading as a
+    tile in a grey box, the six-hour curve, and one grey caption.
+
+    The state is said once — the header's colour and its tag. Only what is
+    wrong is coloured; a healthy number is plain."""
     level = view.get("level") or UNCONFIRMED
     name = view.get("name") or view.get("device_ref") or "设备"
     local = now.astimezone(CN)
-    readings = [r for r in view.get("readings") or []
-                if not (r["key"] == "reach" and r["level"] == OK)]
+    readings = shown(view.get("readings") or [])
     flagged = sorted((r for r in readings if r["level"] in (WARN, ALERT)),
                      key=lambda r: -RANK[r["level"]])
     if flagged:
-        headline = "　".join(f"{r['label']} <font color='{VALUE_COLOR[r['level']]}'>{r['text']}</font>"
-                            for r in flagged[:3])
+        plain_head = "；".join(say(r) for r in flagged[:3])
+        headline = "；".join(_colored(say(r), VALUE_COLOR[r["level"]]) for r in flagged[:3])
     elif level == UNCONFIRMED:
-        headline = "这次没读到完整的读数"
+        plain_head = headline = "这次没读到完整的读数"
     else:
-        headline = "各项读数都在正常范围"
-    elements: list[dict] = [_text(f"{_itag(WORD[level], TAG_WORD_COLOR[level])}　{headline}")]
+        plain_head = headline = "各项读数都在正常范围"
+    elements: list[dict] = [_text(f"**{headline}**")]
     tiles = [_reading_tile(r) for r in readings]
     for i in range(0, len(tiles), 3):
         row = tiles[i:i + 3]
@@ -434,13 +473,10 @@ def device_card(view: dict, *, now: datetime, running: int | None = None,
         facts.append(f"读数 {_local(view['observed_at'], with_date=True)}")
     facts.append("只读，不会动任何东西")
     elements.append(_caption(" · ".join(facts)))
-    tags = [(WORD[level], TAG_COLOR[level])]
-    if flagged:
-        tags.append((f"{len(flagged)} 项要看", "neutral"))
-    plain_head = "　".join(f"{r['label']} {r['text']}" for r in flagged[:3]) or headline
     return _card(TEMPLATE[level], f"{name} · 资源",
                  f"{local:%m-%d} 周{WEEKDAYS[local.weekday()]} {local:%H:%M}",
-                 elements, tags=tags, summary=f"{name} · {WORD[level]} · {plain_head}")
+                 elements, tags=[(WORD[level], TAG_COLOR[level])],
+                 summary=f"{name} · {WORD[level]} · {plain_head}")
 
 
 # -- 报警卡 -------------------------------------------------------------------
@@ -509,23 +545,31 @@ def alert_card(episode: dict, *, now: datetime, sample: bool = False,
 # -- 任务完成卡 ---------------------------------------------------------------
 
 OUTCOME_TAG = {"completed": ("完成", "green"), "failed": ("失败", "red"),
-               "unknown": ("没读到结果", "neutral"), None: ("未结束", "blue")}
+               "unknown": ("结果不明", "orange"), None: ("还在跑", "blue")}
+#: What is said when a task left no text of its own.
+NO_OUTPUT = {"unknown": "任务结束了，但读不到它的输出；可以让指挥端读一下会话再判断",
+             "failed": "执行出错，没有完成", "completed": "没返回文字", None: "还没结束"}
 
 
-def _task_box(i: int, run: dict, where: str, outcome: str | None) -> dict:
-    """One task in a grey box: where it ran and its state, the task in grey,
-    then what the device answered."""
-    word, color = OUTCOME_TAG.get(outcome, ("未结束", "blue"))
-    body = run.get("excerpt")
-    if not body:
-        body = {"unknown": "任务结束了，但读不到它的输出；可以让指挥端读一下会话再判断",
-                "failed": "执行出错，没有完成"}.get(outcome, "没有输出")
-    label = run.get("label") or run.get("project") or f"任务 {i}"
-    return _box(_eid("task", run.get("session_ref"), run.get("run_id"), i), [[
-        _text(f"**{where}**　{_itag(word, color)}"),
-        _caption(label),
-        _text(body),
-    ]])
+def _task_box(i: int, run: dict, where: str, outcome: str | None, *,
+              show_label: bool = True) -> dict:
+    """One task in a grey box: where it ran and its state, the task in grey
+    (unless the card already said it once), then what the device answered."""
+    word, color = OUTCOME_TAG.get(outcome, OUTCOME_TAG[None])
+    rows = [_text(f"**{where}**　{_itag(word, color)}")]
+    if show_label:
+        rows.append(_caption(run.get("label") or run.get("project") or f"任务 {i}"))
+    if run.get("excerpt"):
+        rows.append(_text(run["excerpt"]))
+    else:
+        rows.append(_caption(NO_OUTPUT.get(outcome, NO_OUTPUT[None])))
+    return _box(_eid("task", run.get("session_ref"), run.get("run_id"), i), [rows])
+
+
+def _shared_label(runs: list[dict]) -> str | None:
+    """The task every run was given, when it is the same one."""
+    labels = {str(r.get("label") or r.get("project") or "") for r in runs}
+    return labels.pop() if len(runs) > 1 and len(labels) == 1 and "" not in labels else None
 
 
 def completion_card(runs: list[dict], *, now: datetime, sample: bool = False,
@@ -534,23 +578,26 @@ def completion_card(runs: list[dict], *, now: datetime, sample: bool = False,
     title = text["title"].format(icon=ICON[OK], count=len(runs))
     if sample:
         title += f" · {SAMPLE_TITLE}"
-    shown = runs[:text["max_rows"]]
+    shown_runs = runs[:text["max_rows"]]
     elements: list[dict] = []
     if sample:
         elements.append(_md(SAMPLE_LINE))
-    for i, run in enumerate(shown, 1):
+    same = _shared_label(shown_runs)
+    if same:
+        elements.append(_text(f"<font color='grey'>任务</font>　{same}"))
+    for i, run in enumerate(shown_runs, 1):
         elements.append(_task_box(i, run, run.get("device_name") or run.get("device_ref") or "",
-                                  "completed"))
-    if len(runs) > len(shown):
-        elements.append(_caption(text["more"].format(count=len(runs) - len(shown))))
+                                  "completed", show_label=not same))
+    if len(runs) > len(shown_runs):
+        elements.append(_caption(text["more"].format(count=len(runs) - len(shown_runs))))
     elements.append(_caption("要看全文：问指挥端，或在飞书发「追踪 任务id」"))
     return _card(TEMPLATE[OK], title, f"{_local(now, with_date=True)}（北京时间）", elements,
-                 tags=[(f"{len(runs)} 个", "green")],
                  summary=f"任务完成 {len(runs)} 个：" + "、".join(
                      str(r.get("label") or r.get("project") or "任务") for r in runs[:3]))
 
 
-OUTCOME_WORD = {"completed": "✅", "failed": "❌ 失败", "unknown": "⚪ 没读到结果", None: "⏳ 未结束"}
+#: Worst first: what a reader has to act on is the first row.
+OUTCOME_ORDER = {"failed": 0, "unknown": 1, None: 2, "completed": 3}
 
 
 def batch_card(event: dict, *, now: datetime, runs: list[dict] | None = None,
@@ -558,9 +605,9 @@ def batch_card(event: dict, *, now: datetime, runs: list[dict] | None = None,
                device_names: dict[str, str] | None = None) -> dict:
     """The one message a dispatched batch produces, when every task has an outcome.
 
-    Written for the owner reading it on a phone: the title says how it went,
-    each task is its own name (the instruction's first line), where it ran and
-    what it answered. No run ids, no tool names, no codes on the face.
+    The title is the batch and how it went (the header is the result); that
+    is said once, not again in a tag or a body line. A task every device was given is written once, above the rows;
+    the rows are worst first. No run ids, no tool names, no codes on the face.
     """
     runs = runs or []
     name, _, rest = (event.get("summary") or "").partition("：")
@@ -571,32 +618,35 @@ def batch_card(event: dict, *, now: datetime, runs: list[dict] | None = None,
     if not runs:
         failed = 1 if event.get("level") == "decide" else 0
     pending = sum(1 for r in runs if r.get("outcome") is None)
+    tags: list[tuple[str, str]] = []
     if pending:
-        template, verdict, tag = "blue", f"进行中 {len(runs) - pending}/{len(runs)}", ("进行中", "blue")
-    elif failed:
-        template, verdict, tag = TEMPLATE[ALERT], f"{failed} 个失败", ("有失败", "red")
-    elif unread:
-        template, verdict, tag = TEMPLATE[WARN], f"{unread} 个没读到结果", ("待确认", "orange")
-    else:
-        template, verdict, tag = TEMPLATE[OK], "全部完成", ("完成", "green")
+        template = "blue"
+        tags.append((f"进行中 {len(runs) - pending}/{len(runs)}", "blue"))
+    if failed:
+        tags.append((f"{failed} 个失败", "red"))
+    if unread:
+        tags.append((f"{unread} 个结果不明", "orange"))
+    if not pending:
+        template = TEMPLATE[ALERT] if failed else TEMPLATE[WARN] if unread else TEMPLATE[OK]
+    if not tags:
+        tags.append(("全部完成", "green"))
+    verdict = " · ".join(word for word, _ in tags)
     took = f" · 用时 {_minutes(opened_at, now)}" if opened_at else ""
     subtitle = f"{total} 个任务{took} · {_local(now, with_date=True)}"
     names = device_names or {}
     elements: list[dict] = []
-    done = sum(1 for r in runs if r.get("outcome") == "completed")
-    if runs:
-        elements.append(_text(f"{_itag(tag[0], tag[1])}　{done}/{len(runs)} 完成"
-                              + (f" · {failed} 失败" if failed else "")
-                              + (f" · {unread} 没读到结果" if unread else "")
-                              + (f" · {pending} 还在跑" if pending else "")))
-    for i, run in enumerate(runs, 1):
+    same = _shared_label(runs)
+    if same:
+        elements.append(_text(f"<font color='grey'>任务</font>　{same}"))
+    ordered = sorted(enumerate(runs, 1), key=lambda pair: OUTCOME_ORDER.get(pair[1].get("outcome"), 2))
+    for i, run in ordered:
         device = str(run.get("session_ref") or "").split("|", 1)[0]
         where = names.get(device, device.removeprefix("device:"))
-        elements.append(_task_box(i, run, where, run.get("outcome")))
+        elements.append(_task_box(i, run, where, run.get("outcome"), show_label=not same))
     if not runs:
         elements.append(_md(rest or event.get("summary") or ""))
     return _card(template, f"{name} · {verdict}", subtitle, elements,
-                 tags=[tag], summary=f"{name} · {verdict}", width="default")
+                 summary=f"{name} · {verdict}", width="default")
 
 
 def _revert_button(event: dict) -> list[dict]:
@@ -670,13 +720,20 @@ def daily_card(day: dict, *, now: datetime, sample: bool = False,
         title += f" · {SAMPLE_TITLE}"
     subtitle = text["subtitle"].format(time=f"{local:%H:%M}")
     rows_max = text["max_rows"]
-    runs = day.get("runs", {})
-    total = sum(int(runs.get(k, 0) or 0) for k in ("completed", "failed", "unknown", "stalled"))
-    problems = _dedupe(day.get("problems", []))
+    runs = {k: int(day.get("runs", {}).get(k, 0) or 0)
+            for k in ("completed", "failed", "unknown", "stalled")}
+    total = sum(runs.values())
     resources = day.get("resources", [])
     recovered = [r for r in resources if r.get("recovered")]
     unrecovered = [r for r in resources if not r.get("recovered")]
-    open_now = day.get("open_now", [])
+    # One list of what to look at: what is open now, then the day's task
+    # problems, then resources that have not come back — each thing once.
+    listed = list(day.get("problems", [])) + unrecovered
+    told = {(r.get("subject"), r.get("text")) for r in listed}
+    look = _dedupe(listed + [r for r in day.get("open_now", [])
+                             if (r.get("subject"), r.get("text")) not in told])
+    look.sort(key=lambda r: -RANK.get(r.get("level"), 0))
+    to_look = sum(r["times"] for r in look)
 
     def line(r: dict) -> str:
         times = f"　×{r['times']}" if r.get("times", 1) > 1 else ""
@@ -689,32 +746,28 @@ def daily_card(day: dict, *, now: datetime, sample: bool = False,
             lines.append(f"- 另有 {len(rows) - rows_max} 条")
         return "\n".join(lines)
 
-    # The sentence a reader gets if they read nothing else.
-    said = [f"今天 {total} 个任务" if total else "今天没有派发任务"]
-    bad = int(runs.get("failed", 0) or 0) + int(runs.get("unknown", 0) or 0)
+    # The sentence a reader gets if they read nothing else. Only what happened
+    # is counted: a kind of outcome with none is not mentioned.
     if total:
-        said.append(f"{runs.get('completed', 0)} 个完成" + (f"，{bad} 个要看一眼" if bad else ""))
+        parts = [f"{runs[k]} 个{word}" for k, word in
+                 (("completed", "完成"), ("failed", "失败"), ("unknown", "结果不明"),
+                  ("stalled", "跑了很久")) if runs[k]]
+        said = f"今天 {total} 个任务：" + "，".join(parts)
+    else:
+        said = "今天没有派发任务"
     if resources:
-        said.append(f"资源波动 {len(resources)} 次" + ("，都已恢复" if not unrecovered else ""))
-    said.append(f"现在还有 {len(open_now)} 项没结束" if open_now else "现在一切正常")
-    headline = (f"{_itag('仍有要看的' if open_now else '今天都结束了', TAG_WORD_COLOR[level])}　**"
-                + "，".join(said) + "**")
+        said += f"。资源波动 {len(resources)} 次，" + (
+            "都已恢复" if not unrecovered else f"{len(unrecovered)} 次还没恢复")
+    headline = f"**{said}**"
 
-    def tiles() -> dict:
-        cells = [("完成", runs.get("completed", 0), "green"), ("失败", runs.get("failed", 0), "red"),
-                 ("没读到结果", runs.get("unknown", 0), "grey"), ("超时", runs.get("stalled", 0), "orange")]
-        return _box(_eid("daykpi", local.date()),
-                    [_tile(name, str(count or 0), color if count else "grey")
-                     for name, count, color in cells])
-
-    blocks: dict[str, list[dict]] = {
-        "runs": [_text(f"**{text['headings']['runs']}**"), tiles()],
-        "problems": [_text(f"**{text['headings']['problems']}**\n{listing(problems)}")] if problems else [],
-        "open_now": [_text(f"**{text['headings']['open_now']}**\n{listing(open_now)}")] if open_now else [],
-        "resources": [],
-    }
-    if unrecovered:
-        blocks["resources"].append(_text(f"**{text['headings']['resources']}**\n{listing(unrecovered)}"))
+    look_block = ([_text(f"**{text['headings']['open_now']}**\n{listing(look)}")] if look
+                  else [_caption("没有要看的")])
+    blocks: dict[str, list[dict]] = {"runs": [], "problems": [], "open_now": [], "resources": []}
+    # 「现在仍要看」 and 「需要看一眼的任务」 were two lists of the same things:
+    # they are one list, placed where the first of the two sections is.
+    first = next((name for name in text["sections"] if name in ("open_now", "problems")), None)
+    if first:
+        blocks[first] = look_block
     if recovered:
         blocks["resources"].append(_panel(
             _eid("dayrec", local.date()), f"已恢复的资源波动 · {len(recovered)} 次",
@@ -726,13 +779,11 @@ def daily_card(day: dict, *, now: datetime, sample: bool = False,
     elements.append(_text(headline))
     for name in text["sections"]:
         elements += blocks.get(name, [])
-    elements.append(_hr())
-    elements.append(_md(text["footer"]))
-    open_count = len(open_now)
-    return _card(TEMPLATE[level], title, subtitle, elements,
-                 tags=[("仍有未结束" if open_count else "全部结束", TAG_COLOR[level])],
-                 summary=(f"日报：完成 {runs.get('completed', 0)} · 失败 {runs.get('failed', 0)}"
-                          f" · 仍未结束 {open_count}"))
+    elements.append(_caption(text["footer"]))
+    tag = (f"{to_look} 项要看", TAG_COLOR[level] if still_open else "orange") if to_look \
+        else ("没有要看的", "green")
+    return _card(TEMPLATE[level], title, subtitle, elements, tags=[tag],
+                 summary=f"日报：{said.removeprefix('今天 ')}" + (f" · {to_look} 项要看" if to_look else ""))
 
 
 # -- spec proof ---------------------------------------------------------------

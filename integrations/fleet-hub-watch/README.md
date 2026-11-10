@@ -65,7 +65,33 @@ nothing; `off` runs with no notifier at all. Which one an installation passes
 card is a deliberate `journal`, never a forgotten flag.
 
 `samples/` holds one rendered card per kind and level, marked 示例; paste one
-into Feishu's card builder to preview it.
+into Feishu's card builder to preview it, or draw them all on one page:
+`python3 samples/preview.py --out cards.html` (an approximation of Feishu's
+rendering — good for judging what is said first, what is coloured and what
+repeats).
+
+### How a card is written
+
+Owner, 2026-11-10 («可读性很差»). Every card follows the same four rules, and
+`tests/test_fleet_hub_broadcast.py` holds the samples to them:
+
+1. **One plain sentence first.** A reader who reads nothing else knows whether
+   anything is wrong, where, and whether it is theirs to do.
+2. **Only a problem is coloured.** A healthy number is plain text; a healthy
+   device is one grey line.
+3. **The state is said once** — the header (its colour, its tag, or the batch
+   title), never again in a body tag or a second sentence.
+4. **The same thing appears once.** A task every device was given is written
+   above the rows; the 日报 has one 「要看的」 list (what is open now and what
+   went wrong, each once with ×N), and its count is the sum of that list.
+
+Words a person reads: 交换区 (not Swap 水位), 内存吃紧 (not 内存压力 停顿),
+系统盘 / 数据盘 (not ROOT_FS / DATA), 结果不明 (not 没读到结果). No error code
+and no count of zero on a card's face.
+
+In the 日报 the `runs` section is the opening sentence, and `open_now` and
+`problems` are one list placed at whichever of the two comes first in
+`sections`; `resources` is the fold of what recovered.
 
 ## What the cards say: `card-spec.yaml`
 

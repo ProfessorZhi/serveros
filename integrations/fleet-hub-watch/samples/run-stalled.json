@@ -4,14 +4,14 @@
     "update_multi": true,
     "width_mode": "compact",
     "summary": {
-      "content": "注意 · 任务运行时间过长 · lab-notes：run-22c1（Dell A6000）仍在运行，已超过 2 小时"
+      "content": "注意 · 任务跑了很久 · lab-notes：Dell A6000：已运行超过 2 小时，还没结束"
     }
   },
   "header": {
     "template": "yellow",
     "title": {
       "tag": "plain_text",
-      "content": "任务运行时间过长 · lab-notes · [示例]"
+      "content": "任务跑了很久 · lab-notes · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",
@@ -37,7 +37,7 @@
       },
       {
         "tag": "markdown",
-        "content": "run-22c1（Dell A6000）仍在运行，已超过 2 小时\n<font color='grey'>看它是否还在推进；一直没进展可以让指挥端中断</font>"
+        "content": "Dell A6000：已运行超过 2 小时，还没结束\n<font color='grey'>看它是否还在推进；一直没进展可以让指挥端中断</font>"
       },
       {
         "tag": "collapsible_panel",

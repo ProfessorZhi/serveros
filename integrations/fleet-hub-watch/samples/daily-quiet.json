@@ -1,0 +1,54 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default",
+    "summary": {
+      "content": "日报：9 个任务：9 个完成"
+    }
+  },
+  "header": {
+    "template": "green",
+    "title": {
+      "tag": "plain_text",
+      "content": "Fleet 日报 · 10-29 周四 · [示例]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "18:30 生成（北京时间） · 统计当天 00:00 起"
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "没有要看的"
+        },
+        "color": "green"
+      }
+    ]
+  },
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "⚠️ 示例数据 · 非实时采集"
+      },
+      {
+        "tag": "markdown",
+        "content": "**今天 9 个任务：9 个完成**"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>没有要看的</font>",
+        "text_size": "notation"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>数字由程序统计 · 只读，不会自动处理</font>",
+        "text_size": "notation"
+      }
+    ]
+  }
+}

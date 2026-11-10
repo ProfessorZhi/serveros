@@ -677,7 +677,7 @@ class Notifier:
             return
         level, what, detail = {
             "run.failed": (ALERT, "任务失败", "执行出错，没有完成"),
-            "run.unknown": (WARN, "任务没读到结果", "已经结束，但读不到它的输出"),
+            "run.unknown": (WARN, "任务结果不明", "已经结束，但读不到它的输出"),
             "run.stalled": (WARN, "任务跑了很久", "已运行超过 2 小时，还没结束"),
         }.get(kind, (WARN, kind, kind))
         reason = re.search(r"\(([A-Z0-9_]+)\)\s*$", event["summary"])
