@@ -308,7 +308,16 @@ class Journal:
         if ahead.returncode == 0 and ahead.stdout.strip() == "0":
             self._last_push = self.clock()
             return False
-        pushed = self._git("push", "-q")
+        upstream = self._git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+        if ahead.returncode == 0 and upstream.returncode == 0 and "/" in upstream.stdout:
+            # Explicitly to the tracked branch: the local branch may be named
+            # differently (an empty clone's `master` tracking `origin/main`).
+            remote, _, branch = upstream.stdout.strip().partition("/")
+            pushed = self._git("push", "-q", remote, f"HEAD:{branch}")
+        else:
+            # No upstream yet: the repository was empty when it was cloned. The
+            # first push creates `main` there and tracks it from then on.
+            pushed = self._git("push", "-q", "-u", "origin", "HEAD:main")
         if pushed.returncode != 0:
             print("journal: push failed, kept locally; retried next time", file=sys.stderr)
             return False
