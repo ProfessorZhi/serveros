@@ -93,6 +93,39 @@ In the 日报 the `runs` section is the opening sentence, and `open_now` and
 `problems` are one list placed at whichever of the two comes first in
 `sections`; `resources` is the fold of what recovered.
 
+## Asking in Feishu: what a sentence means
+
+The owner's messages to the bot are answered with a card. A message that starts
+with a command word (状态 / 资源 / 任务 / 批次 / 追踪 / 记忆 / 帮助) is answered at
+once. Any other sentence is **understood by a model** when the hub is started
+with one:
+
+    --intent-command 'claude -p --model haiku'      # or SERVEROS_FLEET_INTENT_COMMAND
+
+With a model the bot is a butler, not a lookup: it answers a sentence in two
+or three sentences of its own — the conclusion, which device, what to look at —
+written from the hub's current readings and open batches, and puts the card
+under them. «我能在戴尔上再跑一个大模型吗» gets «显卡还空着 41 GiB，但交换区满了，
+不建议…» above Dell's resource card. It can only look: asked to restart
+something, it says it cannot.
+
+The command gets a prompt on stdin and prints a JSON intent (`intent.py`). So
+«东京是不是快撑不住了» is 「资源 Tokyo」 and «刚才派的活干完没» is 「任务」, which
+no keyword table reads. The model only chooses among the hub's read-only
+answers and the devices it is shown: its reply is checked against that closed
+set, nothing it writes is executed, its sentences are shown as plain bounded
+text above a card the hub draws from its own readings, and a model that is
+missing, slow (`--intent-timeout`, 20 s) or wrong leaves the keyword table
+answering. Only the owner's own text messages reach it. It adds five to ten
+seconds to a free sentence and nothing to a command word.
+
+On an installed hub, set it with a systemd drop-in and restart the watcher:
+
+    systemctl --user edit serveros-fleet-watch
+    #   [Service]
+    #   Environment=SERVEROS_FLEET_INTENT_COMMAND="claude -p --model haiku"
+    systemctl --user restart serveros-fleet-watch
+
 ## What the cards say: `card-spec.yaml`
 
 Facts (levels, readings, run outcomes, thresholds) are code. Presentation is
