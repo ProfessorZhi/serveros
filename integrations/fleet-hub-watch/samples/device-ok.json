@@ -210,7 +210,7 @@
       {
         "tag": "chart",
         "element_id": "trendaa6c4f4755",
-        "aspect_ratio": "16:9",
+        "aspect_ratio": "2:1",
         "chart_spec": {
           "type": "line",
           "title": {
@@ -219,123 +219,133 @@
           "data": {
             "values": [
               {
+                "time": "08:00",
+                "value": 52.5,
+                "type": "CPU"
+              },
+              {
+                "time": "08:30",
+                "value": 54.5,
+                "type": "CPU"
+              },
+              {
                 "time": "09:00",
-                "value": 40.0,
+                "value": 56.5,
                 "type": "CPU"
               },
               {
                 "time": "09:30",
-                "value": 47.0,
+                "value": 53.5,
                 "type": "CPU"
               },
               {
                 "time": "10:00",
-                "value": 54.0,
+                "value": 55.5,
                 "type": "CPU"
               },
               {
                 "time": "10:30",
-                "value": 61.0,
+                "value": 52.5,
                 "type": "CPU"
               },
               {
                 "time": "11:00",
-                "value": 68.0,
+                "value": 54.5,
                 "type": "CPU"
               },
               {
                 "time": "11:30",
-                "value": 45.0,
+                "value": 56.5,
                 "type": "CPU"
               },
               {
                 "time": "12:00",
-                "value": 52.0,
+                "value": 53.5,
                 "type": "CPU"
               },
               {
                 "time": "12:30",
-                "value": 59.0,
+                "value": 55.5,
                 "type": "CPU"
               },
               {
                 "time": "13:00",
-                "value": 66.0,
+                "value": 52.5,
                 "type": "CPU"
               },
               {
                 "time": "13:30",
-                "value": 43.0,
+                "value": 54.5,
                 "type": "CPU"
               },
               {
                 "time": "14:00",
-                "value": 50.0,
+                "value": 52.5,
                 "type": "CPU"
               },
               {
-                "time": "14:30",
-                "value": 57.0,
-                "type": "CPU"
+                "time": "08:00",
+                "value": 78.3,
+                "type": "内存"
+              },
+              {
+                "time": "08:30",
+                "value": 79.0,
+                "type": "内存"
               },
               {
                 "time": "09:00",
-                "value": 78.0,
+                "value": 79.7,
                 "type": "内存"
               },
               {
                 "time": "09:30",
-                "value": 78.8,
+                "value": 80.5,
                 "type": "内存"
               },
               {
                 "time": "10:00",
-                "value": 79.6,
-                "type": "内存"
-              },
-              {
-                "time": "10:30",
-                "value": 80.4,
-                "type": "内存"
-              },
-              {
-                "time": "11:00",
                 "value": 81.2,
                 "type": "内存"
               },
               {
+                "time": "10:30",
+                "value": 81.9,
+                "type": "内存"
+              },
+              {
+                "time": "11:00",
+                "value": 82.6,
+                "type": "内存"
+              },
+              {
                 "time": "11:30",
-                "value": 82.0,
+                "value": 83.3,
                 "type": "内存"
               },
               {
                 "time": "12:00",
-                "value": 82.8,
+                "value": 84.1,
                 "type": "内存"
               },
               {
                 "time": "12:30",
-                "value": 83.6,
+                "value": 84.8,
                 "type": "内存"
               },
               {
                 "time": "13:00",
-                "value": 84.4,
+                "value": 85.5,
                 "type": "内存"
               },
               {
                 "time": "13:30",
-                "value": 85.2,
+                "value": 86.2,
                 "type": "内存"
               },
               {
                 "time": "14:00",
-                "value": 86.0,
-                "type": "内存"
-              },
-              {
-                "time": "14:30",
-                "value": 86.8,
+                "value": 86.7,
                 "type": "内存"
               }
             ]
@@ -359,12 +369,17 @@
             {
               "orient": "left",
               "min": 0,
-              "max": 100
+              "max": 100,
+              "tick": {
+                "tickCount": 3
+              }
             },
             {
               "orient": "bottom",
               "label": {
-                "autoHide": true
+                "autoRotate": false,
+                "autoHide": true,
+                "autoLimit": true
               }
             }
           ],

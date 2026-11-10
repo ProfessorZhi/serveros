@@ -123,13 +123,42 @@ class Answers(unittest.TestCase):
         self.assertIn("Tokyo", self.body(self.answerer.answer("resource", "东京", NOW)))
         self.assertIn("Tokyo", self.body(self.answerer.answer("resource", "东京内存怎么样", NOW)))
 
-    def test_resource_with_no_device_is_every_devices_full_card(self):
+    def test_resource_with_no_device_is_one_card_for_every_device(self):
+        """Owner, 2026-11-11 («多卡片 很丑陋 很大»): a large card per device, each
+        with a tall chart, filled the screen. One card, a row per device."""
         for asked in ("", "情况", "缺口", "资源情况"):
             got = self.answerer.answer("resource", asked, NOW)
-            self.assertIsInstance(got, list, asked)
-            self.assertEqual(len(got), 2, asked)
-            self.assertIn("Tokyo", self.body(got[0]))
-            self.assertIn("Dell A6000", self.body(got[1]))
+            self.assertIsInstance(got, dict, asked)
+            body = self.body(got)
+            self.assertIn("**Tokyo**", body)
+            self.assertIn("**Dell A6000**", body)
+            self.assertEqual(got["header"]["title"]["content"], "Fleet 资源 · 2 台")
+            self.assertNotIn("color='green'", body, "only a problem is coloured")
+        detailed = self.answerer.answer("resource", "详细", NOW)
+        self.assertIsInstance(detailed, list, "「资源 详细」 is still each device's own card")
+
+    def test_the_fleet_card_has_one_small_chart_with_few_points(self):
+        """72 five-minute points drew a wall of vertical time labels and a
+        number on every point."""
+        from datetime import timedelta
+        notifier = self.answerer.notifier
+        for i in range(72):
+            at = NOW - timedelta(minutes=5 * (72 - i))
+            notifier.record_history([{"device_ref": ref, "readings": [
+                {"key": "memory", "value": 50 + i / 4}, {"key": "cpu", "value": 10}]}
+                for ref in (TOKYO, DELL)], at)
+        card = self.answerer.answer("resource", "", NOW)
+        charts = [e for e in card["body"]["elements"] if e.get("tag") == "chart"]
+        self.assertEqual(len(charts), 1, "one chart on the card, not one per device")
+        spec = charts[0]["chart_spec"]
+        self.assertEqual(charts[0]["aspect_ratio"], "2:1")
+        self.assertEqual({v["type"] for v in spec["data"]["values"]}, {"Tokyo", "Dell A6000"})
+        self.assertLessEqual(len({v["time"] for v in spec["data"]["values"]}), 13)
+        self.assertEqual(spec["label"], {"visible": False})
+        self.assertFalse(spec["axes"][1]["label"]["autoRotate"], "time labels stay horizontal")
+        one = self.answerer.answer("resource", "东京", NOW)
+        (chart,) = [e for e in one["body"]["elements"] if e.get("tag") == "chart"]
+        self.assertLessEqual(len({v["time"] for v in chart["chart_spec"]["data"]["values"]}), 13)
 
     def test_a_device_without_its_own_card_gets_the_hub_drawn_one(self):
         """Owner, 2026-11-10: FJPCOS (Windows, no device-made card) came back
@@ -195,7 +224,7 @@ class Answers(unittest.TestCase):
         rich = {"schema": "x", "header": {"title": {"tag": "plain_text", "content": "东京 · 设备长卡"}},
                 "body": {"elements": []}}
         self.answerer.rich = {TOKYO: {"state": "OK", "made_at": "2026-11-09T06:50:00Z", "card": rich}}
-        got = self.answerer.answer("resource", "", NOW)
+        got = [self.answerer.answer("resource", "东京", NOW)]
         self.assertEqual(got[0]["header"]["title"]["content"], "Tokyo · 资源")
         detail = self.answerer.answer("resource", "东京 详细", NOW)
         self.assertEqual(detail["header"]["title"]["content"], "东京 · 设备长卡")

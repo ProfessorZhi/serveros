@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ORDER = ["status", "device-warn", "device-ok", "batch", "batch-done", "completed", "daily",
+ORDER = ["fleet-resource", "status", "device-warn", "device-ok", "batch", "batch-done", "completed", "daily",
          "daily-quiet", "run-failed", "run-stalled", "alert-red", "alert-recovered",
          "resource-yellow"]
 HEAD = {"green": ("#e8f8ee", "#1f7a3d"), "yellow": ("#fdf3d7", "#a3690a"),
@@ -65,7 +65,7 @@ def chart(spec: dict) -> str:
     times = list(dict.fromkeys(v["time"] for v in values))
     series = list(dict.fromkeys(v["type"] for v in values))
     colors = spec.get("color") or ["#3370FF", "#F5A623"]
-    w, h = 420, 150
+    w, h = 420, 120
     parts = [f"<svg class='chart' width='{w}' height='{h + 34}' viewBox='0 0 {w} {h + 34}'>"]
     for mark in (0, 50, 100):
         y = h - mark / 100 * h + 4

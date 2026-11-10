@@ -41,10 +41,10 @@ FJ_WARN = {"device_ref": "device:work-fj", "name": "FJPCOS", "level": WARN,
                reading("reach", "连接", "已连接"), reading("cpu", "CPU", "63%", value=63),
                reading("memory", "内存", "87% / 16 GiB", WARN, value=87),
                reading("fs:ROOT_FS", "系统盘", "74% · 余 61 GiB", value=74)]}
-HISTORY = {"cpu": [(f"2026-10-29T{h:02d}:{m:02d}:00Z", 40 + (i * 7) % 30)
-                   for i, (h, m) in enumerate((h, m) for h in range(1, 7) for m in (0, 30))],
-           "memory": [(f"2026-10-29T{h:02d}:{m:02d}:00Z", 78 + i * 0.8)
-                      for i, (h, m) in enumerate((h, m) for h in range(1, 7) for m in (0, 30))]}
+_SLOTS = [f"2026-10-29T{h:02d}:{m:02d}:00Z" for h in range(0, 6) for m in range(0, 60, 5)] + [
+    "2026-10-29T06:00:00Z", "2026-10-29T06:25:00Z"]
+HISTORY = {"cpu": [(t, 40 + (i * 7) % 30) for i, t in enumerate(_SLOTS)],
+           "memory": [(t, 78 + i * 0.12) for i, t in enumerate(_SLOTS)]}
 PROBE = "做一次只读验收探针：获取本机 hostname 和内存"
 BATCH_RUNS = [
     {"session_ref": "device:tokyo-shared-dev-01|claude|s-1", "run_id": "r-1", "label": PROBE,
@@ -129,6 +129,13 @@ def samples(spec: dict) -> dict:
     "status": as_sample(commands.status_card([FJ_WARN, TOKYO_WARN, {**DELL_WARN, "level": OK, "readings": [
         r if r["key"] != "memory" else reading("memory", "内存", "67% / 256 GiB")
         for r in DELL_WARN["readings"]]}], now=NOW, running={"device:work-fj": 2})),
+    "fleet-resource": as_sample(cards.fleet_resource_card(
+        [FJ_WARN, TOKYO_WARN, DELL_WARN | {"level": OK, "readings": [
+            r if r["key"] != "memory" else reading("memory", "内存", "67% / 256 GiB")
+            for r in DELL_WARN["readings"]]}], now=NOW, running={"device:work-fj": 2},
+        histories={"device:work-fj": HISTORY,
+                   "device:tokyo-shared-dev-01": {"memory": [(t, 58 - i * 0.3) for i, (t, _) in enumerate(HISTORY["memory"])]},
+                   "device:llm-lab-dell": {"memory": [(t, 66 + (i % 3)) for i, (t, _) in enumerate(HISTORY["memory"])]}})),
     "device-warn": as_sample(cards.device_card(FJ_WARN, now=NOW, running=2, history=HISTORY)),
     "device-ok": as_sample(cards.device_card(TOKYO, now=NOW, history=HISTORY)),
     "batch": as_sample(cards.batch_card({"summary": "journal 验收 11-10：3 个任务"}, now=NOW, runs=BATCH_RUNS,
