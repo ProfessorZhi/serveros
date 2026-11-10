@@ -278,6 +278,7 @@ def trend_chart(eid: str, history: dict[str, list[tuple[str, float]]],
             "data": {"values": values},
             "xField": "time", "yField": "value", "seriesField": "type",
             "point": {"visible": False},
+            "label": {"visible": False},
             "line": {"style": {"curveType": "monotone", "lineWidth": 2}},
             "axes": [{"orient": "left", "min": 0, "max": 100},
                      {"orient": "bottom", "label": {"autoHide": True}}],
@@ -307,8 +308,7 @@ def device_card(view: dict, *, now: datetime, running: int | None = None,
     elements: list[dict] = [_md(f"**{ICON[level]} {WORD[level]}**　{headline}")]
     history = history or {}
     elements += _grid(_eid("grid", view.get("device_ref")),
-                      [_cell(r, sparkline([v for _s, v in history.get(r["key"]) or []]))
-                       for r in readings])
+                      [_cell(r) for r in readings])
     chart = trend_chart(_eid("trend", view.get("device_ref")), history,
                         {r["key"]: r["label"] for r in readings}, title="近 6 小时（%）")
     if chart is not None:
@@ -499,6 +499,23 @@ def tuning_card(event: dict, *, now: datetime) -> dict:
 
 # -- 每日日报 -----------------------------------------------------------------
 
+def _dedupe(rows: list[dict]) -> list[dict]:
+    """The same subject and text once, with how many times it happened."""
+    out: dict[tuple, dict] = {}
+    for row in rows:
+        key = (row.get("subject"), row.get("text"))
+        if key in out:
+            out[key]["times"] += 1
+        else:
+            out[key] = {**row, "times": 1}
+    return list(out.values())
+
+
+def _short(text: str, limit: int = 36) -> str:
+    text = str(text or "")
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 def daily_card(day: dict, *, now: datetime, sample: bool = False,
                spec: dict = DEFAULT_SPEC) -> dict:
     """One card per workday, from the day's ledger.
@@ -509,6 +526,9 @@ def daily_card(day: dict, *, now: datetime, sample: bool = False,
     the worst thing still open at report time, not the worst thing that
     happened: a red that recovered at noon is a line in the report, not a red
     report.
+
+    Owner, 2026-11-10 («日报烂完了»): one sentence first; the counts as tiles;
+    the same problem once with ×N; what recovered folded away.
     """
     text = spec["daily_report"]
     local = now.astimezone(CN)
@@ -519,33 +539,68 @@ def daily_card(day: dict, *, now: datetime, sample: bool = False,
         title += f" · {SAMPLE_TITLE}"
     subtitle = text["subtitle"].format(time=f"{local:%H:%M}")
     rows_max = text["max_rows"]
+    runs = day.get("runs", {})
+    total = sum(int(runs.get(k, 0) or 0) for k in ("completed", "failed", "unknown", "stalled"))
+    problems = _dedupe(day.get("problems", []))
+    resources = day.get("resources", [])
+    recovered = [r for r in resources if r.get("recovered")]
+    unrecovered = [r for r in resources if not r.get("recovered")]
+    open_now = day.get("open_now", [])
+
+    def line(r: dict) -> str:
+        times = f"　×{r['times']}" if r.get("times", 1) > 1 else ""
+        return (f"- {ICON.get(r.get('level'), '')} {_short(r['subject'])}"
+                f"<font color='grey'>　{r['text']}</font>{times}")
 
     def listing(rows: list[dict]) -> str:
-        if not rows:
-            return text["empty"]
-        lines = [f"- {ICON.get(r.get('level'), '')} {r['subject']}：{r['text']}".replace("-  ", "- ")
-                 for r in rows[:rows_max]]
+        lines = [line(r) for r in rows[:rows_max]]
         if len(rows) > rows_max:
             lines.append(f"- 另有 {len(rows) - rows_max} 条")
         return "\n".join(lines)
 
-    runs = day.get("runs", {})
-    sections = {
-        "runs": (f"✅ 完成 {runs.get('completed', 0)} · 🚨 失败 {runs.get('failed', 0)}"
-                 f" · ⚪ 无法确认 {runs.get('unknown', 0)} · ⏳ 超时 {runs.get('stalled', 0)}"),
-        "problems": listing(day.get("problems", [])),
-        "resources": listing([{**r, "text": r["text"] + ("（已恢复）" if r.get("recovered") else "")}
-                              for r in day.get("resources", [])]),
-        "open_now": listing(day.get("open_now", [])),
+    # The sentence a reader gets if they read nothing else.
+    said = [f"今天 {total} 个任务" if total else "今天没有派发任务"]
+    bad = int(runs.get("failed", 0) or 0) + int(runs.get("unknown", 0) or 0)
+    if total:
+        said.append(f"{runs.get('completed', 0)} 个完成" + (f"，{bad} 个要看一眼" if bad else ""))
+    if resources:
+        said.append(f"资源波动 {len(resources)} 次" + ("，都已恢复" if not unrecovered else ""))
+    said.append(f"现在还有 {len(open_now)} 项没结束" if open_now else "现在一切正常")
+    headline = f"**{ICON[level]} " + "，".join(said) + "**"
+
+    def tiles() -> dict:
+        cells = [("完成", runs.get("completed", 0), "green"), ("失败", runs.get("failed", 0), "red"),
+                 ("没读到结果", runs.get("unknown", 0), "grey"), ("超时", runs.get("stalled", 0), "orange")]
+        return {"tag": "column_set", "element_id": _eid("daykpi", local.date()), "flex_mode": "none",
+                "background_style": "default", "horizontal_spacing": "default",
+                "columns": [{"tag": "column", "width": "weighted", "weight": 1,
+                             "elements": [{"tag": "markdown", "content":
+                                           f"<font color='grey'>{name}</font>\n"
+                                           f"**<font color='{color if count else 'grey'}'>{count or 0}</font>**"}]}
+                            for name, count, color in cells]}
+
+    blocks: dict[str, list[dict]] = {
+        "runs": [_md(f"**{text['headings']['runs']}**"), tiles()],
+        "problems": [_md(f"**{text['headings']['problems']}**\n{listing(problems)}")] if problems else [],
+        "open_now": [_md(f"**{text['headings']['open_now']}**\n{listing(open_now)}")] if open_now else [],
+        "resources": [],
     }
+    if unrecovered:
+        blocks["resources"].append(_md(f"**{text['headings']['resources']}**\n{listing(unrecovered)}"))
+    if recovered:
+        blocks["resources"].append(_panel(
+            _eid("dayrec", local.date()), f"已恢复的资源波动 · {len(recovered)} 次",
+            [line({**r, "text": r["text"] + "（已恢复）"}) for r in recovered[:rows_max]],
+            expanded=False))
     elements: list[dict] = []
     if sample:
         elements.append(_md(SAMPLE_LINE))
+    elements.append(_md(headline))
     for name in text["sections"]:
-        elements.append(_md(f"**{text['headings'][name]}**\n{sections[name]}"))
+        elements += blocks.get(name, [])
     elements.append(_hr())
     elements.append(_md(text["footer"]))
-    open_count = len(day.get("open_now", []))
+    open_count = len(open_now)
     return _card(TEMPLATE[level], title, subtitle, elements,
                  tags=[("仍有未结束" if open_count else "全部结束", TAG_COLOR[level])],
                  summary=(f"日报：完成 {runs.get('completed', 0)} · 失败 {runs.get('failed', 0)}"

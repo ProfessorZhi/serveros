@@ -170,6 +170,24 @@ class TheJournal(unittest.TestCase):
         self.assertEqual(journal.tick(NOW), {"written": 0, "pushed": False})
         self.assertNotIn("push", calls)
 
+    def test_the_batch_card_excerpt_is_this_runs_reply(self):
+        """Owner, 2026-11-10: the batch card showed FJPCOS «answering» with the
+        owner's later conversation in the same session."""
+        from fleet_hub_watch.notify import run_excerpt
+        a = f"{TOKYO}|claude|s-1"
+        self.inbox.trace("device", "result", session_ref=a, run_id="r1", text="hostname: VM-16-5")
+
+        class Service:
+            def get_run(self, principal, key, run_id):
+                return {"status": "completed"}
+
+            def read_session(self, principal, key, limit):
+                return {"transcript": {"messages": [{"role": "assistant",
+                                                      "content": "1) chart refused — 没有"}]}}
+        read = run_excerpt(Service(), None, 200, self.inbox)
+        self.assertEqual(read(a, "r1"), "hostname: VM-16-5")
+        self.assertEqual(read(a, "r-unkept"), "1) chart refused — 没有", "the session only as fallback")
+
     def test_the_cursor_is_its_own(self):
         a = f"{TOKYO}|claude|s-1"
         self.inbox.note_dispatch(a, "r1", label="x")
