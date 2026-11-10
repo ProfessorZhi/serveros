@@ -222,9 +222,12 @@ class Answerer:
         card = rich_card(self.rich.get(ref) or {}, now)
         if card is not None:
             return card
-        view = [v for v in self.views if v.get("device_ref") == ref]
-        return cards.resource_card(view, now=now) if view else text_card(
-            "没有这台设备的读数", [self.names.get(ref, ref)], now=now)
+        view = next((v for v in self.views if v.get("device_ref") == ref), None)
+        if view is None:
+            return text_card("没有这台设备的读数", [self.names.get(ref, ref)], now=now)
+        running = sum(1 for row in self.watching()
+                      if (row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]) == ref)
+        return cards.device_card(view, now=now, running=running)
 
     def answer(self, command: str, arg: str, now: datetime) -> dict:
         if command == "status":

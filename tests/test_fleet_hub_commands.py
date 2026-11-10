@@ -125,6 +125,20 @@ class Answers(unittest.TestCase):
             self.assertIn("Tokyo", self.body(got[0]))
             self.assertIn("Dell A6000", self.body(got[1]))
 
+    def test_a_device_without_its_own_card_gets_the_hub_drawn_one(self):
+        """Owner, 2026-11-10: FJPCOS (Windows, no device-made card) came back
+        as the old list card. It gets a per-device card: state first, one tile
+        per reading, a bar under shares."""
+        self.answerer.views[0]["readings"].append(
+            {"key": "memory", "label": "内存", "text": "89% / 16 GiB", "level": "WARN", "value": 89})
+        card = self.answerer.answer("resource", "东京", NOW)
+        self.assertEqual(card["header"]["title"]["content"], "Tokyo · 资源播报")
+        self.assertEqual(card["header"]["template"], "yellow")
+        body = self.body(card)
+        self.assertIn("column_set", body)
+        self.assertIn("▰▰▰▰▰▰▰▰▰▱", body)
+        self.assertIn("**⚠️ 注意**　Swap 99%（水位）　内存 89% / 16 GiB", body)
+
     def test_the_device_made_rich_card_is_preferred(self):
         rich = {"schema": "x", "header": {"title": {"tag": "plain_text", "content": "东京 · 资源播报"}},
                 "body": {"elements": []}}
