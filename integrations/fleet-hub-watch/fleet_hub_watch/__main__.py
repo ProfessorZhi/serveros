@@ -170,6 +170,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-spec", metavar="SPEC",
                         help="prove a broadcast spec and exit (0 good, 2 refused)")
     parser.add_argument("--config", help="the Fleet binding file")
+    parser.add_argument("--journal", metavar="DIR",
+                        help="a clone of the private fleet-journal repository: every "
+                             "finished batch and task is written there and pushed")
+    parser.add_argument("--journal-ssh-key", metavar="PATH",
+                        help="the deploy key that may push to the journal repository")
+    parser.add_argument("--journal-push-every", type=float, default=600.0,
+                        help="seconds between journal pushes (commits gather in between)")
     args = parser.parse_args(argv)
 
     if args.check_spec:
@@ -247,6 +254,18 @@ def main(argv: list[str] | None = None) -> int:
     elif args.notify != "off":
         print(f"unknown --notify {args.notify!r}", file=sys.stderr)
         return EXIT_NO_INBOX
+    journal = None
+    if args.journal:
+        from fleet_mcp.identity import SessionKey
+        from .journal import Journal
+        from .watch import read_reply
+
+        def full_reply(session_ref: str, run_id: str) -> str | None:
+            return read_reply(service, principal, SessionKey.parse(session_ref))
+        journal = Journal(watcher.inbox, Path(args.journal).expanduser(), reply=full_reply,
+                          names=names, push_every=args.journal_push_every,
+                          ssh_key=args.journal_ssh_key)
+        print(f"journal writes to {args.journal}", file=sys.stderr)
     beat = directory / "watch.heartbeat.json"
     lark_state: dict = {}
     buttons = None
@@ -307,6 +326,12 @@ def main(argv: list[str] | None = None) -> int:
                 if answerer is not None:
                     answerer.views, answerer.rich = views, rich or {}
             sent = notifier.tick(views, now, rich) if notifier else None
+            journaled = None
+            if journal is not None:
+                try:
+                    journaled = journal.tick(now)
+                except Exception as exc:  # noqa: BLE001 - the journal never stops the watch
+                    journaled = {"error": type(exc).__name__}
             if buttons is not None and time.time() - last_health > HEALTH_EVERY_SECONDS:
                 lark_state, last_health = feishu.health(), time.time()
             if buttons is not None and not _ready(lark_state.get("user")):
@@ -318,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
                               "unreachable": result["discover"]["unreachable"],
                               "devices": {v["device_ref"]: v["level"] for v in views},
                               "notify": sent, "card_spec": specs.state,
+                              "journal": journaled,
                               "commands_applied": applied,
                               "feishu": ({**lark_state, "buttons": buttons.state,
                                           "clicks_handled": buttons.handled,
