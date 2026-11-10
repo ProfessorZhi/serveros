@@ -4,7 +4,7 @@
     "update_multi": true,
     "width_mode": "default",
     "summary": {
-      "content": "日报：完成 6 · 失败 1 · 仍未结束 1"
+      "content": "日报：10 个任务：6 个完成，1 个失败，2 个结果不明，1 个跑了很久。资源波动 1 次，都已恢复 · 4 项要看"
     }
   },
   "header": {
@@ -22,7 +22,7 @@
         "tag": "text_tag",
         "text": {
           "tag": "plain_text",
-          "content": "仍有未结束"
+          "content": "4 项要看"
         },
         "color": "orange"
       }
@@ -37,112 +37,11 @@
       },
       {
         "tag": "markdown",
-        "content": "<text_tag color='orange'>仍有要看的</text_tag>　**今天 8 个任务，6 个完成，2 个要看一眼，资源波动 1 次，都已恢复，现在还有 1 项没结束**"
+        "content": "**今天 10 个任务：6 个完成，1 个失败，2 个结果不明，1 个跑了很久。资源波动 1 次，都已恢复**"
       },
       {
         "tag": "markdown",
-        "content": "**现在仍要看**\n- ⚠️ 任务运行时间过长 · lab-notes<font color='grey'>　run-22c1（Dell A6000）仍在运行，已超过 2 小时</font>"
-      },
-      {
-        "tag": "markdown",
-        "content": "**今日任务**"
-      },
-      {
-        "tag": "column_set",
-        "element_id": "daykpi5ef2d8c8a9",
-        "flex_mode": "none",
-        "horizontal_spacing": "8px",
-        "margin": "4px 0px 4px 0px",
-        "columns": [
-          {
-            "tag": "column",
-            "width": "weighted",
-            "weight": 1,
-            "background_style": "grey",
-            "padding": "10px 12px 10px 12px",
-            "vertical_spacing": "2px",
-            "vertical_align": "top",
-            "elements": [
-              {
-                "tag": "markdown",
-                "content": "<font color='grey'>完成</font>",
-                "text_size": "notation"
-              },
-              {
-                "tag": "markdown",
-                "content": "**<font color='green'>6</font>**",
-                "text_size": "heading"
-              }
-            ]
-          },
-          {
-            "tag": "column",
-            "width": "weighted",
-            "weight": 1,
-            "background_style": "grey",
-            "padding": "10px 12px 10px 12px",
-            "vertical_spacing": "2px",
-            "vertical_align": "top",
-            "elements": [
-              {
-                "tag": "markdown",
-                "content": "<font color='grey'>失败</font>",
-                "text_size": "notation"
-              },
-              {
-                "tag": "markdown",
-                "content": "**<font color='red'>1</font>**",
-                "text_size": "heading"
-              }
-            ]
-          },
-          {
-            "tag": "column",
-            "width": "weighted",
-            "weight": 1,
-            "background_style": "grey",
-            "padding": "10px 12px 10px 12px",
-            "vertical_spacing": "2px",
-            "vertical_align": "top",
-            "elements": [
-              {
-                "tag": "markdown",
-                "content": "<font color='grey'>没读到结果</font>",
-                "text_size": "notation"
-              },
-              {
-                "tag": "markdown",
-                "content": "**<font color='grey'>1</font>**",
-                "text_size": "heading"
-              }
-            ]
-          },
-          {
-            "tag": "column",
-            "width": "weighted",
-            "weight": 1,
-            "background_style": "grey",
-            "padding": "10px 12px 10px 12px",
-            "vertical_spacing": "2px",
-            "vertical_align": "top",
-            "elements": [
-              {
-                "tag": "markdown",
-                "content": "<font color='grey'>超时</font>",
-                "text_size": "notation"
-              },
-              {
-                "tag": "markdown",
-                "content": "**<font color='grey'>0</font>**",
-                "text_size": "heading"
-              }
-            ]
-          }
-        ]
-      },
-      {
-        "tag": "markdown",
-        "content": "**需要看一眼的任务**\n- 🚨 任务失败 · serveros<font color='grey'>　run-7f3a（Tokyo）执行失败（RUN_FAILED）</font>\n- ⚠️ 任务结果无法确认 · litellm<font color='grey'>　run-5b20（Tokyo）没能确认它完成了，也没能确认它失败了</font>"
+        "content": "**要看的**\n- 🚨 任务失败 · serveros<font color='grey'>　Tokyo：执行出错，没有完成</font>\n- ⚠️ 任务结果不明 · 只输出 hostname<font color='grey'>　FJPCOS：已经结束，但读不到它的输出</font>　×2\n- ⚠️ 任务跑了很久 · lab-notes<font color='grey'>　Dell A6000：已运行超过 2 小时，还没结束</font>"
       },
       {
         "tag": "collapsible_panel",
@@ -171,16 +70,14 @@
         "elements": [
           {
             "tag": "markdown",
-            "content": "- 🚨 Dell A6000 · 磁盘 DATA<font color='grey'>　已用 93% · 余 260\nGiB（已恢复）</font>"
+            "content": "- 🚨 Dell A6000 · 数据盘<font color='grey'>　已用 93% · 余 260\nGiB（已恢复）</font>"
           }
         ]
       },
       {
-        "tag": "hr"
-      },
-      {
         "tag": "markdown",
-        "content": "数字由程序统计 · 只读，未自动处理任何事项"
+        "content": "<font color='grey'>数字由程序统计 · 只读，不会自动处理</font>",
+        "text_size": "notation"
       }
     ]
   }

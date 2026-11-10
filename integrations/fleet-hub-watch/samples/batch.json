@@ -1,0 +1,119 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default",
+    "summary": {
+      "content": "journal 验收 11-10 · 1 个结果不明"
+    }
+  },
+  "header": {
+    "template": "yellow",
+    "title": {
+      "tag": "plain_text",
+      "content": "journal 验收 11-10 · 1 个结果不明 · [示例]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "3 个任务 · 用时 4 分钟 · 10-29 14:30"
+    }
+  },
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "⚠️ 示例数据 · 非实时采集"
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>任务</font>　做一次只读验收探针：获取本机 hostname 和内存"
+      },
+      {
+        "tag": "column_set",
+        "element_id": "taskb128e9247c",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**FJPCOS**　<text_tag color='orange'>结果不明</text_tag>"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>任务结束了，但读不到它的输出；可以让指挥端读一下会话再判断</font>",
+                "text_size": "notation"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "column_set",
+        "element_id": "task57aeee4ea1",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**Tokyo**　<text_tag color='green'>完成</text_tag>"
+              },
+              {
+                "tag": "markdown",
+                "content": "VM-16-5-ubuntu · 内存 58.9%（145 / 246 GiB）"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "column_set",
+        "element_id": "task0bc6bd8f0f",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**Dell A6000**　<text_tag color='green'>完成</text_tag>"
+              },
+              {
+                "tag": "markdown",
+                "content": "FJ-NJ-SER-1009 · 内存 67.1%（20.5 / 30.6 GiB）"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

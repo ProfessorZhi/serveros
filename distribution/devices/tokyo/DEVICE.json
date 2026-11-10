@@ -114,7 +114,7 @@
         "binding": "~/.config/serveros/fleet-v1.yaml",
         "card_spec": {
           "path": "integrations/fleet-hub-watch/card-spec.yaml",
-          "digest": "sha256:ab64b59c7a1fb8790bd5495f8768e317fa61442ba5a08f08b47f0686d6445a42"
+          "digest": "sha256:e530d5971dcc37ec413aed3110fcfc24eda75954d94cd217b762b11d700de4c3"
         },
         "binding_needs": "core_lite.snapshot_path: ~/.local/state/serveros/core-lite/status.json",
         "notify": "required at the first install, kept by later updates: lark:user:<open_id> | lark:chat:<chat_id> | journal (writes the cards, sends nothing) | off"

@@ -36,7 +36,7 @@ CN = ZoneInfo("Asia/Shanghai")
 #: On the first tick only events this recent are written; older history is not back-filled.
 FIRST_RUN_WINDOW = timedelta(days=1)
 RUN_KINDS = ("run.completed", "run.failed", "run.unknown")
-OUTCOME = {"completed": "✅ 完成", "failed": "❌ 失败", "unknown": "⚪ 没读到结果", None: "⏳ 未结束"}
+OUTCOME = {"completed": "✅ 完成", "failed": "❌ 失败", "unknown": "⚪ 结果不明", None: "⏳ 未结束"}
 MAX_REPLY = 60_000          # a final answer longer than this is cut, and says so
 
 README = """# Fleet journal

@@ -92,6 +92,17 @@ def _psi_avg60(line: Any) -> float | None:
     return None
 
 
+# The words a person reads. Owner, 2026-11-10: «Swap 水位», «内存压力 停顿»,
+# «ROOT_FS» had to be translated before they could be read.
+SWAP_LABEL = "交换区"
+PSI_LABEL = "内存吃紧"
+DISK_LABELS = {"ROOT_FS": "系统盘", "DATA_FS": "数据盘", "DATA": "数据盘", "HOME_FS": "主目录盘"}
+
+
+def disk_label(role: str) -> str:
+    return DISK_LABELS.get(str(role), f"磁盘 {role}")
+
+
 def device_view(device_ref: str, display_name: str, summary: dict | None,
                 thresholds: dict[str, float], previous: dict[str, str] | None = None,
                 *, seen_before: bool = True) -> dict[str, Any]:
@@ -99,9 +110,11 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
     previous = previous or {}
     readings: list[dict[str, Any]] = []
 
-    def add(key, label, text, level, *, value=None):
+    def add(key, label, text, level, *, value=None, short=None):
+        # `short` is the bare number for a tile or a one-line row, when `text`
+        # is a sentence.
         readings.append({"key": key, "label": label, "text": text, "level": level,
-                         "value": value})
+                         "value": value, **({"short": short} if short else {})})
 
     connected = bool(summary) and summary.get("connected") == "CONNECTED"
     fresh = bool(summary) and (summary.get("freshness") or {}).get("state") == "FRESH"
@@ -139,7 +152,7 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
         if not isinstance(used, (int, float)) and isinstance(swap.get("free_bytes"), (int, float)):
             used = swap["total_bytes"] - swap["free_bytes"]
         pct = 100.0 * used / swap["total_bytes"] if isinstance(used, (int, float)) else None
-        add("swap", "Swap", f"{pct:.0f}%（水位）" if pct is not None else WORD[UNCONFIRMED],
+        add("swap", SWAP_LABEL, f"{pct:.0f}%" if pct is not None else WORD[UNCONFIRMED],
             _level(pct, warn=t["swap_percent_high"], alert=None,
                    margin=t["swap_percent_recovery_margin"], previous=previous.get("swap")),
             value=pct)
@@ -163,8 +176,9 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
         if some is not None or full is not None:
             def pct(x):
                 return "?" if x is None else f"{x:.1f}%"
-            add("psi", "内存压力", f"停顿 {pct(full if full is not None else some)}",
-                worst([some_level, full_level]))
+            stall = pct(full if full is not None else some)
+            add("psi", PSI_LABEL, f"程序有 {stall} 的时间在等内存",
+                worst([some_level, full_level]), short=stall)
 
     storage = _present(summary, "storage.readonly")
     # The contract carries each storage block as `{"roles": [...]}` — a mapping
@@ -181,7 +195,7 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
             continue
         pct = 100.0 * (total - avail) / total
         key = f"fs:{row['role']}"
-        add(key, f"磁盘 {row['role']}", f"{pct:.0f}% · 余 {avail / GiB:.0f} GiB",
+        add(key, disk_label(row["role"]), f"{pct:.0f}% · 余 {avail / GiB:.0f} GiB",
             _level(pct, warn=t["filesystem_percent_high"],
                    alert=t["filesystem_percent_critical"],
                    margin=t["filesystem_percent_recovery_margin"], previous=previous.get(key)),

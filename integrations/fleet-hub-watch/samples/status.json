@@ -1,0 +1,127 @@
+{
+  "schema": "2.0",
+  "config": {
+    "update_multi": true,
+    "width_mode": "default",
+    "summary": {
+      "content": "Fleet 状态 · 2 台要看"
+    }
+  },
+  "header": {
+    "template": "yellow",
+    "title": {
+      "tag": "plain_text",
+      "content": "Fleet · 3 台设备 · [示例]"
+    },
+    "subtitle": {
+      "tag": "plain_text",
+      "content": "10-29 14:30"
+    },
+    "text_tag_list": [
+      {
+        "tag": "text_tag",
+        "text": {
+          "tag": "plain_text",
+          "content": "2 台要看"
+        },
+        "color": "orange"
+      }
+    ]
+  },
+  "body": {
+    "direction": "vertical",
+    "elements": [
+      {
+        "tag": "markdown",
+        "content": "⚠️ 示例数据 · 非实时采集"
+      },
+      {
+        "tag": "column_set",
+        "element_id": "dev336a07a1d6",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**FJPCOS**　<font color='orange'>内存用了 87%</font>"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>CPU 63% · 2 个任务在跑</font>",
+                "text_size": "notation"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "column_set",
+        "element_id": "devaa6c4f4755",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**Tokyo**　<font color='orange'>交换区用了 100%</font>；<font color='orange'>内存吃紧（2.1% 的时间在等内存）</font>"
+              },
+              {
+                "tag": "markdown",
+                "content": "<font color='grey'>CPU 18% · 内存 61%</font>",
+                "text_size": "notation"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "column_set",
+        "element_id": "dev7d895145e0",
+        "flex_mode": "none",
+        "horizontal_spacing": "8px",
+        "margin": "4px 0px 4px 0px",
+        "columns": [
+          {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "background_style": "grey",
+            "padding": "10px 12px 10px 12px",
+            "vertical_spacing": "2px",
+            "vertical_align": "top",
+            "elements": [
+              {
+                "tag": "markdown",
+                "content": "**Dell A6000**　<font color='grey'>正常 · CPU 72% · 内存 67%</font>"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tag": "markdown",
+        "content": "<font color='grey'>「资源」看每台的完整卡和曲线 · 「资源 东京」只看一台 · 「任务」看在跑的</font>",
+        "text_size": "notation"
+      }
+    ]
+  }
+}

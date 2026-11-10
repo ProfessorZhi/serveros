@@ -4,14 +4,14 @@
     "update_multi": true,
     "width_mode": "compact",
     "summary": {
-      "content": "已恢复 · Dell A6000 · 磁盘 DATA：已用 80% · 余 800 GiB"
+      "content": "已恢复 · Dell A6000 · 数据盘：已用 80% · 余 800 GiB"
     }
   },
   "header": {
     "template": "green",
     "title": {
       "tag": "plain_text",
-      "content": "Dell A6000 · 磁盘 DATA · [示例]"
+      "content": "Dell A6000 · 数据盘 · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",

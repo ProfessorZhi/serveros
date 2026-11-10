@@ -4,7 +4,7 @@
     "update_multi": true,
     "width_mode": "default",
     "summary": {
-      "content": "任务完成 3 个：serveros、ability-management、lab-notes"
+      "content": "任务完成 3 个：跑一遍 serveros 的单元测试、更新能力目录、整理实验笔记"
     }
   },
   "header": {
@@ -16,17 +16,7 @@
     "subtitle": {
       "tag": "plain_text",
       "content": "10-29 14:30（北京时间）"
-    },
-    "text_tag_list": [
-      {
-        "tag": "text_tag",
-        "text": {
-          "tag": "plain_text",
-          "content": "3 个"
-        },
-        "color": "green"
-      }
-    ]
+    }
   },
   "body": {
     "direction": "vertical",
@@ -57,12 +47,12 @@
               },
               {
                 "tag": "markdown",
-                "content": "<font color='grey'>serveros</font>",
+                "content": "<font color='grey'>跑一遍 serveros 的单元测试</font>",
                 "text_size": "notation"
               },
               {
                 "tag": "markdown",
-                "content": "没有输出"
+                "content": "全部通过：12 317 个测试，用时 4 分钟"
               }
             ]
           }
@@ -90,12 +80,13 @@
               },
               {
                 "tag": "markdown",
-                "content": "<font color='grey'>ability-management</font>",
+                "content": "<font color='grey'>更新能力目录</font>",
                 "text_size": "notation"
               },
               {
                 "tag": "markdown",
-                "content": "没有输出"
+                "content": "<font color='grey'>没返回文字</font>",
+                "text_size": "notation"
               }
             ]
           }
@@ -123,12 +114,12 @@
               },
               {
                 "tag": "markdown",
-                "content": "<font color='grey'>lab-notes</font>",
+                "content": "<font color='grey'>整理实验笔记</font>",
                 "text_size": "notation"
               },
               {
                 "tag": "markdown",
-                "content": "没有输出"
+                "content": "整理了 14 篇，合并重复的 3 篇"
               }
             ]
           }

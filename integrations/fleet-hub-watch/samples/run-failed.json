@@ -4,7 +4,7 @@
     "update_multi": true,
     "width_mode": "compact",
     "summary": {
-      "content": "报警 · 任务失败 · serveros：run-7f3a（Tokyo）执行失败（RUN_FAILED）"
+      "content": "报警 · 任务失败 · serveros：Tokyo：执行出错，没有完成"
     }
   },
   "header": {
@@ -37,7 +37,7 @@
       },
       {
         "tag": "markdown",
-        "content": "run-7f3a（Tokyo）执行失败（RUN_FAILED）\n<font color='grey'>让指挥端看一下这个会话最后几轮，决定重试还是修</font>"
+        "content": "Tokyo：执行出错，没有完成\n<font color='grey'>让指挥端看一下这个会话最后几轮，决定重试还是修</font>"
       },
       {
         "tag": "collapsible_panel",
@@ -66,7 +66,7 @@
         "elements": [
           {
             "tag": "markdown",
-            "content": "设备 device:tokyo-shared-dev-01\n对象 run:run-7f3a\n首次观测 10-29 14:25\n最近观测 10-29 14:25\n证据 device:tokyo-shared-dev-01|claude|s-1"
+            "content": "设备 device:tokyo-shared-dev-01\n对象 run:run-7f3a\n首次观测 10-29 14:25\n最近观测 10-29 14:25\n证据 device:tokyo-shared-dev-01|claude|s-1 · run run-7f3a ·\nRUN_FAILED"
           }
         ]
       }

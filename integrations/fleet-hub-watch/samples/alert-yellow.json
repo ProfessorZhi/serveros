@@ -4,14 +4,14 @@
     "update_multi": true,
     "width_mode": "compact",
     "summary": {
-      "content": "注意 · Dell A6000 · 磁盘 DATA：已用 86% · 余 560 GiB（注意线 85%）"
+      "content": "注意 · Dell A6000 · 数据盘：已用 86% · 余 560 GiB（注意线 85%）"
     }
   },
   "header": {
     "template": "yellow",
     "title": {
       "tag": "plain_text",
-      "content": "Dell A6000 · 磁盘 DATA · [示例]"
+      "content": "Dell A6000 · 数据盘 · [示例]"
     },
     "subtitle": {
       "tag": "plain_text",
