@@ -215,7 +215,7 @@ def _bar(value: Any) -> str:
     return "▰" * filled + "▱" * (BAR_CELLS - filled)
 
 
-def _cell(reading: dict) -> str:
+def _cell(reading: dict, spark: str = "") -> str:
     """One metric tile: the name small and grey, the value large and coloured,
     a bar under it when the value is a share."""
     color = VALUE_COLOR.get(reading["level"], "grey")
@@ -225,6 +225,8 @@ def _cell(reading: dict) -> str:
     bar = _bar(reading.get("value"))
     if bar:
         lines.append(f"<font color='{color}'>{bar}</font>")
+    if spark:
+        lines.append(f"<font color='grey'>{spark}</font>")
     return "\n".join(lines)
 
 
@@ -243,7 +245,49 @@ def _grid(prefix: str, cells: list[str], per_row: int = 3) -> list[dict]:
     return rows
 
 
-def device_card(view: dict, *, now: datetime, running: int | None = None) -> dict:
+SPARK = "▁▂▃▄▅▆▇█"
+#: Which readings get a line on the chart, and in which order.
+CHART_KEYS = ("cpu", "memory", "gpu", "gpu_memory", "swap", "disk")
+
+
+def sparkline(values: list[float], cells: int = 24) -> str:
+    """The last `cells` points as block characters, scaled 0–100 for shares."""
+    points = [float(v) for v in values][-cells:]
+    if len(points) < 2:
+        return ""
+    high = max(100.0, max(points))
+    return "".join(SPARK[min(7, int(v / high * 7.999))] for v in points)
+
+
+def trend_chart(eid: str, history: dict[str, list[tuple[str, float]]],
+                labels: dict[str, str], *, title: str) -> dict | None:
+    """A CardKit line chart of the shares over time (VChart spec), or None
+    when fewer than three points were recorded."""
+    values = []
+    for key in CHART_KEYS:
+        for slot, value in history.get(key) or []:
+            values.append({"time": _local(slot), "value": round(float(value), 1),
+                           "type": labels.get(key, key)})
+    if len({v["time"] for v in values}) < 3:
+        return None
+    return {
+        "tag": "chart", "element_id": eid, "aspect_ratio": "16:9",
+        "chart_spec": {
+            "type": "line",
+            "title": {"text": title},
+            "data": {"values": values},
+            "xField": "time", "yField": "value", "seriesField": "type",
+            "point": {"visible": False},
+            "line": {"style": {"curveType": "monotone", "lineWidth": 2}},
+            "axes": [{"orient": "left", "min": 0, "max": 100},
+                     {"orient": "bottom", "label": {"autoHide": True}}],
+            "legends": {"visible": True, "orient": "bottom"},
+        },
+    }
+
+
+def device_card(view: dict, *, now: datetime, running: int | None = None,
+                history: dict[str, list[tuple[str, float]]] | None = None) -> dict:
     """One device's 资源播报, drawn by the hub from its own readings — for a
     device that does not make its own rich card (Windows), in the same spirit:
     the state first, then every reading as a tile, then what to look at."""
@@ -261,7 +305,14 @@ def device_card(view: dict, *, now: datetime, running: int | None = None) -> dic
     else:
         headline = "各项读数都在正常范围"
     elements: list[dict] = [_md(f"**{ICON[level]} {WORD[level]}**　{headline}")]
-    elements += _grid(_eid("grid", view.get("device_ref")), [_cell(r) for r in readings])
+    history = history or {}
+    elements += _grid(_eid("grid", view.get("device_ref")),
+                      [_cell(r, sparkline([v for _s, v in history.get(r["key"]) or []]))
+                       for r in readings])
+    chart = trend_chart(_eid("trend", view.get("device_ref")), history,
+                        {r["key"]: r["label"] for r in readings}, title="近 6 小时（%）")
+    if chart is not None:
+        elements.append(chart)
     facts = []
     if running:
         facts.append(f"🛠 {running} 个任务在跑")
@@ -526,3 +577,30 @@ def render_samples(spec: dict) -> list[dict]:
         completion_card([{"run_id": "r-1", "project": "p", "device_name": "X"}], now=now, spec=spec),
         daily_card(day, now=now, spec=spec),
     ]
+
+
+def without_charts(card: dict) -> dict:
+    """The same card with its chart elements taken out — what is sent when a
+    client refuses a chart, so the answer still arrives."""
+    import copy
+    card = copy.deepcopy(card)
+    elements = (card.get("body") or {}).get("elements")
+    if isinstance(elements, list):
+        card["body"]["elements"] = [e for e in elements
+                                    if not (isinstance(e, dict) and e.get("tag") == "chart")]
+    return card
+
+
+def with_chart(card: dict, chart: dict | None) -> dict:
+    """A device-made card with the hub's trend chart placed after its first line."""
+    if chart is None:
+        return card
+    import copy
+    card = copy.deepcopy(card)
+    elements = (card.get("body") or {}).get("elements")
+    if not isinstance(elements, list):
+        return card
+    if any(isinstance(e, dict) and e.get("element_id") == chart["element_id"] for e in elements):
+        return card
+    elements.insert(min(1, len(elements)), chart)
+    return card

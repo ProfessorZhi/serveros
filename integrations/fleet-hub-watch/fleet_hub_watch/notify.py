@@ -41,6 +41,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -131,6 +132,8 @@ def run_excerpt(service: Any, principal: Any, chars: int) -> Callable[[str, str]
     return read
 PATCH_WINDOW = timedelta(days=13)          # Feishu allows 14; leave a day of slack
 MAX_SENDS_PER_TICK = 20
+HISTORY_SLOT_MINUTES = 5                   # one point per reading per five minutes
+HISTORY_KEEP = timedelta(hours=24)
 SPACING_SECONDS = 0.25                      # under 5 QPS per recipient
 
 _SCHEMA = """
@@ -158,6 +161,13 @@ CREATE TABLE IF NOT EXISTS pending_alerts (
     episode    TEXT PRIMARY KEY,
     body       TEXT NOT NULL,
     since      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS history (
+    device_ref TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    slot       TEXT NOT NULL,
+    value      REAL NOT NULL,
+    PRIMARY KEY (device_ref, key, slot)
 );
 CREATE TABLE IF NOT EXISTS daily_events (
     day        TEXT NOT NULL,
@@ -787,9 +797,39 @@ class Notifier:
 
     # -- one pass -------------------------------------------------------------
 
+    # -- 读数历史（画曲线用） ---------------------------------------------------
+
+    def record_history(self, views: list[dict], now: datetime) -> None:
+        """Every numeric reading, one per device and key per HISTORY_SLOT; a day kept."""
+        slot = now.astimezone(timezone.utc).replace(
+            minute=now.minute - now.minute % HISTORY_SLOT_MINUTES, second=0, microsecond=0)
+        rows = [(v["device_ref"], r["key"], _iso(slot), float(r["value"]))
+                for v in views for r in v.get("readings") or []
+                if isinstance(r.get("value"), (int, float)) and not isinstance(r.get("value"), bool)
+                and v.get("device_ref")]
+        with self._connect() as conn:
+            conn.executemany("INSERT OR REPLACE INTO history(device_ref, key, slot, value) "
+                             "VALUES (?,?,?,?)", rows)
+            conn.execute("DELETE FROM history WHERE slot < ?",
+                         (_iso(now - HISTORY_KEEP),))
+
+    def history(self, device_ref: str, since: datetime) -> dict[str, list[tuple[str, float]]]:
+        """{key: [(slot, value), ...]} oldest first, for one device."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT key, slot, value FROM history WHERE device_ref=? "
+                                "AND slot >= ? ORDER BY slot", (device_ref, _iso(since))).fetchall()
+        out: dict[str, list[tuple[str, float]]] = {}
+        for row in rows:
+            out.setdefault(row["key"], []).append((row["slot"], row["value"]))
+        return out
+
     def tick(self, views: list[dict], now: datetime,
              rich: dict[str, dict] | None = None) -> dict[str, Any]:
         self._sent_this_tick = 0
+        try:
+            self.record_history(views, now)
+        except Exception as exc:  # noqa: BLE001 - a curve is not worth a broadcast
+            print(f"history not recorded: {type(exc).__name__}", file=sys.stderr)
         consumed = self.consume(now)
         promoted = self.promote_pending(now)
         completions = self.flush_completions(now)

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from . import cards
@@ -217,17 +217,29 @@ class Answerer:
         return next((ref for ref, name in self.names.items()
                      if name and len(name) > 2 and name.lower() in text), None)
 
+    TREND_WINDOW = timedelta(hours=6)
+
+    def _history(self, ref: str, now: datetime) -> dict:
+        reader = getattr(self.notifier, "history", None)
+        try:
+            return reader(ref, now - self.TREND_WINDOW) if reader else {}
+        except Exception:  # noqa: BLE001 - a card without a curve is still a card
+            return {}
+
     def _resource(self, ref: str, now: datetime) -> dict:
         from .notify import rich_card
+        view = next((v for v in self.views if v.get("device_ref") == ref), None)
+        history = self._history(ref, now)
         card = rich_card(self.rich.get(ref) or {}, now)
         if card is not None:
-            return card
-        view = next((v for v in self.views if v.get("device_ref") == ref), None)
+            labels = {r["key"]: r["label"] for r in (view or {}).get("readings") or []}
+            return cards.with_chart(card, cards.trend_chart(
+                cards._eid("trend", ref), history, labels, title="近 6 小时（%）"))
         if view is None:
             return text_card("没有这台设备的读数", [self.names.get(ref, ref)], now=now)
         running = sum(1 for row in self.watching()
                       if (row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]) == ref)
-        return cards.device_card(view, now=now, running=running)
+        return cards.device_card(view, now=now, running=running, history=history)
 
     def answer(self, command: str, arg: str, now: datetime) -> dict:
         if command == "status":
