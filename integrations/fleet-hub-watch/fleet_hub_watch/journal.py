@@ -93,12 +93,14 @@ class Journal:
         self._git = git or self._run_git
         self._last_push = 0.0
         self._pending = 0
+        #: Events older than a day before this process started are not back-filled.
+        self._born = datetime.now(timezone.utc)
 
     # -- reading what happened -------------------------------------------------
 
     def _steps(self, **where: Any) -> list[dict[str, Any]]:
         try:
-            return self.inbox.read_trace(**where, limit=300)
+            return self.inbox.read_trace(**where, limit=5000)
         except Exception:  # noqa: BLE001 - a file without a timeline is still a record
             return []
 
@@ -121,13 +123,20 @@ class Journal:
         return found
 
     def _answer(self, session_ref: str, run_id: str, steps: list[dict]) -> str | None:
-        text = None
-        if self.reply is not None:
+        """This run's final answer. The trace kept it when the run finished; it
+        is clipped at the trace's limit, so a reply at that length is read again
+        from the session — and used only if it is the same answer (the session
+        may have moved on to a later task since)."""
+        from fleet_mcp.inbox import TRACE_TEXT_MAX
+        kept = self._text(steps, "result", run_id)
+        text = kept
+        if (kept is None or len(kept) >= TRACE_TEXT_MAX) and self.reply is not None:
             try:
-                text = self.reply(session_ref, run_id)
+                live = self.reply(session_ref, run_id)
             except Exception:  # noqa: BLE001 - the trace keeps a clipped copy
-                text = None
-        text = text or self._text(steps, "result", run_id)
+                live = None
+            if live and (kept is None or _mask(live).startswith(kept[:200])):
+                text = live
         if text and len(text) > MAX_REPLY:
             text = text[:MAX_REPLY] + f"\n…（超过 {MAX_REPLY} 字，后面截掉了；全文在设备会话里）"
         return text
@@ -158,11 +167,29 @@ class Journal:
         return out
 
     def _timeline(self, steps: list[dict]) -> list[str]:
+        """The trace in Beijing time; a run of 'observed' lines that say the same
+        thing is folded into its first line and a count."""
         from fleet_mcp.trace import line
         if not steps:
             return []
-        return ["## 过程（元数据）", "", "<details><summary>时间线</summary>", "",
-                _fence(_mask("\n".join(line(s) for s in steps))), "", "</details>", ""]
+        rows, last_key, folded = [], None, 0
+        for step in steps:
+            detail = step.get("detail") or {}
+            key = ((step.get("run_id"), detail.get("status"), detail.get("reason"))
+                   if step["step"] == "observed" else None)
+            if key is not None and key == last_key:
+                folded += 1
+                continue
+            if folded:
+                rows.append(f"          …同样的观测又 {folded} 次")
+                folded = 0
+            last_key = key
+            local = _local(step.get("at"))[11:19]
+            rows.append(local + line(step)[8:])
+        if folded:
+            rows.append(f"          …同样的观测又 {folded} 次")
+        return ["## 过程（元数据，北京时间）", "", "<details><summary>时间线</summary>", "",
+                _fence(_mask("\n".join(rows))), "", "</details>", ""]
 
     def write_batch(self, batch_id: str, event: dict) -> Path | None:
         head = self.inbox.batch(batch_id)
@@ -239,23 +266,15 @@ class Journal:
 
     # -- the tick ---------------------------------------------------------------
 
-    def _first_run(self) -> bool:
-        try:
-            page = self.inbox.read(SUBSCRIBER, limit=1)
-        except Exception:  # noqa: BLE001
-            return False
-        return page.get("cursor", 0) == 0
-
     def tick(self, now: datetime) -> dict[str, Any]:
-        first = self._first_run()
         page = self.inbox.read(SUBSCRIBER, limit=100)
         written, handled_to = 0, page["cursor"]
+        oldest = min(self._born, now) - FIRST_RUN_WINDOW
         for event in page["events"]:
             handled_to = event["seq"]
-            if first and event.get("occurred_at"):
+            if event.get("occurred_at"):
                 try:
-                    if now - datetime.fromisoformat(event["occurred_at"].replace("Z", "+00:00")) \
-                            > FIRST_RUN_WINDOW:
+                    if datetime.fromisoformat(event["occurred_at"].replace("Z", "+00:00")) < oldest:
                         continue
                 except ValueError:
                     pass
@@ -297,6 +316,8 @@ class Journal:
         status = self._git("status", "--porcelain")
         if status.returncode != 0:
             return False
+        if not status.stdout.strip() and self._git("rev-parse", "--verify", "-q", "HEAD").returncode != 0:
+            return False                    # nothing written yet: nothing to push
         if status.stdout.strip():
             self._git("add", "-A")
             done = self._git("-c", "user.name=fleet-hub", "-c", "user.email=fleet-hub@localhost",
@@ -320,6 +341,7 @@ class Journal:
             pushed = self._git("push", "-q", "-u", "origin", "HEAD:main")
         if pushed.returncode != 0:
             print("journal: push failed, kept locally; retried next time", file=sys.stderr)
+            self._last_push = self.clock()          # the next try waits the same interval
             return False
         self._last_push = self.clock()
         return True
