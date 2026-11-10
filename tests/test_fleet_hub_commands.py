@@ -139,7 +139,7 @@ class Answers(unittest.TestCase):
         self.assertIn("▰▰▰▰▰▰▰▰▰▱", body)
         self.assertIn("**⚠️ 注意**　Swap 99%（水位）　内存 89% / 16 GiB", body)
 
-    def test_six_hours_of_readings_become_a_curve_and_sparklines(self):
+    def test_six_hours_of_readings_become_a_curve(self):
         """Owner, 2026-11-10: the earlier cards had curves; the resource card
         draws the hub's recorded readings as a line chart and per-tile sparks."""
         from datetime import timedelta
@@ -156,7 +156,9 @@ class Answers(unittest.TestCase):
         spec = charts[0]["chart_spec"]
         self.assertEqual(spec["type"], "line")
         self.assertEqual({v["type"] for v in spec["data"]["values"]}, {"CPU", "内存"})
-        self.assertRegex(self.body(card), "[▁▂▃▄▅▆▇█]{8}")
+        self.assertNotRegex(self.body(card), "[▁▂▃▄▅▆▇█]{4}",
+                            "Feishu draws block characters as grey bars; the chart is the trend")
+        self.assertEqual(spec["label"], {"visible": False}, "no number on every point")
         plain = commands.cards.without_charts(card)
         self.assertNotIn('"chart"', self.body(plain))
 
@@ -164,12 +166,17 @@ class Answers(unittest.TestCase):
         card = self.answerer.answer("resource", "东京", NOW)
         self.assertNotIn('"chart"', self.body(card))
 
-    def test_the_device_made_rich_card_is_preferred(self):
-        rich = {"schema": "x", "header": {"title": {"tag": "plain_text", "content": "东京 · 资源播报"}},
+    def test_every_device_gets_the_same_card_and_its_own_long_one_on_request(self):
+        """Owner, 2026-11-10 («资源播报也烂完了»): device-made cards differed per
+        machine and led with collection gaps; all devices now get the hub's card,
+        and 「详细」 asks for the device's own."""
+        rich = {"schema": "x", "header": {"title": {"tag": "plain_text", "content": "东京 · 设备长卡"}},
                 "body": {"elements": []}}
         self.answerer.rich = {TOKYO: {"state": "OK", "made_at": "2026-11-09T06:50:00Z", "card": rich}}
         got = self.answerer.answer("resource", "", NOW)
-        self.assertEqual(got[0]["header"]["title"]["content"], "东京 · 资源播报")
+        self.assertEqual(got[0]["header"]["title"]["content"], "Tokyo · 资源播报")
+        detail = self.answerer.answer("resource", "东京 详细", NOW)
+        self.assertEqual(detail["header"]["title"]["content"], "东京 · 设备长卡")
 
     def test_trace_and_memory_and_help(self):
         self.inbox.trace("fleet", "dispatched (send)", session_ref=f"{TOKYO}|claude|s", run_id="r9")

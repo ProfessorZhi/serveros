@@ -113,9 +113,31 @@ def clip_excerpt(text: Any, chars: int) -> str | None:
     return flat if len(flat) <= chars else flat[:chars - 1] + "…"
 
 
-def run_excerpt(service: Any, principal: Any, chars: int) -> Callable[[str, str], str | None] | None:
+def recorded_reply(inbox: Any, run_id: str) -> str | None:
+    """The reply the monitor kept in the trace when this run finished, or None."""
+    reader = getattr(inbox, "read_trace", None)
+    if reader is None:
+        return None
+    try:
+        steps = reader(run_id=run_id, limit=5000)
+    except Exception:  # noqa: BLE001
+        return None
+    found = None
+    for step in steps:
+        if step.get("step") == "result" and step.get("run_id") == run_id:
+            found = (step.get("detail") or {}).get("text") or found
+    return found
+
+
+def run_excerpt(service: Any, principal: Any, chars: int,
+                inbox: Any = None) -> Callable[[str, str], str | None] | None:
     """(session_ref, run_id) -> the start of that run's final reply, read through
-    Fleet as the monitor's own read-only principal. None when `chars` is 0."""
+    Fleet as the monitor's own read-only principal. None when `chars` is 0.
+
+    A session can move on after its run (Owner, 2026-11-10: a batch card showed
+    FJPCOS «answering» with the owner's later conversation in the same
+    session), so the reply the monitor kept when THIS run finished comes first;
+    the session is read only when nothing was kept."""
     if chars <= 0:
         return None
     from fleet_mcp.identity import SessionKey
@@ -125,7 +147,9 @@ def run_excerpt(service: Any, principal: Any, chars: int) -> Callable[[str, str]
         run = service.get_run(principal, key, run_id)
         text = next((run[f] for f in _OUTPUT_FIELDS if run.get(f)), None)
         if not _as_text(text):
-            # No run receipt on this device: the session still holds the reply.
+            text = recorded_reply(inbox, run_id) if inbox is not None else None
+        if not _as_text(text):
+            # No run receipt and nothing kept: the session still holds the reply.
             from .watch import read_reply
             text = read_reply(service, principal, key)
         return clip_excerpt(text, chars)

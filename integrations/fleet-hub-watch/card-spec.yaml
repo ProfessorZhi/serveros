@@ -65,15 +65,15 @@ daily_report:
   title: Fleet 日报 · {date} 周{weekday}
   subtitle: '{time} 生成（北京时间） · 统计当天 00:00 起'
   sections:
+  - open_now
   - runs
   - problems
   - resources
-  - open_now
   headings:
     runs: 今日任务
     problems: 需要看一眼的任务
-    resources: 今日资源报警
-    open_now: 到现在仍未结束
+    resources: 还没恢复的资源问题
+    open_now: 现在仍要看
   empty: 无
   max_rows: 15
   footer: 数字由程序统计 · 只读，未自动处理任何事项

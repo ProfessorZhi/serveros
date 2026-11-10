@@ -43,7 +43,7 @@ HELP = [("状态", "每台设备一行：是否正常、关键读数"),
         ("资源", "每台设备的完整资源播报卡（也可以直接问「资源情况」「东京内存怎么样」）"),
         ("任务", "进行中的批次，和刚完成的"),
         ("批次 名字", "一个批次里每个任务的结论"),
-        ("资源 设备", "只看那一台的完整资源播报"),
+        ("资源 设备", "只看那一台；加「详细」看设备自己的长卡（账户、时间线）"),
         ("追踪 id", "一个任务/批次走到哪一步、卡在哪"),
         ("记忆 关键词", "指挥中心记下的结论和规矩")]
 
@@ -226,11 +226,18 @@ class Answerer:
         except Exception:  # noqa: BLE001 - a card without a curve is still a card
             return {}
 
-    def _resource(self, ref: str, now: datetime) -> dict:
+    #: Words that ask for the device's own long card instead of the hub's.
+    DETAIL_WORDS = ("详细", "完整", "全部", "detail")
+
+    def _resource(self, ref: str, now: datetime, *, detailed: bool = False) -> dict:
+        """One device's 资源播报. Every device gets the same hub-drawn card
+        (state, tiles, six-hour curve) — Owner, 2026-11-10: the device-made
+        cards differed per machine and led with collection gaps. Its own long
+        card (accounts, timeline, gaps) is asked for with 「资源 东京 详细」."""
         from .notify import rich_card
         view = next((v for v in self.views if v.get("device_ref") == ref), None)
         history = self._history(ref, now)
-        card = rich_card(self.rich.get(ref) or {}, now)
+        card = rich_card(self.rich.get(ref) or {}, now) if (detailed or view is None) else None
         if card is not None:
             labels = {r["key"]: r["label"] for r in (view or {}).get("readings") or []}
             return cards.with_chart(card, cards.trend_chart(
@@ -266,13 +273,16 @@ class Answerer:
             return cards.batch_card(event, now=now, runs=runs, opened_at=opened,
                                     device_names=self.names)
         if command == "resource":
-            ref = self._device(arg)
+            detailed = any(w in (arg or "").lower() for w in self.DETAIL_WORDS)
+            for word in self.DETAIL_WORDS:
+                arg = (arg or "").replace(word, " ")
+            ref = self._device(arg.strip())
             if ref is not None:
-                return self._resource(ref, now)
+                return self._resource(ref, now, detailed=detailed)
             # No device named (资源 / 资源情况 / 资源缺口): every device's full card.
             refs = [v.get("device_ref") for v in self.views if v.get("device_ref")] \
                 or list(self.rich) or list(self.names)
-            return [self._resource(r, now) for r in dict.fromkeys(refs)] or text_card(
+            return [self._resource(r, now, detailed=detailed) for r in dict.fromkeys(refs)] or text_card(
                 "还没有读数", ["设备读数还没到，稍后再问"], now=now)
         if command == "trace":
             from fleet_mcp.trace import diagnose, exchange, line

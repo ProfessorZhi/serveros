@@ -1,6 +1,7 @@
 """The broadcast spec (what cards say and when) and the daily report."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -157,10 +158,30 @@ class TheDailyReport(NotifierTest):
         self.assertEqual(self.notifier.daily(THURSDAY_1830), "DISABLED")
         spec = broadcast_spec.build({"daily_report": {"sections": ["open_now", "runs"]}})
         card = cards.daily_card({"runs": {}, "open_now": []}, now=THURSDAY_1830, spec=spec)
-        texts = [e.get("content", "") for e in card["body"]["elements"]]
-        self.assertTrue(texts[0].startswith("**到现在仍未结束**"))
-        self.assertTrue(texts[1].startswith("**今日任务**"))
+        card = cards.daily_card({"runs": {}, "open_now": [{"subject": "Y", "text": "t", "level": WARN}]},
+                                now=THURSDAY_1830, spec=spec)
+        texts = [e.get("content", "") for e in card["body"]["elements"] if e.get("tag") == "markdown"]
+        self.assertIn("现在还有 1 项没结束", texts[0], "one sentence first")
+        self.assertTrue(texts[1].startswith("**现在仍要看**"))
+        self.assertTrue(texts[2].startswith("**今日任务**"))
+        card = cards.daily_card({"runs": {}, "open_now": []}, now=THURSDAY_1830, spec=spec)
         self.assertEqual(card["header"]["template"], "green")
+
+    def test_the_same_problem_once_and_recovered_ones_folded(self):
+        """Owner, 2026-11-10 («日报烂完了»): two identical lines, and recovered
+        blips listed like open ones."""
+        same = {"subject": "任务没读到结果 · 只输出hostname", "text": "已经结束，但读不到它的输出",
+                "level": WARN}
+        card = cards.daily_card({"runs": {"completed": 10, "unknown": 4},
+                                 "problems": [same, same],
+                                 "resources": [{"subject": "FJPCOS · 内存", "text": "90%",
+                                                "level": WARN, "recovered": True}],
+                                 "open_now": []}, now=THURSDAY_1830)
+        body = json.dumps(card, ensure_ascii=False)
+        self.assertEqual(body.count("只输出hostname"), 1)
+        self.assertIn("×2", body)
+        self.assertIn("已恢复的资源波动 · 1 次", body)
+        self.assertIn("今天 14 个任务，10 个完成，4 个要看一眼", body)
 
     def test_a_recovered_red_is_a_line_not_a_red_report(self):
         card = cards.daily_card({"runs": {"completed": 2},
