@@ -119,12 +119,21 @@ missing, slow (`--intent-timeout`, 20 s) or wrong leaves the keyword table
 answering. Only the owner's own text messages reach it. It adds five to ten
 seconds to a free sentence and nothing to a command word.
 
-On an installed hub, set it with a systemd drop-in and restart the watcher:
+On an installed hub the model is the gateway's DeepSeek route — the owner's
+rule for every device's agents — asked with one HTTP request
+(`ask_model.py`: no Claude Code start, no plugins, no tools), not `claude -p`.
+Set it with a systemd drop-in and restart the watcher:
 
-    systemctl --user edit serveros-fleet-watch
-    #   [Service]
-    #   Environment=SERVEROS_FLEET_INTENT_COMMAND="claude -p --model haiku"
-    systemctl --user restart serveros-fleet-watch
+    # ~/.config/systemd/user/serveros-fleet-watch.service.d/butler.conf
+    [Service]
+    EnvironmentFile=%h/.config/serveros/cloudcli.env
+    Environment=SERVEROS_FLEET_INTENT_COMMAND="@HUB_PYTHON@ -m fleet_hub_watch.ask_model --base-url <gateway> --model <deepseek model id> --key-env <NAME of the key variable>"
+
+The base URL, the model id and the key variable's name are the ones the
+CloudCLI DeepSeek model entry uses (`fleet_model_library` shows them; the key
+itself is in the key center's `cloudcli.env` and is only ever named, never
+written into the unit). `python3 -m fleet_hub_watch.ask_model ... <<< 你好`
+proves the route before the watcher is restarted.
 
 ## What the cards say: `card-spec.yaml`
 
