@@ -139,6 +139,31 @@ class Answers(unittest.TestCase):
         self.assertIn("▰▰▰▰▰▰▰▰▰▱", body)
         self.assertIn("**⚠️ 注意**　Swap 99%（水位）　内存 89% / 16 GiB", body)
 
+    def test_six_hours_of_readings_become_a_curve_and_sparklines(self):
+        """Owner, 2026-11-10: the earlier cards had curves; the resource card
+        draws the hub's recorded readings as a line chart and per-tile sparks."""
+        from datetime import timedelta
+        notifier = self.answerer.notifier
+        for i in range(8):
+            at = NOW - timedelta(minutes=5 * (8 - i))
+            notifier.record_history([{"device_ref": TOKYO, "readings": [
+                {"key": "cpu", "value": 10 + i * 5}, {"key": "memory", "value": 50 + i}]}], at)
+        self.answerer.views[0]["readings"].append(
+            {"key": "memory", "label": "内存", "text": "57%", "level": "OK", "value": 57})
+        card = self.answerer.answer("resource", "东京", NOW)
+        charts = [e for e in card["body"]["elements"] if e.get("tag") == "chart"]
+        self.assertEqual(len(charts), 1)
+        spec = charts[0]["chart_spec"]
+        self.assertEqual(spec["type"], "line")
+        self.assertEqual({v["type"] for v in spec["data"]["values"]}, {"CPU", "内存"})
+        self.assertRegex(self.body(card), "[▁▂▃▄▅▆▇█]{8}")
+        plain = commands.cards.without_charts(card)
+        self.assertNotIn('"chart"', self.body(plain))
+
+    def test_one_reading_draws_no_curve(self):
+        card = self.answerer.answer("resource", "东京", NOW)
+        self.assertNotIn('"chart"', self.body(card))
+
     def test_the_device_made_rich_card_is_preferred(self):
         rich = {"schema": "x", "header": {"title": {"tag": "plain_text", "content": "东京 · 资源播报"}},
                 "body": {"elements": []}}

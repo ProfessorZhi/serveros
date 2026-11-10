@@ -273,7 +273,14 @@ def main(argv: list[str] | None = None) -> int:
             sent = True
             for i, one in enumerate(card if isinstance(card, list) else [card]):
                 key = f"ask:{message_id}:{command}" + (f":{i}" if i else "")
-                sent = bool(notifier.transport.send(one, idempotency_key=key)) and sent
+                ok = notifier.transport.send(one, idempotency_key=key)
+                if not ok and '"chart"' in json.dumps(one):
+                    # A client that refuses the chart still gets the card.
+                    from .cards import without_charts
+                    ok = notifier.transport.send(without_charts(one), idempotency_key=key + ":plain")
+                    watcher.inbox.trace("notify", "chart refused; sent without it",
+                                        ref=f"ask:{message_id}")
+                sent = bool(ok) and sent
             watcher.inbox.trace("notify", f"answered 「{command}」" if sent else
                                 f"answer to 「{command}」 FAILED", ref=f"ask:{message_id}")
             return "SENT" if sent else "FAILED"
