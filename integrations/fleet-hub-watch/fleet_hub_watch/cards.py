@@ -29,6 +29,7 @@ spec existed. Facts — levels, colours, which reading is wrong — stay here.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import importlib.util
 import sys
@@ -113,6 +114,12 @@ def _tile(label: str, value: str, color: str = "default", note: str = "") -> lis
     if note:
         out.append(_caption(note))
     return out
+
+
+def is_styled(card: dict) -> bool:
+    """Whether the card uses anything `plain` would take out."""
+    blob = json.dumps(card, ensure_ascii=False)
+    return any(mark in blob for mark in ('"column_set"', '"chart"', "<text_tag", '"text_size"'))
 
 
 def plain(card: dict) -> dict:
@@ -375,11 +382,26 @@ def trend_chart(eid: str, history: dict[str, list[tuple[str, float]]],
     }
 
 
+def _reading_tile(reading: dict) -> list[dict]:
+    color = VALUE_COLOR.get(reading["level"], "grey")
+    text = str(reading["text"])
+    value, _, note = text.partition(" / ")
+    if not note:
+        value, _, note = text.partition(" · ")
+    aside = re.match(r"(.*?)（(.*)）$", value)
+    if aside:                                   # 「99%（水位）」: the number large, the remark small
+        value, note = aside.group(1), " · ".join(x for x in (aside.group(2), note) if x)
+    tile = _tile(reading["label"], value, color, note)
+    bar = _bar(reading.get("value"))
+    if bar:
+        tile.append(_text(f"<font color='{color}'>{bar}</font>", size="notation"))
+    return tile
+
+
 def device_card(view: dict, *, now: datetime, running: int | None = None,
                 history: dict[str, list[tuple[str, float]]] | None = None) -> dict:
-    """One device's 资源播报, drawn by the hub from its own readings — for a
-    device that does not make its own rich card (Windows), in the same spirit:
-    the state first, then every reading as a tile, then what to look at."""
+    """One device's 资源播报, drawn by the hub: the verdict, every reading as a
+    tile in a grey box, the six-hour curve, and one grey caption."""
     level = view.get("level") or UNCONFIRMED
     name = view.get("name") or view.get("device_ref") or "设备"
     local = now.astimezone(CN)
@@ -388,35 +410,37 @@ def device_card(view: dict, *, now: datetime, running: int | None = None,
     flagged = sorted((r for r in readings if r["level"] in (WARN, ALERT)),
                      key=lambda r: -RANK[r["level"]])
     if flagged:
-        headline = "　".join(f"{r['label']} {r['text']}" for r in flagged[:3])
+        headline = "　".join(f"{r['label']} <font color='{VALUE_COLOR[r['level']]}'>{r['text']}</font>"
+                            for r in flagged[:3])
     elif level == UNCONFIRMED:
         headline = "这次没读到完整的读数"
     else:
         headline = "各项读数都在正常范围"
-    elements: list[dict] = [_md(f"**{ICON[level]} {WORD[level]}**　{headline}")]
+    elements: list[dict] = [_text(f"{_itag(WORD[level], TAG_WORD_COLOR[level])}　{headline}")]
+    tiles = [_reading_tile(r) for r in readings]
+    for i in range(0, len(tiles), 3):
+        row = tiles[i:i + 3]
+        row += [[]] * (3 - len(row))
+        elements.append(_box(_eid("tile", view.get("device_ref"), i), row))
     history = history or {}
-    elements += _grid(_eid("grid", view.get("device_ref")),
-                      [_cell(r) for r in readings])
     chart = trend_chart(_eid("trend", view.get("device_ref")), history,
                         {r["key"]: r["label"] for r in readings}, title="近 6 小时（%）")
     if chart is not None:
         elements.append(chart)
     facts = []
     if running:
-        facts.append(f"🛠 {running} 个任务在跑")
+        facts.append(f"{running} 个任务在跑")
     if view.get("observed_at"):
-        facts.append(f"🕒 读数 {_local(view['observed_at'], with_date=True)}")
-    if facts:
-        elements.append(_md("<font color='grey'>" + "　·　".join(facts) + "</font>"))
-    elements.append(_hr())
-    elements.append(_md("<font color='grey'>只读，不会停止、重启或清理任何东西 · "
-                        "发「状态」看所有设备 · 「任务」看在跑的</font>"))
+        facts.append(f"读数 {_local(view['observed_at'], with_date=True)}")
+    facts.append("只读，不会动任何东西")
+    elements.append(_caption(" · ".join(facts)))
     tags = [(WORD[level], TAG_COLOR[level])]
     if flagged:
         tags.append((f"{len(flagged)} 项要看", "neutral"))
-    return _card(TEMPLATE[level], f"{name} · 资源播报",
-                 f"{local:%m-%d} 周{WEEKDAYS[local.weekday()]} · {local:%H:%M} 更新（北京时间）",
-                 elements, tags=tags, summary=f"{name} · {WORD[level]} · {headline}")
+    plain_head = "　".join(f"{r['label']} {r['text']}" for r in flagged[:3]) or headline
+    return _card(TEMPLATE[level], f"{name} · 资源",
+                 f"{local:%m-%d} 周{WEEKDAYS[local.weekday()]} {local:%H:%M}",
+                 elements, tags=tags, summary=f"{name} · {WORD[level]} · {plain_head}")
 
 
 # -- 报警卡 -------------------------------------------------------------------
@@ -484,6 +508,26 @@ def alert_card(episode: dict, *, now: datetime, sample: bool = False,
 
 # -- 任务完成卡 ---------------------------------------------------------------
 
+OUTCOME_TAG = {"completed": ("完成", "green"), "failed": ("失败", "red"),
+               "unknown": ("没读到结果", "neutral"), None: ("未结束", "blue")}
+
+
+def _task_box(i: int, run: dict, where: str, outcome: str | None) -> dict:
+    """One task in a grey box: where it ran and its state, the task in grey,
+    then what the device answered."""
+    word, color = OUTCOME_TAG.get(outcome, ("未结束", "blue"))
+    body = run.get("excerpt")
+    if not body:
+        body = {"unknown": "任务结束了，但读不到它的输出；可以让指挥端读一下会话再判断",
+                "failed": "执行出错，没有完成"}.get(outcome, "没有输出")
+    label = run.get("label") or run.get("project") or f"任务 {i}"
+    return _box(_eid("task", run.get("session_ref"), run.get("run_id"), i), [[
+        _text(f"**{where}**　{_itag(word, color)}"),
+        _caption(label),
+        _text(body),
+    ]])
+
+
 def completion_card(runs: list[dict], *, now: datetime, sample: bool = False,
                     spec: dict = DEFAULT_SPEC) -> dict:
     text = spec["completion_card"]
@@ -491,17 +535,15 @@ def completion_card(runs: list[dict], *, now: datetime, sample: bool = False,
     if sample:
         title += f" · {SAMPLE_TITLE}"
     shown = runs[:text["max_rows"]]
-    lines = [f"- **{r.get('label') or r.get('project') or '一个任务'}**　"
-             f"<font color='grey'>{r.get('device_name') or r.get('device_ref')}</font>"
-             + (f"\n  ↳ {r['excerpt']}" if r.get("excerpt") else "")
-             for r in shown]
-    if len(runs) > len(shown):
-        lines.append("- " + text["more"].format(count=len(runs) - len(shown)))
-    elements = []
+    elements: list[dict] = []
     if sample:
         elements.append(_md(SAMPLE_LINE))
-    elements.append(_md("\n".join(lines)))
-    elements.append(_md(text["basis"]))
+    for i, run in enumerate(shown, 1):
+        elements.append(_task_box(i, run, run.get("device_name") or run.get("device_ref") or "",
+                                  "completed"))
+    if len(runs) > len(shown):
+        elements.append(_caption(text["more"].format(count=len(runs) - len(shown))))
+    elements.append(_caption("要看全文：问指挥端，或在飞书发「追踪 任务id」"))
     return _card(TEMPLATE[OK], title, f"{_local(now, with_date=True)}（北京时间）", elements,
                  tags=[(f"{len(runs)} 个", "green")],
                  summary=f"任务完成 {len(runs)} 个：" + "、".join(
@@ -541,15 +583,16 @@ def batch_card(event: dict, *, now: datetime, runs: list[dict] | None = None,
     subtitle = f"{total} 个任务{took} · {_local(now, with_date=True)}"
     names = device_names or {}
     elements: list[dict] = []
+    done = sum(1 for r in runs if r.get("outcome") == "completed")
+    if runs:
+        elements.append(_text(f"{_itag(tag[0], tag[1])}　{done}/{len(runs)} 完成"
+                              + (f" · {failed} 失败" if failed else "")
+                              + (f" · {unread} 没读到结果" if unread else "")
+                              + (f" · {pending} 还在跑" if pending else "")))
     for i, run in enumerate(runs, 1):
         device = str(run.get("session_ref") or "").split("|", 1)[0]
         where = names.get(device, device.removeprefix("device:"))
-        head = f"**{i}. {run.get('label') or '任务 ' + str(i)}**　{OUTCOME_WORD.get(run.get('outcome'), '')}"
-        body = run.get("excerpt")
-        if not body:
-            body = {"unknown": "任务结束了，但读不到它的输出；可以让指挥端读一下会话再判断",
-                    "failed": "执行出错，没有完成"}.get(run.get("outcome"), "没有输出")
-        elements.append(_md(f"{head}\n<font color='grey'>{where}</font>\n{body}"))
+        elements.append(_task_box(i, run, where, run.get("outcome")))
     if not runs:
         elements.append(_md(rest or event.get("summary") or ""))
     return _card(template, f"{name} · {verdict}", subtitle, elements,
@@ -654,27 +697,24 @@ def daily_card(day: dict, *, now: datetime, sample: bool = False,
     if resources:
         said.append(f"资源波动 {len(resources)} 次" + ("，都已恢复" if not unrecovered else ""))
     said.append(f"现在还有 {len(open_now)} 项没结束" if open_now else "现在一切正常")
-    headline = f"**{ICON[level]} " + "，".join(said) + "**"
+    headline = (f"{_itag('仍有要看的' if open_now else '今天都结束了', TAG_WORD_COLOR[level])}　**"
+                + "，".join(said) + "**")
 
     def tiles() -> dict:
         cells = [("完成", runs.get("completed", 0), "green"), ("失败", runs.get("failed", 0), "red"),
                  ("没读到结果", runs.get("unknown", 0), "grey"), ("超时", runs.get("stalled", 0), "orange")]
-        return {"tag": "column_set", "element_id": _eid("daykpi", local.date()), "flex_mode": "none",
-                "background_style": "default", "horizontal_spacing": "default",
-                "columns": [{"tag": "column", "width": "weighted", "weight": 1,
-                             "elements": [{"tag": "markdown", "content":
-                                           f"<font color='grey'>{name}</font>\n"
-                                           f"**<font color='{color if count else 'grey'}'>{count or 0}</font>**"}]}
-                            for name, count, color in cells]}
+        return _box(_eid("daykpi", local.date()),
+                    [_tile(name, str(count or 0), color if count else "grey")
+                     for name, count, color in cells])
 
     blocks: dict[str, list[dict]] = {
-        "runs": [_md(f"**{text['headings']['runs']}**"), tiles()],
-        "problems": [_md(f"**{text['headings']['problems']}**\n{listing(problems)}")] if problems else [],
-        "open_now": [_md(f"**{text['headings']['open_now']}**\n{listing(open_now)}")] if open_now else [],
+        "runs": [_text(f"**{text['headings']['runs']}**"), tiles()],
+        "problems": [_text(f"**{text['headings']['problems']}**\n{listing(problems)}")] if problems else [],
+        "open_now": [_text(f"**{text['headings']['open_now']}**\n{listing(open_now)}")] if open_now else [],
         "resources": [],
     }
     if unrecovered:
-        blocks["resources"].append(_md(f"**{text['headings']['resources']}**\n{listing(unrecovered)}"))
+        blocks["resources"].append(_text(f"**{text['headings']['resources']}**\n{listing(unrecovered)}"))
     if recovered:
         blocks["resources"].append(_panel(
             _eid("dayrec", local.date()), f"已恢复的资源波动 · {len(recovered)} 次",
@@ -683,7 +723,7 @@ def daily_card(day: dict, *, now: datetime, sample: bool = False,
     elements: list[dict] = []
     if sample:
         elements.append(_md(SAMPLE_LINE))
-    elements.append(_md(headline))
+    elements.append(_text(headline))
     for name in text["sections"]:
         elements += blocks.get(name, [])
     elements.append(_hr())

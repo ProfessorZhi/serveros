@@ -120,37 +120,46 @@ def _short(text: str) -> str:
 
 
 def status_card(views: list[dict], *, now: datetime, running: dict[str, int] | None = None) -> dict:
-    """One block per device, two short lines each, the problem first:
+    """Every device in its own grey box, the problem first:
 
-        ⚠️ **FJPCOS**　内存 88%
-        CPU 6% · 内存 88% · 2 个任务
+        ┌ FJPCOS  [注意]          │ CPU   │ 内存        │ Swap ┐
+        │ 内存 86% · 2 个任务在跑  │ 13%   │ 86%        │ —    │
 
-    Owner, 2026-11-09: the first version ran every reading into one long line
-    that wrapped mid-phrase, with （水位）（注意） brackets everywhere.
+    Owner, 2026-11-09/10: one long wrapping line, then «太丑了».
     """
     level = worst(v.get("level") for v in views) if views else UNCONFIRMED
     counts = {lv: sum(1 for v in views if v.get("level") == lv) for lv in (ALERT, WARN)}
     head = " · ".join(f"{counts[lv]} {WORD[lv]}" for lv in (ALERT, WARN) if counts[lv]) or "全部正常"
-    blocks = []
     order = {ALERT: 0, WARN: 1, UNCONFIRMED: 2, OK: 3}
+    elements: list[dict] = []
     for view in sorted(views, key=lambda v: order.get(v.get("level"), 4)):
+        lv = view.get("level") or UNCONFIRMED
         readings = {r.get("key"): r for r in view.get("readings") or []}
         bad = [r for r in view.get("readings") or [] if r.get("level") in (WARN, ALERT)]
         reason = " · ".join(
             f"<font color='{'red' if r['level'] == ALERT else 'orange'}'>{r['label']} {_short(r['text'])}</font>"
-            for r in bad[:3]) or "<font color='green'>正常</font>"
-        facts = [f"{label} {_short(readings[key]['text'])}" for key, label in
-                 (("cpu", "CPU"), ("memory", "内存"), ("swap", "Swap"))
-                 if key in readings and readings[key].get("text")]
+            for r in bad[:2]) or "<font color='grey'>一切正常</font>"
         n = (running or {}).get(view.get("device_ref"), 0)
+        first = [cards._text(f"**{view.get('name')}**　{cards._itag(WORD[lv], cards.TAG_WORD_COLOR[lv])}"),
+                 cards._text(reason)]
         if n:
-            facts.append(f"{n} 个任务在跑")
-        blocks.append(f"{ICON.get(view.get('level'), '⚪')} **{view.get('name')}**　{reason}\n"
-                      f"<font color='grey'>{' · '.join(facts)}</font>")
-    elements = [cards._md("\n\n".join(blocks) or "没有设备读数"),
-                cards._md("<font color='grey'>「资源」看每台的完整卡 · 「资源 东京」只看一台 · 「任务」看在跑的</font>")]
-    return cards._card(TEMPLATE[level], f"{len(views)} 台设备 · {head}",
+            first.append(cards._caption(f"{n} 个任务在跑"))
+        tiles = []
+        for key, label in (("cpu", "CPU"), ("memory", "内存"), ("swap", "Swap")):
+            r = readings.get(key)
+            if r is None or not r.get("text"):
+                tiles.append(cards._tile(label, "—", "grey"))
+                continue
+            value = _short(str(r["text"]).split(" / ")[0].split("（")[0])
+            tiles.append(cards._tile(label, value, cards.VALUE_COLOR.get(r.get("level"), "grey")))
+        elements.append(cards._box(cards._eid("dev", view.get("device_ref")), [first] + tiles,
+                                   weights=[3, 1, 1, 1]))
+    if not views:
+        elements.append(cards._text("还没有设备读数"))
+    elements.append(cards._caption("「资源」看每台的完整卡和曲线 · 「资源 东京」只看一台 · 「任务」看在跑的"))
+    return cards._card(TEMPLATE[level], f"Fleet · {len(views)} 台设备",
                        cards._local(now, with_date=True), elements,
+                       tags=[(head, cards.TAG_COLOR[level])],
                        summary=f"Fleet 状态 · {head}", width="default")
 
 
