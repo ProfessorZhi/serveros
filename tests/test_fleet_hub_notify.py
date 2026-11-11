@@ -773,3 +773,41 @@ class TheOwnerIsFoundWithoutAnId(unittest.TestCase):
         failed = SimpleNamespace(returncode=1, stdout="")
         with self.assertRaises(RuntimeError):
             resolve_recipient("owner", run=lambda argv: failed)
+
+
+class EveryDispatchedTaskHasACard(NotifierTest):
+    """Owner, 2026-11-11: «分派任务时根本没有飞书卡片». A task dispatched on its own
+    gets one card while it runs, patched in place when it ends."""
+
+    def _now(self):
+        return datetime.now(timezone.utc)
+
+    def test_a_lone_task_gets_a_card_when_dispatched_and_it_is_patched_at_the_end(self):
+        ref = f"{TOKYO}|claude|s-1"
+        self.inbox.note_dispatch(ref, "run-9", "serveros", "只回答 pong")
+        self.notifier.excerpt = lambda r, rid: "pong 16:01"
+        now = self._now()
+        self.assertEqual(self.notifier.announce_dispatches(now), 0, "a batch may still claim it")
+        later = now + timedelta(seconds=20)
+        self.assertEqual(self.notifier.announce_dispatches(later), 1)
+        self.assertEqual(self.notifier.announce_dispatches(later), 0, "once")
+        (op, _mid, card, _key) = self.transport.ops[-1]
+        self.assertEqual(op, "send")
+        self.assertIn("进行中", card["header"]["title"]["content"])
+        self.inbox.record({"kind": "run.completed", "level": "notify", "device_ref": TOKYO,
+                           "session_ref": ref, "run_id": "run-9", "project": "serveros",
+                           "occurred_at": later.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                           "summary": "serveros: run run-9 completed"})
+        self.notifier.tick([], later + timedelta(minutes=1))
+        self.notifier.tick([], later + timedelta(minutes=7))
+        ops = [op for op, *_ in self.transport.ops]
+        self.assertEqual(ops.count("send"), 1, "no second 任务完成 card")
+        self.assertEqual(ops[-1], "patch")
+        self.assertIn("pong 16:01", json.dumps(self.transport.ops[-1][2], ensure_ascii=False))
+
+    def test_a_task_in_a_batch_is_told_on_the_batch_card_only(self):
+        ref = f"{TOKYO}|claude|s-1"
+        self.inbox.note_dispatch(ref, "run-8", "serveros", "x")
+        self.inbox.open_batch("一批", [{"session_ref": ref, "run_id": "run-8"}], opened_by="gpt")
+        self.assertEqual(self.notifier.announce_dispatches(self._now() + timedelta(seconds=30)), 0)
+        self.assertEqual(self.transport.ops, [])
