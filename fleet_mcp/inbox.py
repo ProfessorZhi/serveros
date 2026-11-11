@@ -550,6 +550,14 @@ class EventInbox:
                                (session_ref, run_id)).fetchone()
         return row["label"] if row else None
 
+    def session_was_dispatched_to(self, session_ref: str | None) -> bool:
+        """Fleet sent work into this session (it is a device doing a task)."""
+        if not session_ref:
+            return False
+        with self._connect() as conn:
+            return conn.execute("SELECT 1 FROM dispatched WHERE session_ref=? LIMIT 1",
+                                (session_ref,)).fetchone() is not None
+
     def recent_dispatches(self, since: str) -> list[dict[str, Any]]:
         """Runs Fleet dispatched at or after `since` (ISO), oldest first."""
         with self._connect() as conn:

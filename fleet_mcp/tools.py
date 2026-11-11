@@ -162,6 +162,13 @@ def _read_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _owner_words(args: dict[str, Any]) -> dict[str, Any]:
+    """`owner_request` only when the caller passed it, so every service shape
+    that predates it keeps working."""
+    value = args.get("owner_request")
+    return {"owner_request": value} if isinstance(value, str) and value.strip() else {}
+
+
 def _send_to_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     message = args.get("message")
     if not isinstance(message, str):
@@ -171,6 +178,7 @@ def _send_to_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         _session_key(ctx, args),
         message=message,
         idempotency_key=args.get("idempotency_key"),
+        **_owner_words(args),
     )
 
 
@@ -270,6 +278,7 @@ def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         model=args.get("model"),
         lifecycle_mode=args.get("lifecycle_mode"),
         permission_mode=args.get("permission_mode"),
+        **_owner_words(args),
         idempotency_key=args.get("idempotency_key"),
     )
 
@@ -542,6 +551,11 @@ TOOLS: tuple[Tool, ...] = (
                 "session": _string("The provider-native session id."),
                 "provider": _string("Session provider family: `claude` (default) or `codex`."),
                 "message": _string("The message text to deliver."),
+                "owner_request": _string(
+                    "The owner's message that led to this dispatch, verbatim. "
+                    "Required when you are a chat commander (ChatGPT, Grok …): "
+                    "Fleet keeps the owner's conversation from it."
+                ),
                 "idempotency_key": _string(
                     "Stable key scoped to principal, verb and target session. "
                     "Reuse only for the identical intent. Accepted receipts "
@@ -689,6 +703,11 @@ TOOLS: tuple[Tool, ...] = (
                     "Optional first message. Supplying one starts a run immediately "
                     "and the returned result carries its `run_id`; omitting it "
                     "creates the session with nothing running."
+                ),
+                "owner_request": _string(
+                    "The owner's message that led to this dispatch, verbatim. "
+                    "Required when you are a chat commander (ChatGPT, Grok …) and "
+                    "start a run: Fleet keeps the owner's conversation from it."
                 ),
                 "provider": _string("Session provider family: `claude` (default) or `codex`."),
                 "runtime": _string(

@@ -2437,9 +2437,11 @@ class FleetService:
         *,
         message: str,
         idempotency_key: str | None = None,
+        owner_request: str | None = None,
     ) -> dict[str, Any]:
         principal.require(SCOPE_SEND)
         self.admit(principal)
+        self._owner_words_required(principal, owner_request)
         if not message or not message.strip():
             raise refuse(BAD_REQUEST, "message must be a non-empty string")
         capped = message[: self.config.policy.max_message_chars]
@@ -2496,7 +2498,8 @@ class FleetService:
         self._record_delivery_ack(claim, record, expect_execution=True)
         state, hint = self._delivery_state(key, provider, payload, run_id)
         self._note_dispatch(key, run_id, None, message, actor=principal.name, verb="send",
-                            state=state)
+                            state=state, owner_request=owner_request,
+                            client=self.client_of(principal))
         self.audit.record(
             "fleet.send",
             principal=principal.name,
@@ -2909,6 +2912,7 @@ class FleetService:
         permission_mode: str | None = None,
         idempotency_key: str | None = None,
         runtime: str = BASE_RUNTIME,
+        owner_request: str | None = None,
     ) -> dict[str, Any]:
         """Mint a session on one device, and start its first run only if asked.
 
@@ -2927,6 +2931,8 @@ class FleetService:
         "started" stay different words.
         """
         principal.require(SCOPE_CREATE)
+        if isinstance(message, str) and message.strip():
+            self._owner_words_required(principal, owner_request)
         self.admit(principal)
         if not isinstance(project, str) or not project.strip():
             raise refuse(BAD_REQUEST, "`project` is required and must name a provider project id")
@@ -3080,7 +3086,8 @@ class FleetService:
         readiness["run_started"] = bool(message and message.strip())
         if readiness["run_started"]:
             self._note_dispatch(key, run_id, project, message, actor=principal.name,
-                                verb="create")
+                                verb="create", owner_request=owner_request,
+                                client=self.client_of(principal))
         # The first message is not logged: the audit is a control-plane record,
         # and a record that accumulates what was said is a second copy of it.
         self.audit.record(
@@ -3136,9 +3143,31 @@ class FleetService:
                     "sending to it is authorized here, which is a separate grant.",
         }
 
+    #: Words in a client's registered name that make it a chat commander, whose
+    #: conversation with the owner Fleet cannot read for itself.
+    CHAT_CLIENT_WORDS = ("chatgpt", "openai", "grok", "xai", "gemini", "claude.ai", "chat")
+    AGENT_CLIENT_WORDS = ("codex", "claude code", "claude-code", "cursor", "cline", "agent")
+
+    def _owner_words_required(self, principal: Principal, owner_request: Any) -> None:
+        """A chat commander (ChatGPT, Grok …) passes the owner's words with every
+        dispatch: Fleet cannot read that conversation otherwise, and the owner
+        asked for it kept in full (2026-11-11). An agent commander's session is
+        read on its device instead, so it is not asked."""
+        client = (self.client_of(principal) or "").lower()
+        if not client or any(w in client for w in self.AGENT_CLIENT_WORDS):
+            return
+        if not any(w in client for w in self.CHAT_CLIENT_WORDS):
+            return
+        if isinstance(owner_request, str) and owner_request.strip():
+            return
+        raise refuse(BAD_REQUEST,
+                     "owner_request is required from a chat commander: pass the owner's "
+                     "message that led to this dispatch, verbatim, then send again")
+
     def _note_dispatch(self, key: SessionKey, run_id: Any, project: Any,
                        message: Any = None, *, actor: str | None = None,
-                       verb: str = "send", state: str | None = None) -> None:
+                       verb: str = "send", state: str | None = None,
+                       owner_request: Any = None, client: str | None = None) -> None:
         """Hand a started run to the monitor, so its outcome is recorded even when
         it ends before the next discovery tick, with a short label (the first
         line of the instruction) for the owner's cards. Never fails the dispatch."""
@@ -3156,6 +3185,9 @@ class FleetService:
             if isinstance(message, str) and message.strip():
                 self.inbox.trace("fleet", "prompt sent", session_ref=key.ref, run_id=run_id,
                                  by=actor, text=message)
+            if isinstance(owner_request, str) and owner_request.strip():
+                self.inbox.trace("commander", "owner request", session_ref=key.ref, run_id=run_id,
+                                 by=actor, client=client, text=owner_request)
         except Exception:  # noqa: BLE001 - the run started; tracking is best effort
             pass
 

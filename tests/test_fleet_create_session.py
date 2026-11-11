@@ -222,9 +222,11 @@ class TheToolIsOnTheSurfaceAndTheOldOnesAreUnchanged(unittest.TestCase):
 
     def test_the_old_send_tool_is_untouched(self):
         tool = fleet_tools.TOOLS_BY_NAME["fleet_send_to_session"]
+        # `owner_request` (2026-11-11) is the owner's words for the journal: a
+        # surface-owned record, never delivered to the session.
         self.assertEqual(sorted(tool.input_schema["properties"]),
                          sorted(["session_ref", "device", "session", "provider",
-                                 "message", "idempotency_key"]))
+                                 "message", "idempotency_key", "owner_request"]))
 
     def test_the_new_tool_takes_no_url_host_path_or_command(self):
         banned = {"url", "uri", "host", "endpoint", "address", "command", "cmd",
@@ -252,7 +254,10 @@ class ArgumentsAreCloudclisOwnSchema(unittest.TestCase):
     #: binding at a time — the routing between them is this surface's, so the
     #: argument is too. It is consumed here and never forwarded, which the test
     #: below asserts, because the provider's own schema is closed.
-    SURFACE_OWNED_ARGUMENTS = {"runtime"}
+    #:
+    #: `owner_request` is the owner's message that led to the dispatch, kept for
+    #: the owner's journal (2026-11-11). It is recorded here and never forwarded.
+    SURFACE_OWNED_ARGUMENTS = {"runtime", "owner_request"}
 
     def test_the_declared_properties_are_the_providers_schema(self):
         tool = fleet_tools.TOOLS_BY_NAME["fleet_create_session"]
@@ -274,6 +279,7 @@ class ArgumentsAreCloudclisOwnSchema(unittest.TestCase):
                 harness.principal(), device=TOKYO, project="p-1",
                 runtime=BASE_RUNTIME)
         sent = harness.providers[TOKYO].created[-1]
+        self.assertNotIn("owner_request", sent)
         self.assertNotIn("runtime", sent,
                          "the provider's schema is closed; an argument this "
                          "surface owns must be consumed here, not relayed")
