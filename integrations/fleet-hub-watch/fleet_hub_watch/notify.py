@@ -593,6 +593,71 @@ class Notifier:
             self.inbox.ack(SUBSCRIBER, handled_to)
         return len(page["events"])
 
+    # -- a card for every dispatched task -----------------------------------------
+
+    #: A dispatched task not claimed by a batch within this long gets its own card.
+    ANNOUNCE_AFTER = timedelta(seconds=15)
+    #: Dispatches older than this are not announced (a restart does not flood).
+    ANNOUNCE_WITHIN = timedelta(hours=2)
+
+    @staticmethod
+    def _live_key(session_ref: str, run_id: str) -> str:
+        return f"run-live:{session_ref}|{run_id}"
+
+    def _live_card(self, session_ref: str, run_id: str, now: datetime, *,
+                   outcome: str | None = None, at: str | None = None) -> dict:
+        label = clean_label(getattr(self.inbox, "label_of", lambda *_a: None)(session_ref, run_id)) \
+            or "一个任务"
+        text = None
+        if outcome is not None and self.excerpt is not None:
+            try:
+                text = self.excerpt(session_ref, run_id)
+            except Exception:  # noqa: BLE001
+                text = None
+        run = {"session_ref": session_ref, "run_id": run_id, "outcome": outcome,
+               "excerpt": text, "label": label}
+        return cards.batch_card({"summary": f"{label}：1 个任务"}, now=now, runs=[run],
+                                opened_at=at or getattr(self.inbox, "dispatched_at",
+                                                        lambda *_a: None)(session_ref, run_id),
+                                device_names=self.device_names)
+
+    def announce_dispatches(self, now: datetime) -> int:
+        """Owner, 2026-11-11: «分派任务时根本没有飞书卡片». A batch has had a card
+        from its opening; a task dispatched on its own had none until it ended.
+        Now every dispatched task not claimed by a batch within
+        `ANNOUNCE_AFTER` gets one card, 进行中, patched in place when it ends."""
+        reader = getattr(self.inbox, "recent_dispatches", None)
+        if reader is None:
+            return 0
+        sent = 0
+        for row in reader(_iso(now - self.ANNOUNCE_WITHIN)):
+            try:
+                at = _parse(row["at"])
+            except (KeyError, ValueError):
+                continue
+            if now - at < self.ANNOUNCE_AFTER:
+                break                                   # rows are oldest first
+            ref, run_id = row["session_ref"], row["run_id"]
+            if self._batch_of({"session_ref": ref, "run_id": run_id}) is not None:
+                continue
+            key = self._live_key(ref, run_id)
+            if self._card(key) is not None:
+                continue
+            if self._send(key, self._live_card(ref, run_id, now, at=row["at"]), now):
+                sent += 1
+                self._trace("card sent: task dispatched", session_ref=ref, run_id=run_id)
+        return sent
+
+    def _finish_live(self, event: dict, outcome: str, now: datetime) -> bool:
+        """The task's own card, if it has one, patched to how it ended."""
+        ref, run_id = event.get("session_ref"), event.get("run_id")
+        if not ref or not run_id or self._card(self._live_key(ref, run_id)) is None:
+            return False
+        self._patch(self._live_key(ref, run_id),
+                    self._live_card(ref, run_id, now, outcome=outcome), now)
+        self._trace("its own card updated", session_ref=ref, run_id=run_id, outcome=outcome)
+        return True
+
     def pulse(self, now: datetime) -> int:
         """Read the inbox between ticks.
 
@@ -605,7 +670,12 @@ class Notifier:
         thing it announces; the tick still does everything else.
         """
         self._sent_this_tick = 0
-        return self.consume(now)
+        handled = self.consume(now)
+        try:
+            self.announce_dispatches(now)
+        except Exception:  # noqa: BLE001 - a missed announcement is not a crash
+            pass
+        return handled
 
     def _label(self, event: dict) -> str:
         """What the owner calls this task: the instruction's first line, else the
@@ -765,6 +835,8 @@ class Notifier:
                 self._trace("no card: a session's own turn",
                             session_ref=event.get("session_ref"), run_id=event.get("run_id"))
                 return
+            if self._finish_live(event, "completed", now):
+                return                           # its own card says so; no second message
             self._trace("queued for the 任务完成 card", session_ref=event.get("session_ref"),
                         run_id=event.get("run_id"))
             with self._connect() as conn:
@@ -784,6 +856,9 @@ class Notifier:
         reason = re.search(r"\(([A-Z0-9_]+)\)\s*$", event["summary"])
         self._note(event, {"episode": run_episode, "subject": f"{what} · {label}",
                            "text": f"{name}：{detail}", "level": level})
+        if kind in ("run.failed", "run.unknown") and not in_batch \
+                and self._finish_live(event, kind.split(".", 1)[1], now):
+            return                               # its own card turned red/orange in place
         if in_batch and kind != "run.stalled":
             # Its outcome is a line on the batch card; one message, not two.
             self._refresh_batch(event, now)
@@ -968,6 +1043,10 @@ class Notifier:
         except Exception as exc:  # noqa: BLE001 - a curve is not worth a broadcast
             print(f"history not recorded: {type(exc).__name__}", file=sys.stderr)
         consumed = self.consume(now)
+        try:
+            self.announce_dispatches(now)
+        except Exception as exc:  # noqa: BLE001
+            print(f"dispatch cards not sent: {type(exc).__name__}", file=sys.stderr)
         promoted = self.promote_pending(now)
         completions = self.flush_completions(now)
         self.expire_runs(now)
