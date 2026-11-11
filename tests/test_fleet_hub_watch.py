@@ -233,6 +233,25 @@ class Classification(WatcherTest):
         self.assertEqual([e["kind"] for e in self.events() if e["kind"] != "run.stalled"],
                          ["run.unknown"])
 
+    def test_a_refused_status_read_keeps_watching_until_the_answer(self):
+        """Owner, 2026-11-11 (15:54): work-fj refused the run-status read
+        (BAD_REQUEST -> REMOTE_REFUSED) while a long audit was still running,
+        and a 「没拿到任务结果」 card went out. A refusal is not an outcome."""
+        self.tokyo.start("s-1", "run-1")
+        self.inbox.note_dispatch(f"{TOKYO}|claude|s-1", "run-1")
+        self.watcher.tick()
+        self.tokyo.answers["run-1"] = FleetRefusal("BAD_REQUEST", "refused")
+        still = {"transcript": {"content": "[2026-11-11T07:44:00.000Z] tool Bash({\"command\":\"q\"})"}}
+        self.harness.service.read_session = lambda principal, key, **kw: still
+        self.settle()
+        self.assertEqual([e for e in self.events() if e["kind"] != "run.stalled"], [])
+        self.assertEqual(len(self.store.all()), 1, "still watched")
+        still["transcript"] = {"content": "[2026-11-11T07:58:00.000Z] assistant: 审计完成：A 类 3 例"}
+        self.clock.advance(BACKOFF_SECONDS[-1])
+        self.settle()
+        (event,) = [e for e in self.events() if e["kind"] != "run.stalled"]
+        self.assertEqual(event["kind"], "run.completed")
+
     def test_an_offline_route_keeps_watching(self):
         self.tokyo.start("s-1", "run-1")
         self.watcher.tick()
