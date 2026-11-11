@@ -32,6 +32,8 @@ from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 SUBSCRIBER = "fleet-journal"
+KIND_WORDS = {"chat": "聊天类（ChatGPT、Grok 等）", "agent": "agent 类（Claude Code、Codex 等）",
+              "other": "其他"}
 CN = ZoneInfo("Asia/Shanghai")
 #: On the first tick only events this recent are written; older history is not back-filled.
 FIRST_RUN_WINDOW = timedelta(days=1)
@@ -46,7 +48,8 @@ ServerOS Fleet 的任务记录，由东京 hub 自动写入（`fleet_hub_watch.j
 - `runs/YYYY/MM/DD/` 每个批次或单个任务一个文件：主人的原话、发给设备的提示词、
   设备的最终回复（原文）、设备做了什么（只有元数据），以及过程的时间线。
 - 每天的 `INDEX.md` 一行一条。
-- `commander/YYYY/MM/DD.md` 主人和指挥端（GPT）的对话：主人的原话和 GPT 给主人的回复
+- `commander/chat/YYYY/MM/DD.md` 主人和聊天类指挥端（ChatGPT、Grok 等）的对话
+- `commander/agent/YYYY/MM/DD.md` 主人和 agent 类指挥端（Claude Code、Codex 等）的对话
   （GPT 用 `fleet_batch action=reply` 写回）。
 - `cards/YYYY/MM/DD.md` 每一张发到飞书的卡片（发送和原位更新），按文字留档。
 - `chat/YYYY/MM/DD.md` 主人在飞书里和管家的每一次对话：问了什么、怎么理解的、
@@ -147,6 +150,16 @@ class Journal:
             text = text[:MAX_REPLY] + f"\n…（超过 {MAX_REPLY} 字，后面截掉了；全文在设备会话里）"
         return text
 
+    def _dispatcher(self, opened_by: str | None, steps: list[dict]) -> str:
+        """Who dispatched: the commander's name and kind, from its own calls."""
+        client = next(((s.get("detail") or {}).get("client") for s in steps
+                       if s.get("source") == "commander" and (s.get("detail") or {}).get("client")
+                       and (s.get("detail") or {}).get("by") in (opened_by, None)), None)
+        if client is None and opened_by != "local-owner":
+            return opened_by or "—"
+        kind, name = self.commander_kind(client, opened_by)
+        return f"{name}（{ {'chat': '聊天类', 'agent': 'agent 类'}.get(kind, '其他') }）"
+
     def _device(self, session_ref: str) -> str:
         ref = session_ref.split("|", 1)[0]
         return self.names.get(ref) or ref.removeprefix("device:")
@@ -209,7 +222,8 @@ class Journal:
         verdict = ("全部完成" if counts.get("completed") == head["total"]
                    else "，".join(f"{OUTCOME.get(k, k)} {v}" for k, v in counts.items()))
         lines = [f"# {_mask(head['name'])} · {verdict}", "",
-                 f"- 批次 `{batch_id}` · 派发者 {head.get('opened_by') or '—'} · {head['total']} 个任务",
+                 f"- 批次 `{batch_id}` · 派发者 {self._dispatcher(head.get('opened_by'), steps)} · "
+                 f"{head['total']} 个任务",
                  f"- 开始 {_local(head.get('opened_at'))} · 结束 {_local(ended)}（北京时间）"]
         if opened.get("skills"):
             lines.append(f"- 指挥侧用的 skill：{opened['skills']}")
@@ -305,8 +319,33 @@ class Journal:
         return path
 
     # -- the owner's conversation with the commander -------------------------------
+    #
+    # Two kinds of commander (Owner, 2026-11-11): a **chat** — ChatGPT, Grok,
+    # Claude on the web — where the owner talks and the commander only
+    # dispatches; and an **agent** — Claude Code, Codex — that also works on a
+    # machine of its own. Each goes to its own folder, named by the client.
 
     COMMANDER_STEPS = ("owner request", "reply to owner")
+
+    #: Words in a client's registered name, and what kind of commander it is.
+    CHAT_WORDS = ("chatgpt", "openai", "grok", "xai", "gemini", "claude.ai", "claude web",
+                  "deepseek", "kimi", "doubao", "qwen", "chat")
+    AGENT_WORDS = ("claude code", "claude-code", "claudecode", "codex", "cursor", "cline",
+                   "windsurf", "copilot", "agent", "local")
+
+    @classmethod
+    def commander_kind(cls, client: str | None, by: str | None = None) -> tuple[str, str]:
+        """(kind, name) for whoever made a commander call: kind is chat,
+        agent or other; name is what to call it on the page."""
+        name = (client or "").strip()
+        low = name.lower()
+        if low == "local" or by == "local-owner":
+            return "agent", "本机 agent（Claude Code / Codex）"
+        if any(w in low for w in cls.AGENT_WORDS):
+            return "agent", name
+        if any(w in low for w in cls.CHAT_WORDS):
+            return "chat", name
+        return "other", name or (by or "未知指挥端")
 
     def _state_path(self) -> Path:
         # Inside .git: never committed, and it travels with the clone it describes.
@@ -353,7 +392,9 @@ class Journal:
             if first and at < floor:
                 continue
             local = at.astimezone(CN)
-            day = self.root / "commander" / f"{local:%Y}" / f"{local:%m}"
+            detail = step.get("detail") or {}
+            kind, client = self.commander_kind(detail.get("client"), detail.get("by"))
+            day = self.root / "commander" / kind / f"{local:%Y}" / f"{local:%m}"
             path = day / f"{local:%d}.md"
             batch_id = step.get("batch_id")
             name = ""
@@ -365,11 +406,12 @@ class Journal:
                         batches.add(batch_id)
                 except Exception:  # noqa: BLE001
                     pass
-            who = "主人 → 指挥端" if step["step"] == "owner request" else "指挥端 → 主人"
+            who = (f"主人 → {client}" if step["step"] == "owner request" else f"{client} → 主人")
             with self._chat_lock:
                 day.mkdir(parents=True, exist_ok=True)
                 if not path.exists():
-                    path.write_text(f"# {local:%Y-%m-%d} 主人与指挥端（GPT）的对话\n\n", encoding="utf-8")
+                    path.write_text(f"# {local:%Y-%m-%d} 主人与{KIND_WORDS[kind]}指挥端的对话\n\n",
+                                    encoding="utf-8")
                 with path.open("a", encoding="utf-8") as handle:
                     handle.write(f"## {local:%H:%M:%S} {who}{name}\n\n{_fence(_mask(text))}\n\n")
                 self._pending += 1

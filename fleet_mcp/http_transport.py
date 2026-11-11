@@ -209,10 +209,16 @@ class HttpSurface:
                         "a Feishu identity token did not carry a Feishu subject"
                     )
                 return Principal(name=subject, scopes=scopes, credential_kind="feishu")
+            client = ""
+            try:
+                client = self.oauth.client(str(claims.get("cid"))).client_name or ""
+            except Exception:  # noqa: BLE001 - the name is for the log, never a gate
+                client = ""
             return Principal(
                 name=f"oauth:{claims.get('cid', 'unknown')}",
                 scopes=scopes,
                 credential_kind="oauth",
+                client=client,
             )
         raise HttpAuthError("token is not the owner token and no OAuth issuer is configured")
 

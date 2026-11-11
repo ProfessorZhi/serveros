@@ -149,6 +149,23 @@ class TheCommanderRecordsWhatItToldTheOwner(unittest.TestCase):
             self.assertIn(("owner request", None, "几台设备？"), said)
             self.assertIn(("reply to owner", None, "三台。"), said)
 
+    def test_the_commander_is_named_by_its_registered_client(self):
+        """Owner, 2026-11-11: the log tells a chat commander (ChatGPT) from an
+        agent (Claude Code) — by the name the client registered with."""
+        import tempfile
+        from fleet_mcp.fleet import Principal
+        with tempfile.TemporaryDirectory() as tmp:
+            service, _ = self._service(tmp)
+            chat = Principal(name="oauth:c1", scopes=frozenset({"fleet:read"}),
+                             credential_kind="oauth", client="ChatGPT")
+            service.batch(chat, action="reply", owner_request="几台？", reply="三台。")
+            local = Principal(name="local-owner", scopes=frozenset({"fleet:read"}), credential_kind="pat")
+            service.batch(local, action="reply", owner_request="看 Dell", reply="正常。")
+            clients = {(s["detail"].get("text"), s["detail"].get("client"))
+                       for s in service.inbox.read_trace(minutes=60) if s["source"] == "commander"}
+            self.assertIn(("几台？", "ChatGPT"), clients)
+            self.assertIn(("看 Dell", "local"), clients)
+
     def test_a_reply_needs_words_and_a_real_batch(self):
         import tempfile
         from fleet_mcp.errors import FleetRefusal

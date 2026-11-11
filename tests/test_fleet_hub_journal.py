@@ -211,17 +211,19 @@ class BothSidesOfEveryConversationAreKept(TheJournal):
         a = f"{TOKYO}|claude|s-1"
         self.inbox.note_dispatch(a, "r1", label="看东京")
         batch = self.inbox.open_batch("一台体检", [{"session_ref": a, "run_id": "r1"}], opened_by="gpt")
-        self.inbox.trace("commander", "owner request", batch_id=batch["batch_id"], text="东京还好吗")
+        self.inbox.trace("commander", "owner request", batch_id=batch["batch_id"], text="东京还好吗",
+                         by="oauth:c1", client="ChatGPT")
         self.finish(a, "r1")
         self.journal.tick(NOW)
         self.inbox.trace("commander", "reply to owner", batch_id=batch["batch_id"],
-                         text=f"东京正常，CPU 11%。token {KEYISH}")
+                         text=f"东京正常，CPU 11%。token {KEYISH}", by="oauth:c1", client="ChatGPT")
         got = self.journal.tick(NOW)
         self.assertEqual(got.get("commander"), 1)
-        (page,) = list((self.clone / "commander").rglob("*.md"))
+        (page,) = list((self.clone / "commander" / "chat").rglob("*.md"))
         talk = page.read_text(encoding="utf-8")
-        self.assertIn("主人 → 指挥端 · 批次「一台体检」", talk)
-        self.assertIn("指挥端 → 主人 · 批次「一台体检」", talk)
+        self.assertIn("聊天类（ChatGPT、Grok 等）指挥端", talk)
+        self.assertIn("主人 → ChatGPT · 批次「一台体检」", talk)
+        self.assertIn("ChatGPT → 主人 · 批次「一台体检」", talk)
         self.assertIn("东京正常，CPU 11%", talk)
         self.assertNotIn(KEYISH, talk)
         (path,) = list((self.clone / "runs").rglob("*-一台体检-*.md"))
@@ -239,6 +241,31 @@ class BothSidesOfEveryConversationAreKept(TheJournal):
         (page,) = list((self.clone / "commander").rglob("*.md"))
         talk = page.read_text(encoding="utf-8")
         self.assertLess(talk.index("Fleet 现在有几台设备"), talk.index("三台：东京、Dell、FJPCOS。"))
+
+    def test_chat_and_agent_commanders_have_their_own_pages(self):
+        """Owner, 2026-11-11: commanders are two kinds — chat (GPT, Grok) and
+        agent (Claude Code, Codex)."""
+        self.inbox.trace("commander", "owner request", text="查一下东京", by="oauth:c1", client="ChatGPT")
+        self.inbox.trace("commander", "owner request", text="改一下 hub", by="oauth:c2",
+                         client="Claude Code (fleet)")
+        self.inbox.trace("commander", "owner request", text="看看 Dell", by="local-owner", client="local")
+        self.inbox.trace("commander", "owner request", text="帮我查", by="oauth:c3", client="Grok")
+        self.journal.tick(NOW)
+        chat = "".join(p.read_text(encoding="utf-8") for p in (self.clone / "commander" / "chat").rglob("*.md"))
+        agent = "".join(p.read_text(encoding="utf-8") for p in (self.clone / "commander" / "agent").rglob("*.md"))
+        self.assertIn("主人 → ChatGPT", chat)
+        self.assertIn("主人 → Grok", chat)
+        self.assertIn("主人 → Claude Code (fleet)", agent)
+        self.assertIn("本机 agent", agent)
+        self.assertNotIn("改一下 hub", chat)
+
+    def test_commander_kind(self):
+        kind = Journal.commander_kind
+        self.assertEqual(kind("ChatGPT")[0], "chat")
+        self.assertEqual(kind("Codex")[0], "agent")
+        self.assertEqual(kind("claude-code")[0], "agent")
+        self.assertEqual(kind(None, "local-owner")[0], "agent")
+        self.assertEqual(kind("Mystery")[0], "other")
 
     def test_every_card_sent_is_kept_as_text(self):
         from fleet_hub_watch import cards
