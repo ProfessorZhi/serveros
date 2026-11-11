@@ -702,6 +702,15 @@ class Watcher:
                 # agent's own answer: the task finished, and that is its output.
                 event = self._event(watch, "run.completed", "notify",
                                     f"completed; status unreadable ({reason}), reply read from the session")
+            elif (status == STATUS_UNKNOWN and reason == "REMOTE_REFUSED"
+                  and self._dispatched(watch) and age < self.max_age):
+                # Owner, 2026-11-11: work-fj's connector refuses the run-status
+                # read now and then while a long Claude Code run is still going.
+                # A refused read is not an outcome: keep watching until the
+                # session ends with the answer, or the window runs out.
+                self._trace("status read refused; still watching",
+                            session_ref=watch["session_ref"], run_id=watch["run_id"])
+                event = None
             elif status == STATUS_DENIED or (status == STATUS_UNKNOWN
                                              and observation.get("retryable") is False):
                 # Not a success and not a failure: the outcome could not be
