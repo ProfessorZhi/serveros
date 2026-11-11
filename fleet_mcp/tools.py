@@ -329,7 +329,8 @@ _ENV_ROW = {
 def _batch(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.batch(ctx.principal, action=args.get("action"), name=args.get("name"),
                              runs=args.get("runs"), batch_id=args.get("batch_id"),
-                             owner_request=args.get("owner_request"), skills=args.get("skills"))
+                             owner_request=args.get("owner_request"), skills=args.get("skills"),
+                             reply=args.get("reply"))
 
 
 def _tune(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
@@ -963,12 +964,15 @@ TOOLS: tuple[Tool, ...] = (
             "outcome the hub records ONE `batch.completed` event and the owner gets ONE "
             "card, instead of one per run; a failed run still alerts at once. Wait for "
             "it with `fleet_inbox` kinds=[batch.completed] rather than polling each run. "
-            "`status` reads progress: settled, pending, and each run's outcome."
+            "`status` reads progress: settled, pending, and each run's outcome. "
+            "`reply` records what you told the owner, verbatim — after you answer them about "
+            "a batch (`batch_id`), or about anything else (`owner_request` + `reply`) — so "
+            "the owner's journal holds both sides of the conversation."
         ),
         input_schema={
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["open", "status"]},
+                "action": {"type": "string", "enum": ["open", "status", "reply"]},
                 "name": _string("For open: a short name the owner will read, e.g. 'A6000 "
                                 "regression x5'."),
                 "runs": {"type": "array", "maxItems": 100,
@@ -978,12 +982,14 @@ TOOLS: tuple[Tool, ...] = (
                                    "required": ["session_ref", "run_id"],
                                    "additionalProperties": False}},
                 "batch_id": _string("For status: the id `open` returned."),
-                "owner_request": _string("For open: the owner's own message that led to this "
+                "owner_request": _string("For open, and for reply with no batch_id: the owner's own message that led to this "
                                          "work, verbatim. Kept in the hub's trace beside the "
                                          "prompts sent and the answers, so the owner can see "
                                          "what was asked, what was sent and what came back."),
                 "skills": {"type": "array", "items": {"type": "string"}, "maxItems": 20,
                            "description": "For open: the skills you used for this request."},
+                "reply": _string("For reply: what you told the owner, verbatim (masked for "
+                                 "anything key-shaped; kept up to 4000 characters)."),
             },
             "required": ["action"],
             "additionalProperties": False,

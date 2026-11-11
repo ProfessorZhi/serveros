@@ -206,8 +206,9 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
         used, total = row.get("memory_used_bytes"), row.get("memory_total_bytes")
         if isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0:
             # No threshold is declared for GPU memory: shown, never judged.
+            # The share is recorded so 「显卡」 questions get a curve.
             add(f"gpu:{row.get('index')}", f"GPU{row.get('index')} 显存",
-                f"{used / GiB:.0f}/{total / GiB:.0f} GiB", OK)
+                f"{used / GiB:.0f}/{total / GiB:.0f} GiB", OK, value=round(100.0 * used / total, 1))
 
     services = _present(summary, "services")
     for row in (services or {}).get("services") or []:

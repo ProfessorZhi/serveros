@@ -267,14 +267,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.journal:
         from fleet_mcp.identity import SessionKey
         from .journal import Journal
-        from .watch import read_reply
+        from .watch import read_reply, recorded_prompt
 
         def full_reply(session_ref: str, run_id: str) -> str | None:
-            return read_reply(service, principal, SessionKey.parse(session_ref))
+            return read_reply(service, principal, SessionKey.parse(session_ref),
+                              recorded_prompt(watcher.inbox, run_id))
         journal = Journal(watcher.inbox, Path(args.journal).expanduser(), reply=full_reply,
                           names=names, push_every=args.journal_push_every,
                           ssh_key=args.journal_ssh_key)
         print(f"journal writes to {args.journal}", file=sys.stderr)
+        if notifier is not None:
+            # Every card that reaches Feishu is kept as text in the journal.
+            from .notify import ArchivingTransport
+            notifier.transport = ArchivingTransport(notifier.transport, journal.note_card)
+            if getattr(notifier, "alert_transport", None) is not None:
+                notifier.alert_transport = ArchivingTransport(notifier.alert_transport,
+                                                              journal.note_card)
     beat = directory / "watch.heartbeat.json"
     lark_state: dict = {}
     buttons = None

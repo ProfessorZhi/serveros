@@ -280,12 +280,126 @@ def _plain_text(transcript: Any) -> str | None:
 REPLY_LIMITS = (1, 3, 5)
 
 
-def read_reply(service: Any, principal: Any, key: Any) -> str | None:
-    """The session's last answer, read the way that survives a capped read."""
+#: Wider reads, tried only when the prompt is known and the narrow ones could
+#: not tell whose answer the last one is.
+ANCHOR_LIMITS = (20, 60)
+USER_LABELS = {"user", "human", "用户", "主人"}
+
+
+def _norm(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def turns(transcript: Any) -> list[tuple[str, str]]:
+    """[(role, text)] in order — role is "user" (a person's or a dispatcher's
+    message, never a tool result) or "assistant" (the agent's own words)."""
+    plain = _plain_text(transcript)
+    out: list[tuple[str, str]] = []
+    if plain:
+        for entry in text_entries(plain):
+            label = entry["label"].lower()
+            if label in USER_LABELS and entry["body"]:
+                out.append(("user", entry["body"]))
+            elif label in ANSWER_LABELS and entry["body"]:
+                out.append(("assistant", entry["body"]))
+        return out
+    for entry in _entries(transcript):
+        inner = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        role = entry.get("role") or inner.get("role") or entry.get("type")
+        content = (entry.get("content") if entry.get("content") is not None
+                   else inner.get("content") if inner.get("content") is not None
+                   else entry.get("text"))
+        if role == "user" and isinstance(content, list):
+            # Tool results travel as user messages; only text blocks are a message.
+            content = [b for b in content if isinstance(b, dict) and b.get("type") == "text"
+                       or isinstance(b, str)]
+        text = _text(content)
+        if role in ("user", "assistant") and text:
+            out.append((role, text))
+    return out
+
+
+def reply_to(transcript: Any, prompt: str, last: str | None) -> tuple[str, str | None]:
+    """Whose answer is in this window of a session?
+
+    ("FOUND", text)  the prompt is here and this is what was said after it,
+                     before the next message from anyone;
+    ("PENDING", None) the prompt is here and nothing has been said after it;
+    ("OTHER", None)  `last` (the session's final words) is here, and the message
+                     it answers is NOT the prompt — the session is in another
+                     conversation;
+    ("UNSEEN", None) this window cannot tell.
+
+    Owner, 2026-11-10/11: a task sent into a session the owner was also
+    talking in was recorded as «completed», with the owner's other
+    conversation as the device's reply."""
+    rows = turns(transcript)
+    mark = _norm(prompt)[:60]
+    if not mark:
+        return "UNSEEN", None
+    asked = [i for i, (role, text) in enumerate(rows) if role == "user" and mark in _norm(text)]
+    if asked:
+        after = rows[asked[-1] + 1:]
+        stop = next((i for i, (role, _) in enumerate(after) if role == "user"), len(after))
+        said = [text for role, text in after[:stop] if role == "assistant"]
+        return ("FOUND", said[-1]) if said else ("PENDING", None)
+    if last:
+        head = _norm(last)[:80]
+        said = [i for i, (role, text) in enumerate(rows) if role == "assistant" and _norm(text).startswith(head)]
+        if said:
+            before = [text for role, text in rows[:said[-1]] if role == "user"]
+            if before:
+                return "OTHER", None
+    return "UNSEEN", None
+
+
+def read_reply(service: Any, principal: Any, key: Any, prompt: str | None = None) -> str | None:
+    """A session's answer, read the way that survives a capped read.
+
+    Without `prompt`: the session's last answer. With it: the answer to THAT
+    prompt — found after it in the session, or the last answer when nothing
+    shows it belongs to another conversation, or None when the session's last
+    words answer somebody else."""
+    last = None
     for limit in REPLY_LIMITS:
-        found = last_assistant_text(service.read_session(principal, key, limit=limit).get("transcript"))
-        if found:
-            return found
+        transcript = service.read_session(principal, key, limit=limit).get("transcript")
+        if prompt:
+            state, text = reply_to(transcript, prompt, last or last_assistant_text(transcript))
+            if state == "FOUND":
+                return text
+            if state == "PENDING":
+                return None
+        last = last or last_assistant_text(transcript)
+        if last and not prompt:
+            return last
+    if not prompt or last is None:
+        return last
+    other = False
+    for limit in ANCHOR_LIMITS:
+        transcript = service.read_session(principal, key, limit=limit).get("transcript")
+        state, text = reply_to(transcript, prompt, last)
+        if state == "FOUND":
+            return text
+        if state == "PENDING":
+            return None
+        other = other or state == "OTHER"
+    return None if other else last
+
+
+def recorded_prompt(inbox: Any, run_id: str) -> str | None:
+    """The prompt Fleet sent for this run, as the trace kept it, or None."""
+    reader = getattr(inbox, "read_trace", None)
+    if reader is None:
+        return None
+    try:
+        steps = reader(run_id=run_id, limit=5000)
+    except Exception:  # noqa: BLE001
+        return None
+    for step in steps:
+        if step.get("step") == "prompt sent" and step.get("run_id") == run_id:
+            text = (step.get("detail") or {}).get("text")
+            if text:
+                return text
     return None
 
 
@@ -496,7 +610,8 @@ class Watcher:
                        **summary)
                 if final:
                     answer = read_reply(self.service, self.principal,
-                                        SessionKey.parse(watch["session_ref"]))
+                                        SessionKey.parse(watch["session_ref"]),
+                                        recorded_prompt(self.inbox, watch["run_id"]))
                     if answer:
                         tracer("device", "result", session_ref=watch["session_ref"],
                                run_id=watch["run_id"], text=answer)
@@ -506,10 +621,17 @@ class Watcher:
     def _answered(self, watch: dict[str, Any]) -> bool:
         key = SessionKey.parse(watch["session_ref"])
         try:
-            if read_reply(self.service, self.principal, key) is not None:
+            prompt = recorded_prompt(self.inbox, watch["run_id"])
+            if read_reply(self.service, self.principal, key, prompt) is not None:
                 self._trace("reply read from the session", session_ref=watch["session_ref"],
                             run_id=watch["run_id"])
                 return True
+            if prompt and read_reply(self.service, self.principal, key) is not None:
+                # The session is talking, but not to this task: not this run's
+                # answer, and not a shape problem either.
+                self._trace("the session's last reply answers another message",
+                            session_ref=watch["session_ref"], run_id=watch["run_id"])
+                return False
             read = self.service.read_session(self.principal, key, limit=1)
         except Exception:  # noqa: BLE001 - an unreadable session is not an answer
             return False

@@ -951,6 +951,54 @@ def with_words(card: dict, words: str) -> dict:
     return card
 
 
+def card_text(card: dict) -> str:
+    """What a card says, as plain text — for the journal, so the owner can read
+    later exactly what was sent. Markup is dropped; a chart is named, not drawn."""
+    def clean(text: str) -> str:
+        text = re.sub(r"<text_tag color='[^']*'>(.*?)</text_tag>", r"【\1】", text or "")
+        text = re.sub(r"</?font[^>]*>|</?at[^>]*>", "", text)
+        return text.replace("**", "").strip()
+
+    out: list[str] = []
+
+    def walk(elements: list) -> None:
+        for e in elements or []:
+            if not isinstance(e, dict):
+                continue
+            tag = e.get("tag")
+            if tag == "markdown" and e.get("content", "").strip():
+                out.append(clean(e["content"]))
+            elif tag == "column_set":
+                parts = []
+                for column in e.get("columns") or []:
+                    inner: list[str] = []
+                    for x in column.get("elements") or []:
+                        if isinstance(x, dict) and x.get("tag") == "markdown" and x.get("content", "").strip():
+                            inner.append(clean(x["content"]))
+                    if inner:
+                        parts.append(" ".join(inner))
+                if parts:
+                    out.append(" ｜ ".join(parts))
+            elif tag == "collapsible_panel":
+                title = clean(((e.get("header") or {}).get("title") or {}).get("content", ""))
+                out.append(f"▸ {title}（折叠）")
+                walk(e.get("elements") or [])
+            elif tag == "chart":
+                spec = e.get("chart_spec") or {}
+                series = list(dict.fromkeys(v.get("type") for v in (spec.get("data") or {}).get("values") or []))
+                out.append(f"[曲线：{(spec.get('title') or {}).get('text', '')}；{'、'.join(map(str, series))}]")
+            elif tag == "button":
+                out.append(f"[按钮：{((e.get('text') or {}).get('content') or '')}]")
+            elif tag == "hr":
+                out.append("—")
+    header = card.get("header") or {}
+    tags = "".join(f"【{(t.get('text') or {}).get('content', '')}】" for t in header.get("text_tag_list") or [])
+    head = [f"{((header.get('title') or {}).get('content') or '').strip()} {tags}".strip(),
+            ((header.get("subtitle") or {}).get("content") or "").strip()]
+    walk((card.get("body") or {}).get("elements") or [])
+    return "\n".join(x for x in head + out if x)
+
+
 def without_charts(card: dict) -> dict:
     """The same card with its chart elements taken out — what is sent when a
     client refuses a chart, so the answer still arrives."""

@@ -46,6 +46,9 @@ ServerOS Fleet 的任务记录，由东京 hub 自动写入（`fleet_hub_watch.j
 - `runs/YYYY/MM/DD/` 每个批次或单个任务一个文件：主人的原话、发给设备的提示词、
   设备的最终回复（原文）、设备做了什么（只有元数据），以及过程的时间线。
 - 每天的 `INDEX.md` 一行一条。
+- `commander/YYYY/MM/DD.md` 主人和指挥端（GPT）的对话：主人的原话和 GPT 给主人的回复
+  （GPT 用 `fleet_batch action=reply` 写回）。
+- `cards/YYYY/MM/DD.md` 每一张发到飞书的卡片（发送和原位更新），按文字留档。
 - `chat/YYYY/MM/DD.md` 主人在飞书里和管家的每一次对话：问了什么、怎么理解的、
   管家说了什么、用了多久。
 - 设备的具体执行过程留在设备本地的会话里；文件里写了会话的 `session_ref`。
@@ -197,6 +200,8 @@ class Journal:
     def write_batch(self, batch_id: str, event: dict) -> Path | None:
         head = self.inbox.batch(batch_id)
         steps = self._steps(batch_id=batch_id)
+        ended = event.get("occurred_at") or next(
+            (s["at"] for s in reversed(steps) if s["step"] == "batch completed"), None)
         opened = self._detail(steps, "owner request")
         counts: dict[str, int] = {}
         for run in head["runs"]:
@@ -205,11 +210,11 @@ class Journal:
                    else "，".join(f"{OUTCOME.get(k, k)} {v}" for k, v in counts.items()))
         lines = [f"# {_mask(head['name'])} · {verdict}", "",
                  f"- 批次 `{batch_id}` · 派发者 {head.get('opened_by') or '—'} · {head['total']} 个任务",
-                 f"- 开始 {_local(head.get('opened_at'))} · 结束 {_local(event.get('occurred_at'))}（北京时间）"]
+                 f"- 开始 {_local(head.get('opened_at'))} · 结束 {_local(ended)}（北京时间）"]
         if opened.get("skills"):
             lines.append(f"- 指挥侧用的 skill：{opened['skills']}")
         commander = [s for s in steps if s.get("source") == "commander"
-                     and s["step"] != "owner request"]
+                     and s["step"] not in ("owner request", "reply to owner")]
         if commander:
             calls: dict[str, int] = {}
             for s in commander:
@@ -220,6 +225,11 @@ class Journal:
                   "## 每台设备", ""]
         for run in head["runs"]:
             lines += self._run_section(run, steps)
+        replies = [s for s in steps if s["step"] == "reply to owner" and (s.get("detail") or {}).get("text")]
+        if replies:
+            lines += ["## 指挥端给主人的回复", ""]
+            for step in replies:
+                lines += [f"{_local(step['at'])}", "", _fence(_mask(step["detail"]["text"])), ""]
         lines += self._timeline(steps)
         stamp = head.get("opened_at") or event.get("occurred_at")
         return self._save(stamp, f"{_slug(head['name'])}-{batch_id[:8]}", head["name"], verdict,
@@ -294,6 +304,113 @@ class Journal:
             self._pending += 1
         return path
 
+    # -- the owner's conversation with the commander -------------------------------
+
+    COMMANDER_STEPS = ("owner request", "reply to owner")
+
+    def _state_path(self) -> Path:
+        # Inside .git: never committed, and it travels with the clone it describes.
+        base = self.root / ".git" if (self.root / ".git").is_dir() else self.root / ".journal-state"
+        return base / "fleet-commander.json"
+
+    def _commander_state(self) -> dict:
+        path = self._state_path()
+        try:
+            return __import__("json").loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {"after": None, "seen": []}
+
+    def note_commander(self, now: datetime | None = None) -> int:
+        """Both sides of the owner's conversation with the commander (GPT), from
+        the trace: what the owner asked and what the commander answered, a page
+        a day at `commander/YYYY/MM/DD.md`. A reply about a batch that is
+        already written rewrites that batch's file so it carries the reply."""
+        import hashlib
+        import json as _json
+        try:
+            steps = self.inbox.read_trace(minutes=24 * 60, limit=2000)
+        except Exception:  # noqa: BLE001
+            return 0
+        state = self._commander_state()
+        seen = set(state.get("seen") or [])
+        first = state.get("after") is None
+        floor = (min(self._born, now or datetime.now(timezone.utc)) - FIRST_RUN_WINDOW)
+        written, batches = 0, set()
+        for step in steps:
+            if step.get("source") != "commander" or step["step"] not in self.COMMANDER_STEPS:
+                continue
+            text = (step.get("detail") or {}).get("text")
+            if not text:
+                continue
+            mark = hashlib.sha256(f"{step['at']}|{step['step']}|{text}".encode()).hexdigest()[:20]
+            if mark in seen:
+                continue
+            try:
+                at = datetime.fromisoformat(step["at"].replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            seen.add(mark)
+            if first and at < floor:
+                continue
+            local = at.astimezone(CN)
+            day = self.root / "commander" / f"{local:%Y}" / f"{local:%m}"
+            path = day / f"{local:%d}.md"
+            batch_id = step.get("batch_id")
+            name = ""
+            if batch_id:
+                try:
+                    head = self.inbox.batch(batch_id)
+                    name = f" · 批次「{_mask(head['name'])}」"
+                    if step["step"] == "reply to owner" and head.get("closed"):
+                        batches.add(batch_id)
+                except Exception:  # noqa: BLE001
+                    pass
+            who = "主人 → 指挥端" if step["step"] == "owner request" else "指挥端 → 主人"
+            with self._chat_lock:
+                day.mkdir(parents=True, exist_ok=True)
+                if not path.exists():
+                    path.write_text(f"# {local:%Y-%m-%d} 主人与指挥端（GPT）的对话\n\n", encoding="utf-8")
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(f"## {local:%H:%M:%S} {who}{name}\n\n{_fence(_mask(text))}\n\n")
+                self._pending += 1
+            written += 1
+        for batch_id in batches:
+            try:
+                self.write_batch(batch_id, {})
+            except Exception as exc:  # noqa: BLE001
+                print(f"journal: batch {batch_id[:8]} not rewritten ({type(exc).__name__})", file=sys.stderr)
+        path = self._state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_json.dumps(
+            {"after": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             "seen": sorted(seen)[-2000:]}), encoding="utf-8")
+        return written
+
+    # -- the cards that were sent ---------------------------------------------------
+
+    def note_card(self, card: dict, *, message_id: str, how: str = "发送",
+                  key: str | None = None, now: datetime | None = None) -> Path:
+        """Every card delivered to Feishu, as text, appended to the day's
+        `cards/YYYY/MM/DD.md` — so what the owner was shown can be read later,
+        not just that a card went out."""
+        from .cards import card_text
+        at = (now or datetime.now(timezone.utc)).astimezone(CN)
+        day = self.root / "cards" / f"{at:%Y}" / f"{at:%m}"
+        path = day / f"{at:%d}.md"
+        text = _mask(card_text(card))
+        title, _, rest = text.partition("\n")
+        lines = [f"## {at:%H:%M:%S} {how} · {title}", "",
+                 f"<sub>message {message_id}" + (f" · key {key[:40]}" if key else "") + "</sub>", "",
+                 "```text", rest.replace("```", "ˋˋˋ") or "（空）", "```"]
+        with self._chat_lock:
+            day.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text(f"# {at:%Y-%m-%d} 发出的飞书卡片\n\n", encoding="utf-8")
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n\n")
+            self._pending += 1
+        return path
+
     # -- the tick ---------------------------------------------------------------
 
     def tick(self, now: datetime) -> dict[str, Any]:
@@ -324,8 +441,16 @@ class Journal:
                       file=sys.stderr)
         if handled_to > page["cursor"]:
             self.inbox.ack(SUBSCRIBER, handled_to)
+        talked = 0
+        try:
+            talked = self.note_commander(now)
+        except Exception as exc:  # noqa: BLE001 - the rest of the journal still goes out
+            print(f"journal: commander not written ({type(exc).__name__})", file=sys.stderr)
         pushed = self.flush()
-        return {"written": written, "pushed": pushed}
+        out = {"written": written, "pushed": pushed}
+        if talked:
+            out["commander"] = talked
+        return out
 
     # -- git ------------------------------------------------------------------
 
@@ -351,7 +476,7 @@ class Journal:
         if status.stdout.strip():
             self._git("add", "-A")
             done = self._git("-c", "user.name=fleet-hub", "-c", "user.email=fleet-hub@localhost",
-                             "commit", "-q", "-m", f"fleet: {self._pending or 1} 条任务记录")
+                             "commit", "-q", "-m", f"fleet: {self._pending or 1} 条记录")
             if done.returncode != 0:
                 return False
             self._pending = 0

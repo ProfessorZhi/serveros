@@ -82,7 +82,7 @@
         "what": "native: C++ collector → status.json (0600) every 30 s, observe only",
         "profile": {
           "path": "native/node-core/core-lite/profiles/tokyo-vince.profile.json",
-          "digest": "sha256:1eeb7b7bbc4c83502565c342eb4e0bde4a009ae4e5ffe6374e161d9ce0012474"
+          "digest": "sha256:6404517a2dc4602e640e7b0442e625e1ff37dddf51ef737fa03dbfbfa04ca34c"
         },
         "units": [
           "serveros-core-lite-publish.service",
