@@ -213,7 +213,7 @@ class HttpSurface:
             try:
                 # The client's registered name, beside the principal, for the
                 # commander log (chat vs agent); never a gate.
-                client = self.oauth.client(str(claims.get("cid"))).client_name or ""
+                client = self.oauth.store.client(str(claims.get("cid"))).client_name or ""
                 names = getattr(self.service, "client_names", None)
                 if client and isinstance(names, dict):
                     names[name] = client[:60]

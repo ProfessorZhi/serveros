@@ -1030,6 +1030,24 @@ class OAuthFlow(_HttpHarness):
         self.assertEqual(status, 401)
         self.assertIn("resource_metadata", headers.get("WWW-Authenticate", ""))
 
+    def test_the_registered_client_name_is_kept_beside_the_principal(self):
+        """The commander log says ChatGPT, not `oauth:<cid>` (owner, 2026-11-11).
+
+        The name lives on the token store; the authorization server wraps it
+        and has no `client()` of its own — calling that silently lost the name
+        and every chat commander fell back to its numeric id.
+        """
+        cid = self.register_client(name="ChatGPT")
+        access, _ = self.oauth.store.mint_access_token(
+            client_id=cid, subject="operator", scopes=("fleet:read",),
+            audience=f"{self.base}/mcp", issuer=self.base,
+        )
+        status, _, _ = self.client.rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                                       token=access)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.service.client_names.get(f"oauth:{cid}"), "ChatGPT",
+                         "a chat commander must be named, not numbered")
+
 
 class UrlShapes(unittest.TestCase):
     """What gets advertised, and where it routes. No socket; routing only."""
