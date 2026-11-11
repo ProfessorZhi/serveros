@@ -156,8 +156,8 @@ class TheCommanderRecordsWhatItToldTheOwner(unittest.TestCase):
         from fleet_mcp.fleet import Principal
         with tempfile.TemporaryDirectory() as tmp:
             service, _ = self._service(tmp)
-            chat = Principal(name="oauth:c1", scopes=frozenset({"fleet:read"}),
-                             credential_kind="oauth", client="ChatGPT")
+            service.client_names = {"oauth:c1": "ChatGPT"}   # what the transport records
+            chat = Principal(name="oauth:c1", scopes=frozenset({"fleet:read"}), credential_kind="oauth")
             service.batch(chat, action="reply", owner_request="几台？", reply="三台。")
             local = Principal(name="local-owner", scopes=frozenset({"fleet:read"}), credential_kind="pat")
             service.batch(local, action="reply", owner_request="看 Dell", reply="正常。")

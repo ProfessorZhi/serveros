@@ -196,10 +196,6 @@ class Principal:
     name: str
     scopes: frozenset[str]
     credential_kind: str  # "pat" | "oauth"
-    #: The client's own registered name (OAuth dynamic registration's
-    #: `client_name`, e.g. «ChatGPT», «Claude Code»), for the log only: it
-    #: grants nothing and is never used in a decision.
-    client: str = ""
 
     def require(self, scope: str) -> None:
         if scope not in self.scopes:
@@ -344,7 +340,10 @@ class FleetService:
         self.core_lite_source = core_lite_source
         self.audit = _CommanderTrace(AuditLog(config.audit), self)
         self.limiter = RateLimiter(config.audit.rate_limit_per_minute) if config.audit else None
-        #: principal name -> the client's registered name, for the commander log.
+        #: principal name -> the client's registered name (OAuth dynamic
+        #: registration's `client_name`, e.g. «ChatGPT», «Claude Code»), set by
+        #: the HTTP transport. For the commander log only: it is kept beside the
+        #: principal, never on it, and is never used in a decision.
         self.client_names: dict[str, str] = {}
         self.dispatch = DispatchGuard(attempts)
         self.discovery = DiscoveryPool(config.policy.discovery_workers)
@@ -1202,13 +1201,10 @@ class FleetService:
     def client_of(self, principal: Principal) -> str | None:
         """Which client this principal calls from, for the log: its registered
         name, or «local» for the agent on this machine."""
-        if principal.client:
-            return principal.client[:60]
-        return "local" if principal.name == "local-owner" else None
+        return getattr(self, "client_names", {}).get(principal.name) or (
+            "local" if principal.name == "local-owner" else None)
 
     def admit(self, principal: Principal) -> None:
-        if principal.client:
-            self.client_names[principal.name] = principal.client[:60]
         if self.limiter is not None:
             allowed, retry_after = self.limiter.check(principal.name)
             if not allowed:
