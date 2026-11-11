@@ -95,6 +95,10 @@ def _heartbeat(path: Path, document: dict) -> None:
 
 HEALTH_EVERY_SECONDS = 1800
 
+#: How often the inbox is read between ticks. A card should appear when the
+#: thing it describes starts, not up to one tick later.
+PULSE_SECONDS = 2.0
+
 
 def _ready(state) -> bool:
     return str(state or "").lower() in ("ready", "ok", "valid", "needs_refresh")
@@ -410,7 +414,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"tick failed: {type(exc).__name__}", file=sys.stderr)
         if args.once:
             return 0
-        time.sleep(max(0.0, args.interval - (time.time() - started)))
+        # The tick is discovery and probing, tens of seconds long. An inbox event
+        # that lands just after one would wait the whole interval, and a batch
+        # that opens and settles inside it would first show up as a finished
+        # card. Read the inbox between ticks so it appears while it runs.
+        deadline = started + args.interval
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(remaining, PULSE_SECONDS))
+            if notifier is None:
+                continue
+            try:
+                notifier.pulse(datetime.now(timezone.utc))
+            except Exception as exc:  # noqa: BLE001 - the next tick reads again
+                print(f"inbox pulse failed: {type(exc).__name__}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -593,6 +593,20 @@ class Notifier:
             self.inbox.ack(SUBSCRIBER, handled_to)
         return len(page["events"])
 
+    def pulse(self, now: datetime) -> int:
+        """Read the inbox between ticks.
+
+        A tick is 30 s of discovery and device probing, and an event that lands
+        just after one waits the whole interval. A dispatched batch is the case
+        that hurts: `batch.opened` and its first members can settle inside the
+        same window, so the card is already the finished one when it is first
+        sent, and the person who dispatched sees no card while the work runs.
+        Reading the inbox on its own short cadence keeps a card close to the
+        thing it announces; the tick still does everything else.
+        """
+        self._sent_this_tick = 0
+        return self.consume(now)
+
     def _label(self, event: dict) -> str:
         """What the owner calls this task: the instruction's first line, else the
         project when it is a name (not an id), else 一个任务."""

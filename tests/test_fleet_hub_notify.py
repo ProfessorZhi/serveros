@@ -659,6 +659,30 @@ class BatchesReportOnce(NotifierTest):
         self.assertEqual(header[2], "red")
 
 
+class TheBatchCardDoesNotWaitForTheNextTick(NotifierTest):
+    """Owner, 2026-11-11: a pong-sized batch opened and settled inside one 30 s
+    tick, so the only card the owner ever saw was already finished.
+
+    The inbox is read between ticks; the batch card appears while it runs.
+    """
+
+    def test_a_pulse_sends_the_card_before_the_tick_that_would_see_it_done(self):
+        runs = [{"session_ref": f"{TOKYO}|claude|s-1", "run_id": f"run-{i}"} for i in range(3)]
+        self.inbox.open_batch("冒烟 x3", runs, opened_by="commander")
+        self.notifier.pulse(THURSDAY_10)
+        (op, mid, card, _key) = self.transport.ops[-1]
+        self.assertEqual(op, "send")
+        self.assertEqual(card["header"]["title"]["content"], "冒烟 x3 · 进行中 0/3")
+        self.assertEqual(card["header"]["template"], "blue",
+                         "the first card the owner sees is a running one")
+
+        self.run_event("run.completed", run_id="run-0")
+        self.notifier.pulse(THURSDAY_10 + timedelta(seconds=2))
+        self.assertTrue(self.transport.ops[1:])
+        self.assertTrue(all(o[0] == "patch" and o[1] == mid for o in self.transport.ops[1:]),
+                        "still the same message, patched between ticks")
+
+
 class AResidentSessionsOwnTurnsAreNotTasks(NotifierTest):
     """Owner, 2026-11-09: every turn of a long-running session was carded."""
 
