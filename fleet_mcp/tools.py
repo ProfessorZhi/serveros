@@ -162,6 +162,13 @@ def _read_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _owner_words(args: dict[str, Any]) -> dict[str, Any]:
+    """`owner_request` only when the caller passed it, so every service shape
+    that predates it keeps working."""
+    value = args.get("owner_request")
+    return {"owner_request": value} if isinstance(value, str) and value.strip() else {}
+
+
 def _send_to_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     message = args.get("message")
     if not isinstance(message, str):
@@ -171,7 +178,7 @@ def _send_to_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         _session_key(ctx, args),
         message=message,
         idempotency_key=args.get("idempotency_key"),
-        owner_request=args.get("owner_request"),
+        **_owner_words(args),
     )
 
 
@@ -271,7 +278,7 @@ def _create_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
         model=args.get("model"),
         lifecycle_mode=args.get("lifecycle_mode"),
         permission_mode=args.get("permission_mode"),
-        owner_request=args.get("owner_request"),
+        **_owner_words(args),
         idempotency_key=args.get("idempotency_key"),
     )
 
