@@ -313,6 +313,27 @@ class EventInbox:
                     (ref, rid)).fetchone()
                 if done is not None:
                     self._settle(conn, ref, rid, done["kind"], done["seq"], only=batch_id)
+            # A batch that is still running gets its card NOW, with every task
+            # 还在跑, so the person who dispatched sees it exists before any of
+            # it comes back. If the batch closed before this call (every run was
+            # already settled above) there is nothing to open: the completion
+            # card is the only message, and no blue card flashes and turns green.
+            left = conn.execute("SELECT COUNT(*) FROM batch_members WHERE batch_id=? AND "
+                                "outcome IS NULL", (batch_id,)).fetchone()[0]
+            if left:
+                opened = {n: None for n in _COLUMNS if n != "seq"}
+                opened.update({
+                    "event_id": hashlib.sha256(f"batch.opened|{batch_id}".encode()).hexdigest(),
+                    "kind": "batch.opened", "level": "notify",
+                    "occurred_at": _now(), "recorded_at": _now(),
+                    "summary": _bounded(f"{name}：{len(members)} 个任务已派出", "summary",
+                                        MAX_SUMMARY, required=True),
+                    "work_ref": f"batch:{batch_id}", "dispatched_by": opened_by,
+                    "evidence": f"batch:{batch_id}"})
+                cols = list(opened)
+                conn.execute(f"INSERT OR IGNORE INTO events ({','.join(cols)}) "
+                             f"VALUES ({','.join('?' * len(cols))})",
+                             [opened[n] for n in cols])
             conn.execute("COMMIT")
         return self.batch(batch_id)
 

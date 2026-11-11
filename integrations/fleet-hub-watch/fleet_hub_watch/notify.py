@@ -607,6 +607,44 @@ class Notifier:
         finder = getattr(self.inbox, "batch_of", None)
         return finder(event.get("session_ref"), event.get("run_id")) if finder else None
 
+    def _batch_id_of(self, event: dict) -> str | None:
+        """The batch this event belongs to, from its own tag or the member table."""
+        ref = str(event.get("work_ref") or "")
+        if ref.startswith("batch:"):
+            return ref.removeprefix("batch:")
+        return self._batch_of(event)
+
+    def _refresh_batch(self, event: dict, now: datetime) -> None:
+        """A batch member settled: say so on the batch's own card."""
+        batch_id = self._batch_id_of(event)
+        if batch_id:
+            self._batch_update(batch_id, now)
+
+    def _batch_update(self, batch_id: str, now: datetime) -> bool:
+        """The batch's card: sent when it opens, patched while it runs and ends.
+
+        A dispatched batch used to produce exactly one message, at the end, as
+        a fresh send. The person who dispatched it saw nothing until every
+        agent was done, and a batch that overran its read window came back as
+        「无法读取」on a card that had never shown it was running. Now the card
+        exists from the moment the batch is opened, says how many tasks are
+        still going, and every member that settles patches it in place — the
+        same message from start to end, as the owner asked.
+        """
+        try:
+            head = self.inbox.batch(batch_id)
+        except Exception:  # noqa: BLE001 - an unknown batch gets no card, not a crash
+            return False
+        event = {"summary": f"{head['name']}：{head['total']} 个任务",
+                 "work_ref": f"batch:{batch_id}"}
+        runs, opened_at = self._batch_runs(event)
+        key = f"batch:{event['work_ref']}"
+        card = cards.batch_card(event, now=now, runs=runs, opened_at=opened_at,
+                                device_names=self.device_names)
+        if self._card(key) is None:
+            return self._send(key, card, now)
+        return self._patch(key, card, now)
+
     def _batch_runs(self, event: dict) -> tuple[list[dict], str | None]:
         batch_id = str(event.get("work_ref") or "").removeprefix("batch:")
         try:
@@ -617,7 +655,9 @@ class Notifier:
         out = []
         for run in runs[:20]:                       # a card stays well under 30 KB
             text = None
-            if self.excerpt is not None:
+            # A run still going has no output to fetch, and asking the device
+            # for one costs a round trip on the same tunnel the tick is using.
+            if self.excerpt is not None and run.get("outcome") is not None:
                 try:
                     text = self.excerpt(run["session_ref"], run["run_id"])
                 except Exception:  # noqa: BLE001 - one unreadable run is not the card's end
@@ -639,18 +679,22 @@ class Notifier:
     def _handle(self, event: dict, now: datetime) -> None:
         kind = event["kind"]
         name = self._name(event.get("device_ref"))
-        if kind == "batch.completed":
-            runs, opened_at = self._batch_runs(event)
-            self._send(f"batch:{event.get('work_ref')}",
-                       cards.batch_card(event, now=now, runs=runs, opened_at=opened_at,
-                                        device_names=self.device_names), now)
+        if kind in ("batch.opened", "batch.completed"):
+            batch_id = str(event.get("work_ref") or "").removeprefix("batch:")
+            if batch_id:
+                self._batch_update(batch_id, now)
             return
         if kind == "tuning.changed":
             self._send(f"tune:{event.get('event_id') or event.get('seq')}",
                        cards.tuning_card(event, now=now), now)
             return
         if kind.startswith("node."):
-            key, _, level = (event.get("evidence") or "|").partition("|")
+            # `reach|ALERT` or `reach|ALERT|TIMEOUT`: the third field names the
+            # failure when the hub had one to name. Splitting on the first two
+            # separators keeps a third field from being read as part of the level.
+            parts = (event.get("evidence") or "|").split("|")
+            key = parts[0]
+            level = parts[1] if len(parts) > 1 else ""
             episode = f"{event['device_ref']}|{key}"
             if kind == "node.recovered":
                 self._note(event, {"episode": episode})
@@ -693,11 +737,18 @@ class Notifier:
         if kind == "run.completed":
             self._note(event, {"episode": run_episode})
             self._close(run_episode, now, text="任务已完成，读到了实际输出")
-            if in_batch or not dispatched:
-                # A batch member is told on its batch card; a resident session's
-                # own turn is not a task anyone dispatched — the 日报 counts it.
-                self._trace("no card: " + ("told on the batch card" if in_batch
-                                           else "a session's own turn"),
+            if in_batch:
+                # A batch member is told on its batch card; refresh it now so the
+                # person who dispatched sees this one finish without waiting for
+                # the last of them.
+                self._refresh_batch(event, now)
+                self._trace("no card: told on the batch card",
+                            session_ref=event.get("session_ref"), run_id=event.get("run_id"))
+                return
+            if not dispatched:
+                # A resident session's own turn is not a task anyone dispatched —
+                # the 日报 counts it.
+                self._trace("no card: a session's own turn",
                             session_ref=event.get("session_ref"), run_id=event.get("run_id"))
                 return
             self._trace("queued for the 任务完成 card", session_ref=event.get("session_ref"),
@@ -721,6 +772,7 @@ class Notifier:
                            "text": f"{name}：{detail}", "level": level})
         if in_batch and kind != "run.stalled":
             # Its outcome is a line on the batch card; one message, not two.
+            self._refresh_batch(event, now)
             self._trace("no card: told on the batch card", session_ref=event.get("session_ref"),
                         run_id=event.get("run_id"))
             return

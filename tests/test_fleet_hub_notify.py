@@ -183,6 +183,74 @@ class Sweep(unittest.TestCase):
         self.sweep("2026-10-29T02:00:00Z", **{TOKYO: summary()})
 
 
+class _Refused(Exception):
+    code = "PROVIDER_TIMEOUT"
+
+
+class Failing(StubService):
+    """Answers what it was given, or raises it when the tunnel raised."""
+
+    def core_lite_status(self, principal, device, *, runtime="claude"):
+        answer = self.summaries.get(device)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+
+class ReachIsConfirmedBeforeItIsAnOutage(unittest.TestCase):
+    """Owner, 2026-11-11: one slow read is not a machine that went away.
+
+    The hub's own session reads share the tunnel with this probe, so a big
+    transcript could starve it past the read timeout; the next tick found the
+    tunnel free and the pair read as 失联 → 已恢复, twice an hour. Three
+    consecutive failures before 失联, and the event names the failure it saw.
+    """
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.dir = Path(self._td.name)
+        self.inbox = EventInbox(self.dir / "inbox.sqlite")
+        self.store = resources.LevelStore(self.dir / "resources.sqlite")
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def sweep(self, at, **by_device):
+        return resources.sweep(Failing(by_device), None, self.inbox, self.store, THRESHOLDS,
+                               now_iso=at)
+
+    def kinds(self):
+        return [(e["kind"], e["evidence"]) for e in self.inbox.read("t", limit=200)["events"]]
+
+    def test_a_failed_read_is_counted_and_holds_the_previous_level(self):
+        self.sweep("2026-10-29T02:00:00Z", **{TOKYO: summary()})
+        view = self.sweep("2026-10-29T02:00:30Z", **{TOKYO: _Refused("slow")})[0]
+        self.assertFalse(view["connected"])
+        self.assertEqual(view["level"], OK, "the level it had before the miss")
+        reach = [r for r in view["readings"] if r["key"] == "reach"][0]
+        self.assertEqual(reach["text"], f"读数中断（1/{resources.REACH_CONFIRMATIONS} 次）")
+        self.assertEqual(self.kinds(), [], "one miss is counted, not carded")
+
+    def test_three_in_a_row_are_an_outage_that_names_the_reason(self):
+        self.sweep("2026-10-29T02:00:00Z", **{TOKYO: summary()})
+        for i in range(resources.REACH_CONFIRMATIONS):
+            self.sweep(f"2026-10-29T02:0{i}:30Z", **{TOKYO: _Refused("slow")})
+        events = self.kinds()
+        self.assertEqual(len(events), 1, "one outage, told once")
+        self.assertEqual(events[0][0], "node.unreachable")
+        self.assertEqual(events[0][1], "reach|ALERT|PROVIDER_TIMEOUT")
+        self.sweep("2026-10-29T02:09:00Z", **{TOKYO: _Refused("slow")})
+        self.assertEqual(len(self.kinds()), 1, "a continuing outage does not page again")
+
+    def test_a_read_that_comes_back_clears_the_streak(self):
+        self.sweep("2026-10-29T02:00:00Z", **{TOKYO: summary()})
+        self.sweep("2026-10-29T02:00:30Z", **{TOKYO: _Refused("slow")})
+        self.sweep("2026-10-29T02:01:00Z", **{TOKYO: summary()})
+        self.sweep("2026-10-29T02:01:30Z", **{TOKYO: _Refused("slow")})
+        self.sweep("2026-10-29T02:02:00Z", **{TOKYO: _Refused("slow")})
+        self.assertEqual(self.kinds(), [], "the streak restarted at the good read")
+
+
 class Recorder:
     def __init__(self):
         self.ops = []
@@ -541,30 +609,52 @@ class TheCommittedSamplesAreCurrent(unittest.TestCase):
 
 
 class BatchesReportOnce(NotifierTest):
-    """Owner, 2026-11-07: a dispatched batch reports once, when it is all done."""
+    """Owner, 2026-11-11: one dispatched batch is ONE Feishu card — sent when
+    the batch opens, patched in place as each of its agents settles. (Before
+    this, the card only appeared once every member was done.)
 
-    def test_a_batch_is_one_card_when_its_last_run_settles(self):
+    What is still true from 2026-11-07: a member's outcome never becomes a
+    second message of its own.
+    """
+
+    def test_the_batch_card_opens_and_every_settle_patches_it_in_place(self):
         runs = [{"session_ref": f"{TOKYO}|claude|s-1", "run_id": f"run-{i}"} for i in range(3)]
         self.inbox.open_batch("回归 x3", runs, opened_by="commander")
+        self.notifier.tick([], THURSDAY_10)
+        (op, mid, card, _key) = self.transport.ops[-1]
+        self.assertEqual(op, "send", "the card exists before anything is done")
+        self.assertEqual(card["header"]["title"]["content"], "回归 x3 · 进行中 0/3")
+        self.assertEqual(card["header"]["template"], "blue")
+
         self.run_event("run.completed", run_id="run-0")
         self.run_event("run.completed", run_id="run-1")
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=10))
-        self.assertEqual(self.transport.ops, [], "members are not carded one by one")
+        self.assertTrue(self.transport.ops[1:], "the two settled members do move the card")
+        self.assertTrue(all(o[0] == "patch" and o[1] == mid for o in self.transport.ops[1:]),
+                        "patched on the batch's own message, never sent again")
+
         self.run_event("run.completed", run_id="run-2")
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=11))
-        (header,) = self.transport.headers()
+        self.assertEqual(len([o for o in self.transport.ops if o[0] == "send"]), 1,
+                         "one message for the whole batch")
+        header = self.transport.headers()[-1]
         self.assertEqual("回归 x3 · 全部完成", header[3])
         self.assertEqual(header[2], "green")
 
-    def test_a_failed_member_is_a_line_on_the_red_batch_card_not_a_second_message(self):
+    def test_a_failed_member_patches_the_card_and_the_last_settle_closes_it(self):
         runs = [{"session_ref": f"{TOKYO}|claude|s-1", "run_id": f"run-{i}"} for i in range(2)]
         self.inbox.open_batch("部署 x2", runs, opened_by="commander")
         self.run_event("run.failed", run_id="run-0")
         self.notifier.tick([], THURSDAY_10)
-        self.assertEqual(self.transport.ops, [], "folded into the batch card")
+        self.assertEqual(len([o for o in self.transport.ops if o[0] == "send"]), 1,
+                         "the failure is a line on the batch card, not a second message")
+        self.assertIn("1 个失败", self.transport.headers()[-1][3])
+
         self.run_event("run.completed", run_id="run-1")
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=1))
-        (header,) = self.transport.headers()
+        self.assertEqual(len([o for o in self.transport.ops if o[0] == "send"]), 1,
+                         "still the same one message")
+        header = self.transport.headers()[-1]
         self.assertEqual(header[3], "部署 x2 · 1 个失败")
         self.assertEqual(header[2], "red")
 

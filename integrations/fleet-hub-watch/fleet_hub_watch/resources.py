@@ -51,6 +51,17 @@ THRESHOLD_KEYS = (
 #: Full memory stall (every task waiting) that makes the hub push an alert card.
 PSI_FULL_ALERT_PERCENT = 5.0
 
+#: Consecutive failed reads before a device is called 失联.
+#:
+#: One failed read is not an outage. Every hub request shares one SSH tunnel
+#: with the session reads of the same tick, so a big transcript being fetched
+#: can push a small probe past its timeout; the next tick then finds the tunnel
+#: free again and the reading returns. Reporting that as 失联 → 已恢复 turns a
+#: busy tunnel into a page, twice an hour. Three in a row (≈90 s) still names a
+#: real outage far sooner than a person notices it, and a one-off delay is
+#: counted for the 日报 without interrupting anybody.
+REACH_CONFIRMATIONS = 3
+
 
 def load_thresholds(contract_path: str | Path) -> dict[str, float]:
     import yaml
@@ -234,6 +245,12 @@ CREATE TABLE IF NOT EXISTS resource_levels (
     since      TEXT NOT NULL,
     PRIMARY KEY (device_ref, key)
 );
+CREATE TABLE IF NOT EXISTS reach_failures (
+    device_ref TEXT PRIMARY KEY,
+    count      INTEGER NOT NULL,
+    code       TEXT,
+    since      TEXT NOT NULL
+);
 """
 
 
@@ -271,6 +288,24 @@ class LevelStore:
                          "level=excluded.level, since=excluded.since",
                          (device_ref, key, level, at))
 
+    def note_failure(self, device_ref: str, code: str | None, at: str) -> int:
+        """Count one failed read and return how many in a row this now is."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT count, since FROM reach_failures WHERE device_ref=?",
+                               (device_ref,)).fetchone()
+            count = (row["count"] if row else 0) + 1
+            since = row["since"] if row else at
+            conn.execute("INSERT INTO reach_failures(device_ref, count, code, since) "
+                         "VALUES (?,?,?,?) ON CONFLICT(device_ref) DO UPDATE SET "
+                         "count=excluded.count, code=excluded.code, since=excluded.since",
+                         (device_ref, count, code, since))
+        return count
+
+    def clear_failure(self, device_ref: str) -> None:
+        """The tunnel answered again: the streak (and any delay it recorded) is over."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM reach_failures WHERE device_ref=?", (device_ref,))
+
 
 def _kind(key: str) -> str:
     if key == "reach":
@@ -295,8 +330,21 @@ def transitions(view: dict[str, Any], previous: dict[str, str]) -> list[dict[str
     return changes
 
 
-def _read_device(service: Any, principal: Any, device: str) -> dict[str, Any] | None:
-    """The reading the card shows for one machine, or None if no runtime answered.
+def _reason(exc: BaseException) -> str:
+    """A short name for why a read failed, for the event evidence.
+
+    The provider's own code (TIMEOUT, UNREACHABLE, …) is the useful one; the
+    exception class is the fallback for anything that does not carry one.
+    """
+    code = getattr(exc, "code", None)
+    if code:
+        return str(code)
+    return type(exc).__name__
+
+
+def _read_device(service: Any, principal: Any,
+                 device: str) -> tuple[dict[str, Any] | None, str | None]:
+    """The reading the card shows for one machine, and why it was missing.
 
     A card is one machine, but a machine can hold several runtime bindings — one
     per OS account — and `core_lite_status` asks exactly one of them. Asking
@@ -311,20 +359,29 @@ def _read_device(service: Any, principal: Any, device: str) -> dict[str, Any] | 
     FIRST summary is kept rather than the last: it names the reason for the
     runtime a caller would have asked for by default, and a reason is more use
     than whichever runtime happened to be sorted last.
+
+    The second half of the answer is the reason a read RAISED, when one did.
+    It used to be swallowed by `except Exception: continue`, so every outage
+    looked identical in the event evidence — `reach|ALERT` and nothing about
+    which failure it was. A silence the hub cannot name is a silence it cannot
+    tell apart from the tunnel being busy (see REACH_CONFIRMATIONS).
     """
     runtimes = service.bound_runtimes(device)
     if not runtimes:
         # No binding at all. Ask the default so the row still carries a named
         # gap (NOT_CONFIGURED) instead of silence.
         try:
-            return service.core_lite_status(principal, device)
-        except Exception:  # noqa: BLE001 - one device's failure is that device's row
-            return None
+            return service.core_lite_status(principal, device), None
+        except Exception as exc:  # noqa: BLE001 - one device's failure is that device's row
+            return None, _reason(exc)
     first: dict[str, Any] | None = None
+    reason: str | None = None
     for runtime in runtimes:
         try:
             summary = service.core_lite_status(principal, device, runtime=runtime)
-        except Exception:  # noqa: BLE001 - one runtime's failure is that runtime's
+        except Exception as exc:  # noqa: BLE001 - one runtime's failure is that runtime's
+            if reason is None:
+                reason = _reason(exc)
             continue
         if summary is None:
             # A source that answered with nothing is not a reading; it is the
@@ -333,8 +390,27 @@ def _read_device(service: Any, principal: Any, device: str) -> dict[str, Any] | 
         if first is None:
             first = summary
         if summary.get("connected") == "CONNECTED":
-            return summary
-    return first
+            return summary, None
+    if first is None and reason is None:
+        # Every runtime answered with nothing at all: silence, not an exception.
+        reason = "NO_READING"
+    return first, reason
+
+
+def _hold_reach(view: dict[str, Any], previous: dict[str, str], count: int) -> None:
+    """A failed read inside the confirmation window keeps the level it had.
+
+    The reading still says the read did not come back — that is the honest
+    thing to show — but its LEVEL is the one before the miss, so the view does
+    not transition and no event is recorded. A tunnel that drops one read in
+    the middle of a big transcript is counted here and never becomes a page.
+    """
+    for reading in view["readings"]:
+        if reading["key"] != "reach":
+            continue
+        reading["text"] = f"读数中断（{count}/{REACH_CONFIRMATIONS} 次）"
+        reading["level"] = previous.get("reach", UNCONFIRMED)
+    view["level"] = worst(r["level"] for r in view["readings"])
 
 
 def sweep(service: Any, principal: Any, inbox: Any, store: LevelStore,
@@ -345,14 +421,30 @@ def sweep(service: Any, principal: Any, inbox: Any, store: LevelStore,
         if getattr(entry, "ownership", None) != "company":
             continue
         device = entry.device_ref.ref
-        summary = _read_device(service, principal, device)
+        summary, reason = _read_device(service, principal, device)
         previous = store.previous(device)
         view = device_view(device, getattr(entry, "display_name", None) or device, summary,
                            thresholds, previous, seen_before=bool(previous))
+        # `reason` is set only when a read RAISED. A device that answered and
+        # said it is not connected is a fact, not a miss, and is reported at
+        # once: the confirmation window is for reads that never came back.
+        reason_code: str | None = None
+        if view["connected"]:
+            store.clear_failure(device)
+        elif reason is not None:
+            count = store.note_failure(device, reason, now_iso)
+            if count < REACH_CONFIRMATIONS:
+                _hold_reach(view, previous, count)
+            else:
+                reason_code = reason
         views.append(view)
         for change in transitions(view, previous):
             recovered = change["now"] == OK
             kind = "node.recovered" if recovered else _kind(change["key"])
+            evidence = f"{change['key']}|{change['now']}"
+            if reason_code and change["key"] == "reach":
+                # A third field the readers below tolerate: which failure it was.
+                evidence += f"|{reason_code}"
             inbox.record({
                 # One fact per reading, level and moment: two readings that
                 # change in the same sweep are two events, not one deduplicated.
@@ -364,7 +456,7 @@ def sweep(service: Any, principal: Any, inbox: Any, store: LevelStore,
                 "occurred_at": now_iso,
                 "summary": f"{view['name']} · {change['label']}：{change['text']}"
                            f"（{WORD.get(change['before'], change['before'])}→{WORD[change['now']]}）",
-                "evidence": f"{change['key']}|{change['now']}",
+                "evidence": evidence,
             })
             store.set(device, change["key"], change["now"], now_iso)
         for reading in view["readings"]:
