@@ -209,11 +209,17 @@ class HttpSurface:
                         "a Feishu identity token did not carry a Feishu subject"
                     )
                 return Principal(name=subject, scopes=scopes, credential_kind="feishu")
-            return Principal(
-                name=f"oauth:{claims.get('cid', 'unknown')}",
-                scopes=scopes,
-                credential_kind="oauth",
-            )
+            name = f"oauth:{claims.get('cid', 'unknown')}"
+            try:
+                # The client's registered name, beside the principal, for the
+                # commander log (chat vs agent); never a gate.
+                client = self.oauth.client(str(claims.get("cid"))).client_name or ""
+                names = getattr(self.service, "client_names", None)
+                if client and isinstance(names, dict):
+                    names[name] = client[:60]
+            except Exception:  # noqa: BLE001
+                pass
+            return Principal(name=name, scopes=scopes, credential_kind="oauth")
         raise HttpAuthError("token is not the owner token and no OAuth issuer is configured")
 
     # -- routing -----------------------------------------------------------

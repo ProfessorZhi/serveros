@@ -287,12 +287,14 @@ class _CommanderTrace:
         who = fields.get("principal")
         if inbox is None or event in self._QUIET or who in (None, "hub-watch"):
             return
+        client = getattr(self._service, "client_names", {}).get(who) or (
+            "local" if who == "local-owner" else None)
         try:
             from .disclosure import project_record
             safe, _ = project_record({"event": event, **fields})
             detail = {k: safe[k] for k in self._KEEP if safe.get(k) is not None
                       and k not in ("session_ref", "run_id")}
-            inbox.trace("commander", event.removeprefix("fleet."), by=who,
+            inbox.trace("commander", event.removeprefix("fleet."), by=who, client=client,
                         session_ref=safe.get("session_ref"), run_id=safe.get("run_id"),
                         **detail)
         except Exception:  # noqa: BLE001 - the trace never stops a call
@@ -338,6 +340,11 @@ class FleetService:
         self.core_lite_source = core_lite_source
         self.audit = _CommanderTrace(AuditLog(config.audit), self)
         self.limiter = RateLimiter(config.audit.rate_limit_per_minute) if config.audit else None
+        #: principal name -> the client's registered name (OAuth dynamic
+        #: registration's `client_name`, e.g. «ChatGPT», «Claude Code»), set by
+        #: the HTTP transport. For the commander log only: it is kept beside the
+        #: principal, never on it, and is never used in a decision.
+        self.client_names: dict[str, str] = {}
         self.dispatch = DispatchGuard(attempts)
         self.discovery = DiscoveryPool(config.policy.discovery_workers)
         #: The hub's event inbox, or None when this surface has none.
@@ -682,7 +689,8 @@ class FleetService:
                     # cannot see it otherwise (owner, 2026-11-09).
                     used = [str(s)[:60] for s in (skills or []) if isinstance(s, str)][:20]
                     self.inbox.trace("commander", "owner request", batch_id=answer["batch_id"],
-                                     by=principal.name, text=owner_request,
+                                     by=principal.name, client=self.client_of(principal),
+                                     text=owner_request,
                                      skills=", ".join(used) or None)
                 self.audit.record("fleet.batch_open", principal=principal.name,
                                   sessions=answer["total"])
@@ -698,9 +706,9 @@ class FleetService:
                 elif isinstance(owner_request, str) and owner_request.strip():
                     # An exchange with no batch: keep the owner's side too.
                     self.inbox.trace("commander", "owner request", by=principal.name,
-                                     text=owner_request)
-                self.inbox.trace("commander", "reply to owner", by=principal.name, text=reply,
-                                 **where)
+                                     client=self.client_of(principal), text=owner_request)
+                self.inbox.trace("commander", "reply to owner", by=principal.name,
+                                 client=self.client_of(principal), text=reply, **where)
                 self.audit.record("fleet.batch_reply", principal=principal.name)
                 return {"recorded": True,
                         "note": "kept in the hub's trace; the journal writes it with the next push"}
@@ -1189,6 +1197,12 @@ class FleetService:
         return {"monitor": "OK", "command": command,
                 "detail": "queued; the monitor applies it on its next tick — read "
                           "fleet_monitor_status for the result"}
+
+    def client_of(self, principal: Principal) -> str | None:
+        """Which client this principal calls from, for the log: its registered
+        name, or «local» for the agent on this machine."""
+        return getattr(self, "client_names", {}).get(principal.name) or (
+            "local" if principal.name == "local-owner" else None)
 
     def admit(self, principal: Principal) -> None:
         if self.limiter is not None:

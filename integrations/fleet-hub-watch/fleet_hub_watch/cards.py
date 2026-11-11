@@ -631,12 +631,17 @@ def alert_card(episode: dict, *, now: datetime, sample: bool = False,
     end = episode.get("recovered_at") or now
     if isinstance(end, str):
         end = datetime.fromisoformat(end.replace("Z", "+00:00"))
-    subtitle = (f"开始 {_local(episode.get('first_seen'), with_date=True)} · "
-                f"{'持续' if state == 'OPEN' else '历时'} {_minutes(episode.get('first_seen'), end)}")
+    if str(episode.get("kind", "")).startswith("run."):
+        subtitle = (f"派发 {_local(episode.get('first_seen'), with_date=True)} · "
+                    f"跑了 {_minutes(episode.get('first_seen'), end)}")
+    else:
+        subtitle = (f"开始 {_local(episode.get('first_seen'), with_date=True)} · "
+                    f"{'持续' if state == 'OPEN' else '历时'} {_minutes(episode.get('first_seen'), end)}")
 
     # Owner, 2026-11-09: say it in one or two short lines — what, and what to do
     # (or that it is over); no 影响 待确认 line and no footer.
-    face = [episode["text"]]
+    face = ([f"<font color='grey'>任务</font>　{episode['task']}", f"**{episode['text']}**"]
+            if episode.get("task") else [episode["text"]])
     if state == "RECOVERED":
         face = [f"已恢复 · {_local(episode.get('recovered_at'), with_date=True)} 读数回到正常"]
     elif state == "ESCALATED":

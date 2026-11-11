@@ -206,6 +206,33 @@ class Classification(WatcherTest):
         self.settle()
         self.assertEqual([e["kind"] for e in self.events()], ["run.unknown"])
 
+    def test_a_refused_status_with_the_answer_in_the_session_is_completed(self):
+        """Owner, 2026-11-11: FJPCOS finished an audit and answered in full, the
+        connector then refused the run-status read, and a 「结果不明」 card went
+        out. A session that ends with the agent's answer is a finished run."""
+        self.tokyo.start("s-1", "run-1")
+        self.inbox.note_dispatch(f"{TOKYO}|claude|s-1", "run-1")
+        self.watcher.tick()
+        self.tokyo.answers["run-1"] = FleetRefusal("RUN_NOT_FOUND", "refused")
+        self.harness.service.read_session = lambda principal, key, **kw: {"transcript": {"content": (
+            "[2026-11-11T03:47:00.000Z] tool Bash({\"command\":\"q\"})\n"
+            "[2026-11-11T03:47:20.000Z] assistant: 结论：口径 A 是对的")}}
+        self.settle()
+        (event,) = [e for e in self.events() if e["kind"] != "run.stalled"]
+        self.assertEqual(event["kind"], "run.completed")
+        self.assertIn("status unreadable", event["summary"])
+
+    def test_a_refused_status_mid_tool_call_stays_unknown(self):
+        self.tokyo.start("s-1", "run-1")
+        self.inbox.note_dispatch(f"{TOKYO}|claude|s-1", "run-1")
+        self.watcher.tick()
+        self.tokyo.answers["run-1"] = FleetRefusal("RUN_NOT_FOUND", "refused")
+        self.harness.service.read_session = lambda principal, key, **kw: {"transcript": {"content": (
+            "[2026-11-11T03:47:00.000Z] tool Bash({\"command\":\"q\"})")}}
+        self.settle()
+        self.assertEqual([e["kind"] for e in self.events() if e["kind"] != "run.stalled"],
+                         ["run.unknown"])
+
     def test_an_offline_route_keeps_watching(self):
         self.tokyo.start("s-1", "run-1")
         self.watcher.tick()

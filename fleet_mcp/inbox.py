@@ -550,6 +550,15 @@ class EventInbox:
                                (session_ref, run_id)).fetchone()
         return row["label"] if row else None
 
+    def dispatched_at(self, session_ref: str | None, run_id: str | None) -> str | None:
+        """When Fleet dispatched this run, or None."""
+        if not session_ref or not run_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute("SELECT at FROM dispatched WHERE session_ref=? AND run_id=?",
+                               (session_ref, run_id)).fetchone()
+        return row["at"] if row else None
+
     def batch_of(self, session_ref: str | None, run_id: str | None) -> str | None:
         """The batch a run belongs to, if any: its outcome is told on that card."""
         if not session_ref or not run_id:

@@ -618,6 +618,23 @@ class Watcher:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _finished(self, watch: dict[str, Any]) -> bool:
+        """The session's newest entry is the agent's answer — not a tool call,
+        not a question to a person: its turn is over."""
+        try:
+            read = self.service.read_session(self.principal, SessionKey.parse(watch["session_ref"]),
+                                             limit=1)
+        except Exception:  # noqa: BLE001 - unreadable is not finished
+            return False
+        transcript = read.get("transcript")
+        if work_summary(transcript).get("waiting_for_person"):
+            return False
+        if last_assistant_text(transcript) is None:
+            return False
+        self._trace("finished: the session ends with the agent's answer",
+                    session_ref=watch["session_ref"], run_id=watch["run_id"])
+        return True
+
     def _answered(self, watch: dict[str, Any]) -> bool:
         key = SessionKey.parse(watch["session_ref"])
         try:
@@ -677,6 +694,14 @@ class Watcher:
             elif (status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY"
                   and age < UNREADABLE_GRACE_SECONDS):
                 event = None                # not readable yet: look again later
+            elif ((status == STATUS_DENIED or (status == STATUS_UNKNOWN
+                                               and observation.get("retryable") is False)
+                   or age >= self.max_age) and self._finished(watch)):
+                # The run's status could not be read (Owner, 2026-11-11: the
+                # Windows connector refused it), but the session ends with the
+                # agent's own answer: the task finished, and that is its output.
+                event = self._event(watch, "run.completed", "notify",
+                                    f"completed; status unreadable ({reason}), reply read from the session")
             elif status == STATUS_DENIED or (status == STATUS_UNKNOWN
                                              and observation.get("retryable") is False):
                 # Not a success and not a failure: the outcome could not be

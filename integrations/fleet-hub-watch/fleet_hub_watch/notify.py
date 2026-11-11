@@ -129,6 +129,14 @@ def recorded_reply(inbox: Any, run_id: str) -> str | None:
     return found
 
 
+def clean_label(text: Any, limit: int = 28) -> str:
+    """A task's name for a card: the instruction's first words, without
+    markdown marks (Owner, 2026-11-11: a title showed «**缓存命中率…»)."""
+    text = re.sub(r"[*`#>_~]+", "", str(text or ""))
+    text = re.sub(r"\s+", " ", text).strip(" ，,。.:：;；")
+    return text if len(text) <= limit else text[:limit - 1].rstrip(" ，,") + "…"
+
+
 def run_excerpt(service: Any, principal: Any, chars: int,
                 inbox: Any = None) -> Callable[[str, str], str | None] | None:
     """(session_ref, run_id) -> the start of that run's final reply, read through
@@ -593,7 +601,7 @@ class Notifier:
         project = event.get("project")
         if not label and isinstance(project, str) and project and not _looks_like_id(project):
             label = project
-        return label or "一个任务"
+        return clean_label(label) or "一个任务"
 
     def _batch_of(self, event: dict) -> str | None:
         finder = getattr(self.inbox, "batch_of", None)
@@ -756,8 +764,8 @@ class Notifier:
             return
         level, what, detail = {
             "run.failed": (ALERT, "任务失败", "执行出错，没有完成"),
-            "run.unknown": (WARN, "任务结果不明", "已经结束，但读不到它的输出"),
-            "run.stalled": (WARN, "任务跑了很久", "已运行超过 2 小时，还没结束"),
+            "run.unknown": (WARN, "没拿到任务结果", "任务停了，但读不到它的回复"),
+            "run.stalled": (WARN, "任务跑了很久", "已经跑了 2 小时以上，还没结束"),
         }.get(kind, (WARN, kind, kind))
         reason = re.search(r"\(([A-Z0-9_]+)\)\s*$", event["summary"])
         self._note(event, {"episode": run_episode, "subject": f"{what} · {label}",
@@ -774,11 +782,16 @@ class Notifier:
             # A resident session's own turn: nobody dispatched it, so nobody is
             # waiting for a card about it. The 日报 counts it.
             return
+        started = getattr(self.inbox, "dispatched_at", lambda *_a: None)(
+            event.get("session_ref"), event.get("run_id"))
         self._open({"episode": run_episode, "key": f"run:{event.get('run_id')}", "kind": kind,
                     "device_ref": event.get("device_ref"),
-                    "subject": f"{what} · {label}",
-                    "text": f"{name}：{detail}",
-                    "level": level, "first_seen": event["occurred_at"],
+                    "subject": f"{name} · {what}",
+                    "task": label,
+                    "text": detail,
+                    "level": level,
+                    "first_seen": started if started and started <= event["occurred_at"]
+                    else event["occurred_at"],
                     "last_seen": event["occurred_at"],
                     "evidence": " · ".join(x for x in (event.get("session_ref"),
                                                        f"run {event.get('run_id')}",
