@@ -53,6 +53,15 @@ def _clean(text: str) -> str:
     return re.sub(r"@_user_\d+|@\S+", " ", text or "").strip()
 
 
+#: What follows a command word without naming anything: 「资源情况」 is 「资源」.
+FILLER = re.compile(r"^(情况|状况|怎么样|如何|咋样|呢|吧|啊|一下|看看|概况|总览|[?？!！。.\s])+$")
+
+
+def _argument(rest: str) -> str:
+    rest = rest.strip()
+    return "" if FILLER.match(rest) else rest
+
+
 def exact(text: str) -> tuple[str, str] | None:
     """(command, argument) when the message starts with a command word —
     answered at once, with no model asked."""
@@ -62,11 +71,11 @@ def exact(text: str) -> tuple[str, str] | None:
     head, _, rest = text.partition(" ")
     command = COMMANDS.get(head.strip().lower())
     if command is not None:
-        return command, rest.strip()
+        return command, _argument(rest)
     # "资源东京" without a space
     for word, name in COMMANDS.items():
         if len(word) > 1 and text.startswith(word):
-            return name, text[len(word):].strip()
+            return name, _argument(text[len(word):])
     return None
 
 

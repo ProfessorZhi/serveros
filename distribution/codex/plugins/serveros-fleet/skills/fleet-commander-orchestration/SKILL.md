@@ -173,6 +173,13 @@ two lines what was dispatched and that the result will arrive as a Feishu
 - When the owner comes back and asks, read `fleet_batch` (status) or
   `fleet_inbox` (kinds `[batch.completed]`) once, then accept or refuse each run
   on its evidence.
+- **Keep your side of the conversation.** After you answer the owner about
+  Fleet work, call `fleet_batch` action `reply` once with what you told them,
+  verbatim: with `batch_id` when the answer is about a batch (the dispatch
+  confirmation and the later verdict both count), otherwise with
+  `owner_request` (their message, verbatim) and `reply`. The owner's journal
+  keeps both sides; without it, what you said is nowhere. It is a record, not
+  a step the owner waits on: one call, then end your turn.
 - When something looks wrong — no card came, a result says 结果不明, a task
   seems stuck — call `fleet_trace` with the batch or run id once and report its
   `diagnosis` (where it stopped, what to check next). Do not re-dispatch or

@@ -150,8 +150,9 @@ def run_excerpt(service: Any, principal: Any, chars: int,
             text = recorded_reply(inbox, run_id) if inbox is not None else None
         if not _as_text(text):
             # No run receipt and nothing kept: the session still holds the reply.
-            from .watch import read_reply
-            text = read_reply(service, principal, key)
+            from .watch import read_reply, recorded_prompt
+            text = read_reply(service, principal, key,
+                              recorded_prompt(inbox, run_id) if inbox is not None else None)
         return clip_excerpt(text, chars)
     return read
 PATCH_WINDOW = timedelta(days=13)          # Feishu allows 14; leave a day of slack
@@ -226,6 +227,33 @@ class JournalTransport:
     def patch(self, message_id: str, card: dict, *, sent_at: str) -> bool:
         self._write({"op": "patch", "message_id": message_id, "card": card})
         return True
+
+
+class ArchivingTransport:
+    """A transport that also hands every card it delivered to `archive`
+    (the journal), so what was sent can be read later. An archive that fails
+    never stops a card."""
+
+    def __init__(self, inner: Transport, archive: Callable[..., Any]) -> None:
+        self.inner, self.archive = inner, archive
+
+    def send(self, card: dict, *, idempotency_key: str) -> str | None:
+        message_id = self.inner.send(card, idempotency_key=idempotency_key)
+        if message_id:
+            self._keep(card, message_id, "发送", idempotency_key)
+        return message_id
+
+    def patch(self, message_id: str, card: dict, *, sent_at: str) -> bool:
+        done = self.inner.patch(message_id, card, sent_at=sent_at)
+        if done:
+            self._keep(card, message_id, "更新", None)
+        return done
+
+    def _keep(self, card: dict, message_id: str, how: str, key: str | None) -> None:
+        try:
+            self.archive(card, message_id=message_id, how=how, key=key)
+        except Exception as exc:  # noqa: BLE001 - a card is worth more than its copy
+            print(f"card not archived: {type(exc).__name__}", file=sys.stderr)
 
 
 def resolve_recipient(spec: str, *, run=None) -> str:

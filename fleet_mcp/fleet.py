@@ -651,13 +651,18 @@ class FleetService:
     def batch(self, principal: Principal, *, action: str, name: str | None = None,
               runs: list[dict[str, str]] | None = None,
               batch_id: str | None = None, owner_request: str | None = None,
-              skills: list[str] | None = None) -> dict[str, Any]:
-        """Open a batch of dispatched runs, or read one.
+              skills: list[str] | None = None, reply: str | None = None) -> dict[str, Any]:
+        """Open a batch of dispatched runs, read one, or record what the
+        commander told the owner.
 
         `open` (fleet:send, the scope that dispatched them): the hub records
         ONE `batch.completed` event when every run has an outcome, and the
         monitor sends one card for it instead of one per run; a failed run
         still alerts on its own at once. `status` (fleet:read) reads progress.
+        `reply` (fleet:read) keeps the commander's answer to the owner — about a
+        batch (`batch_id`), or any exchange (`owner_request` + `reply`) — in the
+        hub's trace, so the journal holds both sides of the conversation
+        (owner, 2026-11-11: what GPT told the owner was nowhere).
         """
         if self.inbox is None:
             raise refuse(BAD_REQUEST, "this Fleet surface has no event inbox; batches live there")
@@ -681,6 +686,24 @@ class FleetService:
                                      skills=", ".join(used) or None)
                 self.audit.record("fleet.batch_open", principal=principal.name,
                                   sessions=answer["total"])
+            elif action == "reply":
+                principal.require(SCOPE_READ)
+                self.admit(principal)
+                if not isinstance(reply, str) or not reply.strip():
+                    raise refuse(BAD_REQUEST, "reply is required: what you told the owner, verbatim")
+                where: dict[str, Any] = {}
+                if isinstance(batch_id, str) and batch_id:
+                    self.inbox.batch(batch_id)          # it must exist
+                    where["batch_id"] = batch_id
+                elif isinstance(owner_request, str) and owner_request.strip():
+                    # An exchange with no batch: keep the owner's side too.
+                    self.inbox.trace("commander", "owner request", by=principal.name,
+                                     text=owner_request)
+                self.inbox.trace("commander", "reply to owner", by=principal.name, text=reply,
+                                 **where)
+                self.audit.record("fleet.batch_reply", principal=principal.name)
+                return {"recorded": True,
+                        "note": "kept in the hub's trace; the journal writes it with the next push"}
             elif action == "status":
                 principal.require(SCOPE_READ)
                 self.admit(principal)
@@ -688,7 +711,7 @@ class FleetService:
                     raise refuse(BAD_REQUEST, "batch_id is required for status")
                 answer = self.inbox.batch(batch_id)
             else:
-                raise refuse(BAD_REQUEST, "action must be open or status")
+                raise refuse(BAD_REQUEST, "action must be open, status or reply")
         except InboxError as exc:
             raise refuse(BAD_REQUEST, str(exc)) from None
         answer["note"] = ("when every run has an outcome, one batch.completed event appears in "

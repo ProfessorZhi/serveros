@@ -37,6 +37,10 @@
     {
       "name": "connector",
       "authorized": true
+    },
+    {
+      "name": "storage.readonly",
+      "authorized": true
     }
   ],
   "services": [

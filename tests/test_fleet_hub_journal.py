@@ -69,7 +69,8 @@ class TheJournal(unittest.TestCase):
         self.finish(a, "r1")
         self.finish(b, "r2")
         got = self.journal.tick(NOW)
-        self.assertEqual(got, {"written": 1, "pushed": True})
+        self.assertEqual(got, {"written": 1, "pushed": True, "commander": 1},
+                         "the batch file, and the owner's words on the commander page")
         (path,) = list((self.clone / "runs").rglob("*-两台体检-*.md"))
         text = path.read_text(encoding="utf-8")
         self.assertIn("# 两台体检 · 全部完成", text)
@@ -83,7 +84,7 @@ class TheJournal(unittest.TestCase):
         self.assertIn("‹已遮蔽›", text)
         self.assertIn("两台体检", (path.parent / "INDEX.md").read_text(encoding="utf-8"))
         log = git(self.remote, "log", "--oneline").stdout
-        self.assertIn("fleet: 1 条任务记录", log)
+        self.assertRegex(log, r"fleet: \d+ 条记录")
         self.assertEqual(self.journal.tick(NOW), {"written": 0, "pushed": False}, "each once")
 
     def test_a_stand_alone_task_is_its_own_file_and_undispatched_turns_are_not(self):
@@ -199,3 +200,88 @@ class TheJournal(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BothSidesOfEveryConversationAreKept(TheJournal):
+    test_a_batch_becomes_one_file_with_the_exchange_and_is_pushed = None
+    """Owner, 2026-11-11: what GPT told the owner was nowhere; what the cards
+    said was not kept; and a device's reply was the session's other talk."""
+
+    def test_the_commanders_reply_about_a_batch_is_on_its_page_and_in_the_batch_file(self):
+        a = f"{TOKYO}|claude|s-1"
+        self.inbox.note_dispatch(a, "r1", label="看东京")
+        batch = self.inbox.open_batch("一台体检", [{"session_ref": a, "run_id": "r1"}], opened_by="gpt")
+        self.inbox.trace("commander", "owner request", batch_id=batch["batch_id"], text="东京还好吗")
+        self.finish(a, "r1")
+        self.journal.tick(NOW)
+        self.inbox.trace("commander", "reply to owner", batch_id=batch["batch_id"],
+                         text=f"东京正常，CPU 11%。token {KEYISH}")
+        got = self.journal.tick(NOW)
+        self.assertEqual(got.get("commander"), 1)
+        (page,) = list((self.clone / "commander").rglob("*.md"))
+        talk = page.read_text(encoding="utf-8")
+        self.assertIn("主人 → 指挥端 · 批次「一台体检」", talk)
+        self.assertIn("指挥端 → 主人 · 批次「一台体检」", talk)
+        self.assertIn("东京正常，CPU 11%", talk)
+        self.assertNotIn(KEYISH, talk)
+        (path,) = list((self.clone / "runs").rglob("*-一台体检-*.md"))
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("## 指挥端给主人的回复", text, "the batch file was rewritten with the reply")
+        self.assertIn("东京正常，CPU 11%", text)
+        self.assertEqual(self.journal.tick(NOW).get("commander"), None, "each line once")
+        self.assertFalse(list(self.clone.rglob("fleet-commander.json"))
+                         and git(self.clone, "ls-files", "--", "*fleet-commander.json").stdout.strip())
+
+    def test_an_exchange_with_no_batch_is_kept_too(self):
+        self.inbox.trace("commander", "owner request", text="Fleet 现在有几台设备")
+        self.inbox.trace("commander", "reply to owner", text="三台：东京、Dell、FJPCOS。")
+        self.journal.tick(NOW)
+        (page,) = list((self.clone / "commander").rglob("*.md"))
+        talk = page.read_text(encoding="utf-8")
+        self.assertLess(talk.index("Fleet 现在有几台设备"), talk.index("三台：东京、Dell、FJPCOS。"))
+
+    def test_every_card_sent_is_kept_as_text(self):
+        from fleet_hub_watch import cards
+        from fleet_hub_watch.notify import ArchivingTransport
+
+        class Feishu:
+            def __init__(self):
+                self.sent = 0
+
+            def send(self, card, *, idempotency_key):
+                self.sent += 1
+                return f"om_{self.sent}" if idempotency_key != "refused" else None
+
+            def patch(self, message_id, card, *, sent_at):
+                return True
+        feishu = Feishu()
+        transport = ArchivingTransport(feishu, self.journal.note_card)
+        card = cards.with_words(cards.fleet_resource_card(
+            [{"device_ref": TOKYO, "name": "Tokyo", "level": "WARN", "readings": [
+                {"key": "swap", "label": "交换区", "text": "100%", "level": "WARN", "value": 100},
+                {"key": "cpu", "label": "CPU", "text": "11%", "level": "OK", "value": 11}]}],
+            now=NOW), f"东京交换区满了，key {KEYISH}")
+        self.assertEqual(transport.send(card, idempotency_key="ask:om_9:resource"), "om_1")
+        self.assertIsNone(transport.send(card, idempotency_key="refused"))
+        self.assertTrue(transport.patch("om_1", card, sent_at="2026-11-11T01:00:00Z"))
+        (page,) = list((self.clone / "cards").rglob("*.md"))
+        text = page.read_text(encoding="utf-8")
+        self.assertEqual(text.count("Fleet 资源 · 1 台"), 2, "sent and patched; the refused one is not kept")
+        self.assertIn("发送 · Fleet 资源 · 1 台 【1 台要看】", text)
+        self.assertIn("更新 · Fleet 资源", text)
+        self.assertIn("Tokyo　交换区用了 100%", text)
+        self.assertIn("东京交换区满了", text)
+        self.assertNotIn("<font", text)
+        self.assertNotIn(KEYISH, text)
+
+    def test_an_archive_that_fails_never_stops_a_card(self):
+        from fleet_hub_watch.notify import ArchivingTransport
+
+        class Feishu:
+            def send(self, card, *, idempotency_key):
+                return "om_1"
+
+        def broken(*args, **kwargs):
+            raise OSError("disk full")
+        self.assertEqual(ArchivingTransport(Feishu(), broken).send({}, idempotency_key="k"), "om_1")
+

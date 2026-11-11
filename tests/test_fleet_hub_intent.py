@@ -107,6 +107,13 @@ class AModelThatFailsLeavesTheKeywordsAnswering(unittest.TestCase):
 
 
 class WhatTheOwnerTyped(unittest.TestCase):
+    def test_a_command_word_followed_by_nothing_in_particular_has_no_argument(self):
+        """Owner, 2026-11-11: the log read 「回答：resource 情况」."""
+        for said in ("资源情况", "资源 情况", "资源怎么样？", "状态如何", "任务呢"):
+            self.assertEqual(commands.exact(said)[1], "", said)
+        self.assertEqual(commands.exact("资源东京"), ("resource", "东京"))
+        self.assertEqual(commands.exact("资源缺口"), ("resource", "缺口"))
+
     def test_a_command_word_never_asks_the_model(self):
         def never(text, devices):
             raise AssertionError("the model was asked about a command word")

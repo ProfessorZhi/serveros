@@ -114,6 +114,21 @@ gets the card whose rows lead with CPU and whose curve is CPU, not the default
 memory curve (the model returns a `focus`; the keyword path reads the same
 words).
 
+### The journal holds every conversation
+
+With `--journal <clone>` the hub writes, besides one file per batch or task
+under `runs/`:
+
+| path | what |
+|---|---|
+| `chat/YYYY/MM/DD.md` | the owner and the butler in Feishu (below) |
+| `commander/YYYY/MM/DD.md` | the owner and the commander (GPT): the owner's words and what GPT told them — GPT writes its side back with `fleet_batch action=reply`; a reply about a batch is also added to that batch's file |
+| `cards/YYYY/MM/DD.md` | every card delivered to Feishu, sent or patched, as text |
+
+A device's final answer in a batch or task file is the answer to the prompt
+Fleet sent: when the session went on to another conversation (the owner typing
+in the same window), that later talk is not recorded as the task's reply.
+
 Every exchange is kept: `butler.jsonl` beside the hub's state (what was asked,
 whether a command word, the model or the keywords understood it, the answer
 chosen, what the butler said, how long it took, whether it was sent), a trace
