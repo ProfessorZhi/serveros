@@ -558,6 +558,13 @@ class EventInbox:
             return conn.execute("SELECT 1 FROM dispatched WHERE session_ref=? LIMIT 1",
                                 (session_ref,)).fetchone() is not None
 
+    def recent_dispatches(self, since: str) -> list[dict[str, Any]]:
+        """Runs Fleet dispatched at or after `since` (ISO), oldest first."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT session_ref, run_id, project, at FROM dispatched "
+                                "WHERE at >= ? ORDER BY at", (since,)).fetchall()
+        return [dict(r) for r in rows]
+
     def dispatched_at(self, session_ref: str | None, run_id: str | None) -> str | None:
         """When Fleet dispatched this run, or None."""
         if not session_ref or not run_id:
