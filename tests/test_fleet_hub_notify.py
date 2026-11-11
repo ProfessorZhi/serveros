@@ -404,9 +404,19 @@ class AlertEpisodes(NotifierTest):
         self.tick(THURSDAY_10)
         (op, _mid, card, _key) = self.transport.ops[0]
         self.assertEqual(card["header"]["template"], "red")
-        self.assertIn("任务失败 · serveros", card["header"]["title"]["content"])
-        self.assertIn("执行出错，没有完成", card["body"]["elements"][0]["content"])
+        self.assertEqual("Tokyo · 任务失败", card["header"]["title"]["content"],
+                         "the device and what happened; the task is the first line")
+        self.assertIn("任务</font>　serveros", card["body"]["elements"][0]["content"])
+        self.assertIn("**执行出错，没有完成**", card["body"]["elements"][0]["content"])
         self.assertNotIn("RUN_FAILED", card["body"]["elements"][0]["content"], "codes stay in 技术详情")
+
+    def test_a_task_name_has_no_markdown_marks(self):
+        """Owner, 2026-11-11: a title read «…收窄为**缓存命中率的计算口径是…»."""
+        from fleet_hub_watch.notify import clean_label
+        self.assertEqual(clean_label("继续审计，但这次把问题收窄为**缓存命中率的计算口径是否有误**。"),
+                         "继续审计，但这次把问题收窄为缓存命中率的计算口径是否有误")
+        self.assertTrue(clean_label("一" * 40).endswith("…"))
+        self.assertEqual(clean_label("`hostname`"), "hostname")
 
     def test_a_stalled_run_that_completes_is_closed_and_counted(self):
         self.run_event("run.stalled")
