@@ -550,6 +550,14 @@ class EventInbox:
                                (session_ref, run_id)).fetchone()
         return row["label"] if row else None
 
+    def session_was_dispatched_to(self, session_ref: str | None) -> bool:
+        """Fleet sent work into this session (it is a device doing a task)."""
+        if not session_ref:
+            return False
+        with self._connect() as conn:
+            return conn.execute("SELECT 1 FROM dispatched WHERE session_ref=? LIMIT 1",
+                                (session_ref,)).fetchone() is not None
+
     def dispatched_at(self, session_ref: str | None, run_id: str | None) -> str | None:
         """When Fleet dispatched this run, or None."""
         if not session_ref or not run_id:

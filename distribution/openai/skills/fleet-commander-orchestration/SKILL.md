@@ -156,6 +156,11 @@ listed idle session may be the owner's own window). A follow-up to a task you
 dispatched is rewritten the same way and goes to the session you created for
 it — never a correction of a plan you wrote.
 
+**Every `fleet_send_to_session` and `fleet_create_session` carries
+`owner_request`** — the owner's message that led to it, verbatim. Fleet keeps
+the owner's conversation from it; a chat commander (ChatGPT, Grok …) that
+leaves it out is refused and sends again with it.
+
 **Then dispatch and leave — every dispatch goes into a batch, even a single
 task.** A chat client times out on a long wait, so the result comes back as a
 card, not in this turn. Right after the last ACK, call `fleet_batch` action

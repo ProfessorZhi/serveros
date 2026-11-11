@@ -279,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
         journal = Journal(watcher.inbox, Path(args.journal).expanduser(), reply=full_reply,
                           names=names, push_every=args.journal_push_every,
                           ssh_key=args.journal_ssh_key)
+        from .commander_log import AgentSessions
+        journal.agents = AgentSessions(service, principal, names=names)
         print(f"journal writes to {args.journal}", file=sys.stderr)
         if notifier is not None:
             # Every card that reaches Feishu is kept as text in the journal.

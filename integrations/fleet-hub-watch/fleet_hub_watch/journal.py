@@ -104,6 +104,8 @@ class Journal:
         self._chat_lock = __import__("threading").Lock()
         #: Events older than a day before this process started are not back-filled.
         self._born = datetime.now(timezone.utc)
+        #: `commander_log.AgentSessions`, when the hub reads agent commanders.
+        self.agents = None
 
     # -- reading what happened -------------------------------------------------
 
@@ -428,6 +430,58 @@ class Journal:
              "seen": sorted(seen)[-2000:]}), encoding="utf-8")
         return written
 
+    # -- an agent commander's whole conversation, from its own session --------------
+
+    def _agent_state_path(self):
+        return self._state_path().with_name("fleet-agent-commander.json")
+
+    def note_agent(self, session_ref: str, who: str, entries: list[dict],
+                   now: datetime | None = None) -> int:
+        """Every owner message and agent answer in an agent commander's session
+        not written before, into `commander/agent/YYYY/MM/DD.md` (Owner,
+        2026-11-11: «完整记录»). Tool calls are left out: runs/ holds the work."""
+        import json as _json
+        from .commander_log import mark
+        path = self._agent_state_path()
+        try:
+            seen = set(_json.loads(path.read_text(encoding="utf-8")).get("seen") or [])
+        except (OSError, ValueError):
+            seen = set()
+        floor = min(self._born, now or datetime.now(timezone.utc)) - FIRST_RUN_WINDOW
+        written = 0
+        for entry in entries:
+            if entry.get("who") not in ("owner", "agent") or not entry.get("text"):
+                continue
+            key = mark(session_ref, entry)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                at = datetime.fromisoformat(str(entry.get("at")).replace("Z", "+00:00"))
+                if at.tzinfo is None:
+                    at = at.replace(tzinfo=timezone.utc)
+            except ValueError:
+                at = now or datetime.now(timezone.utc)
+            if at < floor:
+                continue
+            local = at.astimezone(CN)
+            day = self.root / "commander" / "agent" / f"{local:%Y}" / f"{local:%m}"
+            page = day / f"{local:%d}.md"
+            head = f"主人 → {who}" if entry["who"] == "owner" else f"{who} → 主人"
+            with self._chat_lock:
+                day.mkdir(parents=True, exist_ok=True)
+                if not page.exists():
+                    page.write_text(f"# {local:%Y-%m-%d} 主人与{KIND_WORDS['agent']}指挥端的对话\n\n",
+                                    encoding="utf-8")
+                with page.open("a", encoding="utf-8") as handle:
+                    handle.write(f"## {local:%H:%M:%S} {head}\n\n"
+                                 f"<sub>会话 `{session_ref}`</sub>\n\n{_fence(_mask(entry['text']))}\n\n")
+                self._pending += 1
+            written += 1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_json.dumps({"seen": sorted(seen)[-20000:]}), encoding="utf-8")
+        return written
+
     # -- the cards that were sent ---------------------------------------------------
 
     def note_card(self, card: dict, *, message_id: str, how: str = "发送",
@@ -488,10 +542,21 @@ class Journal:
             talked = self.note_commander(now)
         except Exception as exc:  # noqa: BLE001 - the rest of the journal still goes out
             print(f"journal: commander not written ({type(exc).__name__})", file=sys.stderr)
+        agent_talk = 0
+        agents = getattr(self, "agents", None)
+        if agents is not None and agents.due():
+            try:
+                was = getattr(self.inbox, "session_was_dispatched_to", lambda _ref: False)
+                for ref, who, entries in agents.scan(dispatched=was):
+                    agent_talk += self.note_agent(ref, who, entries, now)
+            except Exception as exc:  # noqa: BLE001 - the rest of the journal still goes out
+                print(f"journal: agent commanders not read ({type(exc).__name__})", file=sys.stderr)
         pushed = self.flush()
         out = {"written": written, "pushed": pushed}
         if talked:
             out["commander"] = talked
+        if agent_talk:
+            out["agent"] = agent_talk
         return out
 
     # -- git ------------------------------------------------------------------
