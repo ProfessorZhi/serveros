@@ -53,6 +53,7 @@
 
 | 文档 | 回答什么问题 | 状态 / 日期 |
 |---|---|---|
+| [Fleet 产品需求基线与当前缺口](FLEET-PRODUCT-REQUIREMENTS-BASELINE.md) | 插件性能、指挥延迟、直达 Agent、Feishu、资源、Ability、Workspace 与治理域的产品要求和当前缺口 | 需求基线草案 · 2026-11-12 |
 | [原生 Agent 工作环境](architecture/NATIVE-WORK-ENVIRONMENT.md) | 目标产品形态与一天的运转 | 设计 · 2026-10-07 |
 | [记忆系统](memory-fabric.md) | 三层记忆、权威归属与召回 | 设计 · 2026-09-24 |
 | [每日工作循环](daily-work-cycle.md) | 采集、对账、Focus 与交付 | 设计 |
