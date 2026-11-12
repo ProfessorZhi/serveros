@@ -110,7 +110,7 @@ def understand(text: str, recognize: Callable[..., tuple[str, str] | None] | Non
 #: Words that mean "show me the resources" in what the owner types freely:
 #: 资源情况 / 资源缺口 / 东京内存怎么样 / 显卡占用 …
 RESOURCE_WORDS = ("资源", "内存", "显存", "显卡", "gpu", "cpu", "磁盘", "硬盘", "负载",
-                  "swap", "缺口", "占用", "压力")
+                  "swap", "缺口", "占用", "压力", "网络", "网速", "延迟", "丢包", "掉线", "断线")
 STATUS_WORDS = ("状态", "怎么样", "健康", "正常吗", "还好吗")
 TASK_WORDS = ("任务", "在跑", "跑完", "进度")
 
@@ -291,7 +291,8 @@ class Answerer:
     #: The words that say which reading a question is about.
     FOCUS_WORDS = {"cpu": ("cpu", "处理器", "负载"), "memory": ("内存",),
                    "swap": ("交换区", "交换", "swap"), "disk": ("磁盘", "硬盘", "系统盘", "数据盘", "存储"),
-                   "gpu": ("显存", "显卡", "gpu")}
+                   "gpu": ("显存", "显卡", "gpu"),
+                   "network": ("网络", "网速", "延迟", "丢包", "断线", "掉线", "老断")}
 
     def _focus(self, text: str) -> tuple[str | None, str]:
         """(the reading asked about, the text without its word)."""
@@ -396,6 +397,8 @@ class Answerer:
                 # The butler's model chose the card's shape for this question;
                 # the numbers are still the hub's own (compose.py).
                 return self._composed(layout, now)
+            if ref is not None and focus == "network" and self.views:
+                return self._composed(compose.auto_layout(self.views, focus=focus, device=ref), now)
             if ref is not None:
                 return self._resource(ref, now, detailed=detailed, focus=focus)
             # No device named (资源 / 资源情况 / 资源缺口): every device on ONE card

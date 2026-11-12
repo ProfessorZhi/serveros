@@ -15,12 +15,14 @@ this script therefore keeps the window away instead of bringing it back.
 
 Usage:
   register-publish-task.ps1 -Bin <dir> -ProfilePath <profile.json> [-Filesystem ROLE=PATH ...]
+                            [-NetworkTarget NAME=HOST:PORT ...]
   register-publish-task.ps1 -Unregister
 #>
 param(
     [string]$Bin,
     [string]$ProfilePath,
     [string[]]$Filesystem = @(),
+    [string[]]$NetworkTarget = @(),
     [switch]$Unregister
 )
 $ErrorActionPreference = 'Stop'
@@ -43,6 +45,12 @@ foreach ($path in @($script, $launcher)) {
 $arguments = @('//B', "`"$launcher`"", "`"$script`"",
                '-Bin', "`"$Bin`"", '-ProfilePath', "`"$ProfilePath`"")
 foreach ($spec in $Filesystem) { $arguments += @('-Filesystem', "`"$spec`"") }
+if ($NetworkTarget.Count -gt 0) {
+    foreach ($spec in $NetworkTarget) {
+        if ($spec -notmatch '^[a-z0-9][a-z0-9-]{0,23}=[^,\s"]+:\d{1,5}$') { throw "not NAME=HOST:PORT: $spec" }
+    }
+    $arguments += @('-NetworkTarget', "`"$($NetworkTarget -join ',')`"")
+}
 
 $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ($arguments -join ' ')
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `

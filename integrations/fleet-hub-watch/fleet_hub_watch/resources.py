@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -61,6 +62,40 @@ PSI_FULL_ALERT_PERCENT = 5.0
 #: real outage far sooner than a person notices it, and a one-off delay is
 #: counted for the 日报 without interrupting anybody.
 REACH_CONFIRMATIONS = 3
+
+#: The hub's own view of each device's link: every sweep times its read.
+#: Over the last LINK_WINDOW, a link is 注意 when reads fail or crawl, and
+#: clears only well below that, so a link on the line does not flap.
+LINK_WINDOW_MINUTES = 60
+LINK_MIN_SAMPLES = 10
+LINK_WARN = {"fail": 20.0, "p95": 10.0}
+LINK_CLEAR = {"fail": 10.0, "p95": 5.0}
+#: A device's own probe of a path (network.readonly): same idea, in ms.
+NET_WARN = {"loss": 20.0, "rtt": 2000.0}
+NET_CLEAR = {"loss": 10.0, "rtt": 1000.0}
+
+
+def _hours_before(iso: str, hours: float) -> str:
+    from datetime import datetime, timedelta
+    at = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    return (at - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _seconds(value: float) -> str:
+    return f"{value * 1000:.0f} ms" if value < 1 else f"{value:.1f} s"
+
+
+def link_reading(stats: dict[str, Any] | None, previous: str | None) -> dict[str, Any] | None:
+    """The hub→device link as a reading, or None before there are enough reads."""
+    if not stats:
+        return None
+    bad = stats["fail"] >= LINK_WARN["fail"] or stats["p95"] >= LINK_WARN["p95"]
+    clear = stats["fail"] < LINK_CLEAR["fail"] and stats["p95"] < LINK_CLEAR["p95"]
+    level = WARN if bad or (previous == WARN and not clear) else OK
+    return {"key": "link", "label": "东京读它", "level": level, "value": stats["fail"],
+            "text": f"一般 {_seconds(stats['p50'])} · 慢时 {_seconds(stats['p95'])} · 失败 {stats['fail']:.0f}%",
+            "short": f"失败 {stats['fail']:.0f}%", "p50": stats["p50"], "p95": stats["p95"],
+            "fail": stats["fail"], "n": stats["n"]}
 
 
 def load_thresholds(contract_path: str | Path) -> dict[str, float]:
@@ -221,6 +256,20 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
             add(f"gpu:{row.get('index')}", f"GPU{row.get('index')} 显存",
                 f"{used / GiB:.0f}/{total / GiB:.0f} GiB", OK, value=round(100.0 * used / total, 1))
 
+    network = _present(summary, "network.readonly")
+    for row in (network or {}).get("paths") or []:
+        name, rtt, loss = row.get("name"), row.get("rtt_ms"), row.get("loss_percent")
+        if not isinstance(name, str) or not isinstance(loss, (int, float)):
+            continue
+        key = f"net:{name}"
+        bad = loss >= NET_WARN["loss"] or (isinstance(rtt, (int, float)) and rtt >= NET_WARN["rtt"])
+        clear = loss < NET_CLEAR["loss"] and (not isinstance(rtt, (int, float)) or rtt < NET_CLEAR["rtt"])
+        level = WARN if bad or (previous.get(key) == WARN and not clear) else OK
+        said = "连不上" if rtt is None else f"{rtt:.0f} ms"
+        readings.append({"key": key, "label": f"网络 {name}", "level": level, "value": float(loss),
+                         "text": f"{said} · 丢 {loss:.0f}%", "short": f"丢 {loss:.0f}%",
+                         "rtt_ms": rtt, "loss": float(loss)})
+
     services = _present(summary, "services")
     for row in (services or {}).get("services") or []:
         if row.get("state") == "FAILED":
@@ -245,6 +294,13 @@ CREATE TABLE IF NOT EXISTS resource_levels (
     since      TEXT NOT NULL,
     PRIMARY KEY (device_ref, key)
 );
+CREATE TABLE IF NOT EXISTS link_samples (
+    device_ref TEXT NOT NULL,
+    at         TEXT NOT NULL,
+    seconds    REAL NOT NULL,
+    ok         INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS link_samples_by_device ON link_samples(device_ref, at);
 CREATE TABLE IF NOT EXISTS reach_failures (
     device_ref TEXT PRIMARY KEY,
     count      INTEGER NOT NULL,
@@ -300,6 +356,26 @@ class LevelStore:
                          "count=excluded.count, code=excluded.code, since=excluded.since",
                          (device_ref, count, code, since))
         return count
+
+    def note_link(self, device_ref: str, seconds: float, ok: bool, at: str) -> None:
+        """One read of this device by the hub: how long it took, whether it came back."""
+        with self._connect() as conn:
+            conn.execute("INSERT INTO link_samples(device_ref, at, seconds, ok) VALUES (?,?,?,?)",
+                         (device_ref, at, round(float(seconds), 3), 1 if ok else 0))
+            conn.execute("DELETE FROM link_samples WHERE at < ?", (_hours_before(at, 26),))
+
+    def link_stats(self, device_ref: str, since: str) -> dict[str, Any] | None:
+        """{n, p50, p95, fail} over the reads since `since`; None with too few."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT seconds, ok FROM link_samples WHERE device_ref=? AND at>=?",
+                                (device_ref, since)).fetchall()
+        if len(rows) < LINK_MIN_SAMPLES:
+            return None
+        times = sorted(r["seconds"] for r in rows)
+        def q(p: float) -> float:
+            return times[min(len(times) - 1, int(p * (len(times) - 1) + 0.5))]
+        return {"n": len(rows), "p50": q(0.5), "p95": q(0.95),
+                "fail": round(100.0 * sum(1 for r in rows if not r["ok"]) / len(rows), 1)}
 
     def clear_failure(self, device_ref: str) -> None:
         """The tunnel answered again: the streak (and any delay it recorded) is over."""
@@ -444,10 +520,27 @@ def sweep(service: Any, principal: Any, inbox: Any, store: LevelStore,
         if getattr(entry, "ownership", None) != "company":
             continue
         device = entry.device_ref.ref
+        started = time.monotonic()
         summary, reason = _read_device(service, principal, device)
+        took = time.monotonic() - started
         previous = store.previous(device)
         view = device_view(device, getattr(entry, "display_name", None) or device, summary,
                            thresholds, previous, seen_before=bool(previous))
+        try:
+            # A late write still came back over the link: only a read that raised
+            # (or came back empty) is the link failing.
+            store.note_link(device, took, reason in (None, "STALE") and summary is not None, now_iso)
+            link = link_reading(store.link_stats(device, _hours_before(now_iso, LINK_WINDOW_MINUTES / 60)),
+                                previous.get("link"))
+        except Exception:  # noqa: BLE001 - a link figure is never worth a sweep
+            link = None
+        # Judged only for a device that has answered before and is not already
+        # 失联: a machine that never answered has no link to grade, and one
+        # that is 失联 is told once, as 失联, not twice.
+        reach_now = next((r["level"] for r in view["readings"] if r["key"] == "reach"), None)
+        if link is not None and previous.get("reach") in (OK, WARN) and reach_now != ALERT:
+            view["readings"].append(link)
+            view["level"] = worst(r["level"] for r in view["readings"])
         # `reason` is set only when a read RAISED. A device that answered and
         # said it is not connected is a fact, not a miss, and is reported at
         # once: the confirmation window is for reads that never came back.

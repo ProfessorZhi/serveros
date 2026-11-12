@@ -2,6 +2,13 @@
 # Publish one Core-Lite status document for this account — observe only.
 #
 #   publish-status.sh --bin DIR --profile PROFILE --out FILE [--filesystem ROLE=PATH ...]
+#                     [--network-target NAME=HOST:PORT ...]
+#
+# With --network-target, this device also measures its network paths (TCP
+# connect time and failures, `net/probe_network.py`) into network.json next to
+# FILE, at most every five minutes and AFTER the status is in place, and folds
+# the last fresh measurement into the next document as `network.readonly`.
+# Only the path names reach the document; hosts and ports stay here.
 #
 # Runs the existing collector (two samples) and the Core-Lite status builder,
 # then replaces FILE atomically, owner-only (0600). FILE is what the Fleet node
@@ -15,13 +22,15 @@ umask 077
 
 bin="" profile="" out=""
 fs_args=()
+net_targets=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --bin) bin="$2"; shift 2 ;;
     --profile) profile="$2"; shift 2 ;;
     --out) out="$2"; shift 2 ;;
     --filesystem) fs_args+=(--filesystem "$2"); shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    --network-target) net_targets+=(--target "$2"); shift 2 ;;
+    -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -44,5 +53,20 @@ doc = json.load(open(sys.argv[1]))
 if not isinstance(doc, dict):
     sys.exit("status is not a JSON object")
 PY
+here="$(cd "$(dirname "$0")" && pwd)"
+net_dir="$here"
+[ -f "$net_dir/probe_network.py" ] || net_dir="$here/../net"
+network="$dir/network.json"
+if [ ${#net_targets[@]} -gt 0 ] && [ -f "$net_dir/fold_network.py" ]; then
+  python3 "$net_dir/fold_network.py" "$work/status.json" "$network" || true
+fi
 chmod 600 "$work/status.json"
 mv -f "$work/status.json" "$out"
+
+# The probe runs after the document is in place, so it never makes one late.
+if [ ${#net_targets[@]} -gt 0 ] && [ -f "$net_dir/probe_network.py" ]; then
+  if [ ! -f "$network" ] || [ -n "$(find "$network" -mmin +5 2>/dev/null)" ]; then
+    python3 "$net_dir/probe_network.py" --out "$network" --samples 3 --timeout 1.5 \
+      "${net_targets[@]}" || true
+  fi
+fi

@@ -533,7 +533,8 @@ ROW_KEYS = ("cpu", "memory", "swap")
 
 #: A question's subject -> (reading keys it means, the chart's title word).
 FOCUS = {"cpu": (("cpu",), "CPU"), "memory": (("memory",), "内存"), "swap": (("swap",), "交换区"),
-         "disk": (("fs:",), "磁盘"), "gpu": (("gpu",), "显存")}
+         "disk": (("fs:",), "磁盘"), "gpu": (("gpu",), "显存"),
+         "network": (("net:", "link"), "网络丢包")}
 
 
 def _is_focus(key: str, focus: str | None) -> bool:
