@@ -135,6 +135,13 @@ def plain(card: dict) -> dict:
                 continue
             if e.get("tag") == "chart":
                 continue
+            if e.get("tag") == "table":
+                names = [(c.get("name"), c.get("display_name") or "") for c in e.get("columns") or []]
+                lines = ["　".join(label for _, label in names)]
+                lines += ["　".join(re.sub(r"<[^>]+>", "", str(row.get(n, ""))) for n, _ in names)
+                          for row in e.get("rows") or []]
+                out.append({"tag": "markdown", "content": "\n".join(lines)})
+                continue
             if e.get("tag") == "column_set":
                 parts = []
                 for column in e.get("columns") or []:
@@ -980,6 +987,8 @@ def card_text(card: dict) -> str:
                     for x in column.get("elements") or []:
                         if isinstance(x, dict) and x.get("tag") == "markdown" and x.get("content", "").strip():
                             inner.append(clean(x["content"]))
+                        elif isinstance(x, dict) and x.get("tag") == "chart":
+                            inner.append(f"[图：{((x.get('chart_spec') or {}).get('title') or {}).get('text', '')}]")
                     if inner:
                         parts.append(" ".join(inner))
                 if parts:
@@ -992,6 +1001,11 @@ def card_text(card: dict) -> str:
                 spec = e.get("chart_spec") or {}
                 series = list(dict.fromkeys(v.get("type") for v in (spec.get("data") or {}).get("values") or []))
                 out.append(f"[曲线：{(spec.get('title') or {}).get('text', '')}；{'、'.join(map(str, series))}]")
+            elif tag == "table":
+                names = [(c.get("name"), c.get("display_name") or "") for c in e.get("columns") or []]
+                out.append(" | ".join(label for _, label in names))
+                out.extend(" | ".join(clean(str(row.get(n, ""))) for n, _ in names)
+                           for row in e.get("rows") or [])
             elif tag == "button":
                 out.append(f"[按钮：{((e.get('text') or {}).get('content') or '')}]")
             elif tag == "hr":

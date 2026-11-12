@@ -102,6 +102,9 @@ VOCABULARY = frozenset({
     # Callback buttons on hub cards (mute, pause, revert). The click comes back
     # over lark-cli's event stream and is only acted on for the owner.
     "button",
+    # The comparison table on a composed 资源 card (fleet_hub_watch/compose.py).
+    # Its rows are data, not elements: nothing inside a row carries a tag.
+    "table",
 })
 
 #: The one rule every CardKit 2.0 component reference states for `element_id`:
