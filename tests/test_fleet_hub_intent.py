@@ -356,5 +356,44 @@ class EveryExchangeIsKept(unittest.TestCase):
         self.assertNotIn("sk-abcdefghijklmnop", text)
 
 
+class WhyTheModelDidNotAnswerIsKept(unittest.TestCase):
+    """Owner, 2026-11-12: two questions in a row got no butler, and the log only
+    said 「model-failed」 / 「keywords」 — not why."""
+
+    def test_each_reason_in_a_few_words(self):
+        def timeout(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, 20)
+        cases = [
+            (timeout, "timeout after"),
+            (model("", code=1) if False else (lambda argv, **k: subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="ask_model: the gateway answered HTTP 429\n")), "HTTP 429"),
+            (model('{"command": "resource", "device": "Tokyo", "layout": [{"block": "tab'), "cut off"),
+            (model("我觉得是网络问题"), "no JSON"),
+            (model('{"command": "reboot"}'), "no answer the hub has"),
+        ]
+        for run, said in cases:
+            ask = intent.Recognizer(["x"], run=run)
+            ask("网络怎么样", DEVICES)
+            with self.subTest(said=said):
+                self.assertIn(said, ask.problem)
+        good = intent.Recognizer(["x"], run=model('{"command": "status"}'))
+        good("怎么样", DEVICES)
+        self.assertEqual(good.problem, "")
+
+    def test_the_reason_reaches_the_log(self):
+        log: list = []
+        ask = intent.Recognizer(["x"], run=model('{"command": "status", "reply": "三台都'))
+        listener = commands.MessageListener("ou_owner", lambda m, c, a, words="", **k: "SENT",
+                                            recognize=ask, devices=lambda: DEVICES, log=log.append)
+        listener.feed(json.dumps({"event": {"sender": {"sender_id": {"open_id": "ou_owner"}},
+                                            "message": {"message_id": "om_1", "message_type": "text",
+                                                        "content": json.dumps({"text": "网络怎么样"})}}}))
+        self.assertIn("cut off", log[0]["model_problem"])
+
+    def test_the_gateway_call_has_room_for_the_whole_answer(self):
+        from fleet_hub_watch import ask_model
+        self.assertGreaterEqual(ask_model.MAX_TOKENS, 1500)
+
+
 if __name__ == "__main__":
     unittest.main()

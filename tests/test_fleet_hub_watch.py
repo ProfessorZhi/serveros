@@ -536,3 +536,17 @@ class TheDeviceSideIsSummarised(unittest.TestCase):
                                "model": "deepseek-v4.1", "skills": "prod-research",
                                "mcp": "mcp__lark__send", "waiting_for_person": True})
         self.assertNotIn("secret", str(got), "metadata only")
+
+
+class AFinishedRunIsSeenWithinAMinute(unittest.TestCase):
+    """Owner, 2026-11-11: a task done at minute 4 was reported at minute 14 —
+    the watch read it at 10 s, 30 s, 2 min, then waited 10 minutes."""
+
+    def test_no_wait_between_reads_is_longer_than_a_minute(self):
+        self.assertLessEqual(max(BACKOFF_SECONDS), 60)
+        reads, at = [], 0
+        for i in range(12):
+            at += BACKOFF_SECONDS[min(i, len(BACKOFF_SECONDS) - 1)]
+            reads.append(at)
+        self.assertTrue(any(240 <= t <= 300 for t in reads), reads)
+

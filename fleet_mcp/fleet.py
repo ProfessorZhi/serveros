@@ -684,13 +684,24 @@ class FleetService:
                         raise refuse(BAD_REQUEST, "every run names a session_ref on an enrolled "
                                                   "device, exactly as the send or create returned it")
                 answer = self.inbox.open_batch(name, runs, opened_by=principal.name)
+                told = set()
+                for run in runs or []:
+                    try:
+                        told |= {(s.get("detail") or {}).get("text") for s in self.inbox.read_trace(
+                            run_id=run.get("run_id"), limit=200)
+                            if s.get("step") == "owner request"}
+                    except Exception:  # noqa: BLE001 - a duplicate line is not worth a refusal
+                        pass
                 if isinstance(owner_request, str) and owner_request.strip():
                     # What the owner asked the commander, in their words — Fleet
-                    # cannot see it otherwise (owner, 2026-11-09).
+                    # cannot see it otherwise (owner, 2026-11-09). Once: when the
+                    # send already carried the same words, the batch does not
+                    # repeat them (owner, 2026-11-11: the log showed it twice).
                     used = [str(s)[:60] for s in (skills or []) if isinstance(s, str)][:20]
+                    repeated = owner_request in told or owner_request[:4000] in told
                     self.inbox.trace("commander", "owner request", batch_id=answer["batch_id"],
                                      by=principal.name, client=self.client_of(principal),
-                                     text=owner_request,
+                                     text=None if repeated else owner_request,
                                      skills=", ".join(used) or None)
                 self.audit.record("fleet.batch_open", principal=principal.name,
                                   sessions=answer["total"])

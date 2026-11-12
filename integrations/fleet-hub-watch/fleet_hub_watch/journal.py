@@ -311,6 +311,8 @@ class Journal:
                  f"- 理解方式：{record.get('understood_by') or '—'}　回答：{_mask(answer)}"
                  f"　用时：{record.get('total_seconds', '—')} 秒（想了 {record.get('seconds', '—')} 秒）"
                  f"　发送：{record.get('sent') or '—'}"]
+        if record.get("model_problem"):
+            lines.append(f"- 模型没答上来：{_mask(record['model_problem'])}")
         if record.get("said"):
             lines += ["", _mask(record["said"])]
         with self._chat_lock:

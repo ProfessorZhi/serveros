@@ -500,7 +500,9 @@ class MessageListener(_listener_base()):
                           "command": command, "argument": arg, "said": words,
                           **({"layout": [b["block"] for b in layout]} if extra else {}),
                           "seconds": thought, "total_seconds": round(time.monotonic() - started, 1),
-                          "sent": sent})
+                          "sent": sent,
+                          **({"model_problem": problem} if (problem := getattr(
+                              self.recognize, "problem", "") if asked_model else "") else {})})
             except Exception:  # noqa: BLE001 - a log line is not worth an answer
                 pass
         return sent

@@ -31,7 +31,12 @@ import urllib.request
 MAX_PROMPT = 20000
 
 
-def ask(base_url: str, model: str, key: str, prompt: str, *, max_tokens: int = 600,
+#: Enough for the intent, a card layout and three sentences. Owner, 2026-11-12:
+#: at 600 the layout field cut the JSON off and the butler fell silent.
+MAX_TOKENS = 1500
+
+
+def ask(base_url: str, model: str, key: str, prompt: str, *, max_tokens: int = MAX_TOKENS,
         timeout: float = 15.0, opener=urllib.request.urlopen) -> str:
     """The model's text for one user message. Raises RuntimeError with a
     reason that carries no credential."""
@@ -56,6 +61,9 @@ def ask(base_url: str, model: str, key: str, prompt: str, *, max_tokens: int = 6
                    if isinstance(p, dict) and p.get("type") == "text")
     if not text.strip():
         raise RuntimeError("the gateway's answer had no text")
+    if doc.get("stop_reason") == "max_tokens":
+        print(f"ask_model: the answer reached --max-tokens ({max_tokens}) and was cut off",
+              file=sys.stderr)
     return text
 
 
@@ -66,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", required=True, help="the model id the gateway serves")
     parser.add_argument("--key-env", required=True,
                         help="the NAME of the environment variable holding the key")
-    parser.add_argument("--max-tokens", type=int, default=600)
+    parser.add_argument("--max-tokens", type=int, default=MAX_TOKENS)
     parser.add_argument("--timeout", type=float, default=15.0)
     args = parser.parse_args(argv)
     key = os.environ.get(args.key_env, "")
