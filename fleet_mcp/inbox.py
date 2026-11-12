@@ -488,6 +488,24 @@ class EventInbox:
                 conn.execute(f"DELETE FROM trace WHERE at < "
                              f"strftime('%Y-%m-%dT%H:%M:%SZ','now','-{self.TRACE_DAYS} days')")
 
+    def trace_between(self, start: str, end: str, *, source: str | None = None,
+                      limit: int = 500) -> list[dict[str, Any]]:
+        """Steps stamped in [start, end] (ISO, UTC), oldest first — e.g. the
+        commander's calls in the minutes before it dispatched."""
+        sql = "SELECT * FROM trace WHERE at >= ? AND at <= ?"
+        args: list[Any] = [start, end]
+        if source:
+            sql += " AND source = ?"
+            args.append(source)
+        sql += " ORDER BY seq LIMIT ?"
+        args.append(int(limit))
+        with self._connect() as conn:
+            rows = [dict(r) for r in conn.execute(sql, args).fetchall()]
+        for row in rows:
+            row["detail"] = json.loads(row["detail"]) if row.get("detail") else {}
+            row.pop("seq", None)
+        return rows
+
     def read_trace(self, *, run_id: str | None = None, session_ref: str | None = None,
                    batch_id: str | None = None, minutes: int | None = None,
                    limit: int = 300) -> list[dict[str, Any]]:

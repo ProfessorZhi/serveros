@@ -81,6 +81,17 @@ def _local(moment: str | None) -> str:
     return at.astimezone(CN).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _span(delta: timedelta) -> str:
+    seconds = int(delta.total_seconds())
+    if seconds <= 0:
+        return "—"
+    if seconds < 60:
+        return f"{seconds} 秒"
+    if seconds < 3600:
+        return f"{seconds // 60} 分 {seconds % 60} 秒"
+    return f"{seconds // 3600} 小时 {seconds % 3600 // 60} 分"
+
+
 def _fence(text: str) -> str:
     longest = max([len(m) for m in re.findall(r"`+", text)] + [2])
     ticks = "`" * (longest + 1)
@@ -214,6 +225,95 @@ class Journal:
         return ["## 过程（元数据，北京时间）", "", "<details><summary>时间线</summary>", "",
                 _fence(_mask("\n".join(rows))), "", "</details>", ""]
 
+    # -- the chain, timed --------------------------------------------------------
+    #
+    # Owner, 2026-11-12: «记录整个链路的时间戳，比如我给指挥侧发消息的时间».
+    # A chat commander (ChatGPT) does not tell Fleet when the owner wrote; the
+    # first Fleet call it made in that turn is the closest fact there is, and
+    # is labelled as such.
+
+    #: Calls closer together than this are one commander turn.
+    TURN_GAP = 180
+    TURN_LOOKBACK_MINUTES = 30
+
+    def _turn_start(self, by: str | None, first_dispatch: str | None) -> str | None:
+        """When the commander began the turn that dispatched: its earliest call
+        in an unbroken run of calls ending at the dispatch."""
+        if not by or not first_dispatch or not hasattr(self.inbox, "trace_between"):
+            return None
+        try:
+            end = datetime.fromisoformat(first_dispatch.replace("Z", "+00:00"))
+            start = end - timedelta(minutes=self.TURN_LOOKBACK_MINUTES)
+            calls = self.inbox.trace_between(start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                             first_dispatch, source="commander")
+        except Exception:  # noqa: BLE001 - a page without this line is still a page
+            return None
+        stamps = [c["at"] for c in calls if (c.get("detail") or {}).get("by") == by]
+        if not stamps:
+            return None
+        earliest = stamps[-1]
+        for previous in reversed(stamps[:-1]):
+            gap = (datetime.fromisoformat(earliest.replace("Z", "+00:00"))
+                   - datetime.fromisoformat(previous.replace("Z", "+00:00"))).total_seconds()
+            if gap > self.TURN_GAP:
+                break
+            earliest = previous
+        return earliest
+
+    @staticmethod
+    def _first(steps: list[dict], names: tuple[str, ...], run_id: str | None = None,
+               last: bool = False, **detail: Any) -> str | None:
+        found = None
+        for step in steps:
+            if step["step"] not in names or (run_id and step.get("run_id") != run_id):
+                continue
+            if any((step.get("detail") or {}).get(k) != v for k, v in detail.items()):
+                continue
+            found = step["at"]
+            if not last:
+                return found
+        return found
+
+    def _chain(self, steps: list[dict], runs: list[dict], by: str | None) -> list[str]:
+        """## 链路时间: each hop of the chain with its time and the wait before it."""
+        dispatch = self._first(steps, ("prompt sent", "dispatched (create)", "dispatched (send)",
+                                       "dispatched"))
+        rows: list[tuple[str, str | None]] = []
+        began = self._turn_start(by, dispatch)
+        if began:
+            rows.append(("指挥端开始处理（主人发消息就在这之前）", began))
+        rows.append(("指挥端派出任务", dispatch))
+        card = self._first(steps, ("card sent", "card sent: task dispatched"))
+        if card:
+            rows.append(("飞书「进行中」卡片发出", card))
+        for run in runs:
+            rid, name = run["run_id"], self._device(run["session_ref"])
+            rows.append((f"{name} 开始干活", self._first(steps, ("device working",), rid)
+                         or self._first(steps, ("observed",), rid, status="RUNNING")))
+            rows.append((f"{name} 做完", self._first(steps, ("device finished",), rid)))
+            rows.append((f"Fleet 取回 {name} 的结果", self._first(steps, ("result",), rid)))
+        done = self._first(steps, ("batch completed",))
+        if done:
+            rows.append(("全部结束（批次关闭）", done))
+        updated = self._first(steps, ("card updated",), last=True)
+        if updated:
+            rows.append(("飞书卡片最后一次更新", updated))
+        for step in steps:
+            if step["step"] == "reply to owner":
+                rows.append(("指挥端回复主人", step["at"]))
+        rows = [(what, at) for what, at in rows if at]
+        if not rows:
+            return []
+        rows.sort(key=lambda r: r[1])
+        out = ["## 链路时间（北京时间）", "", "| 环节 | 时间 | 距上一步 | 距开始 |", "|---|---|---|---|"]
+        start = previous = datetime.fromisoformat(rows[0][1].replace("Z", "+00:00"))
+        for what, at in rows:
+            moment = datetime.fromisoformat(at.replace("Z", "+00:00"))
+            out.append(f"| {what} | {_local(at)[11:]} | {_span(moment - previous)} | "
+                       f"{_span(moment - start)} |")
+            previous = moment
+        return out + [""]
+
     def write_batch(self, batch_id: str, event: dict) -> Path | None:
         head = self.inbox.batch(batch_id)
         steps = self._steps(batch_id=batch_id)
@@ -243,6 +343,7 @@ class Journal:
                   "## 每台设备", ""]
         for run in head["runs"]:
             lines += self._run_section(run, steps)
+        lines += self._chain(steps, head["runs"], head.get("opened_by"))
         replies = [s for s in steps if s["step"] == "reply to owner" and (s.get("detail") or {}).get("text")]
         if replies:
             lines += ["## 指挥端给主人的回复", ""]
@@ -271,6 +372,9 @@ class Journal:
         lines += ["", "## 设备", ""]
         lines += self._run_section({"session_ref": ref, "run_id": run_id, "outcome": outcome},
                                    steps)
+        by = next(((s.get("detail") or {}).get("by") for s in steps
+                   if s.get("source") == "commander" and (s.get("detail") or {}).get("by")), None)
+        lines += self._chain(steps, [{"session_ref": ref, "run_id": run_id}], by)
         lines += self._timeline(steps)
         return self._save(event.get("occurred_at"), f"{_slug(label)}-{run_id[:8]}", label, verdict,
                           "\n".join(lines))
@@ -313,6 +417,11 @@ class Journal:
                  f"　发送：{record.get('sent') or '—'}"]
         if record.get("model_problem"):
             lines.append(f"- 模型没答上来：{_mask(record['model_problem'])}")
+        hops = [(word, record.get(key)) for word, key in
+                (("主人发出", "owner_sent_at"), ("管家收到", "received_at"), ("回复发出", "answered_at"))]
+        hops = [(word, at) for word, at in hops if at]
+        if hops:
+            lines.append("- 时间：" + " → ".join(f"{word} {_local(at)[11:]}" for word, at in hops))
         if record.get("said"):
             lines += ["", _mask(record["said"])]
         with self._chat_lock:

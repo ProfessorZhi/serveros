@@ -432,6 +432,8 @@ class Notifier:
         ok = self._route(card_key).patch(row["message_id"], card, sent_at=row["sent_at"])
         self._sent_this_tick += 1
         if ok:
+            self._trace("card updated", ref=card_key,
+                        title=((card.get("header") or {}).get("title") or {}).get("content"))
             with self._connect() as conn:
                 conn.execute("UPDATE cards SET version=?, patched_at=?, slot=COALESCE(?, slot) "
                              "WHERE card_key=?", (_version(card), _iso(now), slot, card_key))

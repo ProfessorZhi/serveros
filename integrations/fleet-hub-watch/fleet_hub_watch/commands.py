@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from . import cards, compose
@@ -148,6 +148,22 @@ def message_of(event: dict[str, Any], owner: str | None) -> tuple[str, str] | No
     if not isinstance(text, str):
         return None
     return str(message.get("message_id") or payload.get("message_id") or ""), text
+
+
+def sent_at_of(event: dict[str, Any]) -> str | None:
+    """When the owner sent the message, from Feishu's own stamp (ms), as UTC ISO."""
+    from datetime import timezone as _tz
+    payload = event.get("event", event)
+    message = payload.get("message") or payload
+    raw = message.get("create_time") or (event.get("header") or {}).get("create_time")
+    try:
+        ms = int(str(raw))
+    except (TypeError, ValueError):
+        return None
+    try:
+        return datetime.fromtimestamp(ms / 1000, _tz.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 # -- the answers -----------------------------------------------------------------
@@ -466,6 +482,8 @@ class MessageListener(_listener_base()):
         if got is None:
             return None
         message_id, text = got
+        owner_sent_at = sent_at_of(event)
+        received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         started = time.monotonic()
         asked_model = self.recognize is not None and exact(text) is None
         try:
@@ -500,6 +518,8 @@ class MessageListener(_listener_base()):
                           "command": command, "argument": arg, "said": words,
                           **({"layout": [b["block"] for b in layout]} if extra else {}),
                           "seconds": thought, "total_seconds": round(time.monotonic() - started, 1),
+                          "owner_sent_at": owner_sent_at, "received_at": received_at,
+                          "answered_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                           "sent": sent,
                           **({"model_problem": problem} if (problem := getattr(
                               self.recognize, "problem", "") if asked_model else "") else {})})

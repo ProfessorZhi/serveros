@@ -312,3 +312,62 @@ class BothSidesOfEveryConversationAreKept(TheJournal):
             raise OSError("disk full")
         self.assertEqual(ArchivingTransport(Feishu(), broken).send({}, idempotency_key="k"), "om_1")
 
+
+
+class TheWholeChainIsTimed(unittest.TestCase):
+    """Owner, 2026-11-12: «记录整个链路的时间戳，比如我给指挥侧发消息的时间»."""
+
+    def test_each_hop_with_its_wait(self):
+        class Inbox:
+            def trace_between(self, start, end, source=None, limit=500):
+                return [{"at": "2026-11-12T06:30:00Z", "detail": {"by": "gpt"}},   # an older turn
+                        {"at": "2026-11-12T06:38:50Z", "detail": {"by": "gpt"}},   # list_devices
+                        {"at": "2026-11-12T06:39:10Z", "detail": {"by": "other"}},
+                        {"at": "2026-11-12T06:39:22Z", "detail": {"by": "gpt"}}]
+        journal = Journal(Inbox(), Path(tempfile.mkdtemp()), names={TOKYO: "Tokyo"})
+        ref = f"{TOKYO}|claude|s1"
+        steps = [
+            {"at": "2026-11-12T06:39:22Z", "step": "prompt sent", "run_id": "r1", "detail": {}},
+            {"at": "2026-11-12T06:39:46Z", "step": "card sent", "run_id": None, "detail": {}},
+            {"at": "2026-11-12T06:40:05Z", "step": "observed", "run_id": "r1",
+             "detail": {"status": "RUNNING"}},
+            {"at": "2026-11-12T06:40:46Z", "step": "reply to owner", "run_id": None, "detail": {}},
+            {"at": "2026-11-12T06:46:04Z", "step": "device finished", "run_id": "r1", "detail": {}},
+            {"at": "2026-11-12T06:46:04Z", "step": "result", "run_id": "r1", "detail": {}},
+            {"at": "2026-11-12T06:46:30Z", "step": "card updated", "run_id": None, "detail": {}},
+        ]
+        text = "\n".join(journal._chain(steps, [{"session_ref": ref, "run_id": "r1"}], "gpt"))
+        self.assertIn("| 指挥端开始处理（主人发消息就在这之前） | 14:38:50 | — | — |", text,
+                      "the turn began with the call 32 s before the dispatch, not the older turn")
+        self.assertIn("| 指挥端派出任务 | 14:39:22 | 32 秒 | 32 秒 |", text)
+        self.assertIn("| Tokyo 开始干活 | 14:40:05 |", text)
+        self.assertIn("| Tokyo 做完 | 14:46:04 |", text)
+        self.assertIn("| 指挥端回复主人 | 14:40:46 |", text)
+        self.assertIn("| 飞书卡片最后一次更新 | 14:46:30 | 26 秒 | 7 分 40 秒 |", text)
+
+    def test_the_butler_page_has_the_owners_send_time(self):
+        from fleet_hub_watch import commands
+        event = {"event": {"message": {"create_time": "1762929600000"}}}
+        self.assertEqual(commands.sent_at_of(event), "2025-11-12T06:40:00Z")
+        root = Path(tempfile.mkdtemp())
+        journal = Journal(EventInbox(root / "i.sqlite"), root / "clone")
+        path = journal.note_chat({"asked": "网络怎么样", "command": "resource",
+                                  "owner_sent_at": "2026-11-12T03:11:02Z",
+                                  "received_at": "2026-11-12T03:11:03Z",
+                                  "answered_at": "2026-11-12T03:11:09Z"},
+                                 datetime(2026, 11, 12, 3, 11, 9, tzinfo=timezone.utc))
+        self.assertIn("- 时间：主人发出 11:11:02 → 管家收到 11:11:03 → 回复发出 11:11:09",
+                      path.read_text(encoding="utf-8"))
+
+
+class TraceBetween(unittest.TestCase):
+    def test_a_window_and_a_source(self):
+        inbox = EventInbox(Path(tempfile.mkdtemp()) / "i.sqlite")
+        inbox.trace("commander", "list_devices", by="gpt")
+        inbox.trace("fleet", "prompt sent", run_id="r1")
+        now = datetime.now(timezone.utc)
+        start = (now.replace(microsecond=0) - __import__("datetime").timedelta(minutes=1))
+        end = now.replace(microsecond=0) + __import__("datetime").timedelta(minutes=1)
+        got = inbox.trace_between(start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                  end.strftime("%Y-%m-%dT%H:%M:%SZ"), source="commander")
+        self.assertEqual([(s["step"], s["detail"].get("by")) for s in got], [("list_devices", "gpt")])
