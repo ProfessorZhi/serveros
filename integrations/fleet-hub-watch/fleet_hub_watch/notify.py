@@ -152,10 +152,17 @@ def run_excerpt(service: Any, principal: Any, chars: int,
 
     def read(session_ref: str, run_id: str) -> str | None:
         key = SessionKey.parse(session_ref)
-        run = service.get_run(principal, key, run_id)
-        text = next((run[f] for f in _OUTPUT_FIELDS if run.get(f)), None)
+        # What the monitor kept when the run finished comes first, and a run
+        # receipt that cannot be read (Owner, 2026-11-12: Tokyo's batch row
+        # said 没返回文字 while the reply sat in the trace) does not stop the
+        # other two sources from being tried.
+        text = recorded_reply(inbox, run_id) if inbox is not None else None
         if not _as_text(text):
-            text = recorded_reply(inbox, run_id) if inbox is not None else None
+            try:
+                run = service.get_run(principal, key, run_id)
+                text = next((run[f] for f in _OUTPUT_FIELDS if run.get(f)), None)
+            except Exception:  # noqa: BLE001 - one source down is not the reply gone
+                text = None
         if not _as_text(text):
             # No run receipt and nothing kept: the session still holds the reply.
             from .watch import read_reply, recorded_prompt

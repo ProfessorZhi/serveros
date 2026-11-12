@@ -244,6 +244,38 @@ def last_assistant_text(transcript: Any) -> str | None:
     return None
 
 
+def _blocks(content: Any) -> list[dict]:
+    return [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
+
+
+def ends_with_answer(transcript: Any) -> bool:
+    """Whether the session's NEWEST entry is the agent's own words — not a
+    tool call, not a tool's result, not a preamble before a tool call.
+
+    Owner, 2026-11-12: A6000's run was called finished at 3.5 minutes on
+    «我先做只读元数据采集…不会做任何修改» — the agent's plan, said before its
+    first command. The last assistant TEXT anywhere is not the end of a turn;
+    the last ENTRY being that text is."""
+    plain = _plain_text(transcript)
+    if plain:
+        entries = text_entries(plain)
+        return bool(entries) and entries[-1]["label"].lower() in ANSWER_LABELS \
+            and bool(entries[-1]["body"])
+    for entry in reversed(_entries(transcript)):
+        inner = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        role = entry.get("role") or inner.get("role") or entry.get("type")
+        content = entry.get("content") if entry.get("content") is not None else inner.get("content")
+        blocks = _blocks(content)
+        if role in ("user", "human", "tool") or any(b.get("type") == "tool_result" for b in blocks):
+            return False
+        if role != "assistant":
+            continue                    # a summary or system line: look further back
+        if any(b.get("type") in ("tool_use", "server_tool_use") for b in blocks):
+            return False
+        return bool(_text(content if content is not None else entry.get("text")))
+    return False
+
+
 def _entries(transcript: Any) -> list[dict]:
     if isinstance(transcript, str):
         try:
@@ -633,7 +665,7 @@ class Watcher:
         transcript = read.get("transcript")
         if work_summary(transcript).get("waiting_for_person"):
             return False
-        if last_assistant_text(transcript) is None:
+        if not ends_with_answer(transcript):
             return False
         self._trace("finished: the session ends with the agent's answer",
                     session_ref=watch["session_ref"], run_id=watch["run_id"])
@@ -683,7 +715,8 @@ class Watcher:
                                     "completed with readable output")
             elif status == STATUS_FAILED:
                 event = self._event(watch, "run.failed", "notify", f"failed ({reason})")
-            elif status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY" and self._answered(watch):
+            elif status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY" and self._answered(watch) \
+                    and self._finished(watch):
                 # No run receipt, but the session holds the reply: that is output.
                 event = self._event(watch, "run.completed", "notify",
                                     "completed; reply read from the session")
