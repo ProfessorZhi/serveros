@@ -58,6 +58,10 @@ UNIT_TEMPLATES = {
     "core_lite_service": "native/node-core/core-lite/deploy/serveros-core-lite-publish.service",
     "core_lite_timer": "native/node-core/core-lite/deploy/serveros-core-lite-publish.timer",
     "core_lite_publish": "native/node-core/core-lite/deploy/publish-status.sh",
+    # The network probe the publisher runs with --network-target, and the fold
+    # that adds its result to the document; installed next to the publisher.
+    "core_lite_probe": "native/node-core/core-lite/net/probe_network.py",
+    "core_lite_fold": "native/node-core/core-lite/net/fold_network.py",
     "node_connector": "fleet_mcp/node/systemd/user/serveros-fleet-node-connector.service.in",
     "hub_watch": "integrations/fleet-hub-watch/serveros-fleet-watch.service.template",
     "secrets_sync": "distribution/keycenter/serveros-secrets-sync.service.template",
@@ -69,6 +73,7 @@ UNIT_TEMPLATES = {
     "node_connector_windows": "fleet_mcp/node/install.ps1",
     "core_lite_publish_windows": "native/node-core/core-lite/windows/deploy/publish-status.ps1",
     "core_lite_task_windows": "native/node-core/core-lite/windows/deploy/register-publish-task.ps1",
+    "core_lite_probe_windows": "native/node-core/core-lite/windows/deploy/probe-network.ps1",
     # The task's action is wscript.exe running this file, and the registration
     # script refuses to register without it. Pinned here rather than left to the
     # device's checkout: the kit states what the device is supposed to run, and a
@@ -200,7 +205,8 @@ def kit(doc: dict, name: str) -> dict:
             "task": "\\ServerOS\\ServerOS Core-Lite publish (scheduled task, this user)",
             "templates": [_pin(UNIT_TEMPLATES[k]) for k in ("core_lite_publish_windows",
                                                              "core_lite_task_windows",
-                                                             "core_lite_task_launcher_windows")],
+                                                             "core_lite_task_launcher_windows",
+                                                             "core_lite_probe_windows")],
             "status_file": "%LOCALAPPDATA%\\ServerOS\\state\\core-lite\\status.json"}
     elif mon["core_lite"]:
         monitor["core_lite"] = {
@@ -208,7 +214,8 @@ def kit(doc: dict, name: str) -> dict:
             "profile": _pin(mon["core_lite"]),
             "units": ["serveros-core-lite-publish.service", "serveros-core-lite-publish.timer"],
             "templates": [_pin(UNIT_TEMPLATES[k]) for k in
-                          ("core_lite_service", "core_lite_timer", "core_lite_publish")],
+                          ("core_lite_service", "core_lite_timer", "core_lite_publish",
+                           "core_lite_probe", "core_lite_fold")],
             "status_file": "~/.local/state/serveros/core-lite/status.json"}
     if mon["node_connector"]:
         key = "node_connector" if dev["os"] == "linux" else "node_connector_windows"
@@ -496,7 +503,9 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
                  ["install", "-D", "-m", "755", "-t", str(ctx.lib_dir),
                   str(build / "serveros-node-resource-snapshot"),
                   str(build / "core-lite" / "core-lite-status"),
-                  str(ROOT / UNIT_TEMPLATES["core_lite_publish"])]),
+                  str(ROOT / UNIT_TEMPLATES["core_lite_publish"]),
+                  str(ROOT / UNIT_TEMPLATES["core_lite_probe"]),
+                  str(ROOT / UNIT_TEMPLATES["core_lite_fold"])]),
             Step("monitor", "core-lite: publish unit",
                  write=(ctx.unit_dir / "serveros-core-lite-publish.service", unit)),
             Step("monitor", "core-lite: timer",

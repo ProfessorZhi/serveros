@@ -99,7 +99,15 @@
           },
           {
             "path": "native/node-core/core-lite/deploy/publish-status.sh",
-            "digest": "sha256:d3d63e0a718158639036eb5d6d42aa1b0a0444cc74e133474140fead3260cd62"
+            "digest": "sha256:eb882a3869ed7032d24bb8ad67cbf726852b523e1df56cbbad4e33280107fc35"
+          },
+          {
+            "path": "native/node-core/core-lite/net/probe_network.py",
+            "digest": "sha256:e006cbd87fd7952d5c22de169b11ff741b46033170b12d29f4e106e67e70c73c"
+          },
+          {
+            "path": "native/node-core/core-lite/net/fold_network.py",
+            "digest": "sha256:087bad83916b3557b3fa0b8d7ee999f0f7da9bd8fcc5a291ffd18f638f272711"
           }
         ],
         "status_file": "~/.local/state/serveros/core-lite/status.json"

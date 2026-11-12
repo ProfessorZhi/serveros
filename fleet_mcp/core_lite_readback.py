@@ -125,7 +125,19 @@ OBSERVATION_VALUE_KEYS: dict[str, dict[str, str]] = {
     # this map is what tells the reader which members are ITS shape, so a
     # document that grew a `processes` list is refused rather than carried.
     "gpu.readonly": {"gpus": "gpu_rows", "sample_time": "sample_time"},
+    # The device's own view of its network: per configured path (a name the
+    # deploy chose, e.g. `tokyo-public`), the median TCP connect time and the
+    # share of connects that failed. Measured by the publish scripts' probe
+    # (`native/node-core/core-lite/net/`), never by the native builder.
+    "network.readonly": {"paths": "net_rows", "sample_time": "sample_time"},
 }
+
+#: One network path row, and the bounds each member is checked against.
+NET_VALUE_KEYS = frozenset({"paths", "sample_time"})
+NET_ROW_KEYS = frozenset({"name", "rtt_ms", "loss_percent", "samples"})
+NET_PATHS_MAX = 8
+NET_RTT_MAX_MS = 60_000
+_NET_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,23}\Z")
 
 #: A card counter. `index` and `label` identify a card to a human without naming
 #: an instance — no UUID, no serial, no bus id — which is why `label` is
@@ -724,6 +736,59 @@ def _gpu_rows(rows: Any, sink: list[Refusal]) -> tuple[str, Any]:
     return _OK, out
 
 
+def _net_value(value: dict[str, Any], sink: list[Refusal]) -> tuple[str, Any, bool]:
+    """Project a `network.readonly` value: all rows or none, like the GPUs.
+
+    A path name is a deploy-chosen word, charset-bounded so that it can never
+    carry a host, an address or a credential onto a card. `rtt_ms` is null
+    when no connect succeeded (loss 100%).
+    """
+    if set(value) - NET_VALUE_KEYS or not isinstance(value.get("paths"), list):
+        sink.append(Refusal("MALFORMED_VALUE", "network.readonly",
+                            "a PRESENT network value carries a `paths` list and nothing else"))
+        return _BAD, None, False
+    rows = value["paths"]
+    if not 0 < len(rows) <= NET_PATHS_MAX:
+        sink.append(Refusal("MALFORMED_VALUE", "network.readonly.paths",
+                            f"between 1 and {NET_PATHS_MAX} paths"))
+        return _BAD, None, False
+    out, names = [], set()
+    for index, row in enumerate(rows):
+        where = f"network.readonly.paths[{index}]"
+        if not isinstance(row, dict) or set(row) != NET_ROW_KEYS:
+            sink.append(Refusal("MALFORMED_VALUE", where, "not a path row"))
+            return _BAD, None, False
+        name, rtt, loss, samples = row["name"], row["rtt_ms"], row["loss_percent"], row["samples"]
+        if not isinstance(name, str) or not _NET_NAME.match(name) or name in names:
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.name", "not a path name"))
+            return _BAD, None, False
+        if not (isinstance(samples, int) and not isinstance(samples, bool) and 1 <= samples <= 100):
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.samples", "not an integer in [1, 100]"))
+            return _BAD, None, False
+        if not _finite_number(loss) or not 0 <= loss <= 100:
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.loss_percent", "not a number in [0, 100]"))
+            return _BAD, None, False
+        if rtt is None:
+            if loss != 100:
+                sink.append(Refusal("MALFORMED_VALUE", f"{where}.rtt_ms",
+                                    "null only when every connect failed"))
+                return _BAD, None, False
+        elif not _finite_number(rtt) or not 0 <= rtt <= NET_RTT_MAX_MS:
+            sink.append(Refusal("MALFORMED_VALUE", f"{where}.rtt_ms",
+                                f"not a number in [0, {NET_RTT_MAX_MS}]"))
+            return _BAD, None, False
+        names.add(name)
+        out.append({"name": name, "rtt_ms": rtt, "loss_percent": loss, "samples": samples})
+    projected: dict[str, Any] = {"paths": out}
+    if "sample_time" in value:
+        if _as_iso(value["sample_time"]) is None:
+            sink.append(Refusal("MALFORMED_VALUE", "network.readonly.sample_time",
+                                "not a timestamp this reader can place"))
+            return _BAD, None, False
+        projected["sample_time"] = value["sample_time"]
+    return _OK, projected, True
+
+
 def _gpu_value(value: dict[str, Any], sink: list[Refusal]) -> tuple[str, Any, bool]:
     """Project a `gpu.readonly` value. Returns (state, value, all_measured).
 
@@ -777,6 +842,9 @@ def _project_value(name: str, value: dict[str, Any], sink: list[Refusal]
         if unknown:
             return _BAD, None, False
         return _gpu_value(value, sink)
+
+    if name == "network.readonly":
+        return _net_value(value, sink)
 
     if name == "storage.readonly":
         state, projected = _storage_value(value, sink)

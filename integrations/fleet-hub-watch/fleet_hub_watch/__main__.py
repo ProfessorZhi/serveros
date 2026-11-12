@@ -390,6 +390,7 @@ def main(argv: list[str] | None = None) -> int:
             journaled = None
             if journal is not None:
                 try:
+                    journal.note_resources(views, now)
                     journaled = journal.tick(now)
                 except Exception as exc:  # noqa: BLE001 - the journal never stops the watch
                     journaled = {"error": type(exc).__name__}

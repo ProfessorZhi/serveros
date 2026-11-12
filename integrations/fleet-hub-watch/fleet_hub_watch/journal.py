@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+from .levels import WORD
+
 SUBSCRIBER = "fleet-journal"
 KIND_WORDS = {"chat": "聊天类（ChatGPT、Grok 等）", "agent": "agent 类（Claude Code、Codex 等）",
               "other": "其他"}
@@ -315,6 +317,51 @@ class Journal:
             day.mkdir(parents=True, exist_ok=True)
             if not path.exists():
                 path.write_text(f"# {at:%Y-%m-%d} 与管家的对话\n\n", encoding="utf-8")
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n\n")
+            self._pending += 1
+        return path
+
+    # -- the machines' own state ------------------------------------------------
+    #
+    # Owner, 2026-11-12: «硬件信息这些也存入日志，方便排查网络质量、内存、硬盘».
+    # Every RESOURCE_EVERY a snapshot of every device — each reading as the
+    # card would say it, the network paths and how fast the hub reads it — and
+    # at once whenever a device's level changes, so a night that went wrong
+    # can be read back minute by minute. Readings only: no host, no address.
+
+    RESOURCE_EVERY = 600.0
+
+    def note_resources(self, views: list[dict], now: datetime) -> Path | None:
+        state = tuple((v.get("device_ref"), v.get("level"),
+                       tuple((r.get("key"), r.get("level")) for r in v.get("readings") or []))
+                      for v in views)
+        changed = state != getattr(self, "_resource_state", None)
+        if not views or (not changed and self.clock() - getattr(self, "_resource_at", 0.0)
+                         < self.RESOURCE_EVERY):
+            return None
+        first = not hasattr(self, "_resource_state")
+        self._resource_state, self._resource_at = state, self.clock()
+        at = now.astimezone(CN)
+        day = self.root / "resources" / f"{at:%Y}" / f"{at:%m}"
+        path = day / f"{at:%d}.md"
+        why = "定时" if first or not changed else "有变化"
+        lines = [f"## {at:%H:%M:%S}（{why}）", ""]
+        for view in views:
+            readings = view.get("readings") or []
+            said = []
+            for r in readings:
+                text = f"{r.get('label')} {r.get('text')}"
+                if r.get("level") in ("WARN", "ALERT"):
+                    text = f"**{text}**（{WORD.get(r.get('level'), r.get('level'))}）"
+                said.append(text)
+            lines.append(f"- **{view.get('name') or view.get('device_ref')}**　"
+                         f"{WORD.get(view.get('level'), '无法确认')}　" + "；".join(_mask(x) for x in said))
+        with self._chat_lock:
+            day.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.write_text(f"# {at:%Y-%m-%d} 设备状态（资源、网络、东京读它）\n\n",
+                                encoding="utf-8")
             with path.open("a", encoding="utf-8") as handle:
                 handle.write("\n".join(lines) + "\n\n")
             self._pending += 1

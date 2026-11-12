@@ -59,15 +59,19 @@
         "templates": [
           {
             "path": "native/node-core/core-lite/windows/deploy/publish-status.ps1",
-            "digest": "sha256:2b3943c6adf097263db93c430d60034b3e4b51ee64d3b6bafe12e9c37211f0b5"
+            "digest": "sha256:aae62c27ae33a22e73a6f4b658661052e2e4fa227e2bf194ebe54180f8b62b3a"
           },
           {
             "path": "native/node-core/core-lite/windows/deploy/register-publish-task.ps1",
-            "digest": "sha256:3ad8fb6fcab15ba5de5a4ecaa4b00193c03c648735dc993cd0eb9d83ed947e3d"
+            "digest": "sha256:bc52a5a9dc85f39eb88397f25ce51071869e1344b91f0d0a58ac60c599b4bddb"
           },
           {
             "path": "native/node-core/core-lite/windows/deploy/run-hidden-wait.vbs",
             "digest": "sha256:c73f9ba68fffdb2672f0949d7c96d5e761f718679ae114ddbd70faa9d1b0fef8"
+          },
+          {
+            "path": "native/node-core/core-lite/windows/deploy/probe-network.ps1",
+            "digest": "sha256:8c5fcda4f6f7390e781acdbdcf6d5433377237607207e27b2b2a16f0cc2f3994"
           }
         ],
         "status_file": "%LOCALAPPDATA%\\ServerOS\\state\\core-lite\\status.json"

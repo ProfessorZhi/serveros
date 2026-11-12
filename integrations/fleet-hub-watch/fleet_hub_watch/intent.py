@@ -35,7 +35,7 @@ from typing import Callable
 #: The answers the hub can give, as the model is told about them.
 COMMANDS = {
     "status": "每台设备现在是否正常、有没有问题（一句话问整体情况、哪台有事）",
-    "resource": "资源读数和曲线：CPU、内存、交换区、磁盘、显存；可以指定一台设备",
+    "resource": "资源读数和曲线：CPU、内存、交换区、磁盘、显存、网络质量（延迟、丢包、断线）；可以指定一台设备",
     "tasks": "正在跑的任务批次和刚完成的",
     "batch": "某一个批次里每个任务的结论；query 填批次的名字",
     "trace": "某个任务或批次走到哪一步、卡在哪；query 填它的名字或 id",
@@ -43,7 +43,8 @@ COMMANDS = {
     "help": "问的是这个助手能做什么，或者以上都不是",
 }
 #: The reading a question is about -> the word the answerer reads it back from.
-FOCUS_WORD = {"cpu": "CPU", "memory": "内存", "swap": "交换区", "disk": "磁盘", "gpu": "显存"}
+FOCUS_WORD = {"cpu": "CPU", "memory": "内存", "swap": "交换区", "disk": "磁盘", "gpu": "显存",
+              "network": "网络"}
 #: Commands whose argument is free text taken from the sentence.
 TAKES_QUERY = ("batch", "trace", "memory")
 MAX_TEXT = 500
@@ -63,13 +64,14 @@ JSON 的字段：
   "device":  上面的某一个设备，或 null
   "detail":  true 表示他明确要详细/完整的内容，否则 false
   "focus":   他问的是哪一项读数："cpu" / "memory"（内存）/ "swap"（交换区）/
-             "disk"（磁盘）/ "gpu"（显卡、显存）；没有专指某一项就填 null。
+             "disk"（磁盘）/ "gpu"（显卡、显存）/ "network"（网络、延迟、丢包、老断、卡）；
+             没有专指某一项就填 null。
              问 CPU 就答 CPU，不要拿别的读数当主角。
   "query":   command 是 batch / trace / memory 时，从句子里原样摘出要查的名字或 id，
              一个字都不要删改（「别等测试那批」的名字是「别等测试」）；否则 ""
 
   "layout":  只在 command 是 resource 时填：回答卡片怎么排，按重要性排，最多 4 块，
-             每块是 {{"block": 下面某一个, "metric": "cpu"/"memory"/"swap"/"disk"/"gpu" 或 null,
+             每块是 {{"block": 下面某一个, "metric": "cpu"/"memory"/"swap"/"disk"/"gpu"/"network" 或 null,
              "device": 上面某一个设备或 null}}。可选的 block：
 {blocks}
              按问题挑最能说明问题的组合，不要每次都一样：问整体就对比表加柱状图，
