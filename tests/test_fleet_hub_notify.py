@@ -251,6 +251,62 @@ class ReachIsConfirmedBeforeItIsAnOutage(unittest.TestCase):
         self.assertEqual(self.kinds(), [], "the streak restarted at the good read")
 
 
+
+def late(age=75):
+    """What the readback says when the route answered but the document's stamp
+    is past the bound: UNKNOWN, STALE — never NOT_CONNECTED."""
+    return {"connected": "UNKNOWN",
+            "freshness": {"state": "STALE", "age_seconds": age, "bound_seconds": 60}}
+
+
+class ALateWriteIsNotALostMachine(unittest.TestCase):
+    """Owner, 2026-11-12: «查一下 FJPCOS 为什么老断».
+
+    FJPCOS publishes its reading once a minute; the reader's freshness bound is
+    60 s. A run that started a few seconds late made the next read STALE, the
+    readback said UNKNOWN, and that answered-but-not-connected read was paged at
+    once as 失联 — the following read was 已恢复. A late write now goes through
+    the same three-in-a-row window as a read that timed out.
+    """
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.dir = Path(self._td.name)
+        self.inbox = EventInbox(self.dir / "inbox.sqlite")
+        self.store = resources.LevelStore(self.dir / "resources.sqlite")
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def sweep(self, at, **by_device):
+        return resources.sweep(Failing(by_device), None, self.inbox, self.store, THRESHOLDS,
+                               now_iso=at)
+
+    def events(self):
+        return [(e["kind"], e["evidence"]) for e in self.inbox.read("t", limit=200)["events"]]
+
+    def test_the_night_of_the_eleventh_pages_nobody(self):
+        self.sweep("2026-11-11T16:00:00Z", **{TOKYO: summary()})
+        for minute in range(10, 60, 7):
+            self.sweep(f"2026-11-11T16:{minute}:00Z", **{TOKYO: late()})
+            self.sweep(f"2026-11-11T16:{minute}:30Z", **{TOKYO: summary()})
+        self.assertEqual(self.events(), [], "a late write held, then cleared")
+
+    def test_a_writer_that_stopped_is_told_once_as_stopped(self):
+        self.sweep("2026-11-11T16:00:00Z", **{TOKYO: summary()})
+        for i in range(resources.REACH_CONFIRMATIONS):
+            view = self.sweep(f"2026-11-11T16:0{i + 1}:00Z", **{TOKYO: late(age=60 * (i + 2))})[0]
+        self.assertEqual(self.events(), [("node.unreachable", "reach|ALERT|STALE")])
+        reach = [r for r in view["readings"] if r["key"] == "reach"][0]
+        self.assertEqual(reach["text"], "读数停更 4 分钟")
+
+    def test_a_device_that_says_it_is_not_connected_is_still_told_at_once(self):
+        self.sweep("2026-11-11T16:00:00Z", **{TOKYO: summary()})
+        self.sweep("2026-11-11T16:00:30Z", **{TOKYO: {
+            "connected": "NOT_CONNECTED", "freshness": {"state": "STALE", "age_seconds": 90}}})
+        self.assertEqual([k for k, _ in self.events()], ["node.unreachable"])
+
+
 class Recorder:
     def __init__(self):
         self.ops = []

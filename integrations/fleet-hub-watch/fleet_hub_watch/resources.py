@@ -394,7 +394,30 @@ def _read_device(service: Any, principal: Any,
     if first is None and reason is None:
         # Every runtime answered with nothing at all: silence, not an exception.
         reason = "NO_READING"
+    if reason is None and first is not None and _late(first):
+        # The route answered and named this device; only the document's stamp
+        # was past the freshness bound. That is a late write, not a lost
+        # machine: FJPCOS publishes once a minute against a 60 s bound, so any
+        # run that starts a few seconds late read as 失联 and the next one as
+        # 已恢复 — a dozen pages on the night of 11-11. A late write goes
+        # through the same confirmation window as a read that timed out.
+        reason = "STALE"
     return first, reason
+
+
+def _late(summary: dict[str, Any]) -> bool:
+    return ((summary.get("freshness") or {}).get("state") == "STALE"
+            and summary.get("connected") != "NOT_CONNECTED")
+
+
+def _say_stale(view: dict[str, Any], summary: dict[str, Any] | None) -> None:
+    """A confirmed stop of the device's own writer says so, not 失联: the
+    machine answers, its collector has stopped writing."""
+    age = ((summary or {}).get("freshness") or {}).get("age_seconds")
+    for reading in view["readings"]:
+        if reading["key"] == "reach" and reading["level"] == ALERT:
+            reading["text"] = (f"读数停更 {int(age) // 60} 分钟" if isinstance(age, (int, float))
+                               and age >= 60 else "读数停更")
 
 
 def _hold_reach(view: dict[str, Any], previous: dict[str, str], count: int) -> None:
@@ -437,6 +460,8 @@ def sweep(service: Any, principal: Any, inbox: Any, store: LevelStore,
                 _hold_reach(view, previous, count)
             else:
                 reason_code = reason
+                if reason == "STALE":
+                    _say_stale(view, summary)
         views.append(view)
         for change in transitions(view, previous):
             recovered = change["now"] == OK
