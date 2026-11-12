@@ -84,8 +84,7 @@ def auto_layout(views: list[dict], *, focus: str | None = None,
                 device: str | None = None) -> list[dict[str, Any]]:
     """What a person would put on the card, from the readings alone."""
     if device is not None and focus == "network":
-        return [{"block": "network", "metric": None, "device": device},
-                {"block": "trend", "metric": "network", "device": device}]
+        return [{"block": "network", "metric": None, "device": device}]
     if device is not None:
         view = _view(views, device)
         hot = focus if focus in USAGE else _hottest(view)
@@ -93,9 +92,7 @@ def auto_layout(views: list[dict], *, focus: str | None = None,
                 {"block": "ring", "metric": hot, "device": device},
                 {"block": "trend", "metric": None, "device": device}]
     if focus == "network":
-        return [{"block": "network", "metric": None, "device": None},
-                {"block": "bar", "metric": "network", "device": None},
-                {"block": "trend", "metric": "network", "device": None}]
+        return [{"block": "network", "metric": None, "device": None}]
     flagged = any(v.get("level") in (WARN, ALERT) for v in views)
     blocks: list[dict[str, Any]] = []
     if flagged:
@@ -167,7 +164,7 @@ def _ink(reading: dict) -> str:
 # -- blocks --------------------------------------------------------------------
 
 def _table(views: list[dict], i: int) -> list[dict]:
-    shown = [m for m in METRICS if any(current(v, m) for v in views)]
+    shown = [m for m in USAGE if any(current(v, m) for v in views)]
     columns = [{"name": "device", "display_name": "设备", "data_type": "lark_md", "width": "auto"},
                {"name": "state", "display_name": "状态", "data_type": "lark_md", "width": "auto"}]
     columns += [{"name": m, "display_name": METRICS[m], "data_type": "lark_md", "width": "auto",
@@ -311,61 +308,79 @@ def _ms(value: Any) -> str:
     return f"{value:.0f} ms" if value < 1000 else f"{value / 1000:.1f} s"
 
 
+PATH_WORD = {"tokyo-public": "公网", "tokyo-tailnet": "tailnet", "local": "本地出口"}
+
+
+def _path(key: str) -> str:
+    name = key.removeprefix("net:")
+    return PATH_WORD.get(name, name.removeprefix("tokyo-"))
+
+
+def _usable(r: dict) -> bool:
+    return isinstance(r.get("rtt_ms"), (int, float)) and r.get("loss", 100) < 100
+
+
 def advice(views: list[dict]) -> list[str]:
-    """Which path is better today, per device, from its own probe."""
+    """One plain sentence per device that has something to say: a path that
+    does not connect, which path to Tokyo is better, where the slowness is."""
     out = []
     for view in views:
         paths = [r for r in view.get("readings") or [] if r.get("key", "").startswith("net:")]
         tokyo = [r for r in paths if "tokyo" in r["key"]]
-        if len(tokyo) >= 2:
-            best = min(tokyo, key=lambda r: (r.get("loss", 100), r.get("rtt_ms") or 1e9))
-            worst_ = max(tokyo, key=lambda r: (r.get("loss", 100), r.get("rtt_ms") or 1e9))
-            if best is not worst_ and (best.get("loss", 0) + 5 < worst_.get("loss", 0)
-                                       or (best.get("rtt_ms") or 1e9) * 1.3 < (worst_.get("rtt_ms") or 1e9)):
-                out.append(f"**{_name(view)}** 到东京：今天走 **{best['key'][4:]}** 更好"
-                           f"（{_ms(best.get('rtt_ms'))} · 丢 {best.get('loss', 0):.0f}%，"
-                           f"{worst_['key'][4:]} 是 {_ms(worst_.get('rtt_ms'))} · 丢 {worst_.get('loss', 0):.0f}%）")
         local = [r for r in paths if "tokyo" not in r["key"]]
-        if tokyo and local and all(r.get("level") == OK for r in local) \
-                and any(r.get("level") == WARN for r in tokyo):
-            out.append(f"**{_name(view)}** 本地出口正常，慢在去东京的那一段")
-        elif local and any(r.get("level") == WARN for r in local):
-            out.append(f"**{_name(view)}** 本地出口本身就差（{local[0]['text']}）")
+        name = f"**{_name(view)}**"
+        dead = [r for r in tokyo if not _usable(r)]
+        alive = [r for r in tokyo if _usable(r)]
+        for r in dead:
+            out.append(f"{name} 的 {_path(r['key'])} 连不上东京：这台可能没开它，或探测地址不对")
+        if len(alive) >= 2:
+            best = min(alive, key=lambda r: (r["loss"], r["rtt_ms"]))
+            other = max(alive, key=lambda r: (r["loss"], r["rtt_ms"]))
+            if best["loss"] + 5 < other["loss"] or best["rtt_ms"] * 1.3 < other["rtt_ms"]:
+                out.append(f"{name} 到东京走 **{_path(best['key'])}** 更好"
+                           f"（{_ms(best['rtt_ms'])}，{_path(other['key'])} {_ms(other['rtt_ms'])}"
+                           + (f" 丢 {other['loss']:.0f}%" if other["loss"] else "") + "）")
+        if alive and all(r.get("level") == WARN for r in alive):
+            if local and all(r.get("level") == OK for r in local):
+                out.append(f"{name} 本地出口正常，慢在去东京的那一段")
+            elif local:
+                out.append(f"{name} 本地出口本身就慢")
     return out
 
 
+def _path_line(r: dict) -> str:
+    if not _usable(r):
+        return f"{_path(r['key'])}　<font color='red'>连不上</font>"
+    value = _ms(r["rtt_ms"]) + (f" · 丢 {r['loss']:.0f}%" if r["loss"] else "")
+    color = LEVEL_INK.get(r.get("level"))
+    return f"{_path(r['key'])}　" + (f"<font color='{color}'>{value}</font>" if color else f"**{value}**")
+
+
 def _network(views: list[dict], i: int) -> list[dict]:
-    columns = [{"name": "device", "display_name": "设备", "data_type": "lark_md", "width": "auto"},
-               {"name": "path", "display_name": "线路", "data_type": "lark_md", "width": "auto"},
-               {"name": "rtt", "display_name": "往返", "data_type": "lark_md", "width": "auto",
-                "horizontal_align": "right"},
-               {"name": "loss", "display_name": "丢包 / 失败", "data_type": "lark_md", "width": "auto",
-                "horizontal_align": "right"}]
-    rows = []
+    """One grey column per device: the hub's read of it, then each path."""
+    columns = []
     for view in views:
-        for r in view.get("readings") or []:
-            key = r.get("key", "")
-            if key == "link":
-                rtt = f"一般 {_ms(r['p50'] * 1000)} · 慢时 {_ms(r['p95'] * 1000)}"
-                path = "东京读它"
-            elif key.startswith("net:"):
-                rtt, path = _ms(r.get("rtt_ms")), key[4:]
-            else:
-                continue
-            color = LEVEL_INK.get(r.get("level"))
-            loss = f"{r['value']:.0f}%"
-            rows.append({"device": f"**{_name(view)}**", "path": path, "rtt": rtt,
-                         "loss": f"<font color='{color}'>{loss}</font>" if color else loss})
-    if not rows:
-        return [cards._caption("还没有网络读数：设备的线路探测未开，或东京读它的次数还不够（每台约 5 分钟后出现）")]
-    out = [{"tag": "table", "element_id": cards._eid("net", i), "page_size": 12, "row_height": "low",
-            "freeze_first_column": True,
-            "header_style": {"background_style": "grey", "bold": True, "lines": 1,
-                             "text_size": "normal", "text_align": "left"},
-            "columns": columns, "rows": rows}]
+        readings = view.get("readings") or []
+        paths = [r for r in readings if r.get("key", "").startswith("net:")]
+        link = next((r for r in readings if r.get("key") == "link"), None)
+        # The hub reading itself (a few ms) says nothing about a network.
+        if not paths and not (link and link.get("level") == WARN):
+            continue
+        lines = [cards._text(f"**{_name(view)}**")]
+        if link:
+            said = f"东京读它 {_ms(link['p50'] * 1000)}" + (
+                f" · 失败 {link['fail']:.0f}%" if link["fail"] else "")
+            color = LEVEL_INK.get(link.get("level"))
+            lines.append(cards._caption(f"<font color='{color}'>{said}</font>" if color else said))
+        lines += [cards._text(_path_line(r)) for r in paths]
+        columns.append(lines)
+    if not columns:
+        return [cards._caption("还没有网络读数：设备的线路探测未开，或东京读它的次数还不够（约 5 分钟后出现）")]
+    out = [cards._box(cards._eid("net", i), columns)]
     said = advice(views)
     if said:
-        out.append(cards._box(cards._eid("netsay", i), [[cards._text(line) for line in said]]))
+        out.append(cards._text("\n".join(f"- {line}" for line in said)))
+    out.append(cards._caption("往返＝设备连到对方用的时间（越小越好）· 东京读它＝东京每次读这台要多久"))
     return out
 
 
@@ -399,8 +414,15 @@ def compose(layout: list[dict[str, Any]], views: list[dict], *, now: datetime,
     devices = {b.get("device") for b in layout if b.get("device")}
     shown = [v for v in views if not devices or v.get("device_ref") in devices] \
         if all(b.get("device") for b in layout) else views
+    net_drawn = False
     for i, block in enumerate(layout):
         kind, metric, device = block["block"], block.get("metric"), block.get("device")
+        if metric == "network" or kind == "network":
+            # Loss as a bar or a ring misleads (one path that never connects
+            # reads as 100%): the network is always drawn as its own block, once.
+            if net_drawn:
+                continue
+            kind, net_drawn = "network", True
         if kind == "table":
             got = _table(views, i)
         elif kind == "bar":
@@ -428,8 +450,10 @@ def compose(layout: list[dict[str, Any]], views: list[dict], *, now: datetime,
     level = worst(v.get("level") for v in shown) if shown else UNCONFIRMED
     flagged = sum(1 for v in shown if v.get("level") in (WARN, ALERT))
     head = f"{flagged} 台要看" if flagged else ("全部正常" if level == OK else WORD.get(level, "无法确认"))
-    title = (f"{_name(shown[0])} · 资源" if len(shown) == 1 and devices
-             else f"Fleet 资源 · {len(shown)} 台")
+    what = "网络" if layout and all(b["block"] == "network" or b.get("metric") == "network"
+                                     for b in layout) else "资源"
+    title = (f"{_name(shown[0])} · {what}" if len(shown) == 1 and devices
+             else f"Fleet {what} · {len(shown)} 台")
     return cards._card(TEMPLATE[level], title, cards._local(now, with_date=True), elements,
                        tags=[(head, cards.TAG_COLOR[level])],
                        summary=f"{title} · {head}")

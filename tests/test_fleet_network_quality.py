@@ -117,6 +117,14 @@ class TheHubJudgesIt(unittest.TestCase):
         fresh = view_with_paths(middling)
         self.assertEqual([r["level"] for r in fresh["readings"] if r["key"].startswith("net:")], [OK])
 
+    def test_a_path_that_never_connected_is_not_an_alarm(self):
+        dead = [{"name": "tokyo-tailnet", "rtt_ms": None, "loss_percent": 100, "samples": 3}]
+        never = view_with_paths(dead)
+        self.assertEqual([r["level"] for r in never["readings"] if r["key"].startswith("net:")],
+                         ["UNCONFIRMED"])
+        broke = view_with_paths(dead, {"net:tokyo-tailnet": OK})
+        self.assertEqual([r["level"] for r in broke["readings"] if r["key"].startswith("net:")], [WARN])
+
     def test_the_hub_times_its_reads_and_grades_the_link(self):
         with tempfile.TemporaryDirectory() as td:
             store = resources.LevelStore(Path(td) / "r.sqlite")
@@ -149,8 +157,24 @@ class TheCardSaysWhichPathIsBetter(unittest.TestCase):
         card = compose.compose(layout, fleet(), now=NOW)
         text = cards.card_text(card)
         self.assertIn("东京读它", text)
-        self.assertIn("今天走 tailnet 更好".replace("tailnet", "tokyo-tailnet"), text)
+        self.assertIn("到东京走 tailnet 更好（900 ms，公网 1.2 s 丢 15%）", text)
+        self.assertTrue(card["header"]["title"]["content"].startswith("Fleet 网络"))
+        self.assertNotIn("table", json.dumps(card), "one column per device, not a wide table")
         self.assertNotIn("example", text)
+
+    def test_a_path_that_never_connects_is_named_not_blamed_on_the_route(self):
+        """11-12 10:4x: A6000's tailnet probe never connected; the card said
+        «本地出口正常，慢在去东京的那一段» while its public path was fine."""
+        dell = view_with_paths([
+            {"name": "tokyo-public", "rtt_ms": 472, "loss_percent": 0, "samples": 3},
+            {"name": "tokyo-tailnet", "rtt_ms": None, "loss_percent": 100, "samples": 3},
+            {"name": "local", "rtt_ms": 13, "loss_percent": 0, "samples": 3}])
+        said = compose.advice([dell])
+        self.assertEqual(len(said), 1)
+        self.assertIn("tailnet 连不上东京", said[0])
+        card = compose.compose([{"block": "bar", "metric": "network", "device": None}], [dell], now=NOW)
+        self.assertFalse([e for e in card["body"]["elements"] if e.get("tag") == "chart"],
+                         "no 100% loss bar: the network is drawn as its own block")
 
     def test_the_owner_can_just_ask(self):
         self.assertEqual(commands.parse("网络怎么样")[0], "resource")

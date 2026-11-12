@@ -265,6 +265,10 @@ def device_view(device_ref: str, display_name: str, summary: dict | None,
         bad = loss >= NET_WARN["loss"] or (isinstance(rtt, (int, float)) and rtt >= NET_WARN["rtt"])
         clear = loss < NET_CLEAR["loss"] and (not isinstance(rtt, (int, float)) or rtt < NET_CLEAR["rtt"])
         level = WARN if bad or (previous.get(key) == WARN and not clear) else OK
+        if rtt is None and previous.get(key) not in (OK, WARN):
+            # A path that has never connected is not set up (no tailnet on
+            # this machine, a wrong probe address): shown, never an alarm.
+            level = UNCONFIRMED
         said = "连不上" if rtt is None else f"{rtt:.0f} ms"
         readings.append({"key": key, "label": f"网络 {name}", "level": level, "value": float(loss),
                          "text": f"{said} · 丢 {loss:.0f}%", "short": f"丢 {loss:.0f}%",
