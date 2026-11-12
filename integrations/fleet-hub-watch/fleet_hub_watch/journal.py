@@ -333,9 +333,12 @@ class Journal:
     RESOURCE_EVERY = 600.0
 
     def note_resources(self, views: list[dict], now: datetime) -> Path | None:
-        state = tuple((v.get("device_ref"), v.get("level"),
-                       tuple((r.get("key"), r.get("level")) for r in v.get("readings") or []))
-                      for v in views)
+        # A change is a device's level, or which of its readings need a look —
+        # not a reading appearing or a number moving, which every sweep does.
+        state = tuple(sorted((str(v.get("device_ref")), str(v.get("level")),
+                              tuple(sorted(str(r.get("key")) for r in v.get("readings") or []
+                                           if r.get("level") in ("WARN", "ALERT"))))
+                             for v in views))
         changed = state != getattr(self, "_resource_state", None)
         if not views or (not changed and self.clock() - getattr(self, "_resource_at", 0.0)
                          < self.RESOURCE_EVERY):
