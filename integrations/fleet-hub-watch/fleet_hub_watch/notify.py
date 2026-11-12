@@ -508,12 +508,46 @@ class Notifier:
                          " VALUES (?,?,?,?,?)",
                          (episode, card_key, generation, state, json.dumps(body, ensure_ascii=False)))
 
+    #: A problem that comes back this soon after it recovered is the same
+    #: problem flapping: its card is reopened in place, not sent again.
+    FLAP_WINDOW = timedelta(hours=3)
+
+    def _reopen_quietly(self, current: dict | None, body: dict, now: datetime) -> bool:
+        """Owner, 2026-11-12: FJPCOS 「连接 报警 / 已恢复」 went out a dozen times in
+        one evening. A problem back within `FLAP_WINDOW` of recovering, no
+        worse than before, reopens its own card in place (a patch makes no
+        sound) and counts the times."""
+        if current is None or current["state"] != "RECOVERED":
+            return False
+        previous = current["body"]
+        try:
+            recovered = _parse(previous.get("recovered_at"))
+        except (TypeError, ValueError):
+            return False
+        sent = self._card(current["card_key"])
+        if sent is None or now - recovered > self.FLAP_WINDOW \
+                or now - _parse(sent["sent_at"]) > PATCH_WINDOW \
+                or RANK[body["level"]] > RANK[previous["level"]]:
+            return False
+        flaps = int(previous.get("flaps") or 1) + 1
+        reopened = {**previous, **body, "first_seen": previous.get("first_seen"),
+                    "state": "OPEN", "flaps": flaps,
+                    "text": f"{body.get('text') or previous.get('text')}（反复：第 {flaps} 次）"}
+        reopened.pop("recovered_at", None)
+        if self._patch(current["card_key"], cards.alert_card(reopened, now=now, spec=self.spec), now):
+            self._save_episode(current["episode"] if "episode" in current else body["episode"],
+                               current["card_key"], current["generation"], "OPEN", reopened)
+            self._trace("flapping: same card reopened", ref=current["card_key"], flaps=flaps)
+        return True
+
     def _open(self, body: dict, now: datetime) -> None:
         """Open, raise, lower or refresh an episode."""
         if self._muted(body, now):
             return
         episode = body["episode"]
         current = self._episode(episode)
+        if self._reopen_quietly(current, body, now):
+            return
         if current is None or current["state"] != "OPEN":
             generation = (current["generation"] + 1) if current else 0
             card_key = f"episode:{episode}#{generation}"
@@ -596,7 +630,7 @@ class Notifier:
     # -- a card for every dispatched task -----------------------------------------
 
     #: A dispatched task not claimed by a batch within this long gets its own card.
-    ANNOUNCE_AFTER = timedelta(seconds=15)
+    ANNOUNCE_AFTER = timedelta(seconds=45)
     #: Dispatches older than this are not announced (a restart does not flood).
     ANNOUNCE_WITHIN = timedelta(hours=2)
 
@@ -639,6 +673,11 @@ class Notifier:
                 break                                   # rows are oldest first
             ref, run_id = row["session_ref"], row["run_id"]
             if self._batch_of({"session_ref": ref, "run_id": run_id}) is not None:
+                continue
+            ended = getattr(self.inbox, "run_outcome", lambda *_a: None)(ref, run_id)
+            if ended is not None:
+                # Already over (a restart catching up): its outcome was told
+                # already, and a 进行中 card would never be closed.
                 continue
             key = self._live_key(ref, run_id)
             if self._card(key) is not None:
@@ -722,6 +761,16 @@ class Notifier:
         event = {"summary": f"{head['name']}：{head['total']} 个任务",
                  "work_ref": f"batch:{batch_id}"}
         runs, opened_at = self._batch_runs(event)
+        for run in runs:
+            # A task that already had its own card before the commander put it in
+            # this batch: that card says where it went, and goes quiet.
+            live = self._live_key(run["session_ref"], run["run_id"])
+            if self._card(live) is not None:
+                self._patch(live, cards._card(
+                    "blue", f"{clean_label(run.get('label')) or '一个任务'} · 已并入批次",
+                    cards._local(now, with_date=True),
+                    [cards._text(f"进度和结果看批次卡「{head['name']}」")],
+                    summary=f"已并入批次「{head['name']}」"), now)
         key = f"batch:{event['work_ref']}"
         card = cards.batch_card(event, now=now, runs=runs, opened_at=opened_at,
                                 device_names=self.device_names)

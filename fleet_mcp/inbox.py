@@ -558,6 +558,16 @@ class EventInbox:
             return conn.execute("SELECT 1 FROM dispatched WHERE session_ref=? LIMIT 1",
                                 (session_ref,)).fetchone() is not None
 
+    def run_outcome(self, session_ref: str | None, run_id: str | None) -> str | None:
+        """The run's recorded outcome event kind, or None while it has none."""
+        if not session_ref or not run_id:
+            return None
+        with self._connect() as conn:
+            row = conn.execute("SELECT kind FROM events WHERE session_ref=? AND run_id=? AND kind IN "
+                               "('run.completed','run.failed','run.unknown') ORDER BY seq LIMIT 1",
+                               (session_ref, run_id)).fetchone()
+        return row["kind"] if row else None
+
     def recent_dispatches(self, since: str) -> list[dict[str, Any]]:
         """Runs Fleet dispatched at or after `since` (ISO), oldest first."""
         with self._connect() as conn:
