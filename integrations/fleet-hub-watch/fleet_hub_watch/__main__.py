@@ -304,10 +304,11 @@ def main(argv: list[str] | None = None) -> int:
         answerer = Answerer(service=service, principal=principal, inbox=watcher.inbox,
                             notifier=notifier, names=names, watching=watcher.store.all)
 
-        def reply(message_id: str, command: str, arg: str, words: str = "") -> str:
+        def reply(message_id: str, command: str, arg: str, words: str = "",
+                  layout: list | None = None) -> str:
             now = datetime.now(timezone.utc)
             try:
-                card = answerer.answer(command, arg, now)
+                card = answerer.answer(command, arg, now, layout=layout)
                 if words:           # the butler's own sentences, above the facts
                     if isinstance(card, list):
                         card = [cards.with_words(card[0], words)] + card[1:]

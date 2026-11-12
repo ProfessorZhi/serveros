@@ -26,7 +26,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from . import cards
+from . import cards, compose
 from .levels import ALERT, ICON, OK, TEMPLATE, UNCONFIRMED, WARN, WORD, worst
 
 CONSUME_MESSAGES = ["event", "consume", "im.message.receive_v1", "--as", "bot"]
@@ -322,6 +322,16 @@ class Answerer:
                       if (row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]) == ref)
         return cards.device_card(view, now=now, running=running, history=history, focus=focus)
 
+    def _composed(self, layout: list[dict], now: datetime) -> dict:
+        running: dict[str, int] = {}
+        for row in self.watching():
+            ref = row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]
+            running[ref] = running.get(ref, 0) + 1
+        return compose.compose(
+            layout, self.views, now=now, running=running,
+            histories={v["device_ref"]: self._history(v["device_ref"], now)
+                       for v in self.views if v.get("device_ref")})
+
     def digest(self, now: datetime) -> str:
         """What is true right now, as a few lines of text for the butler to
         answer from: each device's state and readings, and the batches open."""
@@ -348,7 +358,8 @@ class Answerer:
             lines.append(f"- 批次「{b.get('name')}」{state}：{b.get('settled')}/{b.get('total')} 个有结果")
         return f"时间 {cards._local(now, with_date=True)}（北京时间）\n" + "\n".join(lines)
 
-    def answer(self, command: str, arg: str, now: datetime) -> dict:
+    def answer(self, command: str, arg: str, now: datetime,
+               layout: list[dict] | None = None) -> dict:
         if command == "say":
             return cards._card("blue", "Fleet 管家", cards._local(now, with_date=True),
                                [cards._caption("发「帮助」看我能查什么")], summary="Fleet 管家")
@@ -381,6 +392,10 @@ class Answerer:
                 arg = (arg or "").replace(word, " ")
             focus, named = self._focus(arg)
             ref = self._device(named.strip()) or self._device(arg.strip())
+            if layout and self.views and not detailed:
+                # The butler's model chose the card's shape for this question;
+                # the numbers are still the hub's own (compose.py).
+                return self._composed(layout, now)
             if ref is not None:
                 return self._resource(ref, now, detailed=detailed, focus=focus)
             # No device named (资源 / 资源情况 / 资源缺口): every device on ONE card
@@ -391,14 +406,9 @@ class Answerer:
             if detailed or not self.views:
                 return [self._resource(r, now, detailed=detailed) for r in dict.fromkeys(refs)] or text_card(
                     "还没有读数", ["设备读数还没到，稍后再问"], now=now)
-            running: dict[str, int] = {}
-            for row in self.watching():
-                ref = row.get("device_ref") or str(row.get("session_ref", "")).split("|", 1)[0]
-                running[ref] = running.get(ref, 0) + 1
-            return cards.fleet_resource_card(
-                self.views, now=now, running=running, focus=focus,
-                histories={v["device_ref"]: self._history(v["device_ref"], now)
-                           for v in self.views if v.get("device_ref")})
+            # No model layout: the readings choose (what is wrong first, then
+            # the comparison, then the reading under the most pressure).
+            return self._composed(compose.auto_layout(self.views, focus=focus), now)
         if command == "trace":
             from fleet_mcp.trace import diagnose, exchange, line
             if not arg:
@@ -464,6 +474,7 @@ class MessageListener(_listener_base()):
         meant = understand(text, self.recognize, self.devices(), facts)
         command, arg = meant or ("help", "")
         words = getattr(self.recognize, "words", "") if asked_model else ""
+        layout = getattr(self.recognize, "layout", None) if asked_model else None
         if not asked_model:
             how = "command-word"
         elif getattr(self.recognize, "failed", 0) > failed_before:
@@ -475,14 +486,16 @@ class MessageListener(_listener_base()):
             how = "keywords" if meant else "none"
         thought = round(time.monotonic() - started, 1)
         self.handled += 1
-        sent = self.reply(message_id, command, arg, words) if words else \
-            self.reply(message_id, command, arg)
+        extra: dict = {"layout": layout} if layout and command == "resource" else {}
+        sent = self.reply(message_id, command, arg, words, **extra) if words else \
+            self.reply(message_id, command, arg, **extra)
         if self.log is not None:
             # Every exchange with the owner is kept: what was asked, how it was
             # understood, what the butler said, and whether the answer went out.
             try:
                 self.log({"message_id": message_id, "asked": _clean(text), "understood_by": how,
                           "command": command, "argument": arg, "said": words,
+                          **({"layout": [b["block"] for b in layout]} if extra else {}),
                           "seconds": thought, "total_seconds": round(time.monotonic() - started, 1),
                           "sent": sent})
             except Exception:  # noqa: BLE001 - a log line is not worth an answer

@@ -68,6 +68,14 @@ JSON 的字段：
   "query":   command 是 batch / trace / memory 时，从句子里原样摘出要查的名字或 id，
              一个字都不要删改（「别等测试那批」的名字是「别等测试」）；否则 ""
 
+  "layout":  只在 command 是 resource 时填：回答卡片怎么排，按重要性排，最多 4 块，
+             每块是 {{"block": 下面某一个, "metric": "cpu"/"memory"/"swap"/"disk"/"gpu" 或 null,
+             "device": 上面某一个设备或 null}}。可选的 block：
+{blocks}
+             按问题挑最能说明问题的组合，不要每次都一样：问整体就对比表加柱状图，
+             问某一项就柱状图加曲线，问某一台就大数字加环形图加曲线，问谁最吃紧就排行。
+             你只排版，不写任何数字，数字由程序从读数里填。其他 command 填 []
+
   "reply":   像管家一样用两三句大白话直接回答他（不超过 120 个字）：先说结论，
              有问题就说是哪台、多严重、建议看什么；只根据下面 <facts> 里的事实，
              没有的不要编；你只能看、不能动任何东西，被要求操作时如实说做不了。
@@ -119,7 +127,22 @@ def prompt_for(text: str, devices: dict[str, str], aliases: dict[str, str] | Non
     # The sentence cannot close its own fence.
     safe = text[:MAX_TEXT].replace("</message>", "")
     known = (facts or "（暂时没有读数）")[:MAX_FACTS].replace("</facts>", "")
-    return PROMPT.format(commands=commands, devices=listed, text=safe, facts=known)
+    from .compose import BLOCKS
+    blocks = "\n".join(f"               - {name}：{what}" for name, what in BLOCKS.items())
+    return PROMPT.format(commands=commands, devices=listed, text=safe, facts=known, blocks=blocks)
+
+
+def read_layout_reply(reply: str, devices: dict[str, str]) -> list[dict]:
+    """The checked `layout` from the model's reply; [] when there is none."""
+    from .compose import read_layout
+    found = re.search(r"\{.*\}", reply or "", re.DOTALL)
+    if not found:
+        return []
+    try:
+        doc = json.loads(found.group(0))
+    except ValueError:
+        return []
+    return read_layout(doc.get("layout"), devices) if isinstance(doc, dict) else []
 
 
 def read_reply(reply: str, devices: dict[str, str]) -> tuple[str, str] | None:
@@ -164,9 +187,12 @@ class Recognizer:
         self.asked = self.understood = self.failed = 0
         #: What the model said in answer to the last sentence ('' when nothing).
         self.words = ""
+        #: How it would lay the resource card out ([] when it did not say).
+        self.layout: list[dict] = []
 
     def __call__(self, text: str, devices: dict[str, str], facts: str = "") -> tuple[str, str] | None:
         self.words = ""
+        self.layout = []
         if not self.argv or not (text or "").strip():
             return None
         self.asked += 1
@@ -181,6 +207,7 @@ class Recognizer:
             return None
         got = read_reply(done.stdout, devices)
         self.words = read_words(done.stdout)
+        self.layout = read_layout_reply(done.stdout, devices) if got and got[0] == "resource" else []
         if got is not None:
             self.understood += 1
         return got
