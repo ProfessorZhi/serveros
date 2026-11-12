@@ -162,6 +162,20 @@ class TheCardSaysWhichPathIsBetter(unittest.TestCase):
         self.assertNotIn("table", json.dumps(card), "one column per device, not a wide table")
         self.assertNotIn("example", text)
 
+    def test_a_network_card_is_judged_by_the_network(self):
+        """11-12 11:11: every path fine, header «3 台要看» — from swap."""
+        views = fleet()
+        views[0]["readings"] = [r for r in views[0]["readings"] if r["key"] != "net:tokyo-public"]
+        views[0]["readings"].append({"key": "swap", "label": "交换区", "text": "100%",
+                                     "level": WARN, "value": 100})
+        views[0]["level"] = WARN
+        hub = {"device_ref": TOKYO, "name": "Tokyo", "level": WARN, "readings": [
+            {"key": "swap", "label": "交换区", "text": "100%", "level": WARN, "value": 100},
+            resources.link_reading({"n": 30, "p50": 0.001, "p95": 0.001, "fail": 0.0}, None)]}
+        card = compose.compose(compose.auto_layout(views + [hub], focus="network"), views + [hub], now=NOW)
+        self.assertEqual(card["header"]["title"]["content"], "Fleet 网络 · 1 台")
+        self.assertEqual(card["header"]["text_tag_list"][0]["text"]["content"], "全部正常")
+
     def test_a_path_that_never_connects_is_named_not_blamed_on_the_route(self):
         """11-12 10:4x: A6000's tailnet probe never connected; the card said
         «本地出口正常，慢在去东京的那一段» while its public path was fine."""

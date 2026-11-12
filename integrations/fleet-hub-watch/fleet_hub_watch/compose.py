@@ -447,11 +447,25 @@ def compose(layout: list[dict[str, Any]], views: list[dict], *, now: datetime,
     tasks = sum((running or {}).get(v.get("device_ref"), 0) for v in shown)
     foot = (f"{tasks} 个任务在跑 · " if tasks else "") + "「资源 东京」看单台 · 只读，不会动任何东西"
     elements.append(cards._caption(foot))
-    level = worst(v.get("level") for v in shown) if shown else UNCONFIRMED
-    flagged = sum(1 for v in shown if v.get("level") in (WARN, ALERT))
-    head = f"{flagged} 台要看" if flagged else ("全部正常" if level == OK else WORD.get(level, "无法确认"))
     what = "网络" if layout and all(b["block"] == "network" or b.get("metric") == "network"
                                      for b in layout) else "资源"
+    if what == "网络":
+        # A network card is judged by the network: a full swap on Tokyo is
+        # not a reason for this header to say 3 台要看 (11-12 11:11).
+        def net_level(view: dict) -> str:
+            return worst(r.get("level") for r in view.get("readings") or []
+                         if r.get("key") == "link" or str(r.get("key", "")).startswith("net:"))
+        shown = [v for v in shown
+                 if any(r.get("key") == "link" or str(r.get("key", "")).startswith("net:")
+                        for r in v.get("readings") or [])
+                 and (any(str(r.get("key", "")).startswith("net:") for r in v.get("readings") or [])
+                      or net_level(v) == WARN)] or shown
+        levels = {v.get("device_ref"): net_level(v) for v in shown}
+    else:
+        levels = {v.get("device_ref"): v.get("level") for v in shown}
+    level = worst(levels.values()) if shown else UNCONFIRMED
+    flagged = sum(1 for lv in levels.values() if lv in (WARN, ALERT))
+    head = f"{flagged} 台要看" if flagged else ("全部正常" if level == OK else WORD.get(level, "无法确认"))
     title = (f"{_name(shown[0])} · {what}" if len(shown) == 1 and devices
              else f"Fleet {what} · {len(shown)} 台")
     return cards._card(TEMPLATE[level], title, cards._local(now, with_date=True), elements,
