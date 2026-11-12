@@ -191,23 +191,40 @@ class Recognizer:
         self.words = ""
         #: How it would lay the resource card out ([] when it did not say).
         self.layout: list[dict] = []
+        #: Why the last sentence got no usable answer from the model, in a few
+        #: words ('' when it did): kept in the butler's log, never shown.
+        self.problem = ""
 
     def __call__(self, text: str, devices: dict[str, str], facts: str = "") -> tuple[str, str] | None:
         self.words = ""
         self.layout = []
+        self.problem = ""
         if not self.argv or not (text or "").strip():
             return None
         self.asked += 1
         try:
             done = self._run(self.argv, input=prompt_for(text, devices, self.aliases, facts), text=True,
                              capture_output=True, timeout=self.timeout)
-        except (OSError, subprocess.SubprocessError):
+        except subprocess.TimeoutExpired:
             self.failed += 1
+            self.problem = f"timeout after {self.timeout:g}s"
+            return None
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.failed += 1
+            self.problem = f"could not run ({type(exc).__name__})"
             return None
         if done.returncode != 0:
             self.failed += 1
+            # ask_model's own one-line reason (it never prints a key).
+            last = (done.stderr or "").strip().splitlines()[-1:] or [""]
+            self.problem = f"exit {done.returncode}: {last[0][:160]}"
             return None
         got = read_reply(done.stdout, devices)
+        if got is None:
+            out = done.stdout or ""
+            self.problem = ("no JSON in the answer" if "{" not in out else
+                            "the JSON was cut off (raise --max-tokens)" if out.count("{") > out.count("}")
+                            else "the JSON named no answer the hub has")
         self.words = read_words(done.stdout)
         self.layout = read_layout_reply(done.stdout, devices) if got and got[0] == "resource" else []
         if got is not None:

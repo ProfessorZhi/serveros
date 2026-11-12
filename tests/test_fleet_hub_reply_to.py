@@ -181,3 +181,33 @@ class TheCommanderRecordsWhatItToldTheOwner(unittest.TestCase):
         tool = {t.name: t for t in tools.TOOLS}["fleet_batch"]
         self.assertIn("reply", tool.input_schema["properties"]["action"]["enum"])
         self.assertIn("reply", tool.input_schema["properties"])
+
+
+class TheOwnersWordsAreKeptOnce(unittest.TestCase):
+    """Owner, 2026-11-11: the send and the batch both carried owner_request, and
+    the commander log showed the same sentence twice."""
+
+    def test_a_batch_does_not_repeat_what_its_send_already_kept(self):
+        import tempfile
+        from fleet_mcp.fleet import FleetService, Principal
+        from fleet_mcp.inbox import EventInbox
+        with tempfile.TemporaryDirectory() as tmp:
+            service = object.__new__(FleetService)
+            service.inbox = EventInbox(Path(tmp) / "i.sqlite")
+            service.admit = lambda principal: None
+            service.audit = type("Audit", (), {"record": lambda self, *a, **k: None})()
+            device = type("Ref", (), {"ref": "device:x"})()
+            service.registry = type("Registry", (), {"all": lambda self: [
+                type("Entry", (), {"device_ref": device})()]})()
+            gpt = Principal(name="gpt", scopes=frozenset({"fleet:read", "fleet:send"}), credential_kind="oauth")
+            service.inbox.trace("commander", "owner request", session_ref="device:x|c|s", run_id="r1",
+                                text="派一个小任务")
+            service.batch(gpt, action="open", name="b", runs=[{"session_ref": "device:x|c|s", "run_id": "r1"}],
+                          owner_request="派一个小任务", skills=["fleet-async-dispatch"])
+            service.batch(gpt, action="open", name="c", runs=[{"session_ref": "device:x|c|t", "run_id": "r2"}],
+                          owner_request="另一句", skills=["fleet-async-dispatch"])
+            said = [(s["detail"].get("text"), s["detail"].get("skills")) for s in service.inbox.read_trace(minutes=5)
+                    if s["step"] == "owner request"]
+        self.assertEqual([t for t, _ in said].count("派一个小任务"), 1)
+        self.assertIn((None, "fleet-async-dispatch"), said, "the skills are still kept on the batch")
+        self.assertIn(("另一句", "fleet-async-dispatch"), said)

@@ -43,7 +43,11 @@ from fleet_next_agent_monitor.sources import Grant, LegacyFactsSource
 
 from .facts import FleetFactsClient
 
-BACKOFF_SECONDS = (10, 30, 120, 600)
+#: When a watched run is read again: soon, then every minute. Owner, 2026-11-11:
+#: a 4-minute task waited for the 600-second read and reported at minute 14.
+BACKOFF_SECONDS = (10, 20, 30, 60)
+#: While a run goes on, what the device is doing is read on every WORK_EVERY-th check.
+WORK_EVERY = 3
 #: A run read right after it started can say `completed` with no activity
 #: record yet (serveros#531). Inside this window that is "not readable yet",
 #: not a verdict; only after it does the run become 无法确认.
@@ -726,8 +730,9 @@ class Watcher:
                 recorded.append(self.inbox.record(event))
                 self.store.drop(watch, now)
                 continue
-            if watch["checks"] >= 2 and self._dispatched(watch):
-                # Past the first quick checks: say what the device is doing.
+            if watch["checks"] >= 2 and watch["checks"] % WORK_EVERY == 2 and self._dispatched(watch):
+                # Past the first quick checks: say what the device is doing —
+                # every few reads, not each minute (a 100-entry session read).
                 self._device_work(watch, final=False)
             stalled = bool(watch["stall_reported"])
             if not stalled and age >= self.stall_after:
