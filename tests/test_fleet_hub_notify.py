@@ -446,13 +446,23 @@ class AlertEpisodes(NotifierTest):
         self.tick(THURSDAY_10 + timedelta(minutes=10))
         self.assertEqual(self.transport.ops, [])
 
-    def test_a_reopened_episode_is_a_new_card(self):
+    def test_a_reopened_episode_soon_after_is_the_same_card(self):
+        """Owner, 2026-11-12: back within FLAP_WINDOW is flapping — one card."""
         self.node(ALERT, "2026-10-29T02:00:00Z")
         self.tick(THURSDAY_10 + timedelta(minutes=5))
         self.node(OK, "2026-10-29T02:10:00Z", recovered=True)
         self.tick(THURSDAY_10 + timedelta(minutes=10))
         self.node(ALERT, "2026-10-29T02:20:00Z")
         self.tick(THURSDAY_10 + timedelta(minutes=25))
+        self.assertEqual([op for op, *_ in self.transport.ops], ["send", "patch", "patch"])
+
+    def test_a_reopened_episode_long_after_is_a_new_card(self):
+        self.node(ALERT, "2026-10-29T02:00:00Z")
+        self.tick(THURSDAY_10 + timedelta(minutes=5))
+        self.node(OK, "2026-10-29T02:10:00Z", recovered=True)
+        self.tick(THURSDAY_10 + timedelta(minutes=10))
+        self.node(ALERT, "2026-10-29T06:20:00Z")
+        self.tick(THURSDAY_10 + timedelta(hours=4, minutes=25))
         self.assertEqual([op for op, *_ in self.transport.ops], ["send", "patch", "send"])
 
     def test_a_card_past_the_patch_window_is_continued_on_a_new_one(self):
@@ -788,7 +798,7 @@ class EveryDispatchedTaskHasACard(NotifierTest):
         self.notifier.excerpt = lambda r, rid: "pong 16:01"
         now = self._now()
         self.assertEqual(self.notifier.announce_dispatches(now), 0, "a batch may still claim it")
-        later = now + timedelta(seconds=20)
+        later = now + timedelta(seconds=50)
         self.assertEqual(self.notifier.announce_dispatches(later), 1)
         self.assertEqual(self.notifier.announce_dispatches(later), 0, "once")
         (op, _mid, card, _key) = self.transport.ops[-1]
@@ -811,3 +821,46 @@ class EveryDispatchedTaskHasACard(NotifierTest):
         self.inbox.open_batch("一批", [{"session_ref": ref, "run_id": "run-8"}], opened_by="gpt")
         self.assertEqual(self.notifier.announce_dispatches(self._now() + timedelta(seconds=30)), 0)
         self.assertEqual(self.transport.ops, [])
+
+
+class TheNoiseOfTheEleventh(NotifierTest):
+    """Owner, 2026-11-12: what the journal showed after the 11-11 deploy."""
+
+    def test_a_restart_does_not_announce_tasks_that_already_ended(self):
+        ref = f"{TOKYO}|claude|s-1"
+        self.inbox.note_dispatch(ref, "done-1", "serveros", "早就做完了")
+        self.inbox.record({"kind": "run.completed", "level": "notify", "device_ref": TOKYO,
+                           "session_ref": ref, "run_id": "done-1", "project": "serveros",
+                           "occurred_at": "2026-10-29T02:00:00Z", "summary": "done"})
+        now = datetime.now(timezone.utc) + timedelta(minutes=5)
+        self.assertEqual(self.notifier.announce_dispatches(now), 0)
+
+    def test_a_task_put_in_a_batch_after_its_own_card_says_so_on_that_card(self):
+        ref = f"{TOKYO}|claude|s-1"
+        self.inbox.note_dispatch(ref, "late-1", "serveros", "先等 10 秒再回答")
+        now = datetime.now(timezone.utc) + timedelta(minutes=1)
+        self.assertEqual(self.notifier.announce_dispatches(now), 1)
+        self.inbox.open_batch("ChatGPT 验收", [{"session_ref": ref, "run_id": "late-1"}],
+                              opened_by="gpt")
+        self.notifier.pulse(now)
+        patched = [card for op, _m, card, _k in self.transport.ops if op == "patch"]
+        self.assertTrue(any("已并入批次" in c["header"]["title"]["content"] for c in patched))
+
+    def test_a_connection_that_flaps_reopens_its_own_card_quietly(self):
+        def reach(level, at):
+            self.inbox.record({"kind": "node.recovered" if level == "OK" else "node.unreachable",
+                               "level": "auto" if level == "OK" else "notify", "device_ref": DELL,
+                               "occurred_at": at, "summary": "Dell A6000 · 连接：失联",
+                               "evidence": f"reach|{level}", "event_id": f"r{level}{at}"})
+        reach(ALERT, "2026-10-29T02:00:00Z")
+        self.notifier.tick([], THURSDAY_10)
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=5))
+        reach("OK", "2026-10-29T02:10:00Z")
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=10))
+        sends = lambda: [op for op, *_ in self.transport.ops].count("send")
+        first = sends()
+        reach(ALERT, "2026-10-29T02:40:00Z")
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=40))
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=45))
+        self.assertEqual(sends(), first, "no second message for the same flapping connection")
+        self.assertIn("反复：第 2 次", json.dumps(self.transport.ops[-1][2], ensure_ascii=False))
