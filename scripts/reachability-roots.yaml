@@ -1,0 +1,63 @@
+# Entry points for scripts/reachability.py.
+#
+# Source: the read-only device collection of 2026-11-13 (hwz-records
+# information/raw/fleet-collect/2026-11-13/services/*.md). Each line is a
+# program a systemd unit, a scheduled task or a plugin manifest actually starts.
+# The tooling group is what installs, builds and releases them.
+
+running-tokyo:
+  - bin/serverosd                       # serverosd.service
+  - bin/serverosctl                     # daily / evening-alignment / continuation-wake units, status card, work board
+  - bin/serveros-fleet-owned            # serveros-fleet-v1.service
+  - integrations/fleet-hub-watch/fleet_hub_watch/__main__.py   # serveros-fleet-watch.service
+  - integrations/fleet-hub-watch/fleet_hub_watch/ask_model.py  # its intent command
+  - fleet_mcp/node/status_card.py       # serveros-status-card.service
+  - distribution/keycenter/serveros_secret.py                  # serveros-secrets-sync.service
+  - native/node-core/core-lite/deploy/publish-status.sh        # serveros-core-lite-publish.service
+
+running-a6000:
+  - bin/serverosd
+  - fleet_mcp/node/start-connector.sh   # serveros-fleet-node-connector.service
+  - fleet_mcp/node/start-tunnel.sh      # serveros-fleet-node-tunnel.service
+  - fleet_mcp/node/status_card.py
+  - distribution/keycenter/serveros_secret.py
+  - native/node-core/core-lite/deploy/publish-status.sh
+
+running-fjpcos:
+  - fleet_mcp/node/start-connector.ps1  # \ServerOS-FleetNode-Connector
+  - fleet_mcp/node/start-tunnel.ps1     # \ServerOS-FleetNode-Tunnel
+  - native/node-core/core-lite/windows/deploy/publish-status.ps1   # \ServerOS\ServerOS Core-Lite publish
+  - native/node-core/core-lite/windows/deploy/probe-network.ps1
+  - distribution/keycenter/windows/sync-secrets.ps1               # \ServerOS\ServerOS Secrets sync
+
+plugin:
+  - mcp/bin/serveros-node-mcp           # plugin MCP, connected on Tokyo and A6000
+  - mcp/bin/serveros-agent-mcp
+  - skills/serveros/scripts/architecture_check.py
+  - skills/serveros/scripts/map_projection.py
+  - skills/serveros/scripts/mutation_guard.py
+  - skills/serveros/scripts/validate_contract.py
+
+tooling:
+  - distribution/device_kit.py
+  - distribution/build.py
+  - distribution/install/install.sh
+  - distribution/install/install.ps1
+  - distribution/windows/update.ps1
+  - distribution/keycenter/windows/register-sync-task.ps1
+  - fleet_mcp/node/install.sh
+  - fleet_mcp/node/install.ps1
+  - native/node-core/core-lite/windows/deploy/register-publish-task.ps1
+  - native/node-core/core-lite/windows/ci_check.py
+  - scripts/release.py
+  - scripts/build.py
+  - scripts/verify.py
+  - scripts/fleet_plugin.py
+  - scripts/hermetic_tests.py
+  - scripts/scan_secrets.py
+  - scripts/install-fleet-plugin.sh
+  - .github/workflows/tests.yml
+  - .github/workflows/fleet-release.yml
+  - .github/workflows/serveros-core-lite-windows.yml
+  - .github/workflows/serveros-native-linux-contract.yml
+  - .github/workflows/serveros-native-windows-contract.yml
