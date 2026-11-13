@@ -1,7 +1,7 @@
 # Fleet 产品需求基线与当前缺口
 
 > 状态：产品需求基线草案，待产品 Owner 审阅。  
-> 基线日期：2026-11-12。  
+> 基线日期：2026-11-13。  
 > 适用范围：ServerOS Fleet、ChatGPT Fleet 插件、Tokyo Hub、三设备 Agent Runtime、Ability Management 与 Feishu 播报。  
 > 本文记录产品目标、用户痛点、需求边界、当前仓库证据和验收条件。**设计存在、源码存在、已安装、运行有效、真实端到端验收是不同状态，不得互相替代。**
 
@@ -391,7 +391,7 @@ DECLARED → INSTALLED → LOADED → READY → GRANTED → EFFECTIVE
 
 ## 4. 当前仓库证据与缺口基线
 
-以下是 2026-11-12 对主仓和 Ability 仓库的只读核对。它描述已见证据，不代替设备实时验收。
+第一轮为 2026-11-12 对主仓和 Ability 仓库的只读核对；2026-11-13 的深入审计补充见第 8–13 节。所有内容描述仓库证据，不代替设备实时验收。
 
 | 领域 | 已有资产 / 证据 | 当前缺口与判断 |
 |---|---|---|
@@ -476,7 +476,256 @@ DECLARED → INSTALLED → LOADED → READY → GRANTED → EFFECTIVE
 6. **自动发现边界**：默认自动发现和按需加载；新安装、外部执行代码、Hook、凭据、网络和高风险效果遵循准入。
 7. **Workspace 迁移边界**：普通新产物自动落位；历史结构性移动、重命名、合并和删除必须单独 proposal 与批准。
 
-## 8. 相关权威文档
+## 8. 目录域与权威边界：磁盘、飞书、Ability 源码、Runtime 安装必须分开
+
+“目录”至少是四种不同对象，不得共用一份物理目录树，也不得互相推断：
+
+| 域 | 对象和身份 | 唯一职责 Owner | 主要规则 |
+|---|---|---|---|
+| D1 · 设备磁盘目录 | Host filesystem、mount、Path Role、Repo、Worktree、Artifact、State | Workspace Management + ServerOS Path Contract | 物理路径按设备、OS principal、volume 和 Path Role 解析；禁止跨设备复制绝对路径 |
+| D2 · 飞书云目录 | Tenant、Space、Wiki Node、Drive Folder/File、Minutes、ACL、Owner、Revision | Feishu Space Management | 以 Provider + tenant/security domain + native object ID 为身份；目录名不是身份 |
+| D3 · Ability 源码目录 | Canonical Skill / Plugin / MCP / Hook 等 Artifact、Manifest、Revision | ability-management | Canonical Source 是唯一可编辑源；产品树是逻辑投影，物理源码目录保持稳定 |
+| D4 · Agent Runtime 安装目录 | Claude/Codex Skills、Plugin Cache、MCP config、Hooks、Instructions、Subagents | Ability Distribution + Runtime Adapter | Runtime 目录是 Installation，不是 Canonical Source；只能单向 materialize 和 readback |
+
+### 8.1 D1 磁盘目录
+
+Workspace 的六个主要逻辑区域继续保持：src、worktrees、test-envs、ops、records、knowledge；其它数据按 Host Profile 和 Path Contract 放入对应位置。
+
+- Tokyo：路径绑定相对完整，但绑定不等于目录已经收敛。
+- A6000：当前 linux-gpu-compute profile 中 data root、workspace source、worktrees、artifacts、state、toolchains、runtime-assets 等仍有多个 UNBOUND。已有 worktree 观察记录不能代替规范路径绑定。
+- FJPCOS：D:\\projects、D:\\apps、D:\\develop 等路径多数来自 user_reported；workspace.worktrees、state、runtime-assets、home 等仍有未绑定角色，artifacts 路径也需要设备侧核验。
+
+任何新产物必须先调用 Path Resolve / Admit；历史目录治理先只读盘点、生成 proposal，再经 approval → apply → verify。不得把目录数量变少当成成功，也不得自动清理未知 owner、活动 Run 或受保护 WIP。
+
+### 8.2 D2 飞书目录
+
+Feishu 不是本地文件夹的云端副本。现有信息架构已经区分：
+
+- Feishu Wiki / Doc：人类阅读和维护的内容表面。
+- Records / Git：可审计、可 diff、可恢复的记录与受控镜像。
+- Feishu Drive：大字节资产层，保存 PDF、图片、录音、视频、附件和测试材料；Git 默认只保留必要 metadata、hash 和 locator。
+
+三类文档关系必须保留：
+
+- FOLLOW_MIRROR：外部只读来源，Source 仍是正文权威。
+- EXTERNAL_MAINTAINED：别人的位置，只维护获准范围。
+- OWNED：我们拥有的正文，按既定 body authority 和 readback 维护。
+
+三端同步不是三主双向 mtime sync。Feishu Space Management 管对象位置、ACL、Map、生命周期和 drift；Document Stewardship 管正文关系、局部 patch、冲突、revision 和 readback；Information Management 管来源理解、claims、provenance 和 redaction；Feishu Report 管正式报告发布；B10 管通知。
+
+现有 Feishu 信息架构的 live 基线记录于 2026-09-24，文档明确标注 DESIGN != LIVE，且当时没有重新验证当前 ACL、所有云空间和三端同步。此前记录的外部文档 Space、Drive 根目录和 Records 布局只能作为历史基线。实施前必须按 stable locator 重新读取当前对象、父子关系、ACL、revision 和实际消费者。
+
+### 8.3 D3 / D4 Ability 目录
+
+Ability Product Tree 是逻辑树；Resolver 使用的是 Ability ↔ Provider ↔ Profile ↔ Binding 的机器图；源码物理目录按稳定 identity 保持扁平，例如 ability-management/skills/<ability-id>/。不要为了“目录看起来整齐”把 Skill 源码物理搬进 A1/A2/A3 子目录。
+
+Runtime 安装目录是由 canonical payload 生成的只读副本。禁止在 Claude/Codex runtime 目录分别手工修复；必须回到 canonical source，生成新 Revision，再分发和 readback。
+
+## 9. 指挥侧与设备侧：采用双层发现、单一执行权
+
+### 9.1 产品分工
+
+| 能力类型 | 指挥侧（GPT / Fleet MCP） | 设备侧（Claude Code / Codex Agent） |
+|---|---|---|
+| Fleet Control MCP | 主动调用：设备、Session、派发、批次、Trace、Inbox、状态和授权范围内的控制动作 | 不重复代理这些全局控制动作 |
+| 本地 Skill | 不逐个加载设备专属 Skill；只识别语义需求和目标设备 | Native-first 自动发现，必要时调用本机 ability.search |
+| 本地 MCP / CLI / Script | 不把所有本地工具 Schema 搬到 GPT 工具面 | 在目标 Runtime 按需发现和调用 |
+| Plugin | 负责版本、发布、安装策略和目标范围，不是每个任务都调用一次 | 安装后由 Runtime 暴露其中的 Skill/MCP；按 Runtime 支持情况刷新或新建 Session |
+| 共享云服务 Provider | 只有当操作属于 Hub/全局表面时才直接调用 | 需要本地身份、数据、网络或工作区时由目标 Agent 调用 |
+| Ability Management | 用户要求上架、审核、版本、下架或分发时主动调用 | 任务执行前本机检索、resolve、按需加载；安装仍经过明确写操作 |
+
+**Plugin 是 Packaging，不是 Task-time Tool。Skill 是 Procedure，不是 MCP。MCP 是某个 Runtime 的工具表面。Provider 是实际执行某个 Operation 的实现。Ability 是语义职责。Binding 决定它在哪台设备、哪个 principal、哪个 target 上真正可用。**
+
+同一个云服务可以在 Hub 和设备侧有不同 Adapter，但每个 Operation 必须有明确的 Owner、权限和审计，不允许出现两个工具都声称是同一操作的权威入口。
+
+### 9.2 正常任务路径
+
+1. GPT 先把用户意图映射到语义 Ability / Operation，而不是先挑某个 Skill 名字。
+2. 如果当前 Agent 已能完成，直接让当前 Agent 执行，不调用 Fleet 做全量设备盘点。
+3. 如果需要另一设备，指挥侧查询最小的全局能力摘要，选择满足 Binding、Runtime、Readiness 和 Grant 的设备。
+4. GPT 使用 Fleet MCP 发送有边界的 Task Envelope：目标、上下文 locator、operation、数据范围、预算、验收条件和返回格式。
+5. 目标设备 Agent 优先使用原生工具和已安装 Skill；未明确匹配时调用本地 ability.search，查看 metadata，再进行本机 resolution。
+6. 目标 Agent 加载所需 Skill、MCP 或脚本并执行，不等待 GPT 为每个子工具逐次下令。
+7. Agent 返回 Execution Receipt：device_ref、principal、runtime、ability identity、revision、provider、operation、target binding、授权结果、证据 locator、结果和 freshness。
+8. GPT 负责验收结果、更新父 Work 和决定是否需要下一台设备。Work Engine 仍是工作状态权威。
+
+### 9.3 自动发现的边界
+
+- 常驻 Context 只放小型 Resident 核心能力；其它能力保持 Catalog，不把完整目录或所有 MCP Schema 注入每个 Session。
+- 已安装的原生 Skill / Tool 由 Claude/Codex 原生发现优先处理。
+- 原生发现没有命中、任务跨领域或需要查版本时，再调用本地 ability.search。
+- 当前 ability.search 是 substring 检索，只返回 trigger hints，不返回 avoid hints；它不是完整语义任务路由器。
+- 当前 ability.resolve 支持 operation reference，例如 ability:<id>#<verb>，但请求中传入的 providers、instances、health、profile、runtime_binding 等属于 caller claims，不是自动采集的设备事实，也不签发授权。
+- 当前 ability.inspect 明确把 resolution 标为 not attempted；“在目录中”不等于“本设备可执行”。
+- 新 MCP、Hook、可执行 Plugin、凭据或网络权限不能因为被发现就自动安装或授权。动态加载只有在目标 Runtime 已验证支持时才可宣称；否则需要安全 CLI、明确 rollout 或新 Session。
+
+**推荐的平衡：GPT 负责跨设备和全局控制，设备 Agent 负责本地能力选择与执行。GPT 不需要知道每台设备上几十个工具的细节，但必须知道每台设备有哪些语义 Operation 可以被真实调用。**
+
+## 10. Ability 上架、发布、安装、下架和退役
+
+### 10.1 当前已经实现的部分
+
+Ability Management 的 control_plane.py 已有：
+
+- scan / fingerprint / sanitize / reconcile / sync-self
+- publish（构建和发布 vendored Plugin 制品）
+- install / update / readback / rollout
+- fleet-sync（Desired Profile 与 Observed Snapshot 对账）
+- catalog list / search / install（按 pin Revision 安装 Skill）
+
+catalog.yaml 已采用 Resident / Catalog 两层设计，并有 first-party 与 approved third-party 门槛。第三方未获 Owner 批准时返回 NEEDS_OWNER_APPROVAL，不应自动安装。
+
+### 10.2 当前不完整的部分
+
+1. catalog_entries 当前只遍历 manifest 的 Skill 类型；catalog install 只安装 Skill，不是 MCP、Plugin、Hook、Subagent 的通用安装器。
+2. publish 是 Plugin 制品发布，不等于把某个 Ability 加入全局可发现目录。
+3. fleet-sync 对不在 Desired Profile 的 EXTRA 默认只标记，不自动卸载，这是正确的安全默认，但没有配套的显式卸载和退役命令。
+4. control_plane.py 当前有 publish/install/update/readback/rollout/fleet-sync/catalog 命令，但 ability-management 的 SKILL.md 单入口命令列表仍是旧集合，没有完整教 Agent 使用这些新命令。
+5. 目前缺少一个能同时展示 typed artifact、catalog visibility、device installation、runtime load、readiness、grant 和 retirement 状态的统一生命周期视图。
+
+### 10.3 必须区分的生命周期状态
+
+| 维度 | 状态示例 | 语义 |
+|---|---|---|
+| Registry | CANDIDATE / ADOPTED / RETIRING / RETIRED | 能力身份和治理生命周期 |
+| Catalog | RESIDENT / DISCOVERABLE / HIDDEN / APPROVAL_REQUIRED | Agent 是否可以发现和申请 |
+| Release | DRAFT / PUBLISHED / REVOKED | 不可变发布制品及其来源 |
+| Distribution | DESIRED / PINNED / DISTRIBUTED | 哪个设备 Profile 期望哪个 Revision |
+| Installation | NOT_INSTALLED / INSTALLED / REMOVED | 设备实际安装记录 |
+| Runtime | NOT_LOADED / LOADED / READY / STALE | Agent 是否实际发现和加载 |
+| Operation | SUPPORTED / UNSUPPORTED / UNKNOWN | Provider 是否声明支持具体 Operation |
+| Authorization | ALLOW / DENY / HUMAN_REQUIRED / UNKNOWN | 当前 principal / target / work envelope 是否获准 |
+
+这些状态不得压成一个 AVAILABLE 布尔值。
+
+### 10.4 上架流程
+
+发现来源 → 确认 stable identity / license / provenance → 选择 USE_NATIVE / ADOPT / WRAP / COMPOSE / FORK / BUILD → 创建 typed Ability Card 和 Revision → 安全检查与兼容测试 → 选择 Catalog tier → 发布 immutable Revision → 设备 Profile pin 或按需安装 → Runtime readback → 真实 Operation 验收。
+
+### 10.5 下架和退役流程
+
+标记 DEPRECATED / RETIRING → 禁止新任务选择或新安装 → 查询所有设备、Session、Plugin、MCP 和 active Work 消费者 → 选择替代能力并迁移 → 等待活动消费者结束或安全交接 → 对目标设备执行显式 uninstall → readback 确认移除 → 写入 Installation Receipt → 标记 RETIRED 并保留历史 Revision / alias / 审计记录。
+
+撤销权限、从 Catalog 隐藏、卸载 Runtime、删除 Registry 记录是不同操作。不得因为下架就立即删除历史 Revision，也不得在未知消费者仍运行时强行卸载。
+
+## 11. 三设备协调与跨设备 Ability Resolution
+
+### 11.1 已有内部组件与暴露缺口
+
+仓库内部已经有部分能力：
+
+- fleet/interfaces.py 有 ability_list / ability_status，可读取设备的 observed Ability Snapshot。
+- 同一模块的 fleet_capability_find 解析的是 transport capability level（例如通过什么 transport 能到达），不是产品 Ability / Skill 能力。
+- ability_list 没有最新 .observed.yaml 时会返回 OBSERVATION_UNAVAILABLE，而不是伪造空列表。
+- serveros-node-mcp 暴露本机 ability.list/tree/inspect/search/resolve。
+- serveros-agent-mcp 暴露 device、Agent Provider 和 Session Control。
+- off-host Fleet MCP 当前定义 26 个工具，主要覆盖设备、Session、派发、批次、状态、Trace、Inbox、Model 和 Monitor；没有把 fleet/interfaces.py 的 semantic ability_list / ability_status 或跨设备 Ability Resolve 暴露给 GPT。
+- fleet_device_versions 只提供最近记录的 Ability Family Profile / Revision，不等于每个设备当前有效 Ability 清单。
+
+因此现在不是完全没有能力发现代码，而是内部 Observation、设备本地 Resolver 和指挥侧 MCP 之间没有形成一条可验证的跨设备能力查询链路。
+
+### 11.2 应补充的全局接口
+
+建议在现有 Fleet Control Plane 增加语义级的只读接口，而不是新建第二套 Registry：
+
+- capability.search：根据用户意图和 Operation 找到候选 Ability。
+- capability.resolve：按 device + principal + runtime + target + operation 返回每台设备的真实有效状态。
+- capability.explain：解释为何可用、为何不可用、缺失哪个 Provider / Binding / Revision / Grant。
+- capability.matrix：返回精简的三设备能力摘要，支持 freshness、coverage 和 observation source。
+
+这些接口应复用 ability-management Registry、现有 resolver、fleet/interfaces.py Observation 和现有 Agent Control / transport，不复制一份 Ability 真相。
+
+跨设备查询必须读取目标设备的实际观察或让目标节点自身回答。不能把 Tokyo 的本地能力投影当成 A6000 或 Windows 的事实。
+
+### 11.3 当前三设备 Profile / Runtime 不一致
+
+Ability Manifest 的 Desired Profile 当前包含：
+
+- Tokyo：Claude Code 和 Codex 都声明了 linux-work、research、design、production-observation、testing、session-manager。
+- A6000：Claude Code 和 Codex 都声明了 linux-work、production-observation、production-change、testing、session-manager。
+- FJPCOS：Claude Code 和 Codex 都声明了 Windows core、work-management、test-management、automated-testing、information-management、session-manager、ability-management。
+
+但 Fleet Device Registry 当前记录：
+
+- Tokyo：只有 Claude Code。
+- A6000：只有 Claude Code。
+- FJPCOS：Claude Code + Codex。
+
+因此 Tokyo / A6000 Desired Profile 中的 Codex 安装目标与当前设备 Runtime Registry 不一致。必须决定是安装并验证 Codex，还是修正 Desired Profile；不能把“期望”误报成“实际可用”。
+
+此外：
+
+- Ability Manifest 的 Device Profile 目前按角色命名，但 Fleet registry 没有显式的 ability_profile_ref 将 device_ref 绑定到唯一 Desired Ability Profile。
+- Ability Manifest 的 authors.devices 仍有 linux-server、dell-work 等历史 ID；Fleet registry 使用 work-fj、tokyo-shared-dev-01、llm-lab-dell。需要显式 alias / migration 对账，不能猜测身份。
+- FJPCOS Desired Profile 没有 workspace-maintainer；注释说 Windows 有独立 Workspace specialization，但该实现没有从当前 Profile 分发。必须通过真实 Runtime scan 证明它实际存在。
+
+### 11.4 协调责任
+
+- GPT：高层目标、跨设备分解、目标选择、依赖顺序、最终验收。
+- Fleet：设备身份、可达性、路由、Session、dispatch、handoff、状态和 Receipt。
+- Work Engine：Item / Activity / Run / Outcome / Lease / Checkpoint 的正式状态和依赖。
+- Device Agent：本地 Ability Discovery、Skill/MCP 选择、执行和证据生成。
+- Memory Handoff：异步工作交接和跨设备上下文定位，不是第二个 Work Engine。
+
+fleet-coordination Skill 明确不是 Scheduler，不应由它接管步骤排序、重试和长期工作流。单设备内部并行使用原生 Subagent / Quay；跨设备步骤由 GPT 规划，并写入现有 Work Engine / Handoff。
+
+### 11.5 当前可靠性阻塞
+
+- Agent Control Router 的 NodeControlTransport 在当前合同中仍标记 deployed=false；合同明确记录 work-fj Windows 没有可用的 ServerOS Node Runtime / Connector。Fleet MCP 的 CloudCLI Session 路由是另一条路径，不能用它证明 Windows Node MCP / Ability Resolver 已就绪。
+- Agent Control 的 durable-effect reconciliation 仍是 partial。失去 Mutating Dispatch 的响应后，若无法从实际 Effect Owner 取得 APPLIED / NOT_APPLIED 观察，结果必须保持 EFFECT_UNKNOWN，不能盲目重发。
+- Work Handoff 与 Session / Writer Handoff 不同。前者传任务和 checkpoint locator；后者必须 checkpoint、验证目标、fence 旧 writer、转移 lease，再允许新端写入。
+
+## 12. A9 Production Observation：当前实际缺口
+
+A9 的 Skill 正文已经明确四类入口和只读纪律，但它目前仍是调查流程说明，不是已绑定生产环境的 Provider。
+
+当前 manifest：
+
+- production-observation：1 个 Revision，version=null，compatibility=[]，installations=[]。
+- production-change：1 个 Revision，version=null，compatibility=[]，installations=[]。
+- Tokyo 和 A6000 Desired Profile 引用了 A9；A6000 还引用 A10。
+- Windows Terminal Capability Profile 预期它能承担生产状态 / 日志观察，但 work-fj-windows Desired Profile 未包含 A9。
+- 仓库中尚未找到能把 LiteLLM Production target、只读 Provider、设备 Binding、Runtime Compatibility、Readiness 和 Grant 连起来的完整配置与验收证据。
+
+必须补齐：
+
+1. Target Registry：生产环境 stable identity、environment、service、版本和数据范围。
+2. Read-only Provider：管理/用量 API、请求查询、日志查询和必要的只读跳板。每个 Provider 声明具体 Operation，不提供任意 Shell。
+3. Device Binding：哪个 device / principal / runtime 持有合法网络、credential reference 和 target binding；Secret 只留在目标设备的受控凭据系统。
+4. Readiness：实际 endpoint、版本、认证和最小查询探测；不以 SSH 可达等同生产主机可达。
+5. Authorization：按 Operation、Target、principal、查询预算和时间范围限制。
+6. Evidence Receipt：每个事实记录 source、version、time、query scope、redaction 和 evidence locator。
+7. E2E：服务状态、精确用户、Request ID、时间 + 错误、指定 Feishu message 五类调查真实通过。
+
+建议先只实现 A9 只读查询，不把 A10 生产变更混进来。哪个设备拥有实际生产 Binding，就优先选择哪个设备；不要因为 Tokyo 是 development-primary 或 A6000 是 GPU worker 就推断它们能访问生产。
+
+本轮只读检查了 GitHub 仓库，没有连接生产服务器、读取生产 Secret 或执行生产查询。设备侧真实 Binding 需要另行授权检查。
+
+## 13. 2026-11-13 仓库审计发现登记
+
+| ID | 当前发现 | 判断 / 后续动作 |
+|---|---|---|
+| G01 | Fleet MCP 有 26 个工具，但没有对外的 semantic Ability Matrix / cross-device resolve | 补接口，复用内部 Observation 和 Resolver |
+| G02 | Node MCP 的 ability.search 是 substring，缺 avoid_hints；ability.resolve 使用 caller claims | 增加触发/排除词和设备侧可信事实解析 |
+| G03 | control_plane.py 有发布、安装、更新、readback、rollout、catalog install，但没有完整 uninstall / unpublish / retire | 建立受控退役与消费方迁移流程 |
+| G04 | Ability Management SKILL.md 的命令清单落后于 control_plane.py | 更新 Skill 并加入命令合同测试 |
+| G05 | catalog install 当前只处理 Skill 类型 | 建立 typed lifecycle / action registry，不把不同类型安装方式混为一谈 |
+| G06 | Ability Device Profiles 未显式绑定 Fleet device_ref | 在现有 Device Registry 建立唯一 Profile Reference |
+| G07 | Tokyo / A6000 Desired Profile 声明 Codex，但 Fleet Registry 只记录 Claude | 对齐真实 Runtime，不允许假想安装 |
+| G08 | authors.devices 仍保留旧设备 ID，与当前 Fleet device IDs 不一致 | 做 alias / identity migration 和 referential integrity 检查 |
+| G09 | workspace-maintainer 有 20 个历史 Revision；当前 Installation 记录仍以旧 linux-server 为主，版本字段大量为空；canonical identity 为 workspace-maintainer，显示名为 workspace-management | 清理版本与 alias 语义，重新扫描三设备 |
+| G10 | feishu-space-management 有 3 个 Revision，Tokyo 安装记录包括 Claude 与 Codex，但 compatibility 为空，Tokyo 当前 Fleet Runtime 只记录 Claude | Fresh scan + compatibility self-check |
+| G11 | production-observation / production-change 没有 Compatibility 和 Installation 证据 | A9/A10 优先补齐真实 Binding / Provider |
+| G12 | Feishu 三端同步架构的最后 live baseline 为 2026-09-24 | 重新盘点 Space、ACL、Drive、Wiki 和 Records consumer |
+| G13 | CAPABILITY-FAMILIES 当前视图标注 manifest 65 个 Ability 中 20 个已归类、45 个未归类 | 这是导航映射覆盖缺口，不代表 45 个实现缺失；逐项映射或标记 legacy / provider / specialist |
+| G14 | resource-observation 被列为 declared absent，但产品树已把它定义为 A4 ServerOS Core 子能力 | 修正视图，不另造重复 Skill |
+| G15 | content-archiving 没有独立 Ability，当前由 information-management 承担 B1 子职责 | 评估是否需要独立 Specialist，不为填空强行造新 Ability |
+| G16 | A6000 多个 Workspace Path Role 为 UNBOUND，FJPCOS 多个 Path Role 仍是 user_reported | 先设备只读扫描，再做物理目录治理 |
+| G17 | Agent Control 的 Windows NodeControlTransport 未部署，Mutating Effect Reconciliation 仍 partial | 完成 Windows Node 接入和可靠交接闭环；保留未知效果拒绝重试 |
+
+以上是仓库静态审计结果，不代表已经完成三台设备的实时扫描。Manifest 的 Installation、Compatibility 和 Desired Profile 只能按各自语义解读；必须通过设备 snapshot / Runtime readback 更新后，才能宣称 E2E 可用。
+
+## 14. 相关权威文档
 
 本文件不替代以下细分合同；发生冲突时，应先确认对应领域的 canonical authority，而不是在本文件复制第二套规则。
 
