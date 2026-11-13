@@ -920,3 +920,53 @@ class TheNoiseOfTheEleventh(NotifierTest):
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=45))
         self.assertEqual(sends(), first, "no second message for the same flapping connection")
         self.assertIn("反复：第 2 次", json.dumps(self.transport.ops[-1][2], ensure_ascii=False))
+
+
+class ARefusedCardDoesNotStopTheWatch(NotifierTest):
+    """Tokyo, 2026-11-12 19:03: lark-cli refused one card with an exception. The
+    inbox loop never acknowledged that event, read it again every pulse, and no
+    card went out after it for a day. The log said only `TransportFault`."""
+
+    def test_a_transport_that_raises_is_a_card_not_sent(self):
+        from fleet_hub_watch.notify import LarkTransport
+
+        class Refusing:
+            def send_card(self, card, *, idempotency_key):
+                raise RuntimeError("the CLI refused: {\"code\": 230002}")
+
+            def update(self, payload):
+                raise RuntimeError("the CLI refused")
+
+        lark = LarkTransport.__new__(LarkTransport)
+        lark._sender = Refusing()
+        card = cards.completion_card([{"run_id": "r1", "project": "serveros"}], now=THURSDAY_10)
+        self.assertIsNone(lark.send(card, idempotency_key="k"))
+        self.assertFalse(lark.patch("m1", card, sent_at="2026-10-29T02:00:00Z"))
+
+    def test_an_event_that_keeps_failing_is_skipped_and_the_rest_go_out(self):
+        from fleet_hub_watch import notify
+        self.run_event("run.failed", run_id="bad")
+        self.run_event("run.failed", run_id="good")
+        real = self.notifier._handle
+
+        def handle(event, now):
+            if event.get("run_id") == "bad":
+                raise RuntimeError("boom")
+            return real(event, now)
+
+        self.notifier._handle = handle
+        for _ in range(notify.EVENT_ATTEMPTS - 1):
+            self.notifier.consume(THURSDAY_10)
+            self.assertEqual(self.transport.ops, [], "nothing after the bad event jumps it")
+        self.notifier.consume(THURSDAY_10)
+        self.assertEqual(self.inbox.read(notify.SUBSCRIBER, limit=10)["events"], [])
+        self.notifier.promote_pending(THURSDAY_10 + timedelta(minutes=10))
+        self.notifier.flush_completions(THURSDAY_10 + timedelta(minutes=10))
+        self.assertEqual([h[3] for h in self.transport.headers()], ["Tokyo · 任务失败"],
+                         "the good run's card, once")
+
+    def test_the_reason_is_in_the_log_line(self):
+        from fleet_hub_watch.notify import describe
+        self.assertEqual(describe(RuntimeError("the CLI refused:\n  {\"code\": 1}")),
+                         'RuntimeError: the CLI refused: {"code": 1}')
+        self.assertEqual(describe(RuntimeError()), "RuntimeError")

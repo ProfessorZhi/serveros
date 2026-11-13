@@ -171,6 +171,9 @@ def run_excerpt(service: Any, principal: Any, chars: int,
         return clip_excerpt(text, chars)
     return read
 PATCH_WINDOW = timedelta(days=13)          # Feishu allows 14; leave a day of slack
+#: An inbox event that keeps failing is tried this many times, then skipped with a
+#: trace. Without a limit one bad event blocks every event after it (2026-11-12).
+EVENT_ATTEMPTS = 5
 MAX_SENDS_PER_TICK = 20
 HISTORY_SLOT_MINUTES = 5                   # one point per reading per five minutes
 HISTORY_KEEP = timedelta(hours=24)
@@ -298,14 +301,44 @@ class LarkTransport:
         self._sender = sys.modules[name].sender(recipient)
 
     def send(self, card: dict, *, idempotency_key: str) -> str | None:
-        answer = self._sender.send_card(card, idempotency_key=idempotency_key)
+        try:
+            answer = self._sender.send_card(card, idempotency_key=idempotency_key)
+        except Exception as exc:  # noqa: BLE001 - see _refused
+            return _refused("send", exc)
         if answer.get("state") != "DELIVERED":
             return None
         return (answer.get("provider") or {}).get("remote_id")
 
     def patch(self, message_id: str, card: dict, *, sent_at: str) -> bool:
-        answer = self._sender.update({"message_id": message_id, "sent_at": sent_at, "card": card})
+        try:
+            answer = self._sender.update({"message_id": message_id, "sent_at": sent_at,
+                                          "card": card})
+        except Exception as exc:  # noqa: BLE001 - see _refused
+            return bool(_refused("patch", exc))
         return answer.get("state") == "DELIVERED"
+
+
+def _refused(verb: str, exc: Exception) -> None:
+    """A card the transport could not deliver is "not sent", never a crash.
+
+    2026-11-12 19:03 on Tokyo: lark-cli started refusing one card. The refusal
+    came up as an exception, out of the inbox loop, before that event was
+    acknowledged. Every pulse read the same event again and failed again, about
+    20,000 times a day. No card went out, and the journal and heartbeat that
+    follow the cards in the tick were not written either. The log said only
+    `TransportFault`, so nobody could see why.
+
+    Now the refusal is logged with its reason and the caller treats the card as
+    not sent, the same as a refusal that came back as an answer.
+    """
+    print(f"card {verb} refused: {describe(exc)}", file=sys.stderr)
+    return None
+
+
+def describe(exc: BaseException, limit: int = 300) -> str:
+    """The exception's type and its first line, short enough for a log line."""
+    text = " ".join(str(exc).split())
+    return f"{type(exc).__name__}: {text[:limit]}" if text else type(exc).__name__
 
 
 def _version(card: dict) -> str:
@@ -352,6 +385,8 @@ class Notifier:
         self.excerpt = excerpt
         self.sleep = sleep
         self._sent_this_tick = 0
+        #: inbox seq -> how many times handling it has failed in a row.
+        self._failed_events: dict[int, int] = {}
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
 
@@ -628,7 +663,18 @@ class Notifier:
         for event in page["events"]:
             if self._sent_this_tick >= MAX_SENDS_PER_TICK:
                 break
-            self._handle(event, now)
+            try:
+                self._handle(event, now)
+            except Exception as exc:  # noqa: BLE001 - one bad event must not block the rest
+                failures = self._failed_events.get(event["seq"], 0) + 1
+                self._failed_events[event["seq"]] = failures
+                print(f"inbox event {event['seq']} ({event.get('kind')}) failed "
+                      f"{failures}/{EVENT_ATTEMPTS}: {describe(exc)}", file=sys.stderr)
+                if failures < EVENT_ATTEMPTS:
+                    break  # read it again next time; nothing after it is skipped
+                self._trace("inbox event skipped after repeated failures",
+                            ref=str(event["seq"]), error=describe(exc))
+            self._failed_events.pop(event["seq"], None)
             handled_to = event["seq"]
         if handled_to > page["cursor"]:
             # Only as far as what was handled: an event left over by the per-tick
