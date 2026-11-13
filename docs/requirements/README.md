@@ -18,11 +18,21 @@
 | 2026-11-13 | 效率与性能从起点就是一等目标；任何外部操作必须有超时、整体期限和进程树回收 | Owner；[性能需求](fleet-efficiency-performance.md) |
 | 2026-10-28 | 旧版 Fleet 与 Fleet Next 双轨并行，Next 不覆盖旧版 | Owner，#478（并入 #531） |
 
-## 和 V1 的关系
+## V1 范围（Owner 对齐，2026-11-13）
 
-V1 的范围仍以 [#531](https://github.com/ProfessorZhi/serveros/issues/531) 为准：三台设备 × 四部分（Ability 家族、原子能力、监控与播报、指挥侧 Skill），加一次真实自迭代，每格要设备回执。
+分工：GPT 与本地 DeepSeek 负责采集信息；云端 Claude 负责决策并实现代码（PR，CI 绿即合并）；各设备的本地 Claude Code 负责部署。
 
-这里的需求大多属于 V1 之后。只有下面几项进入 V1 的完成条件：
+V1 按以下顺序推进，每项都要三台设备的回执：
+
+1. **Fleet 闭环跑通，设备侧高性能。** 派发 → Hub → 设备 → 结果 → 飞书播报与 agent 监控，中间任何一跳断了都能看见。新的性能敏感组件用 Rust，第一个是设备主动推送事件（见 [Rust 评估 §3](rust-evaluation-2026-11-13.md)）。
+2. **CloudCLI 精确穿透，Claude Code 与 Codex 三台都要。** 指挥侧要能像人一样使用设备上的 Claude Code 与 Codex，包括列出并调用 Skill 和斜杠命令。CloudCLI（ProfessorZhi/claudecodeui）只补这一层薄的 MCP 工具；路由、权限、审计和能力发现留在 Fleet。
+3. **指挥侧 Skill 融合业务知识。** 立项与编号（`<前缀>-<四位数>`，前缀注册表在 hwz-records 的 `ops/workspace/serveros/projects.yaml`）、项目开发知识、飞书目录。
+4. **Ability 家族与能力发现，包括设备侧的「本机说明」。** 每台设备的 agent 能回答：我是谁，有哪些密钥（只列名字）以及怎么同步，有哪些服务和定时任务，目录在哪，网络走哪条路。
+5. Grok / Gemini 等其他指挥端客户端暂缓。
+
+依据：三台设备的只读采集报告，见 hwz-records 的 `information/raw/fleet-collect/2026-11-13/`（hwz-records PR #24）。
+
+原有的 [#531](https://github.com/ProfessorZhi/serveros/issues/531)（三台设备 × 四部分，每格要设备回执）仍是验收形式。这里的需求大多属于 V1 之后，只有下面几项也进入 V1 的完成条件：
 
 1. **所有外部操作有界**：有超时、整体期限、进程树回收和单实例（[性能需求 §3.2–3.4](fleet-efficiency-performance.md)）。第一个案例的修复 #627 已合并。
 2. **性能有基线**：派发 → Hub 发现、设备完成 → 取回、取回 → 卡片，这几段的 P50/P95 每次发版前都用 `fleet_hub_watch/perf.py` 量一次，并写进发布说明。
