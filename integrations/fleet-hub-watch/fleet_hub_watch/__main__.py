@@ -47,7 +47,8 @@ from datetime import datetime, timezone
 from . import resources
 from . import spec as broadcast_spec
 from . import cards, feishu
-from .notify import JournalTransport, LarkTransport, Notifier, resolve_recipient, run_excerpt
+from .notify import (JournalTransport, LarkTransport, Notifier, describe, resolve_recipient,
+                     run_excerpt)
 from .watch import Watcher, WatchStore
 
 DEFAULT_CONTRACT = Path(__file__).resolve().parents[3] / "runtime" / "attribution-contract.yaml"
@@ -386,14 +387,16 @@ def main(argv: list[str] | None = None) -> int:
                 rich = rich_cache.get("cards")
                 if answerer is not None:
                     answerer.views, answerer.rich = views, rich or {}
-            sent = notifier.tick(views, now, rich) if notifier else None
+            # The journal goes first: it is the record of what happened, and a
+            # card that cannot be delivered must not also cost the record.
             journaled = None
             if journal is not None:
                 try:
                     journal.note_resources(views, now)
                     journaled = journal.tick(now)
                 except Exception as exc:  # noqa: BLE001 - the journal never stops the watch
-                    journaled = {"error": type(exc).__name__}
+                    journaled = {"error": describe(exc)}
+            sent = notifier.tick(views, now, rich) if notifier else None
             if buttons is not None and time.time() - last_health > HEALTH_EVERY_SECONDS:
                 lark_state, last_health = feishu.health(), time.time()
             if buttons is not None and not _ready(lark_state.get("user")):
@@ -414,8 +417,8 @@ def main(argv: list[str] | None = None) -> int:
                                          if buttons is not None else None)})
         except Exception as exc:  # noqa: BLE001 - one bad tick must not end the watch
             _heartbeat(beat, {"last_tick_at": started, "ok": False,
-                              "error": type(exc).__name__})
-            print(f"tick failed: {type(exc).__name__}", file=sys.stderr)
+                              "error": describe(exc)})
+            print(f"tick failed: {describe(exc)}", file=sys.stderr)
         if args.once:
             return 0
         # The tick is discovery and probing, tens of seconds long. An inbox event
@@ -433,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 notifier.pulse(datetime.now(timezone.utc))
             except Exception as exc:  # noqa: BLE001 - the next tick reads again
-                print(f"inbox pulse failed: {type(exc).__name__}", file=sys.stderr)
+                print(f"inbox pulse failed: {describe(exc)}", file=sys.stderr)
 
 
 if __name__ == "__main__":
