@@ -722,6 +722,7 @@ A9 的 Skill 正文已经明确四类入口和只读纪律，但它目前仍是�
 | G15 | content-archiving 没有独立 Ability，当前由 information-management 承担 B1 子职责 | 评估是否需要独立 Specialist，不为填空强行造新 Ability |
 | G16 | A6000 多个 Workspace Path Role 为 UNBOUND，FJPCOS 多个 Path Role 仍是 user_reported | 先设备只读扫描，再做物理目录治理 |
 | G17 | Agent Control 的 Windows NodeControlTransport 未部署，Mutating Effect Reconciliation 仍 partial | 完成 Windows Node 接入和可靠交接闭环；保留未知效果拒绝重试 |
+| G18 | integrations/chatgpt-fleet-next 是 instruction-only Agent Plugin package，不含 mcp.json；实际 off-host Fleet MCP 是 fleet_mcp/ 下独立的 Streamable HTTP + OAuth ingress | 区分插件包装与真实 MCP 连接；性能基线必须测量当前实际连接、26-tool schema 和客户端行为，不能用 ZIP/build 测试代替 |
 
 以上是仓库静态审计结果，不代表已经完成三台设备的实时扫描。Manifest 的 Installation、Compatibility 和 Desired Profile 只能按各自语义解读；必须通过设备 snapshot / Runtime readback 更新后，才能宣称 E2E 可用。
 
