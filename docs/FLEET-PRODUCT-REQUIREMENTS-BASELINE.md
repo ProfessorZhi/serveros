@@ -726,7 +726,120 @@ A9 的 Skill 正文已经明确四类入口和只读纪律，但它目前仍是�
 
 以上是仓库静态审计结果，不代表已经完成三台设备的实时扫描。Manifest 的 Installation、Compatibility 和 Desired Profile 只能按各自语义解读；必须通过设备 snapshot / Runtime readback 更新后，才能宣称 E2E 可用。
 
-## 14. 相关权威文档
+## 14. GitHub 资源目录与仓库治理
+
+GitHub 必须作为独立的第三类资源目录纳入 Fleet 产品需求。它既是代码托管平台，也是项目、协作、发布、知识沉淀和外部关注关系的资源目录。不能把 GitHub 仓库简单当作磁盘目录，也不能把仓库 README / Wiki 当作 Feishu Space 的替代品。
+
+### 14.1 管理范围
+
+至少覆盖：
+
+1. Account / Organization / Team：个人账户、组织、团队、成员、Owner、权限边界。
+2. Repository：Public / Private / Internal（如适用）、Archived / Active、Fork / Mirror / Template、默认分支、语言、Topics、License、Description、创建和最后活动时间。
+3. Collaboration：Collaborator、Team Access、CODEOWNERS、Branch Protection、Rulesets、Required Checks、PR Review Policy。
+4. Project Work：Issues、Projects、Milestones、Pull Requests、Discussions、Wiki、Actions。
+5. Release & Supply Chain：Tags、Releases、Packages、Artifacts、Dependabot、Security Advisories、Workflow。
+6. Stars & Watch：自己 Star 了哪些外部仓库（Outbound Stars）；自己的仓库被多少人 Star（Inbound Stargazers）；Watch / Notifications 与 Forks 必须分开统计。
+7. Repository Lifecycle：Candidate、Active、Maintenance、Deprecated、Archived、Transferred、Deleted（删除需要单独授权）。
+8. Local Binding：每个 Repo 在哪些设备、哪些磁盘目录、哪些 Workspace / Worktree 中有 Clone；记录 Remote、Branch、HEAD、Dirty State 和 Last Sync。
+
+### 14.2 GitHub 与另外两类目录的边界
+
+| 资源目录 | 权威对象 | 主要职责 | 不应承担 |
+|---|---|---|---|
+| Local Filesystem | Host + Volume + Path + Path Role | 本地文件实际存放、Workspace、Worktree、Artifacts | 仓库可见性、云端权限 |
+| Feishu | Tenant + Space + Native Object ID + ACL | 知识、文档、云盘、协作和信息发布 | Git Commit / Branch 的代码权威 |
+| GitHub | Account / Org + Repository ID + Git Ref / Object | 源码、版本、Issue、PR、Release、Star 和协作权限 | 物理磁盘路径、飞书正文权威 |
+
+三个系统通过稳定 locator 和关联关系互相链接，不进行盲目双向复制：
+
+- GitHub Repository ↔ Local Clone / Worktree：用 repository ID、canonical URL、remote 和 local path binding 关联。
+- GitHub Repository ↔ Feishu Space / Wiki：用 project identity、native object ID 和 document role 关联。
+- GitHub Release / Commit / PR ↔ Feishu Change Record / Decision：保存 locator、revision 和 provenance，不复制出第二份权威状态。
+
+### 14.3 Public / Private / Internal 治理
+
+每个仓库必须有明确的 Visibility Intent，而不只是读取当前 GitHub visibility：
+
+- PUBLIC：允许外部发现和访问；必须经过公开内容、历史提交、配置、Secret、数据、License 和依赖安全检查。
+- PRIVATE：仅授权成员和服务身份访问；需要明确 Owner、Team、Collaborator 和最小权限。
+- INTERNAL：仅在适用的 GitHub Organization / Enterprise 中使用；不得假设个人账户支持该状态。
+
+必须支持 Visibility Drift 检测：实际状态与批准状态不一致时告警。Public → Private、Private → Public、组织转移、删除等都是高风险变更，必须人工审批；尤其 Private → Public 不得由 Agent 自动执行。
+
+仓库名不能决定其 visibility intent。例如名为 public-docs 的仓库目前登记为 Private，必须由 Owner 确认用途，不得自动改为 Public。
+
+### 14.4 Star / Watch / Fork 管理
+
+必须区分两种 Star：
+
+- Outbound Stars：用户 Star 的外部项目，是个人技术书签和研究发现入口。需要分类、Topic、用途、最近检查时间、是否仍维护、是否已被本地/项目吸收、是否仍值得关注。
+- Inbound Stars：用户自己的仓库收到的 Star，是项目外部关注度信号。需要记录趋势、增长速度、来源可见信息（仅使用合法公开数据），但不能把 Star 数量等同于质量或优先级。
+
+Watch / Notifications 表示关注动态；Fork 表示代码派生关系；Star 表示收藏/认可。三者不得合并为一个“关注数”。
+
+Star 管理的建议能力：
+- starred.list / starred.search / starred.classify
+- starred.review / starred.unstar（Unstar 必须用户确认）
+- repository.stargazers.read / repository.star-trend.read（只读）
+- repository.watch-status.read / repository.forks.read
+
+如果当前 GitHub Connector 不暴露某项 Star API，应明确标记 NOT_EXPOSED，并使用经过授权的 GitHub CLI / API Adapter 或官方 UI；不能编造已完成的数据。
+
+### 14.5 仓库目录与项目组合治理
+
+建议每个仓库至少登记：
+
+- stable repository ID、canonical URL、owner / org、visibility、lifecycle state
+- project family / domain / parent / successor / related repositories
+- primary purpose、source-of-truth role、owner、maintainers
+- default branch、release strategy、language、topics、license
+- local clone bindings、worktree bindings、active agents / active work references
+- last push、last release、open issue / PR、archived 状态
+- security posture、rulesets、branch protection、CI health
+- inbound star / fork / watch signals（数据可用时）
+
+必须建立关系类型，而不是只按名称猜测：
+- SAME_PROJECT / SPLIT_FROM / SUCCESSOR_OF / MIRROR_OF / FORK_OF / ARCHIVE_OF / RELATED_TO。
+
+重复或相似命名的仓库只能进入 REVIEW 队列，不能自动合并、删除或改名。
+
+### 14.6 当前只读盘点快照（2026-11-13）
+
+通过当前连接的 GitHub Repository Listing，按 owner=ProfessorZhi 可见范围读取到 78 个仓库：
+
+- Public：29
+- Private：49
+- Archived：12
+- Not Archived：66
+
+第二页返回 0 条，说明本次列表请求范围内共有 78 条结果。
+
+初步需 Owner 核实的线索：
+- work-engine 当前为 Private + Archived，但项目架构仍引用 Work Engine 作为工作状态权威。
+- public-docs 当前为 Private，名称与 Visibility Intent 可能不一致。
+- blenderlab / blender-lab、llmlab / llm-lab、Photo-Watermark-1 / Photo-Watermark-2、marketops-session / marketops-session-private 等存在名称相似或疑似同项目关系，尚未检查 Git 历史、Remote、内容和消费者。
+- serveros 为 Public，ability-management 为 Private；需分别定义公开接口、内部实现、文档和发布边界。
+- 目前 Connector 返回的列表未包含 Star 数量，也没有提供 Outbound Starred Repository 清单；Star 管理状态仍为 UNKNOWN / NOT_EXPOSED，不能据此判定没有 Star。
+
+以上仅是连接器可见范围的快照，不代表个人账户、所有 Organization、企业团队和全部 GitHub 资源都已盘点。
+
+### 14.7 GitHub 治理的完成标准
+
+- 所有可访问 Account / Org / Team / Repo 有稳定身份、Owner 和可见性意图。
+- Public / Private / Internal 与实际设置无未解释 Drift。
+- 每个活跃 Repo 有明确生命周期、项目关系和本地 Clone / Worktree 映射。
+- Archived Repo 有归档理由、替代项目和活跃消费者检查；不得因 Archived 字段就推断可以删除。
+- Outbound Stars 可分类、复查、检索；Inbound Stars 与 Watch / Fork 分开呈现。
+- Branch Protection、Rulesets、CI、Release 和权限可以只读审计。
+- Visibility 变更、Transfer、Delete、Unstar 和权限修改必须经过相应授权。
+- GitHub / Feishu / Local 三个目录可互相定位，但各自保留原生权威和权限。
+
+### 14.8 本轮审计边界与能力缺口
+
+本轮仅使用当前 GitHub Connector 读取仓库列表及已有仓库文件，没有修改仓库 Visibility、Stars、Watch、Collaborators、Branch Protection 或 Rulesets。Connector 当前没有暴露完整的个人 Starred 列表与 Star 写操作，因此后续需要单独验证 GitHub CLI / API Adapter 的认证和授权能力。
+
+## 15. 相关权威文档
 
 本文件不替代以下细分合同；发生冲突时，应先确认对应领域的 canonical authority，而不是在本文件复制第二套规则。
 
