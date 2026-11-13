@@ -24,6 +24,8 @@
 | 文档 | 回答什么问题 | 状态 / 日期 |
 |---|---|---|
 | [Fleet V1 拓扑与运行](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) | 每台设备上 Core、Runtime、Ability 的边界；Fleet 如何连接 | 设计 · 2026-10-17 |
+| [Fleet 效率、性能与执行可靠性需求](requirements/fleet-efficiency-performance.md) | 性能作为一等工程目标；Rust 评估原则、进程生命周期、并发治理、Windows Secrets Sync 案例与验收要求 | 需求收集稿 · 2026-11-13 |
+| [Fleet 当前现状、缺口与目标工作体系](requirements/fleet-current-state-and-gaps.md) | 当前目录职责、理想信息流/工作流、Feishu 播报、可观测性、性能、Work/Agent 风险与文档漂移 | 现状基线 · 2026-11-13 |
 | [常驻监控与东京中枢](plans/fleet-v1-resident-monitor-and-tokyo-hub.md) | 常驻监控怎么自动发现各设备的 run、只播报一次；项目理解与需求看板存在 Tokyo、GPT 怎么看；设备角色与默认模型路由（东京网关0） | 设计草案 · 2026-10-30 |
 | [Fleet V1 总跟踪](plans/fleet-v1-four-pillar-tracker.md) | V1 做完长什么样：三设备 × 四部分 + 一次真实自迭代的验收矩阵、推进顺序、owner 动作、PR 处理建议 | 草稿 · 2026-10-29 |
 | [Fleet V1 差距清单与工作包](plans/fleet-v1-gap-and-work-packages.md) | V1 还差什么；按泳道拆成可交给本地 Codex / Claude Code 的工作包（F 功能、D 解耦与目录、Q 质量与运维），每个带范围、验收与依赖 | 计划 · 2026-10-26 |
