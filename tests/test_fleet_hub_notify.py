@@ -866,10 +866,13 @@ class EveryDispatchedTaskHasACard(NotifierTest):
                            "summary": "serveros: run run-9 completed"})
         self.notifier.tick([], later + timedelta(minutes=1))
         self.notifier.tick([], later + timedelta(minutes=7))
-        ops = [op for op, *_ in self.transport.ops]
-        self.assertEqual(ops.count("send"), 1, "no second 任务完成 card")
-        self.assertEqual(ops[-1], "patch")
-        self.assertIn("pong 16:01", json.dumps(self.transport.ops[-1][2], ensure_ascii=False))
+        # Only this task's card: on the wall clock the test can cross 18:00
+        # Beijing, when the same tick also sends the day's Fleet 日报.
+        ops = [(op, c) for op, _m, c, _k in self.transport.ops
+               if "只回答 pong" in c["header"]["title"]["content"]]
+        self.assertEqual([op for op, _ in ops].count("send"), 1, "no second 任务完成 card")
+        self.assertEqual(ops[-1][0], "patch")
+        self.assertIn("pong 16:01", json.dumps(ops[-1][1], ensure_ascii=False))
 
     def test_a_task_in_a_batch_is_told_on_the_batch_card_only(self):
         ref = f"{TOKYO}|claude|s-1"
