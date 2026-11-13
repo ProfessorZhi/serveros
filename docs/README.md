@@ -63,6 +63,7 @@
 | [重点深归档](DEEP-ARCHIVE-POLICY.md) | 深归档范围与 discovery 分母 | 设计 |
 | [Agent 身份、Session 与委派](architecture/AGENT-IDENTITY-SESSION-DELEGATION.md) | V2 的角色与责任拆分 | **V2 设计，未构建** |
 | [Fleet V2 自治组织](architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md) | V2 的分层自治形态 | **V2 设计，未构建** |
+| [统一工作系统与 Browser Runtime 需求补充](proposals/proposal-fleet-work-system-browser-runtime.md) | 信息摄入、结构化认识、需求/每日 Focus、研究设计、执行测试、报告/Memory，以及 Browser Runtime、Credential Broker 和 Website Registry 的需求闭环 | 需求提案 · 2026-11-13 |
 
 能力（Ability）的权威定义在 [ability-management](https://github.com/ProfessorZhi/ability-management)：[能力蓝图](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-CANONICAL-BLUEPRINT.md)、[实现矩阵](https://github.com/ProfessorZhi/ability-management/blob/main/design/ABILITY-REALIZATION-PLAN.md)。
 
