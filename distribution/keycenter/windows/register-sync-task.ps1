@@ -8,6 +8,13 @@ flashes one every run). The task runs as the current user, interactive token,
 least privilege, and ignores a new start while one is running. -Unregister
 removes it.
 
+The real bound on a run is -TimeoutSeconds in sync-secrets.ps1 (150 s), which
+kills the whole child tree when a pull hangs. ExecutionTimeLimit is only a
+backstop for the script itself getting stuck: Task Scheduler stops the launcher
+at the limit but leaves the tree below it running, which is exactly how orphans
+used to stack up every 5 minutes, so it is set well above the script's own
+timeout rather than at 3 minutes.
+
 Before the first run, on this device: `serveros_secret.py keygen` (send the
 public key to the owner) and write %USERPROFILE%\.config\serveros\secrets.yaml
 (repo, device). This script reads no secret and changes nothing else.
@@ -54,7 +61,7 @@ $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
     -RepetitionInterval (New-TimeSpan -Minutes $Minutes)
 $principal = New-ScheduledTaskPrincipal -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
     -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 3) `
+$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $name -TaskPath $folder -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings -Force | Out-Null

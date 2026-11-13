@@ -31,11 +31,11 @@
         "templates": [
           {
             "path": "distribution/keycenter/windows/register-sync-task.ps1",
-            "digest": "sha256:eacd20ba3ffbb1d80cc2cde1cbe9991e8fc2934b763120bf2fa0cd3e8a27397d"
+            "digest": "sha256:96cb9127162ae0164f4af2f483460d89d09da55145c51d3eca07b0b95989a0ec"
           },
           {
             "path": "distribution/keycenter/windows/sync-secrets.ps1",
-            "digest": "sha256:cb761f83f8d83d802425065acbc6a47eb984e3895fc07c66d60c0a3048d70aa4"
+            "digest": "sha256:082bff16094b39314664905cb223f53b8254c9b6573ef54a7d83896ac516fb9a"
           },
           {
             "path": "distribution/keycenter/windows/run-hidden-wait.vbs",
