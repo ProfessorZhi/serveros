@@ -2,8 +2,11 @@
 
 这是 Fleet 产品需求的唯一入口。2026-11-12 至 11-13 先后写了三份草稿（PR #626、#628、#629），它们合并在这里，去掉重复的入口，并改掉了已过时的现状描述。
 
+**先读 [fleet-requirements.md](fleet-requirements.md)**：全部需求的唯一编号清单（验收、自动化档位、状态、待拍板问题）。下表的文档是它的背景与细节。
+
 | 文档 | 回答什么 |
 |---|---|
+| [fleet-requirements.md](fleet-requirements.md) | 需求清单：总原则、工作流模型，以及采集与认识、对齐与看板、条目与编号、派活、观测、资源治理、能力发现、安全、性能各组需求 |
 | [fleet-product-requirements.md](fleet-product-requirements.md) | 产品定位与最高原则；七个核心问题（插件性能、指挥延迟、直达 Agent、飞书体验、资源画像与告警、Ability 版本、自动发现与目录治理）；P0/P1/P2 顺序；GitHub 治理 |
 | [fleet-efficiency-performance.md](fleet-efficiency-performance.md) | 性能与执行可靠性作为一等目标；可度量、可设预算；所有外部操作有界、进程树回收、单实例；跨平台一致；Windows 密钥同步事件是第一个案例 |
 | [fleet-current-state-and-gaps.md](fleet-current-state-and-gaps.md) | 仓库目录职责与混层；九段理想工作流（信息采集 → 结构化认识 → 需求 → 每日对齐 → 调研设计 → 执行 → 验收 → 交付 → 对账与记忆）；飞书播报与可观测性现状 |
@@ -14,6 +17,7 @@
 
 | 日期 | 决定 | 出处 |
 |---|---|---|
+| 2026-11-13 | **需求只在 Git 存一份**；飞书云空间文档自动生成、给人看；GPT 在聊天里渲染 | Owner |
 | 2026-11-13 | **新的性能敏感组件默认用 Rust。** 现有 C++ / Python 组件按实测逐个决定是否改写；没有收益就不切换 | Owner；[Rust 评估](rust-evaluation-2026-11-13.md) |
 | 2026-11-13 | 效率与性能从起点就是一等目标；任何外部操作必须有超时、整体期限和进程树回收 | Owner；[性能需求](fleet-efficiency-performance.md) |
 | 2026-10-28 | 旧版 Fleet 与 Fleet Next 双轨并行，Next 不覆盖旧版 | Owner，#478（并入 #531） |
