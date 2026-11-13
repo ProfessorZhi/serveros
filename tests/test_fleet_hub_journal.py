@@ -371,3 +371,23 @@ class TraceBetween(unittest.TestCase):
         got = inbox.trace_between(start.strftime("%Y-%m-%dT%H:%M:%SZ"),
                                   end.strftime("%Y-%m-%dT%H:%M:%SZ"), source="commander")
         self.assertEqual([(s["step"], s["detail"].get("by")) for s in got], [("list_devices", "gpt")])
+
+
+class ChainLatencies(unittest.TestCase):
+    def test_hops_from_a_page_timeline(self):
+        from fleet_hub_watch import perf
+        page = "\n".join([
+            "## 过程", "<details><summary>时间线</summary>", "```text",
+            "14:39:22  fleet   prompt sent  [tokyo-shared-dev-01]  409448a0-6f4  (by=x)",
+            "14:39:35  monitor watching  [tokyo-shared-dev-01]  409448a0-6f4  (origin=dispatched)",
+            "14:39:36  monitor observed  [tokyo-shared-dev-01]  409448a0-6f4  (status=RUNNING)",
+            "14:46:04  device  device finished  [tokyo-shared-dev-01]  409448a0-6f4  (turns=6)",
+            "14:46:05  device  result  [tokyo-shared-dev-01]  409448a0-6f4",
+            "14:46:08  notify  no card: told on the batch card  [tokyo-shared-dev-01]  409448a0-6f4",
+            "```"])
+        got = perf.hops([page])
+        self.assertEqual(got["派发 → Hub 开始盯"], [13.0])
+        self.assertEqual(got["派发 → 第一次读到状态"], [14.0])
+        self.assertEqual(got["设备做完 → Hub 取回结果"], [1.0])
+        self.assertEqual(got["取回结果 → 卡片处理"], [3.0])
+        self.assertEqual(perf.quantile([1, 2, 3, 4, 100], 0.95), 100)
