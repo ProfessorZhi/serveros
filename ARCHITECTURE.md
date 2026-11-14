@@ -95,6 +95,67 @@ fleet-journal 记时间线 → 飞书私发 Owner 一张卡片（一次完成一
 5. **先问 Owner 的事：** 删生产数据、改生产服、开新前缀、新建或改凭据、对外可见的动作。
 6. **改造的方式：** 每步一个 PR，CI 全绿才合并；先并行再切换，不中断运行中的服务；部署由本地 Claude Code 执行并回执。
 
+## The resident surface (frozen)
+
+> 这一节原样沿用旧版规范（`tests/test_core_freeze.py` 守着它）。它是仍然生效的约束：常驻的只有 `serverosd`，并点名拒绝另外五个守护进程。里面的「§20」指旧版章节号。
+
+*Unnumbered on purpose.* Every other section here is a design that changes; this
+one is a refusal that is supposed to be hard to change, and a numbered section
+sits in a document whose whole convention is that numbers move.
+
+**Exactly one thing is resident, and it is `serverosd`.**
+
+Here “one thing” refers to the ServerOS semantic Node Core per managed scope, not
+a ban on native supervisors, CloudCLI, Tailscale, shared Providers or currently
+executing Agents. Finite scheduled operations may wake an existing Parent after
+a result arrives; this is continuation plumbing, not a resident business planner.
+
+This is frozen because the pressure against it is steady and each step is
+individually reasonable. Discovery feels like it deserves a supervisor; memory
+feels like it deserves a writer; coordination feels like it deserves a
+scheduler. Each of those is a *semantic service* — a resolver, a schema, a
+refusal rule — and none of them is a process. A service that answers in-process
+becomes a question that can be unanswered the moment it is given a process, and
+"the answer is unavailable" is the one output this product exists to make
+impossible.
+
+```text
+serverosd          resident, supervised by systemd (§20)
+serverosctl        on demand — the operator surface
+serveros-*-mcp     on demand — spawned per Agent session, owned by that session
+
+refused as resident units, by name:
+  abilityd                 discovery is a resolver, not a supervisor
+  memoryd                  the ledger is written by the operation that needs it
+  coordinationd            bindings are a durable record, not a running thing
+  resource-governanced     observation is a tick, and admission is a policy read
+  feishud                  Feishu is a Provider, reached when a command needs it
+```
+
+Each refused name is the obvious way to make one of the four semantic services
+into a process. Refusing them is not a claim that a second resident unit could
+never be justified — it is that the justification would have to survive this
+paragraph, in a diff, with a name.
+
+**What may be a process is a Provider or a Managed Runtime, and both live
+outside the core.** BotMux, the Codex App Server, Docker, Feishu and OpenViking
+are reached through a module under `mcp/` or `abilities/`; the core's loader
+closure may not reach any of them, and `serverosd` starts with every one of
+them absent. `tests/test_core_freeze.py` asserts the surface is exactly the
+three rows above, that no refused name has appeared on it, and that none of
+these outer systems is in the core's closure. `tests/test_core_ability_boundary.py`
+asserts the closure itself.
+
+**This section was deleted from the document and is restored here on
+2026-09-22.** The gate that holds it — `test_the_refusal_is_written_down`, whose
+own failure message is "the freeze was deleted rather than changed" — stayed in
+the tree and stayed red while the text was gone. Nothing in the refusal had
+become false: `test_no_such_daemon_exists` never stopped passing, and no refused
+name has appeared since. What went missing was the paragraph a person reads
+before proposing the sixth one, which is the only thing the section was ever
+for. The subsection above is where the refusal lives; this one is why it is
+still refused.
+
 ## 7. 正在改什么
 
 依据：[需求清单](docs/requirements/fleet-requirements.md)、[盘点报告](docs/audit/2026-11-13-inventory.md)。
