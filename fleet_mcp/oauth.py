@@ -178,9 +178,56 @@ class TokenStore:
         root.mkdir(parents=True, exist_ok=True)
         self._key_path = root / "signing.key"
         self._state_path = root / "state.json"
+        self._key_created = False
         self._key = self._load_or_create_key()
         self._clients, self._refresh, self._revocations = self._load_state()
         self._revocation_stamp: tuple[int, int] | None = None
+        self._auth_counts: dict[str, list[float]] = {}
+        self._auth_flushed = 0.0
+        if self._key_created and (self._clients or self._refresh):
+            self._note_key_regenerated()
+
+    # -- what the watchdog reads (requirement D-5) ---------------------------
+    #
+    # 2026-11-04 the signing key was created anew while clients were still
+    # registered. Every token those clients held stopped verifying ("signature
+    # does not verify"), the Claude Code plugin and Codex showed "needs
+    # authentication", and nobody was told. Two small files beside the key now
+    # say so; `fleet_hub_watch.watchdog` reads them and tells the owner. They
+    # hold reasons, counts and times only: never a token, a claim or a client
+    # secret.
+
+    AUTH_FAILURES_FILE = "auth-failures.json"
+    KEY_REGENERATED_FILE = "key-regenerated.json"
+    #: The counts are flushed at most this often, so a burst of bad requests
+    #: costs one small write, not one per request.
+    AUTH_FLUSH_SECONDS = 10.0
+
+    def _note_key_regenerated(self) -> None:
+        marker = {"at": time.time(), "registered_clients": len(self._clients),
+                  "refresh_chains": len(self._refresh)}
+        self._write_private(self.root / self.KEY_REGENERATED_FILE,
+                            json.dumps(marker).encode("utf-8"))
+
+    def _note_auth(self, outcome: str) -> None:
+        now = time.time()
+        with self._lock:
+            entry = self._auth_counts.setdefault(outcome, [0, 0.0])
+            entry[0] += 1
+            entry[1] = now
+            if now - self._auth_flushed < self.AUTH_FLUSH_SECONDS and outcome == "ok":
+                return
+            if now - self._auth_flushed < self.AUTH_FLUSH_SECONDS and entry[0] > 1:
+                return
+            self._auth_flushed = now
+            document = {"pid": os.getpid(), "updated": now,
+                        "counts": {k: {"count": int(v[0]), "last_at": v[1]}
+                                   for k, v in self._auth_counts.items()}}
+        try:
+            self._write_private(self.root / self.AUTH_FAILURES_FILE,
+                                json.dumps(document).encode("utf-8"))
+        except OSError:
+            pass                                  # a lost count never fails a request
 
     @property
     def root(self) -> Path:
@@ -209,6 +256,7 @@ class TokenStore:
             pass
         key = secrets.token_bytes(32)
         self._write_private(self._key_path, key)
+        self._key_created = True
         return key
 
     @staticmethod
@@ -442,6 +490,15 @@ class TokenStore:
         return payload if isinstance(payload, dict) else None
 
     def verify_access_token(self, token: str, *, audience: str) -> dict[str, Any]:
+        try:
+            payload = self._verify_access_token(token, audience=audience)
+        except OAuthError as exc:
+            self._note_auth(exc.description)
+            raise
+        self._note_auth("ok")
+        return payload
+
+    def _verify_access_token(self, token: str, *, audience: str) -> dict[str, Any]:
         payload = self.signed_claims(token)
         if payload is None:
             raise OAuthError("invalid_token", "signature does not verify", status=401)
