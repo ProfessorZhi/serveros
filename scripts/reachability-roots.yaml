@@ -11,6 +11,7 @@ running-tokyo:
   - bin/serveros-fleet-owned            # serveros-fleet-v1.service
   - integrations/fleet-hub-watch/fleet_hub_watch/__main__.py   # serveros-fleet-watch.service
   - integrations/fleet-hub-watch/fleet_hub_watch/ask_model.py  # its intent command
+  - integrations/fleet-hub-watch/fleet_hub_watch/watchdog.py   # serveros-fleet-watchdog.timer (O-3)
   - fleet_mcp/node/status_card.py       # serveros-status-card.service
   - distribution/keycenter/serveros_secret.py                  # serveros-secrets-sync.service
   - native/node-core/core-lite/deploy/publish-status.sh        # serveros-core-lite-publish.service
