@@ -104,7 +104,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 research-exchange/tests/check_packet.py -v
 
 - [ServerOS 当前目标架构](../docs/architecture/NATIVE-WORK-ENVIRONMENT.md)
 - [研究交接协议](../docs/architecture/RESEARCH-EXCHANGE.md)
-- [CC 执行计划](../docs/plans/plan-01-native-work-environment.md)
+- [CC 执行计划](../docs/archive/plans/plan-01-native-work-environment.md)
 
 输入提交固定后不覆盖结果来假装幂等；新结论用新 result-id 或明确修订。结果中的建议和
 APPROVE 文字都不是人类授权。

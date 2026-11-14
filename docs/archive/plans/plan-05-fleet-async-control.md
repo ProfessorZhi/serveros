@@ -3,7 +3,7 @@
 ## Overview
 
 Item SRV-0011; source baseline 597f7b8. Follow
-`docs/proposals/proposal-fleet-async-control.md`. Root owns control code;
+`docs/archive/proposals/proposal-fleet-async-control.md`. Root owns control code;
 Tokyo P1 owns Operator Skills/packaging; Dell owns independent QA preparation;
 Windows owns read-only native verification. Do not edit another lane's files.
 

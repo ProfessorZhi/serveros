@@ -1,7 +1,7 @@
 # Fleet command-side adaptation implementation plan
 
 Item SRV-0011; base `730bdac9ff609ceed0dc636614b20f08b2eabff5`.
-Follow `docs/proposals/proposal-fleet-command-client.md`. This lane owns only
+Follow `docs/archive/proposals/proposal-fleet-command-client.md`. This lane owns only
 the shared Skills, the CC/Codex client packaging, the overlay update checks,
 related tests and these documents. Core control code remains root-owned.
 

@@ -1,6 +1,6 @@
 # Fleet V1：差距清单与工作包
 
-> **这篇回答什么：** 对照 [FLEET-V1-V2-ARCHITECTURE.md](../architecture/FLEET-V1-V2-ARCHITECTURE.md)（需求与设计）和 [FLEET-FOUR-LAYERS.md](../architecture/FLEET-FOUR-LAYERS.md)（分层与目录），V1 现在还差什么；把差距拆成可以交给本地 Codex / Claude Code 独立完成的工作包，每个都写明范围、步骤、验收与依赖。
+> **这篇回答什么：** 对照 [FLEET-V1-V2-ARCHITECTURE.md](../../architecture/FLEET-V1-V2-ARCHITECTURE.md)（需求与设计）和 [FLEET-FOUR-LAYERS.md](../../architecture/FLEET-FOUR-LAYERS.md)（分层与目录），V1 现在还差什么；把差距拆成可以交给本地 Codex / Claude Code 独立完成的工作包，每个都写明范围、步骤、验收与依赖。
 >
 > **状态：** 计划，2026-10-26，基于 main `3f5ec20` 的实测。工作包完成后在本文对应行标注 PR 号；不另建第二份进度表。
 

@@ -1,6 +1,6 @@
 # ServerOS 协作体系合同：能力局部结果怎样成为用户交付
 
-状态：2026-09-23 需求反查后的设计修订，非部署声明。本文件细化 ARCHITECTURE.md §1/3/4/8/10/11/27 的协作行为；不改变原生Agent主脑、唯一serverosd、Work Engine状态权威和生产人执行边界。出处见 [反查记录](WORK-SCENARIO-REVIEW-20260923.md)，各职责的具体接力见 ability-management/design/ABILITY-SCENARIO-CONTRACTS.md。
+状态：2026-09-23 需求反查后的设计修订，非部署声明。本文件细化 ARCHITECTURE.md §1/3/4/8/10/11/27 的协作行为；不改变原生Agent主脑、唯一serverosd、Work Engine状态权威和生产人执行边界。出处见 [反查记录](archive/WORK-SCENARIO-REVIEW-20260923.md)，各职责的具体接力见 ability-management/design/ABILITY-SCENARIO-CONTRACTS.md。
 
 ## 1. 根问题不是缺一套流程图
 

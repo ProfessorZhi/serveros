@@ -92,7 +92,7 @@
 ## 5. 共同规则（拼在每张派工卡前面）
 
 ```
-你是仓库整合冲刺的一个 agent。任务书正本：ProfessorZhi/serveros 分支 claude/marketops-architecture-audit-u71oo7 的 docs/plans/plan-04-consolidation-sprint.md（细节见同目录 plan-03）。
+你是仓库整合冲刺的一个 agent。任务书正本：ProfessorZhi/serveros 分支 claude/marketops-architecture-audit-u71oo7 的 docs/archive/plans/plan-04-consolidation-sprint.md（细节见同目录 plan-03）。
 - 只写派工卡里分给你的路径，只推送你自己的分支，开 Draft PR。不推 main、不合并、不 force-push、不 rebase 别人的分支。
 - 不改仓库可见性、不删仓库、不改名、不转 Issue。
 - 不合并或改动 #266、#146 和任何 V1 Draft PR 的内容。

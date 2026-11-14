@@ -26,14 +26,14 @@
 | 文档 | 回答什么问题 | 状态 / 日期 |
 |---|---|---|
 | [Fleet V1 拓扑与运行](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) | 每台设备上 Core、Runtime、Ability 的边界；Fleet 如何连接 | 设计 · 2026-10-17 |
-| [常驻监控与东京中枢](plans/fleet-v1-resident-monitor-and-tokyo-hub.md) | 常驻监控怎么自动发现各设备的 run、只播报一次；项目理解与需求看板存在 Tokyo、GPT 怎么看；设备角色与默认模型路由（东京网关0） | 设计草案 · 2026-10-30 |
-| [Fleet V1 总跟踪](plans/fleet-v1-four-pillar-tracker.md) | V1 做完长什么样：三设备 × 四部分 + 一次真实自迭代的验收矩阵、推进顺序、owner 动作、PR 处理建议 | 草稿 · 2026-10-29 |
-| [Fleet V1 差距清单与工作包](plans/fleet-v1-gap-and-work-packages.md) | V1 还差什么；按泳道拆成可交给本地 Codex / Claude Code 的工作包（F 功能、D 解耦与目录、Q 质量与运维），每个带范围、验收与依赖 | 计划 · 2026-10-26 |
+| [常驻监控与东京中枢](archive/plans/fleet-v1-resident-monitor-and-tokyo-hub.md) | 常驻监控怎么自动发现各设备的 run、只播报一次；项目理解与需求看板存在 Tokyo、GPT 怎么看；设备角色与默认模型路由（东京网关0） | 设计草案 · 2026-10-30 |
+| [Fleet V1 总跟踪](archive/plans/fleet-v1-four-pillar-tracker.md) | V1 做完长什么样：三设备 × 四部分 + 一次真实自迭代的验收矩阵、推进顺序、owner 动作、PR 处理建议 | 草稿 · 2026-10-29 |
+| [Fleet V1 差距清单与工作包](archive/plans/fleet-v1-gap-and-work-packages.md) | V1 还差什么；按泳道拆成可交给本地 Codex / Claude Code 的工作包（F 功能、D 解耦与目录、Q 质量与运维），每个带范围、验收与依赖 | 计划 · 2026-10-26 |
 | [Fleet 需求与 V1/V2 架构](architecture/FLEET-V1-V2-ARCHITECTURE.md) | 舵手模型、需求与稳定性要求、V1 技术设计（事件收件箱、通知、抢占）、V1 必须预留的 13 个接口、V2 层层管理与 OpenAgents | 设计 · 2026-10-26 |
 | [Fleet 四层与仓库目录](architecture/FLEET-FOUR-LAYERS.md) | Fleet 的四层（底座、接入与枢纽、设备能力、指挥侧）各管什么、在哪个目录、怎么依赖；目录登记表 [layers.yaml](architecture/layers.yaml) | 设计 · 2026-10-26 |
 | [Fleet Next 验收手册](fleet-next-acceptance-runbook.md) | 人工验收怎么做；离线测试覆盖不到什么 | 运行手册 |
 | [Next ingress runbook](fleet-v1-next-ingress-runbook.md) | 独立 Tailscale 节点从零到可用的完整步骤 | 运行手册 |
-| [Owner/runtime 验收 2026-10-22](fleet-v1-owner-runtime-acceptance-20261022.md) | 候选版本的 34 个工具、授权与恢复行为 | 候选证据 · 2026-10-22 |
+| [Owner/runtime 验收 2026-10-22](archive/fleet-v1-owner-runtime-acceptance-20261022.md) | 候选版本的 34 个工具、授权与恢复行为 | 候选证据 · 2026-10-22 |
 | [Dell 就绪](fleet-v1-dell-readiness.md) | Dell 多账号的只读就绪矩阵 | 只读测量 · 2026-10-15 |
 | [Dell cutover](fleet-v1-dell-fjd-cutover-plan.md) | Dell 账号切换的前置条件 | 计划 |
 | [设备就绪缺口](fleet-next-device-readiness-gaps.md) | 各设备还缺什么 | 缺口清单 · 2026-10-13 |
@@ -70,11 +70,12 @@
 
 ## 历史与证据
 
-这些目录保留**当时的**判断、计划与证据，不是当前状态。引用前先看文件日期和 Status 行。
+这些目录保留**当时的**判断、计划与证据，不是当前状态。引用前先看文件日期和 Status 行。2026-11-14 起统一放在 [archive/](archive/)（盘点 D9）。
 
-- [plans/](plans)：实施计划，含 Fleet V1 campaign（[plan-02](plans/plan-02-complete-fleet-v1-delivery-campaign.md)）和 P0–P12（[CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md)）。
-- [proposals/](proposals)：成对的设计提案。
-- [reviews/](reviews)：独立评审记录。
+- [archive/plans/](archive/plans)：实施计划，含 Fleet V1 campaign（[plan-02](archive/plans/plan-02-complete-fleet-v1-delivery-campaign.md)）和 P0–P12（[CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md)）。
+- [archive/proposals/](archive/proposals)：成对的设计提案。
+- [archive/reviews/](archive/reviews)：独立评审记录。
+- 带日期的单篇记录（2026-09-22 至 10-22 的基线、评审、验收、交接）也在 [archive/](archive/)。
 - 带日期的验收/评审（2026-10-17 至 10-21 的 RC 评审与 QA 探针）：`integrations/fleet-v1-release/`、`integrations/fleet-v1-qa/` 已于 2026-11-14 删除（盘点 D1：没有任何入口和测试引用）。需要时从删除前的提交取回：`git checkout 3f1f34b55c55 -- integrations/fleet-v1-release integrations/fleet-v1-qa`。
 
 历史文档里的工具数（33/34）、revision（`fleet-mcp-3/4/5`）与「未部署」判断都是当天的记录。当前工具面以 `fleet_mcp/version.py` 为准。

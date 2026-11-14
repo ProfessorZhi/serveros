@@ -267,7 +267,7 @@ ChatGPT 默认承担人机战略对话；Codex 可以是另一位总管入口、
 
 ## 13. 上线与试验的分阶段边界
 
-产品目标清晰并不等于当前原型已经安全。先按 [Fleet V2 delivery/acceptance plan](../plans/fleet-v2-delivery-and-acceptance.md) 落地：
+产品目标清晰并不等于当前原型已经安全。先按 [Fleet V2 delivery/acceptance plan](../archive/plans/fleet-v2-delivery-and-acceptance.md) 落地：
 1. 固化用户交互、组织/Role/Full-Control 产品契约与离线负控；不触碰真实权限。
 2. 做真实 Work/Ability/Runtime 的只读 Join 与可重复的管理决策；没有可信事实不派发。
 3. 完成 V1 #237 所需的真实 Writer fencing、effect idempotency 与 OS Writer 边界，才能给跨设备副作用可信写路径。

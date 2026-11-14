@@ -29,7 +29,7 @@
 <details>
 <summary>状态说明原文（英文，含日期与优先顺序）</summary>
 
-> **2026-10-22 Fleet V2 product-target companion:** [Fleet V2 Autonomous Organization / Owner Full-Control](FLEET-V2-AUTONOMOUS-ORGANIZATION.md) describes the new user-requested organization, native Runtime mix, device-repair team, self-update, and standing Owner-mode expectations. This file continues to define the existing identity/session/delegation invariants; the new product target neither grants live OS permission nor waives #237. [V2 phased acceptance](../plans/fleet-v2-delivery-and-acceptance.md).
+> **2026-10-22 Fleet V2 product-target companion:** [Fleet V2 Autonomous Organization / Owner Full-Control](FLEET-V2-AUTONOMOUS-ORGANIZATION.md) describes the new user-requested organization, native Runtime mix, device-repair team, self-update, and standing Owner-mode expectations. This file continues to define the existing identity/session/delegation invariants; the new product target neither grants live OS permission nor waives #237. [V2 phased acceptance](../archive/plans/fleet-v2-delivery-and-acceptance.md).
 
 > **Status: reviewed V2 design direction · 2026-10-16. DESIGN ONLY, not CODE/INTEGRATION/LIVE.**
 >
@@ -37,7 +37,7 @@
 >
 > **Normative order:** [root architecture](../../ARCHITECTURE.md) is the product authority; [Native Agent Work Environment §6](NATIVE-WORK-ENVIRONMENT.md) already established "Session is a resource; roles can be handed off" on 2026-10-07/08. This document **extends and operationalizes that decision**, rather than inventing another authority. Existing versioned V1 contracts and runtime behavior take precedence until explicitly migrated.
 >
-> **2026-10-17 Fleet V1 release-scope correction:** [Complete Fleet Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244) and [per-node V1 plan](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) now require supported **Claude Code AND Codex** provider/session lifecycle on the three authorized devices, tested by a local CC Fleet Plugin before ChatGPT packaging. Earlier lines in this document deferring formal Codex acceptance until V2 are superseded. V2 retains identity-independent role pools, governed peer messaging and optional OpenAgents, not the basic Codex adapter. This is a target change, NOT evidence installed Codex is live.
+> **2026-10-17 Fleet V1 release-scope correction:** [Complete Fleet Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244) and [per-node V1 plan](../archive/plans/plan-02-complete-fleet-v1-delivery-campaign.md) now require supported **Claude Code AND Codex** provider/session lifecycle on the three authorized devices, tested by a local CC Fleet Plugin before ChatGPT packaging. Earlier lines in this document deferring formal Codex acceptance until V2 are superseded. V2 retains identity-independent role pools, governed peer messaging and optional OpenAgents, not the basic Codex adapter. This is a target change, NOT evidence installed Codex is live.
 >
 > **Immediate prerequisite:** [V1 correctness and security gates #237](https://github.com/ProfessorZhi/serveros/issues/237). Expanding Agent orchestration before these gates are satisfied amplifies unsafe behavior.
 

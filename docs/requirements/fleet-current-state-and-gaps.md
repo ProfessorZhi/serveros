@@ -187,7 +187,7 @@ ServerOS 应将信息、理解、需求、工作、研究设计、执行验证�
 | Memory | memory/record.py、scope.py、projection.py、handoff.py、openviking/ | memory-fabric.md 的 2026-09-27 状态表记录 OpenViking 已部署、认证访问和备份已建立；同一文档也明确“没有 consumer 读取 Provider”，auto-recall/capture 未配置 | Provider 有部署记录；业务协同不完整 |
 | Requirement Intake | workengine/request.py、intake/global_board.py、focus_source.py、board-contract.yaml | 本次未读取当前 Work Engine 数据库、Board 实际状态或 Feishu 看板映射；候选、正式接受和看板投影需要有 fresh receipt | SOURCE_CONFIRMED；RUNTIME_NOT_VERIFIED |
 | Daily Focus | intake/daily_cycle.py、daily_reading.py、runtime/serveros-daily.*、evening-alignment.* | 有每日工作循环设计和定时单元；本次没有真实最近一次成功运行、cutoff、水位、Focus 和交付回执 | 设计与实现并存；实时执行待核 |
-| Research & Design | research-exchange/、docs/proposals/、docs/plans/、docs/reviews/ | 有研究包、Proposal 和 Review 结构，但没有统一证据证明正式 Requirement 到 Research Packet、Design、AC、Implementation 的关联全部完整 | 部分实现 |
+| Research & Design | research-exchange/、docs/archive/proposals/、docs/archive/plans/、docs/archive/reviews/ | 有研究包、Proposal 和 Review 结构，但没有统一证据证明正式 Requirement 到 Research Packet、Design、AC、Implementation 的关联全部完整 | 部分实现 |
 | Execution | workengine/、fleet_mcp/、fleet/、mcp/、integrations/ | Issue #237 仍开放并记录 Session fencing、持久化幂等、独占 Work lease 等 P0 风险；Legacy/Next 需要保持双轨边界 | OPEN_BLOCKER |
 | Verification | tests/、.github/workflows/、scripts/hermetic_tests.py、Fleet QA packages | 417 个测试文件不等于 417 项验收通过；本次没有运行测试，也没有收集当前 main exact-SHA CI 结果和三设备证据 | SOURCE_CONFIRMED；本轮 NOT_RUN |
 | Reports & Publication | runtime/daily_report.py、report_delivery.py、report_publication.py、workbench/REPORTS.md | 生成、发布和投递分散在 runtime/；reports/ 尚不存在；没有本次实际日报生成、发布、Feishu receipt 的端到端证明 | 部分实现；交付闭环待核 |
@@ -407,7 +407,7 @@ Issue #531 是当前公开的 Fleet V1 总跟踪入口，范围为 Tokyo、Dell 
 当前需要治理的不是“再多写几篇文档”，而是让文档有唯一职责和可信更新时间：
 
 1. docs/architecture/FLEET-FOUR-LAYERS.md 的 Legacy 退役表述需要按 #478 更新。
-2. docs/plans/fleet-v1-gap-and-work-packages.md 是 2026-10-26 的计划；其中 D2/D3/D4 目录迁移目标仍需对照当前 tree 更新状态。
+2. docs/archive/plans/fleet-v1-gap-and-work-packages.md 是 2026-10-26 的计划；其中 D2/D3/D4 目录迁移目标仍需对照当前 tree 更新状态。
 3. docs/INFORMATION-DOCUMENT-LIFECYCLE.md 是 2026-09-23/24 的设计；其 B2 semantic writer consumer 和 focus_source NOT_PRODUCED 记录需要刷新。
 4. docs/daily-work-cycle.md 是 2026-09-24 的设计；必须附最近一次真实 Daily Cycle receipt 才能说明当前运行。
 5. docs/NODE-OBSERVABILITY.md 明确是产品/架构修订，不是运行实现；需要当前设备采样、source freshness 和 self-health 证据。

@@ -22,7 +22,7 @@ Future packaging may add `fleet-multiagent-review`, `fleet-permissions` and `fle
 5. Test one authorized cloud-to-native handoff and one multi-agent bounded task. No new production service, remote tunnel, Feishu scope, daemon or OpenAgents Workspace pairing as part of packaging.
 
 ## Related work
-- [Federated agent design](../../docs/plans/fleet-next-agent-federation-v0.md)
+- [Federated agent design](../../docs/archive/plans/fleet-next-agent-federation-v0.md)
 - ServerOS issue #186 — Cloud Skills
 - ServerOS issue #187 — OpenAgents SDK pilot
 - Ability Management issue #29 — Ability Family source of truth

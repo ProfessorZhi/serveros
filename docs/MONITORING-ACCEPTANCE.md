@@ -4,7 +4,7 @@
 
 ## 2026-10-17 完整 Fleet V1 · 三机真实监控验收
 
-本文件原日期/源码反查保留为当时的历史基线。新增完整 [Fleet V1 交付计划](plans/plan-02-complete-fleet-v1-delivery-campaign.md) 的**设备源/安全/交付门**：Tokyo/vince、Dell/fjd 与 Windows 每个授权 principal 的 C++ Core 实际采集、OS 服务状态、可信签名 Node/Fleet 读回、真实 Device Ability/CC+Codex Runtime（未安装/未授权则 UNKNOWN），需要证明 Core 的 sampling & IPC 和服务自身 readiness，不只进程 alive。
+本文件原日期/源码反查保留为当时的历史基线。新增完整 [Fleet V1 交付计划](archive/plans/plan-02-complete-fleet-v1-delivery-campaign.md) 的**设备源/安全/交付门**：Tokyo/vince、Dell/fjd 与 Windows 每个授权 principal 的 C++ Core 实际采集、OS 服务状态、可信签名 Node/Fleet 读回、真实 Device Ability/CC+Codex Runtime（未安装/未授权则 UNKNOWN），需要证明 Core 的 sampling & IPC 和服务自身 readiness，不只进程 alive。
 
 Windows 127.0.0.1:16095 → 本地 SSH Tunnel → 上游 Selkies/Claude Web → 授权会话交互流，以及 Tailscale 和 RDC 分别有实际 owner、采样时间、功能健康和自愈许可。网络/Tailscale down 时仅本机 Core 可以按获准服务恢复本地依赖，远端 Selkies 由实际 owner 所在设备处理。Core 与现有 Python serverosd 迁移期不得成为同 unit 的双恢复写者。
 

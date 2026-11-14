@@ -9,7 +9,7 @@
 > - 三台设备的拓扑与 V1 运行边界：[FLEET-V1-TOPOLOGY-OPERATIONS.md](FLEET-V1-TOPOLOGY-OPERATIONS.md)；
 > - V2 组织形态的完整提案：[FLEET-V2-AUTONOMOUS-ORGANIZATION.md](FLEET-V2-AUTONOMOUS-ORGANIZATION.md)；
 > - 身份、Session 与委派：[AGENT-IDENTITY-SESSION-DELEGATION.md](AGENT-IDENTITY-SESSION-DELEGATION.md)。
-> - V1 还差什么、怎么分工：[fleet-v1-gap-and-work-packages.md](../plans/fleet-v1-gap-and-work-packages.md)。
+> - V1 还差什么、怎么分工：[fleet-v1-gap-and-work-packages.md](../archive/plans/fleet-v1-gap-and-work-packages.md)。
 >
 > 本文与它们冲突时，以本文记录的 owner 决定为准，并应回头修正那篇文档。
 

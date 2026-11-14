@@ -4,7 +4,7 @@
 
 ## 2026-10-17 完整 Fleet V1 节点观测 / C++ Core 版本边界
 
-[完整 Fleet V1 拓扑](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) 与 [交付计划](plans/plan-02-complete-fleet-v1-delivery-campaign.md) 是最新设备范围。本文原 2026-09-23 的 serverosd/Python 实机观察是历史基线：目标形态为 **每台受管设备、每个授权 OS principal 至多一份 C++ Native Core 写方**，旧 Python serverosd 在迁移期间继续担任当前生产写方，C++ Core 先 observe/shadow 对比，未经批准不能并发操作同一服务。OS supervisor 管 Core 的启动/进程退出；Core 本身保持轻量、不内嵌 LLM/Worker/第二服务管理器。
+[完整 Fleet V1 拓扑](architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md) 与 [交付计划](archive/plans/plan-02-complete-fleet-v1-delivery-campaign.md) 是最新设备范围。本文原 2026-09-23 的 serverosd/Python 实机观察是历史基线：目标形态为 **每台受管设备、每个授权 OS principal 至多一份 C++ Native Core 写方**，旧 Python serverosd 在迁移期间继续担任当前生产写方，C++ Core 先 observe/shadow 对比，未经批准不能并发操作同一服务。OS supervisor 管 Core 的启动/进程退出；Core 本身保持轻量、不内嵌 LLM/Worker/第二服务管理器。
 
 必须至少分离 CPU/内存/Swap/PSI、磁盘、GPU（实际授权时）、单用户 cgroup、服务进程、服务协议 readiness、Tailscale 链路、SSH Tunnel、CloudCLI/Connector、Native CC/Codex Provider/Session、Remote Desktop Control 与监控自身健康。每项有 owner、平台/采样源、observed_at/TTL、UNKNOWN/STALE、实际版本与能力证据；采样和监控本身不能增加操作权。Codex 最终实测为完整 Fleet V1 目标，而非仅静态 registry 声明。
 

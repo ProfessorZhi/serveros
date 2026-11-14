@@ -1,7 +1,7 @@
 # Fleet Operator Skills implementation plan
 
 Item SRV-0011; baseline `597f7b8b5507ec10435b75fd4658b922bcf5c56a`.
-Follow `docs/proposals/proposal-fleet-operator-skills.md`. This lane owns only
+Follow `docs/archive/proposals/proposal-fleet-operator-skills.md`. This lane owns only
 the shared Skills source, the CC/overlay packaging surfaces, package tests and
 its own proposal/plan/review documents. Control code remains with the root lane.
 

@@ -6,7 +6,7 @@
 >
 > **怎么读：** §1–§3 是产品定义与三类设备的分工；§4 是客户端插件与设备能力的区别；§5 是一条工作如何跨设备流动、文件落在哪；§6 是 V1 验收门与 V2 分界；§7 是依赖的既有规范。
 
-**当前实施范围：** [Complete Fleet V1 Delivery Campaign](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) · [Issue #244](https://github.com/ProfessorZhi/serveros/issues/244)。三设备 Native Core + 网络/服务自愈 + CC/Codex/CloudCLI + Device Ability + Fleet 工具面 + 本地 CC Plugin/Skills 构成 V1 的功能范围。未安装或未授权的能力必须明确列为 BLOCKED，不能因为设计存在就当作已接通。开发优先 Tokyo/Dell，Windows 只做最终必需的原生验收；ChatGPT App2 与插件注册不在当前关键路径上。
+**当前实施范围：** [Complete Fleet V1 Delivery Campaign](../archive/plans/plan-02-complete-fleet-v1-delivery-campaign.md) · [Issue #244](https://github.com/ProfessorZhi/serveros/issues/244)。三设备 Native Core + 网络/服务自愈 + CC/Codex/CloudCLI + Device Ability + Fleet 工具面 + 本地 CC Plugin/Skills 构成 V1 的功能范围。未安装或未授权的能力必须明确列为 BLOCKED，不能因为设计存在就当作已接通。开发优先 Tokyo/Dell，Windows 只做最终必需的原生验收；ChatGPT App2 与插件注册不在当前关键路径上。
 
 **V2 专题：** Agent 身份、Session 资源化、Assignment、分层委派与消息通信只在 [Agent Identity, Session Resources and Multi-Agent Delegation](AGENT-IDENTITY-SESSION-DELEGATION.md) 中定义。本文只定义 Fleet V1 的执行拓扑与验收边界，不再建第二份 V2 身份规范。
 
@@ -161,7 +161,7 @@ Dell 任务临时目录可以按 owner/Work/Run 做已结束工件 dry-run 清�
 
 **V2 新增但不回填为 V1：** 稳定跨设备 Logical Agent/Role Principal 身份、动态 Session 资源池、复杂 Assignment/Activation 派生视图；专业 Agent 间的受治理通信、浅层 Parent 分工，以及 [openagents-org/openagents-sdk](https://github.com/openagents-org/openagents-sdk) 作为可替换 A6 委派 Provider 的独立实验。V2 的详细合同只见 [Agent Identity / Session / Delegation](AGENT-IDENTITY-SESSION-DELEGATION.md)；不在此复制新的 Agent schema、业务数据库或第二个调度器。
 
-截至本文决策日，候选源码、PR 与合成/toy 验收**不等于三设备生产部署或本地 CC authenticated E2E 已通过**。[Fleet 完整 V1 Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244)、[完整 V1 实施计划](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) 和 [早期计划 Issue #189](https://github.com/ProfessorZhi/serveros/issues/189)、[Ability Journey #190](https://github.com/ProfessorZhi/serveros/issues/190) 和各自真实回执是实施范围与证据入口。
+截至本文决策日，候选源码、PR 与合成/toy 验收**不等于三设备生产部署或本地 CC authenticated E2E 已通过**。[Fleet 完整 V1 Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244)、[完整 V1 实施计划](../archive/plans/plan-02-complete-fleet-v1-delivery-campaign.md) 和 [早期计划 Issue #189](https://github.com/ProfessorZhi/serveros/issues/189)、[Ability Journey #190](https://github.com/ProfessorZhi/serveros/issues/190) 和各自真实回执是实施范围与证据入口。
 
 ## 7. 直接依赖的既有规范
 

@@ -4,9 +4,9 @@
 
 ## 1. 只从这里进入
 
-- 产品与实现边界：[目标架构](../architecture/NATIVE-WORK-ENVIRONMENT.md)。
-- 21 项逐项要求：[Ability 需求与验收](../architecture/ABILITY-REQUIREMENTS.md)。
-- 落位、深度、视觉导航、迁移：[目录实施合同](../architecture/DIRECTORY-CONVERGENCE.md)。
+- 产品与实现边界：[目标架构](../../architecture/NATIVE-WORK-ENVIRONMENT.md)。
+- 21 项逐项要求：[Ability 需求与验收](../../architecture/ABILITY-REQUIREMENTS.md)。
+- 落位、深度、视觉导航、迁移：[目录实施合同](../../architecture/DIRECTORY-CONVERGENCE.md)。
 - 夜间运行：[执行委托](../CC-OVERNIGHT-MANDATE.md)。
 
 先看本页，再按当前包读取有关章节；不一次加载全架构、所有 Skill、历史台账或 raw transcript。实际实现复用现有 owner，新接口必须显式说明新增并保持兼容。

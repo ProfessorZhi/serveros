@@ -1,7 +1,7 @@
 """The Fleet event inbox: one ordered record of what happened to runs and nodes.
 
 Design: `docs/architecture/FLEET-V1-V2-ARCHITECTURE.md` §5.1, and the resident
-monitor in `docs/plans/fleet-v1-resident-monitor-and-tokyo-hub.md` §3.
+monitor in `docs/archive/plans/fleet-v1-resident-monitor-and-tokyo-hub.md` §3.
 
 One writer appends (the resident watcher); readers page through it by sequence
 number and may advance a cursor of their own. Three invariants are the point of

@@ -1,7 +1,7 @@
 # Fleet V1 Complete-Nodes Delivery Campaign · execution and acceptance plan
 
 > **2026-10-17 accepted delivery scope · DESIGN / TASK PLAN, not deployed evidence.**
-> The product authority is [ARCHITECTURE.md](../../ARCHITECTURE.md), the Fleet component contract is [FLEET-V1-TOPOLOGY-OPERATIONS.md](../architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md), and [Issue #244](https://github.com/ProfessorZhi/serveros/issues/244) is the campaign visibility and acceptance ledger. This plan does not replace the existing Work Engine, Agent Control, Ability registry or release owner.
+> The product authority is [ARCHITECTURE.md](../../../ARCHITECTURE.md), the Fleet component contract is [FLEET-V1-TOPOLOGY-OPERATIONS.md](../../architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md), and [Issue #244](https://github.com/ProfessorZhi/serveros/issues/244) is the campaign visibility and acceptance ledger. This plan does not replace the existing Work Engine, Agent Control, Ability registry or release owner.
 >
 > **Changed release goal:** final full-fleet V1 includes actually usable Claude Code **and Codex** on the three authorized device profiles through native/CloudCLI/Fleet where supported, not just a static Codex schema. Claude Code local plugin acceptance is the **first** device/client milestone; ChatGPT plugin registration/Feishu App2 consumer work is a later rollout, not a blocker for initial code integration. OpenAgents and provider-independent dynamic Agent teams remain optional V2.
 >

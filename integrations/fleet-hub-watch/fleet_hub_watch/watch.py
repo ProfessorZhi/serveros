@@ -1,6 +1,6 @@
 """The hub watcher: find runs on every bound runtime, classify them, record once.
 
-Design: `docs/plans/fleet-v1-resident-monitor-and-tokyo-hub.md` §3 (M2).
+Design: `docs/archive/plans/fleet-v1-resident-monitor-and-tokyo-hub.md` §3 (M2).
 
 One tick does two things:
 
