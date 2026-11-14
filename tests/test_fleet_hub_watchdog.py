@@ -109,3 +109,60 @@ class TheKitInstallsIt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheSignInIsWatched(Harness):
+    """D-5: refused tokens and a regenerated signing key reach the owner."""
+
+    def setUp(self):
+        super().setUp()
+        self.store = Path(self._td.name) / "oauth"
+        self.store.mkdir()
+        self.tick(NOW)
+
+    def counts(self, pid, **counts):
+        (self.store / "auth-failures.json").write_text(json.dumps(
+            {"pid": pid, "updated": NOW,
+             "counts": {k.replace("_", " "): {"count": v, "last_at": NOW} for k, v in counts.items()}}))
+
+    def check(self, at):
+        return watchdog.run_once(self.beat, self.state, self.send, now=at, store_root=self.store)
+
+    def test_refusals_with_no_success_open_a_problem_and_a_success_clears_it(self):
+        self.counts(1, signature_does_not_verify=0, ok=10)
+        self.check(NOW)
+        self.assertEqual(self.sent, [])
+        self.counts(1, signature_does_not_verify=7, ok=10)
+        self.tick(NOW + 300)
+        self.check(NOW + 300)
+        self.assertEqual(self.sent, ["Fleet MCP 认证一直失败"])
+        self.counts(1, signature_does_not_verify=9, ok=12)
+        self.tick(NOW + 600)
+        self.check(NOW + 600)
+        self.assertEqual(self.sent[-1], "Fleet MCP 认证已恢复")
+
+    def test_expired_tokens_are_not_a_problem(self):
+        self.counts(1, ok=1)
+        self.check(NOW)
+        self.counts(1, token_expired=50, ok=1)
+        self.tick(NOW + 300)
+        self.check(NOW + 300)
+        self.assertEqual(self.sent, [])
+
+    def test_a_restarted_server_does_not_count_as_a_drop(self):
+        self.counts(1, signature_does_not_verify=100, ok=0)
+        self.check(NOW)
+        self.sent.clear()
+        self.counts(2, signature_does_not_verify=2, ok=0)
+        self.tick(NOW + 300)
+        self.check(NOW + 300)
+        self.assertNotIn("Fleet MCP 认证一直失败", self.sent[1:])
+
+    def test_a_regenerated_key_is_told_once(self):
+        (self.store / "key-regenerated.json").write_text(json.dumps(
+            {"at": NOW - 60, "registered_clients": 3, "refresh_chains": 2}))
+        self.check(NOW)
+        self.assertEqual(self.sent, ["Fleet 签名密钥被重新生成"])
+        self.tick(NOW + 300)
+        self.check(NOW + 300)
+        self.assertEqual(len(self.sent), 1)
