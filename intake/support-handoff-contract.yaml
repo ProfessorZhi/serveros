@@ -12,7 +12,7 @@
 #     尝试、疑问、建议）。先入已有工作/通知队列并得到回执，再按许可给 owner 提醒；
 #     外发收件人/机器人未绑定时显示待投递，不能告诉求助者“已通知”。
 #
-# `docs/integration-readiness-20260922.md:105` says the same thing as a status:
+# `docs/archive/integration-readiness-20260922.md:105` says the same thing as a status:
 #
 #     无结论时交已绑定个人 owner 的现有队列，得到实际回执才声称已转人工。
 #

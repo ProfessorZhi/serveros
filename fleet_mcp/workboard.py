@@ -1,6 +1,6 @@
 """The hub's requirement board and project understanding, read through Fleet.
 
-Design: docs/plans/fleet-v1-resident-monitor-and-tokyo-hub.md §4. Requirements
+Design: docs/archive/plans/fleet-v1-resident-monitor-and-tokyo-hub.md §4. Requirements
 live in ONE place — the Tokyo Work Engine (`state/serveros.db`): a Candidate
 carries its source and reason, and only the owner turns it into an Item. The
 board here is a projection of that store, never a second backlog; project

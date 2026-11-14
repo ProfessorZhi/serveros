@@ -15,7 +15,7 @@
 # 本文件的 scope 是 §6 的附着域：一个引用挂在谁身上。
 
 schema: serveros/environment.v1
-source: docs/proposals/2026-09-20-final-serveros-architecture.md §6
+source: docs/archive/proposals/2026-09-20-final-serveros-architecture.md §6
 
 # ---------------------------------------------------------------------------
 # 引用挂在谁身上

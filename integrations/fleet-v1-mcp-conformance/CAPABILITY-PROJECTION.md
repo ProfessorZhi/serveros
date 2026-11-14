@@ -2,7 +2,7 @@
 
 Read from source at the candidate tip, against the contract in
 `docs/architecture/FLEET-V1-TOPOLOGY-OPERATIONS.md` §2/§4 and
-`docs/plans/plan-02-…` §1. Nothing here is measured on a device; it is what the
+`docs/archive/plans/plan-02-…` §1. Nothing here is measured on a device; it is what the
 code can and cannot answer.
 
 ## The catalogue, as the plan defines it

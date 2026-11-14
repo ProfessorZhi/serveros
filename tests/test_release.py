@@ -1297,7 +1297,7 @@ class UnitTemplateInventoryTest(unittest.TestCase):
     #: installer. Each needs its reason, and the set is checked below so a
     #: name cannot linger here after its template is gone.
     #:   serveros-native-facts.service — the Native Core facts publisher;
-    #:   docs/plans/plan-08-native-facts-owner.md ships it as a template that
+    #:   docs/archive/plans/plan-08-native-facts-owner.md ships it as a template that
     #:   release.py does not install.
     NOT_INSTALLED_BY_RELEASE = {"serveros-native-facts.service"}
 

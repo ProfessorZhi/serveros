@@ -1,6 +1,6 @@
 # fleet-hub-watch — the hub's resident watcher (M2)
 
-Design: [`docs/plans/fleet-v1-resident-monitor-and-tokyo-hub.md`](../../docs/plans/fleet-v1-resident-monitor-and-tokyo-hub.md) §3.
+Design: [`docs/archive/plans/fleet-v1-resident-monitor-and-tokyo-hub.md`](../../docs/archive/plans/fleet-v1-resident-monitor-and-tokyo-hub.md) §3.
 
 Runs on the hub (Tokyo). Each tick:
 
