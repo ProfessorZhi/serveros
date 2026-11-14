@@ -44,7 +44,7 @@
         "unit": "serveros-secrets-sync.timer",
         "template": {
           "path": "distribution/keycenter/serveros-secrets-sync.service.template",
-          "digest": "sha256:fb46802b25dc513807a4e5b29b52202804300c5b86c3bf6cc32f98a295d39d42"
+          "digest": "sha256:68fab24f8eb316b8abeaf612215e22fddaaf0f26fd9437bd01036a04669f94a8"
         },
         "timer": {
           "path": "distribution/keycenter/serveros-secrets-sync.timer",
