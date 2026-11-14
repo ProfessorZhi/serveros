@@ -4,7 +4,7 @@
 
 ## 2026-10-17 Fleet 三设备实现落位提醒
 
-当前 [完整 Fleet V1 campaign](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) 将每设备授权 OS principal 的 C++ Native Core、CloudCLI/CC+Codex Runtime、Node Connector/安全凭据/Ability/服务 Desired State 列为本地受管对象；Work Engine、G1 Ability 和 Agent Control 仍只保持各自一份 authority。三机开发源码和测试现场应在可追踪的 Git branch/worktree 和受管 artifacts，而非从东京直接把某个用户的 $HOME、models、凭据或进程状态搬去 Dell/Windows。Windows 127.0.0.1:16095 SSH→Selkies/Claude Web 是有明确 owner 的服务 Binding，不是应搬入 Git 或清理重装的目录。
+当前 [完整 Fleet V1 campaign](../archive/plans/plan-02-complete-fleet-v1-delivery-campaign.md) 将每设备授权 OS principal 的 C++ Native Core、CloudCLI/CC+Codex Runtime、Node Connector/安全凭据/Ability/服务 Desired State 列为本地受管对象；Work Engine、G1 Ability 和 Agent Control 仍只保持各自一份 authority。三机开发源码和测试现场应在可追踪的 Git branch/worktree 和受管 artifacts，而非从东京直接把某个用户的 $HOME、models、凭据或进程状态搬去 Dell/Windows。Windows 127.0.0.1:16095 SSH→Selkies/Claude Web 是有明确 owner 的服务 Binding，不是应搬入 Git 或清理重装的目录。
 
 GitHub Issue #244 及其子任务用作计划和 PR 可见性，不建第二 Work 状态库。真实跨设备安装、生产服务自启、文件/凭据迁移或删除仍须独立人类授权与回滚；Hosted GitHub CI 因额度耗尽可以标记托管运行器豁免，但不能跳过本地验证。
 

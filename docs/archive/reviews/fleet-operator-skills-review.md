@@ -126,8 +126,8 @@ the bytes of every normalized local target — including files under `skills/`.
 
 ## Design review
 
-The design is in `docs/proposals/proposal-fleet-operator-skills.md` and the
-implementation plan is `docs/plans/plan-06-fleet-operator-skills.md`.
+The design is in `docs/archive/proposals/proposal-fleet-operator-skills.md` and the
+implementation plan is `docs/archive/plans/plan-06-fleet-operator-skills.md`.
 
 - **Critical — none unresolved.** The work does not add a scheduler, a batch
   MCP verb, a durable task store, or a new execution authority. Dependency

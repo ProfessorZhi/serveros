@@ -6,9 +6,9 @@
 >
 > **怎么读：** §1–§3 是产品边界与一天的运转；§4–§5 是调研与交付形态；§6–§7 是 Session 与上下文；§8–§10 是项目、能力与外部研究；§11–§15 是验证、权限与完成标准；§16–§18 是实现模板、目录合同与交付判断。只需读当前任务相关的一节。
 
-**配套文档：** [21 项 Ability 要求与验收](ABILITY-REQUIREMENTS.md) · [目录与深度收敛](DIRECTORY-CONVERGENCE.md) · [CC 执行计划](../plans/plan-01-native-work-environment.md) · [夜间执行委托](../CC-OVERNIGHT-MANDATE.md) · [调研与 GPT 交接](RESEARCH-EXCHANGE.md) · [LiteLLM 来源与看板样式](LITELLM-SOURCE-AND-BOARD-PROFILE.md)。历史差距快照见 [IMPLEMENTATION-DELTA-20261007](IMPLEMENTATION-DELTA-20261007.md)，不能代替最新状态。
+**配套文档：** [21 项 Ability 要求与验收](ABILITY-REQUIREMENTS.md) · [目录与深度收敛](DIRECTORY-CONVERGENCE.md) · [CC 执行计划](../archive/plans/plan-01-native-work-environment.md) · [夜间执行委托](../archive/CC-OVERNIGHT-MANDATE.md) · [调研与 GPT 交接](RESEARCH-EXCHANGE.md) · [LiteLLM 来源与看板样式](LITELLM-SOURCE-AND-BOARD-PROFILE.md)。历史差距快照见 [IMPLEMENTATION-DELTA-20261007](IMPLEMENTATION-DELTA-20261007.md)，不能代替最新状态。
 
-> **Fleet V1 设备补充（2026-10-17，不改变本文的 Work/Agent 原理）：** 每台授权 OS principal 的 C++ Native Core、资源/服务/网络观测、受控自愈、CloudCLI 上真实 CC+Codex Runtime、Device Abilities 与本地 CC Operator Plugin，由 [Fleet V1 设备拓扑](FLEET-V1-TOPOLOGY-OPERATIONS.md) 和 [一次性多线交付计划](../plans/plan-02-complete-fleet-v1-delivery-campaign.md) 负责。Windows 的 `127.0.0.1:16095` → SSH → Selkies/Claude Web 及 Tailscale/RDC 是独立状态、owner 和恢复策略；主要开发与测试在东京/Dell。三设备实际 LIVE 与 Codex entitlement 均需真实证据，不由此设计自动成立。范围以 [Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244) 为准。
+> **Fleet V1 设备补充（2026-10-17，不改变本文的 Work/Agent 原理）：** 每台授权 OS principal 的 C++ Native Core、资源/服务/网络观测、受控自愈、CloudCLI 上真实 CC+Codex Runtime、Device Abilities 与本地 CC Operator Plugin，由 [Fleet V1 设备拓扑](FLEET-V1-TOPOLOGY-OPERATIONS.md) 和 [一次性多线交付计划](../archive/plans/plan-02-complete-fleet-v1-delivery-campaign.md) 负责。Windows 的 `127.0.0.1:16095` → SSH → Selkies/Claude Web 及 Tailscale/RDC 是独立状态、owner 和恢复策略；主要开发与测试在东京/Dell。三设备实际 LIVE 与 Codex entitlement 均需真实证据，不由此设计自动成立。范围以 [Campaign #244](https://github.com/ProfessorZhi/serveros/issues/244) 为准。
 
 ## 1. 产品目标与边界
 

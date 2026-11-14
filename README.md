@@ -112,7 +112,7 @@ ServerOS 的自动化由五条相互连接、可独立降级的循环组成。�
 | 接手或部署 | [文档地图 · 运行](docs/README.md#运行与部署) |
 | 改代码、跑测试 | [文档地图 · 开发](docs/README.md#开发与契约) |
 | 看设计与边界 | [ARCHITECTURE.md](ARCHITECTURE.md)（现状）；旧版完整规范在 [docs/archive/](docs/archive/ARCHITECTURE-2026-11-13.md) |
-| 看历史计划与证据 | [docs/plans](docs/plans)、[docs/proposals](docs/proposals)、[docs/reviews](docs/reviews) |
+| 看历史计划与证据 | [docs/archive/](docs/archive/)（plans、proposals、reviews 与带日期的记录） |
 
 完整索引在 [docs/README.md](docs/README.md)。
 

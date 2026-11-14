@@ -3,7 +3,7 @@
 ## Overview
 
 Item SRV-0011, source baseline `6c34efe18bc0ca9d2d840c5c20227981d0f4290a`.
-Implement `docs/proposals/proposal-fleet-native-family-routes.md` in this
+Implement `docs/archive/proposals/proposal-fleet-native-family-routes.md` in this
 isolated worktree. Root owns all source/test changes. This reviewer owns only
 design documents and review records. Plan 06 is reserved by the concurrent
 operator Skills lane; this work uses 07 without copying that lane's files.

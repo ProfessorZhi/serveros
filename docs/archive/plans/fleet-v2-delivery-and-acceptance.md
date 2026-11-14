@@ -1,6 +1,6 @@
 # Fleet V2 分阶段交付与验收：自治组织、Full-Control 与多 Runtime
 
-> **2026-10-22 · DESIGN / NOT_IMPLEMENTED / NOT_DEPLOYED**。本计划将 [V2 产品架构](../architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md) 变为可检验的阶段目标。它不授予真实 OS、生产、数据或第三方账户权限；当前受保护操作仍遵守现有生效权限与审批。任何离线测试绿灯不能转成生产上线签收。
+> **2026-10-22 · DESIGN / NOT_IMPLEMENTED / NOT_DEPLOYED**。本计划将 [V2 产品架构](../../architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md) 变为可检验的阶段目标。它不授予真实 OS、生产、数据或第三方账户权限；当前受保护操作仍遵守现有生效权限与审批。任何离线测试绿灯不能转成生产上线签收。
 
 ## A. 从根因到结果的交付路线
 
@@ -118,9 +118,9 @@ Owner 激活一个受管环境后，正常创建工作树/项目、新 Session�
 
 ## G. 规范关联
 
-- [Fleet V2 产品架构](../architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md)
-- [Agent/Session 既有细节设计](../architecture/AGENT-IDENTITY-SESSION-DELEGATION.md)
-- [Native Agent Work Environment](../architecture/NATIVE-WORK-ENVIRONMENT.md)
+- [Fleet V2 产品架构](../../architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md)
+- [Agent/Session 既有细节设计](../../architecture/AGENT-IDENTITY-SESSION-DELEGATION.md)
+- [Native Agent Work Environment](../../architecture/NATIVE-WORK-ENVIRONMENT.md)
 - [Fleet V1 release gate #237](https://github.com/ProfessorZhi/serveros/issues/237)
 - [Fleet V1 完整交付 #244](https://github.com/ProfessorZhi/serveros/issues/244)
 - [V2 R0 draft #389](https://github.com/ProfessorZhi/serveros/pull/389)

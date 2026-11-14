@@ -119,7 +119,7 @@ Memory, authority and evidence cross all five. Details are in [ARCHITECTURE.md](
 | Operate or deploy | [Documentation map · operations](docs/README.md#运行与部署) |
 | Change code, run tests | [Documentation map · development](docs/README.md#开发与契约) |
 | Read the design and boundaries | [ARCHITECTURE.md](ARCHITECTURE.md) (current); the previous full specification is in [docs/archive/](docs/archive/ARCHITECTURE-2026-11-13.md) |
-| See historical plans and evidence | [docs/plans](docs/plans), [docs/proposals](docs/proposals), [docs/reviews](docs/reviews) |
+| See historical plans and evidence | [docs/archive/](docs/archive/) (plans, proposals, reviews and dated records) |
 
 The full index is [docs/README.md](docs/README.md).
 

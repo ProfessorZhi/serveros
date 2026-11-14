@@ -68,6 +68,6 @@ Reviewed https://github.com/yaleh/quay and especially packages/quay-native/READM
 | R4 | Optional OpenAgents localhost PoC | recoverable delegation, no identity takeover, independent QA, measurable benefit | DEFERRED, #187 |
 | R5 | Live bounded device repair | owner-granted scope, no busy-session takeover, rollback/health readback | NOT_AUTHORIZED |
 
-Pre-existing release gate: https://github.com/ProfessorZhi/serveros/issues/237. Campaign: https://github.com/ProfessorZhi/serveros/issues/244. Existing V2 decision: docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md. Existing research: docs/plans/fleet-next-agent-federation-v0.md.
+Pre-existing release gate: https://github.com/ProfessorZhi/serveros/issues/237. Campaign: https://github.com/ProfessorZhi/serveros/issues/244. Existing V2 decision: docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md. Existing research: docs/archive/plans/fleet-next-agent-federation-v0.md.
 
 **This branch is a preview only; the earlier A-prime raw-SQLite Writer isolation problem remains open, and no production V1 or V2 signing claim follows.**

@@ -10,7 +10,7 @@
 
 ## 2026-10-17 Fleet V1 服务与来源验收补充
 
-[Complete Fleet V1 plan](plans/plan-02-complete-fleet-v1-delivery-campaign.md) 补充三机每授权 OS principal 的 C++ Core 资源/服务观察、实际 CloudCLI + CC/Codex、Tailscale/SSH/Remote Desktop Control 和 Selkies 网络链。监控是来源可验证的状态投影，**不是** Core 的另一份业务/恢复数据库；原 Python serverosd 指的是当前/历史实现，向 C++ 的切换必须 shadow 和单一恢复写方。未经授权的 Windows 私有数据不得投送公司飞书接收方。
+[Complete Fleet V1 plan](archive/plans/plan-02-complete-fleet-v1-delivery-campaign.md) 补充三机每授权 OS principal 的 C++ Core 资源/服务观察、实际 CloudCLI + CC/Codex、Tailscale/SSH/Remote Desktop Control 和 Selkies 网络链。监控是来源可验证的状态投影，**不是** Core 的另一份业务/恢复数据库；原 Python serverosd 指的是当前/历史实现，向 C++ 的切换必须 shadow 和单一恢复写方。未经授权的 Windows 私有数据不得投送公司飞书接收方。
 
 Windows 本地 127.0.0.1:16095 / SSH forward / 上游 Selkies- Claude Web / 交互流是分开的可用性层，HTTP 200 并不代表 WebSocket/会话已可用。Tailscale daemon、peer、实际应用健康也必须分开。只有声明为当前 Work 或 standing infrastructure 的设备/服务才进入告警，停用/未安装/未经观测不能错误显示故障或健康。
 

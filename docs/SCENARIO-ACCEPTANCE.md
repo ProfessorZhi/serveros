@@ -98,7 +98,7 @@ B8生成准确范围内容，B9做必要发布，B10按receiver/窗口发送；S
 
 ## Fleet V1 三机完整运行路径补充 · 2026-10-17
 
-下表只增补当前 V1 功能/设备验收，不覆盖 J01–J10 的 Work/Feishu 业务场景。参见 [完整 Fleet V1 campaign](plans/plan-02-complete-fleet-v1-delivery-campaign.md)；所有用例记录 OS principal、真实设备与 Runtime、授权、source/installed SHA、协议 readback、测试 exit code 与恢复/拒绝 receipt。模拟与真实必须分栏。
+下表只增补当前 V1 功能/设备验收，不覆盖 J01–J10 的 Work/Feishu 业务场景。参见 [完整 Fleet V1 campaign](archive/plans/plan-02-complete-fleet-v1-delivery-campaign.md)；所有用例记录 OS principal、真实设备与 Runtime、授权、source/installed SHA、协议 readback、测试 exit code 与恢复/拒绝 receipt。模拟与真实必须分栏。
 
 | 用例 | 真实验收谓词 | 明确不能冒充 PASS 的替代 |
 | --- | --- | --- |

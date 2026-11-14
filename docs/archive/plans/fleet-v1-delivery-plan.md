@@ -75,7 +75,7 @@ lane can be reviewed without reading the others.
 
 | lane | owns | must not touch |
 |---|---|---|
-| **A — integration (this plan)** | `docs/plans/*`, the root entry link, conflict resolution, the release candidate | any lane's owned files |
+| **A — integration (this plan)** | `docs/archive/plans/*`, the root entry link, conflict resolution, the release candidate | any lane's owned files |
 | **B — runtime policy** | `fleet_mcp/fleet.py`, `fleet_mcp/config.py`, `fleet_mcp/runtime_create_policy.py` | packaging, deploy scripts |
 | **C — packaging** | `integrations/**` (the overlay builder, skills, assets, `plugin.json`) | runtime policy, deploy |
 | **D — Dell** | Dell device enrolment, the second runtime's binding and isolation facts | Tokyo ingress, Windows |

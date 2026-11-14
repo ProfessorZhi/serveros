@@ -6,7 +6,7 @@
 
 持续推进 SRV-0011 的 ServerOS 最终实现及目录收敛，直到达到本轮完成条件或真实执行限制。用户休息期间不等待每个普通工程步骤的“继续”。一个 PR、一次测试、一个 Run 或一份报告完成后，立即接下一项已授权工程。
 
-入口：先读 `docs/plans/plan-01-native-work-environment.md`。然后按当前包读取目标架构、`ABILITY-REQUIREMENTS.md`、`DIRECTORY-CONVERGENCE.md` 的相关章节。不要一次加载全部 Skill、原始资料和历史台账。
+入口：先读 `docs/archive/plans/plan-01-native-work-environment.md`。然后按当前包读取目标架构、`ABILITY-REQUIREMENTS.md`、`DIRECTORY-CONVERGENCE.md` 的相关章节。不要一次加载全部 Skill、原始资料和历史台账。
 
 ## 执行授权与边界
 

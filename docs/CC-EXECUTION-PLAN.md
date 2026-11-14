@@ -1,12 +1,12 @@
 # CC 实施主计划：目标架构 → 真实消费者 → 安装 → 目录收口
 
-> 2026-10-07：当前执行入口已转到 [原生工作环境 V2 计划](plans/plan-01-native-work-environment.md)。本文件保留为既有子系统与历史执行参考，不再作为另一条并行总计划；权限和接口约束按 V2 的兼容迁移说明保留。
+> 2026-10-07：当前执行入口已转到 [原生工作环境 V2 计划](archive/plans/plan-01-native-work-environment.md)。本文件保留为既有子系统与历史执行参考，不再作为另一条并行总计划；权限和接口约束按 V2 的兼容迁移说明保留。
 
 2026-09-25，依据Tokyo只读现场复核修订。仍使用唯一P0–P12计划；本页替换旧实施建议，不另建路线图或任务数据库。**本次交付是计划，未实施、未安装、未启用定时器。**
 
 ## 0. 执行入口与完成定义
 
-后续用户明确要求实施时，CC先读本页和[短交接提示](CC-IMPLEMENTATION-HANDOFF.md)，按需读[现场基线](IMPLEMENTATION-BASELINE-20260925.md)及相关架构章节。不要把整棵Ability Tree、所有Skill或全部设计预先装入上下文。
+后续用户明确要求实施时，CC先读本页和[短交接提示](archive/CC-IMPLEMENTATION-HANDOFF.md)，按需读[现场基线](archive/IMPLEMENTATION-BASELINE-20260925.md)及相关架构章节。不要把整棵Ability Tree、所有Skill或全部设计预先装入上下文。
 
 目标不是重写ServerOS，而是让现有实现满足已对齐产品：Native Claude/Codex主脑；ServerOS Plugin提供能力入口；两个MCP适配器连接真实Core/Provider；`serverosd`保持唯一常驻Node Core；OS/既有执行器唤醒有限工作；G1、A1–A10、B1–B10按任务组合。
 
@@ -145,7 +145,7 @@ Focus接受→确保唯一logical Parent→完成当前授权步骤→等待chil
 
 **早期切片**：先迁真正卡住普通任务的源指引：机器policy模板/渲染、work-management、information-management、dev-doctor YAML、vision、session-manager、report、MUC凭据输出示例。保非干扰/秘密/生产保护，清掉“每producer必有Run”“每云写必全量proposal”“Meeting成员必须齐全”“Codex未安装”的失效指导。
 
-**实现规则**：G1.4按需authoring；原生够用不新造Skill。description精准，root按当前模式展开，不无条件读所有reference或强制全套research/review/test。metadata长度仅信号；安全边界实际由谁消费要验证。旧正确规则不能仅为lint/token数删除。全部21职责对照[现场职责映射](IMPLEMENTATION-BASELINE-20260925.md#5-21项责任的实施落点)，共用MCP/CLI/Provider，不要求物理载体对称。
+**实现规则**：G1.4按需authoring；原生够用不新造Skill。description精准，root按当前模式展开，不无条件读所有reference或强制全套research/review/test。metadata长度仅信号；安全边界实际由谁消费要验证。旧正确规则不能仅为lint/token数删除。全部21职责对照[现场职责映射](archive/IMPLEMENTATION-BASELINE-20260925.md#5-21项责任的实施落点)，共用MCP/CLI/Provider，不要求物理载体对称。
 
 **构建/安装接缝**：`plugin/bundle.yaml`、`plugin/profiles/linux-work.yaml`、`scripts/build.py`与pack/manifest声明共同锁完整Ability SHA；更新真正改变的cache identity，不复用旧版本字符串承载新字节。两个ServerOS MCP已存在，node面转发daemon事实，agent面调用真实控制/Provider；普通原生工具/外部读取不必绕daemon，不把所有Ability变成Core业务代码。
 
