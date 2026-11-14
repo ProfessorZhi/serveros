@@ -75,6 +75,6 @@
 - [plans/](plans)：实施计划，含 Fleet V1 campaign（[plan-02](plans/plan-02-complete-fleet-v1-delivery-campaign.md)）和 P0–P12（[CC-EXECUTION-PLAN](CC-EXECUTION-PLAN.md)）。
 - [proposals/](proposals)：成对的设计提案。
 - [reviews/](reviews)：独立评审记录。
-- 带日期的验收/评审：`integrations/fleet-v1-release/QA-MATRIX.md`、`integrations/fleet-v1-release/RC-*-REVIEW-2026-10-20.md`、`integrations/fleet-v1-qa/QA-TRIAGE-2026-10-17.md`。
+- 带日期的验收/评审（2026-10-17 至 10-21 的 RC 评审与 QA 探针）：`integrations/fleet-v1-release/`、`integrations/fleet-v1-qa/` 已于 2026-11-14 删除（盘点 D1：没有任何入口和测试引用）。需要时从删除前的提交取回：`git checkout 3f1f34b55c55 -- integrations/fleet-v1-release integrations/fleet-v1-qa`。
 
 历史文档里的工具数（33/34）、revision（`fleet-mcp-3/4/5`）与「未部署」判断都是当天的记录。当前工具面以 `fleet_mcp/version.py` 为准。
