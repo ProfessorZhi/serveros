@@ -18,8 +18,8 @@
 ## 第一次来
 
 1. [根 README](../README.md)：产品是什么、现在能做什么、5 分钟上手。
-2. [架构导读](../ARCHITECTURE.zh.md)：核心模型与阅读路径（中文）。
-3. [ARCHITECTURE.md](../ARCHITECTURE.md)：唯一规范性产品架构（英文）。
+2. [架构（现状）](../ARCHITECTURE.md)：设备角色、运行中的组成部分、仓库与权威、底线、正在改什么。
+3. [旧版完整规范](archive/ARCHITECTURE-2026-11-13.md)（2026-09 至 11-13，英文）：代码注释与旧文档里的「ARCHITECTURE §N」「invariant N」指这一版。
 
 ## 运行与部署
 

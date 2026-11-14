@@ -4,7 +4,7 @@
 
 It does not replace the model, and it does not put a scheduler on top of one. It makes sure the model has the right environment, context, memory, capabilities and permission boundary at the moment it needs them.
 
-[中文](README.md) · [Architecture guide](ARCHITECTURE.zh.md) · [Full architecture (normative)](ARCHITECTURE.md) · [Documentation map](docs/README.md)
+[中文](README.md) · [Architecture (current)](ARCHITECTURE.md) · [Previous full specification](docs/archive/ARCHITECTURE-2026-11-13.md) · [Documentation map](docs/README.md)
 
 ---
 
@@ -109,16 +109,16 @@ Automation is five connected loops that degrade independently. They are not a ma
 | Knowledge | a source revision | read only the delta → update understanding → maintain documents → read back |
 | Runtime | observation | health/impact/ownership → bounded recovery → status card/Incident → a human only when needed |
 
-Memory, authority and evidence cross all five. Details are in the [architecture guide](ARCHITECTURE.zh.md).
+Memory, authority and evidence cross all five. Details are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Documentation map
 
 | I want to… | Start here |
 |---|---|
-| Know what this is and what works | This page + [architecture guide](ARCHITECTURE.zh.md) |
+| Know what this is and what works | This page + [ARCHITECTURE.md](ARCHITECTURE.md) |
 | Operate or deploy | [Documentation map · operations](docs/README.md#运行与部署) |
 | Change code, run tests | [Documentation map · development](docs/README.md#开发与契约) |
-| Read the design and boundaries | [ARCHITECTURE.md](ARCHITECTURE.md) (normative) |
+| Read the design and boundaries | [ARCHITECTURE.md](ARCHITECTURE.md) (current); the previous full specification is in [docs/archive/](docs/archive/ARCHITECTURE-2026-11-13.md) |
 | See historical plans and evidence | [docs/plans](docs/plans), [docs/proposals](docs/proposals), [docs/reviews](docs/reviews) |
 
 The full index is [docs/README.md](docs/README.md).
