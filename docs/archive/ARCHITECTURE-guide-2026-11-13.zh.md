@@ -1,6 +1,8 @@
+> **历史版本（2026-11-13 存档）。** 现状见根目录 [ARCHITECTURE.md](../../ARCHITECTURE.md)。本文件保留原有章节号，供代码注释和旧文档里的「§N」「invariant N」引用；内容不再更新。
+
 # ServerOS 架构导读
 
-> 这是一份**导读**，不是规范。[ARCHITECTURE.md](ARCHITECTURE.md)（英文）是唯一规范性产品架构；本页只解释它为什么这样组织、各部分如何咬合。两者冲突时以规范为准。
+> 这是一份**导读**，不是规范。[ARCHITECTURE.md](../../ARCHITECTURE.md)（英文）是唯一规范性产品架构；本页只解释它为什么这样组织、各部分如何咬合。两者冲突时以规范为准。
 
 ## 一句话
 
@@ -72,7 +74,7 @@ Fleet 只做四件事：**发现设备、路由会话、约束授权、可靠投
 - 创建、发送、控制、批准、导航是五个独立权限，互不隐含。
 - 消息投递成功不等于接收方已经执行；超时后先对账，不当作可重试。
 
-V1 已实现上述能力的候选版本；V2 的自治组织、角色委派与跨设备 Session 池只有设计，见 [Fleet V2](docs/architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md) 与 [Agent 身份/委派](docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md)。
+V1 已实现上述能力的候选版本；V2 的自治组织、角色委派与跨设备 Session 池只有设计，见 [Fleet V2](../../docs/architecture/FLEET-V2-AUTONOMOUS-ORGANIZATION.md) 与 [Agent 身份/委派](../../docs/architecture/AGENT-IDENTITY-SESSION-DELEGATION.md)。
 
 ## 安全边界
 

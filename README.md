@@ -4,7 +4,7 @@
 
 它不替代模型，也不在模型之上再套一个调度器。它负责让模型在需要的时候，拿到正确的环境、上下文、记忆、能力和权限边界。
 
-[English](README.en.md) · [架构导读](ARCHITECTURE.zh.md) · [完整架构（英文规范）](ARCHITECTURE.md) · [文档地图](docs/README.md)
+[English](README.en.md) · [架构（现状）](ARCHITECTURE.md) · [旧版完整规范](docs/archive/ARCHITECTURE-2026-11-13.md) · [文档地图](docs/README.md)
 
 ---
 
@@ -102,16 +102,16 @@ ServerOS 的自动化由五条相互连接、可独立降级的循环组成。�
 | 知识 | Source revision | 只读变化 → 更新理解 → 维护文档 → 回读 |
 | 运行 | 观察 | 健康/影响/归属 → 有限恢复 → 状态卡/Incident → 必要时找人 |
 
-记忆、权限和证据横穿五条循环。细节见[架构导读](ARCHITECTURE.zh.md)。
+记忆、权限和证据横穿五条循环。细节见[架构（现状）](ARCHITECTURE.md)。
 
 ## 文档地图
 
 | 我想…… | 从这里开始 |
 |---|---|
-| 先知道它是什么、能做什么 | 本页 + [架构导读](ARCHITECTURE.zh.md) |
+| 先知道它是什么、能做什么 | 本页 + [架构（现状）](ARCHITECTURE.md) |
 | 接手或部署 | [文档地图 · 运行](docs/README.md#运行与部署) |
 | 改代码、跑测试 | [文档地图 · 开发](docs/README.md#开发与契约) |
-| 看设计与边界 | [ARCHITECTURE.md](ARCHITECTURE.md)（英文规范） |
+| 看设计与边界 | [ARCHITECTURE.md](ARCHITECTURE.md)（现状）；旧版完整规范在 [docs/archive/](docs/archive/ARCHITECTURE-2026-11-13.md) |
 | 看历史计划与证据 | [docs/plans](docs/plans)、[docs/proposals](docs/proposals)、[docs/reviews](docs/reviews) |
 
 完整索引在 [docs/README.md](docs/README.md)。
