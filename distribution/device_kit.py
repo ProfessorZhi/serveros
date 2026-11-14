@@ -64,6 +64,10 @@ UNIT_TEMPLATES = {
     "core_lite_fold": "native/node-core/core-lite/net/fold_network.py",
     "node_connector": "fleet_mcp/node/systemd/user/serveros-fleet-node-connector.service.in",
     "hub_watch": "integrations/fleet-hub-watch/serveros-fleet-watch.service.template",
+    # O-3: the watcher's own watchdog, on its own timer, so it runs when the
+    # watcher is the thing that is broken.
+    "hub_watchdog": "integrations/fleet-hub-watch/serveros-fleet-watchdog.service.template",
+    "hub_watchdog_timer": "integrations/fleet-hub-watch/serveros-fleet-watchdog.timer",
     "secrets_sync": "distribution/keycenter/serveros-secrets-sync.service.template",
     "secrets_timer": "distribution/keycenter/serveros-secrets-sync.timer",
     "secrets_tool": "distribution/keycenter/serveros_secret.py",
@@ -229,6 +233,10 @@ def kit(doc: dict, name: str) -> dict:
                     "Feishu completion / alert / daily cards",
             "unit": "serveros-fleet-watch.service", "template": _pin(UNIT_TEMPLATES["hub_watch"]),
             "binding": hub["binding"], "card_spec": _pin("integrations/fleet-hub-watch/card-spec.yaml"),
+            "watchdog": {"what": "tells the owner when the watcher stops or every tick fails",
+                         "unit": "serveros-fleet-watchdog.timer",
+                         "template": _pin(UNIT_TEMPLATES["hub_watchdog"]),
+                         "timer": _pin(UNIT_TEMPLATES["hub_watchdog_timer"])},
             "binding_needs": "core_lite.snapshot_path: ~/.local/state/serveros/core-lite/status.json",
             # Not a default any more: the install refuses without it. Named here
             # so a reader of the kit knows the decision the hub was installed
@@ -579,6 +587,18 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
                         f"{ctx.state_dir / 'core-lite' / 'status.json'}"]),
         ]
         units.append("serveros-fleet-watch.service")
+        watchdog = _render(UNIT_TEMPLATES["hub_watchdog"], {
+            "HUB_REPO": str(ROOT), "HUB_PYTHON": py, "HUB_BINDING": binding,
+            "HUB_NOTIFY": ctx.notify if ctx.notify.startswith("lark:") else "lark:owner",
+            "HUB_DOC_URL": "https://github.com/ProfessorZhi/serveros/blob/main/distribution/README.md"})
+        steps += [
+            Step("monitor", "watchdog: unit (tells the owner when the watcher stops or keeps failing)",
+                 write=(ctx.unit_dir / "serveros-fleet-watchdog.service", watchdog)),
+            Step("monitor", "watchdog: timer (every 5 minutes)",
+                 write=(ctx.unit_dir / "serveros-fleet-watchdog.timer",
+                        (ROOT / UNIT_TEMPLATES["hub_watchdog_timer"]).read_text(encoding="utf-8"))),
+        ]
+        units.append("serveros-fleet-watchdog.timer")
     steps.append(Step("monitor", "systemd: reload unit files", ["systemctl", "--user", "daemon-reload"]))
     for name in units:
         steps.append(Step("monitor", f"enable {name}",

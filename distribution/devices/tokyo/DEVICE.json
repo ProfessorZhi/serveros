@@ -124,6 +124,18 @@
           "path": "integrations/fleet-hub-watch/card-spec.yaml",
           "digest": "sha256:77f193e79b928a06d648e9e278e58197a0fe981c1d8b8f584b15d40ff1d48a62"
         },
+        "watchdog": {
+          "what": "tells the owner when the watcher stops or every tick fails",
+          "unit": "serveros-fleet-watchdog.timer",
+          "template": {
+            "path": "integrations/fleet-hub-watch/serveros-fleet-watchdog.service.template",
+            "digest": "sha256:a9573aaaf8557b7f64c30d271f331cb0921646b9bdbf8eeae1a51f47912a0dc6"
+          },
+          "timer": {
+            "path": "integrations/fleet-hub-watch/serveros-fleet-watchdog.timer",
+            "digest": "sha256:120e52404f3ba807465bee53d10317e1e707d7664a6458fa5eb81b47ea91334f"
+          }
+        },
         "binding_needs": "core_lite.snapshot_path: ~/.local/state/serveros/core-lite/status.json",
         "notify": "required at the first install, kept by later updates: lark:user:<open_id> | lark:chat:<chat_id> | journal (writes the cards, sends nothing) | off"
       }

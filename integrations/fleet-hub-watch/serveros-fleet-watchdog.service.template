@@ -1,0 +1,22 @@
+# TEMPLATE — SOURCE ONLY. THIS FILE IS NOT A UNIT.
+#
+# The watcher's own watchdog (requirement O-3). It runs as its own short-lived
+# process on its own timer, so it still runs when the watcher is the thing that
+# is broken; it reads the heartbeat and tells the owner once when the watcher
+# stops or every tick fails, and once when it recovers. Rendered by
+# distribution/device_kit.py together with serveros-fleet-watch.service.
+
+[Unit]
+Description=ServerOS Fleet watchdog (tells the owner when the hub watcher stops or keeps failing)
+Documentation=@HUB_DOC_URL@
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=@HUB_REPO@:@HUB_REPO@/integrations/fleet-next-agent-monitor:@HUB_REPO@/integrations/fleet-hub-watch
+ExecStart=@HUB_PYTHON@ -m fleet_hub_watch.watchdog --config @HUB_BINDING@ --notify @HUB_NOTIFY@
+TimeoutStartSec=120
+KillMode=control-group
+MemoryMax=256M
+TasksMax=512
+Nice=10
+NoNewPrivileges=yes
