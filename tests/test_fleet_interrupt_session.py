@@ -246,7 +246,7 @@ class TheToolIsOnTheSurfaceAndSaysWhatItIs(unittest.TestCase):
                                      "fleet_model_upsert", "fleet_batch", "fleet_tune", "fleet_inbox", "fleet_trace", "fleet_memory",
                                      "fleet_work_board", "fleet_project_understanding",
                                      "fleet_work_candidate_add", "fleet_device_versions",
-                                     "fleet_monitor_status", "fleet_monitor_control"])
+                                     "fleet_monitor_status", "fleet_monitor_control", "fleet_agent_catalog", "fleet_agent_invoke"])
         # The eight that came before are still there, still in their order.
         self.assertEqual(names[:8], [
             "fleet_list_devices", "fleet_list_sessions", "fleet_get_session",
@@ -719,7 +719,7 @@ class TheNodeTransportSignsAndCloses(unittest.TestCase):
         # The session routes, native mirror, core status, fresh projects and
         # the one destructive project route, the model library pair, and the
         # device's own 资源播报 card.
-        self.assertEqual(len(np.ROUTES), 17)
+        self.assertEqual(len(np.ROUTES), 18)
         # Named so that a future edit cannot add a second one under cover of
         # this count going up.
         self.assertEqual([r for r in np.ROUTES if "interrupt" in r],

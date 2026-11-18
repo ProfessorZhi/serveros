@@ -291,6 +291,9 @@ KIND_BY_FIELD: dict[str, str] = {
     "source": CODE,
     "gateway": REF,
     "entries": COUNT,
+    # fleet_agent_catalog: which list (skills | commands) and how many items.
+    "catalog": CODE,
+    "items": COUNT,
     "steps": COUNT,
     "verified": FLAG,
 }

@@ -262,6 +262,7 @@ class RouteClosure(_Base):
             ("POST", f"/v1/sessions/{ALLOWED}/read", {"mode": "latest"}),
             ("POST", f"/v1/sessions/{ALLOWED}/send", {"message": "hello"}),
             ("POST", f"/v1/sessions/{ALLOWED}/interrupt", {}),
+            ("POST", f"/v1/sessions/{ALLOWED}/catalog", {"kind": "skills"}),
             ("GET", f"/v1/runs/run-7?session={ALLOWED}", None),
             ("POST", "/v1/sessions", {"project": "p-1"}),
             ("POST", "/v1/projects", {"root": "work", "name": "new"}),
@@ -283,6 +284,11 @@ class RouteClosure(_Base):
                     self.assertIn(status, (400, 403), payload)
                     self.assertIn(payload["error"]["code"],
                                   ("CAPABILITY_UNSUPPORTED", "WRITE_NOT_GRANTED"))
+                    continue
+                if path.endswith("/catalog"):
+                    # Reachable, and refused by name: this binding holds no
+                    # CloudCLI login token for the REST routes.
+                    self.assertEqual(payload["error"]["code"], "CAPABILITY_UNSUPPORTED", payload)
                     continue
                 if path in ("/v1/projects", "/v1/projects/delete"):
                     self.assertEqual(status, 403, payload)
@@ -333,7 +339,7 @@ class RouteClosure(_Base):
         # And the placeholders that do exist name only ids.
         self.assertEqual(
             sorted(s.strip("{}") for r in np.ROUTES for s in r.partition(" ")[2].split("/") if s.startswith("{")),
-            ["id", "id", "id", "id", "run_id"],
+            ["id", "id", "id", "id", "id", "run_id"],
         )
 
 

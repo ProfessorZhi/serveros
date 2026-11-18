@@ -24,10 +24,19 @@ to govern.
 | `send(key, message, ...)` | a message into a session; returns a run id | in code |
 | `get_run(key, run_id, ...)` | a run's outcome; readable after the run and its process have ended (D-3) | in code; D-3 open |
 | `interrupt(key)` | stop the run the session has, and nothing else | in code |
-| `list_skills(key)` / `invoke_skill(key, name, args)` | the Skills the agent in that session can use, and calling one | **to add** |
-| `list_commands(key)` / `invoke_command(key, name, args)` | the slash commands, and calling one | **to add** |
-| `set_model(key, ...)` / `set_permission_mode(key, ...)` | switch a session's model or permission mode | **to add** (today: CloudCLI native tools) |
-| `approve(key, request_id, decision)` | answer an agent's permission request | **to add** (today: CloudCLI native tools) |
+| `list_skills(key)` / `invoke_skill(key, name, args)` | the Skills the agent in that session can use, each with its exact invocation text; and calling one | in code (2026-11-18) |
+| `list_commands(key)` / `invoke_command(key, name, args)` | the slash commands of the session's project and user, with `invocable`; and calling one | in code (2026-11-18) |
+| `reconfigure(key, model=, effort=, permission_mode=)` | switch a session's model, effort or permission mode for its next run | in code (2026-11-18) |
+| `approve(key, request_id, allow=, ...)` | answer one permission request the agent is waiting on | in code (2026-11-18) |
+| `list_models(provider=)` / `upsert_model(...)` | the device's model library; no secret value either way (`fleet_mcp/model_entries.py` holds the rules) | in code (2026-11-18) |
+
+Invoking is "resolve a name from the device's own catalog, then send"
+(`providers/base.py` → `invocation_text`). Fleet's `fleet_agent_invoke` does
+exactly that through `fleet_send_to_session`, so an invocation passes every
+gate a send passes and nothing unlisted can be typed into a session. The Fleet
+tools are `fleet_agent_catalog` (read) and `fleet_agent_invoke` (send); model,
+permission and approval answers keep their existing tools and now reach the
+device through `reconfigure` / `approve`.
 
 Acceptance (D-2): three devices × two providers (Claude Code, Codex) each do
 «list Skills → invoke one → read the reply».
@@ -41,14 +50,20 @@ Acceptance (D-2): three devices × two providers (Claude Code, Codex) each do
 
 ## Where CloudCLI is still named above the interface
 
-Two CloudCLI-only features sit beside the interface today. They are listed
-here so the list can only shrink; `tests/test_agent_access_boundary.py` fails
-when a module not on it starts importing a CloudCLI module.
+Listed so the list can only shrink; `tests/test_agent_access_boundary.py`
+fails when a module imports a CloudCLI module it is not listed for.
 
-| feature | modules | where it goes |
+| module | still imports | why, and where it goes |
 |---|---|---|
-| the 22 mirrored native tools (`fleet_cloudcli_*`), incl. model and permission switching and approvals | `cloudcli_native.py`, used by `fleet.py`, `tools.py`, `providers/fleet_node.py`, `node/connector.py` | the generic ones become interface verbs (`set_model`, `set_permission_mode`, `approve`); the rest stay a CloudCLI-only extension that is absent when another implementation is in use |
-| the model library | `cloudcli_models.py`, used by `fleet.py`, `node/connector.py`, `node/model_login.py`, `deploy/release_plan.py` | interface verbs `list_models` / `upsert_model` |
+| `fleet.py`, `tools.py` | `cloudcli_native` | the mirrored native tools (`fleet_cloudcli_*`) and their governance. The generic ones (model / permission switch, approvals) already reach the device through `reconfigure` / `approve`; the rest stay a CloudCLI-only extension, absent when another implementation is in use |
+| `providers/fleet_node.py` | `cloudcli_native` | the signed native route checks a tool name against the recorded set before it is sent |
+| `node/connector.py` | `providers.cloudcli`, `cloudcli_native` | the connector's own implementation choice (it talks to this machine's CloudCLI), and the signed native route's floor on this side |
+| `node/model_login.py` | `cloudcli_models` | the owner logs in to this machine's CloudCLI once, for its REST routes |
+| `deploy/release_plan.py` | `cloudcli_native` | counts the mirrored tools in a release plan |
+
+Since 2026-11-18 `fleet.py` reads the model library only through the interface
+and `model_entries.py`, and the connector reads it, the Skills and the commands
+only through its provider.
 
 ## Rules
 

@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-16
+tool_surface_revision: fleet-mcp-17
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -547,6 +547,29 @@ tools:
       resume_broadcast, send_daily_now, reload_spec) that change what the monitor
       says or when, never what it observes, and nothing on any device.
 
+  fleet_agent_catalog:
+    verb: read
+    answers: >-
+      the Skills (kind skills) or slash commands (kind commands) the agent in
+      one session can use: name, the exact invocation text, description, scope;
+      a command CloudCLI handles on its own screen is listed with invocable false
+    answered_by: >-
+      the session's device through the interface (`list_skills` /
+      `list_commands`, docs/architecture/agent-access.md); over the node channel
+      the signed `POST /v1/sessions/{id}/catalog`, which reads CloudCLI's REST
+      routes on loopback with the owner's token on that machine
+    authorization: fleet:read. No device path is in the answer.
+
+  fleet_agent_invoke:
+    verb: write
+    answers: the same receipt as fleet_send_to_session, plus what was invoked
+    answered_by: fleet_agent_catalog for the session, then fleet_send_to_session
+    authorization: >-
+      fleet:send and every send grant. The caller names a listed item; the
+      invocation text is the device's own, so nothing unlisted is typed into a
+      session.
+    effect: one message into the session, as a send
+
 
 # ---------------------------------------------------------------------------
 # Addressability
@@ -840,7 +863,7 @@ native_mirror:
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 57
+  served_total: 59
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.
@@ -900,6 +923,7 @@ node_transport:
     - 'POST /v1/sessions/{id}/read'
     - 'POST /v1/sessions/{id}/send'
     - 'POST /v1/sessions/{id}/interrupt'
+    - 'POST /v1/sessions/{id}/catalog'
     - 'GET /v1/runs/{run_id}'
     # The one mirrored-native route. The PATH is fixed and the tool is named in
     # the SIGNED body, so there is no path parameter and no redirect; the device

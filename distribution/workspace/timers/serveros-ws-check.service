@@ -1,0 +1,14 @@
+# R-1: the daily directory check. Read-only: scans and plans, never moves.
+# Install (user unit, per account):
+#   cp serveros-ws-check.{service,timer} ~/.config/systemd/user/
+#   sed -i "s/@DEVICE@/<tokyo|a6000>/" ~/.config/systemd/user/serveros-ws-check.service
+#   systemctl --user daemon-reload && systemctl --user enable --now serveros-ws-check.timer
+[Unit]
+Description=ServerOS daily directory check (ws.py check --record)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/work/src/serveros
+ExecStart=/usr/bin/python3 distribution/workspace/ws.py check --device @DEVICE@ --record
+Nice=10
+IOSchedulingClass=idle

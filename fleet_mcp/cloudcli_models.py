@@ -43,24 +43,14 @@ from pathlib import Path
 from typing import Any
 
 from .errors import BAD_REQUEST, PROVIDER_UNAUTHORIZED, PROVIDER_UNREACHABLE, FleetRefusal
+# The rules for an entry are not CloudCLI's; they live in `model_entries` and
+# are re-exported here so the device side reads one name for each.
+from .model_entries import (  # noqa: F401
+    PROVIDER_RUNTIME, ROW_KINDS, SCHEMA, WRITABLE_KINDS, _ENV_KEY, check_entry,
+    declared_models, is_secretish, source_contradiction)
 
-SCHEMA = "serveros/fleet-model-library.v1"
+CATALOG_SCHEMA = "serveros/fleet-agent-catalog.v1"
 
-#: CloudCLI provider name -> the runtime kind runtime-policy.yaml judges.
-PROVIDER_RUNTIME = {"claude": "claude-code", "codex": "codex"}
-
-ROW_KINDS = ("value", "secret", "envref", "unset")
-WRITABLE_KINDS = ("value", "envref", "unset", "secret")
-
-#: Keys whose value is a credential however it is stored. Matched on the key
-#: name only — never on the value, which this module does not inspect.
-_SECRETISH = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|AUTH|CREDENTIAL|PRIVATE)",
-                        re.IGNORECASE)
-_ENV_KEY = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
-_MODEL_ID = re.compile(r"^\S{1,200}$")
-_BASE_URL_KEYS = ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL")
-_MODEL_KEYS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
-               "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL")
 
 TOKEN_MAX_BYTES = 8192
 #: Written by `serveros-secret sync` on this machine: the NAMES of the variables
@@ -80,10 +70,6 @@ def secret_names(path: Path | None = None) -> dict[str, Any]:
     names = sorted(n for n in data.get("names") or [] if isinstance(n, str) and _ENV_KEY.match(n))
     return {"state": "SYNCED", "names": names, "synced_at": data.get("synced_at"),
             "errors": len(data.get("errors") or [])}
-
-
-def is_secretish(key: str) -> bool:
-    return bool(_SECRETISH.search(key or ""))
 
 
 # -- reading ---------------------------------------------------------------
@@ -139,79 +125,6 @@ def project(provider: str, payload: Any) -> dict[str, Any]:
     }
 
 
-# -- writing ---------------------------------------------------------------
-
-def check_entry(provider: str, model_id: Any, label: Any, env: Any) -> list[dict[str, Any]]:
-    """The env rows to write, or a refusal. Never accepts a secret value."""
-    if provider not in PROVIDER_RUNTIME:
-        raise FleetRefusal(BAD_REQUEST, f"provider must be one of {sorted(PROVIDER_RUNTIME)}")
-    if not isinstance(model_id, str) or not _MODEL_ID.match(model_id):
-        raise FleetRefusal(BAD_REQUEST, "model_id must be 1-200 characters with no whitespace")
-    if not isinstance(label, str) or not label.strip() or len(label) > 80:
-        raise FleetRefusal(BAD_REQUEST, "label must be 1-80 characters")
-    if not isinstance(env, list) or len(env) > 64:
-        raise FleetRefusal(BAD_REQUEST, "env must be a list of at most 64 rows")
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for i, row in enumerate(env):
-        if not isinstance(row, dict) or set(row) - {"key", "kind", "value", "variable"}:
-            raise FleetRefusal(BAD_REQUEST, f"env[{i}] must be {{key, kind, value|variable}}")
-        key, kind = row.get("key"), row.get("kind")
-        if not isinstance(key, str) or not _ENV_KEY.match(key):
-            raise FleetRefusal(BAD_REQUEST, f"env[{i}].key is not an environment variable name")
-        if key in seen:
-            raise FleetRefusal(BAD_REQUEST, f"env key {key} appears twice")
-        seen.add(key)
-        if kind not in WRITABLE_KINDS:
-            raise FleetRefusal(BAD_REQUEST, f"env[{i}].kind must be one of {list(WRITABLE_KINDS)}")
-        if kind == "secret":
-            if "value" in row or "variable" in row:
-                raise FleetRefusal(
-                    BAD_REQUEST,
-                    f"{key}: a secret value is never written through Fleet. Name the "
-                    f"variable that holds it as an envref row, or send {{key, kind: "
-                    f"secret}} with no value to keep the one the device already stores.")
-            rows.append({"key": key, "kind": "secret"})
-        elif kind == "unset":
-            rows.append({"key": key, "kind": "unset"})
-        elif kind == "envref":
-            var = row.get("variable", row.get("value"))
-            if not isinstance(var, str) or not _ENV_KEY.match(var):
-                raise FleetRefusal(BAD_REQUEST, f"{key}: an envref names a variable, e.g. GW0_TOKEN")
-            rows.append({"key": key, "kind": "envref", "value": var})
-        else:
-            value = row.get("value")
-            if is_secretish(key):
-                raise FleetRefusal(
-                    BAD_REQUEST,
-                    f"{key} holds a credential, so it may only be an envref row naming "
-                    f"the variable that holds it — never a plain value.")
-            if not isinstance(value, str) or len(value) > 2048:
-                raise FleetRefusal(BAD_REQUEST, f"{key}: value must be text of at most 2048 characters")
-            rows.append({"key": key, "kind": "value", "value": value})
-    return rows
-
-
-def declared_models(model_id: str, rows: list[dict[str, Any]]) -> list[str]:
-    """Every model name this entry would run, for the runtime policy to judge."""
-    names = [model_id]
-    for row in rows:
-        if row["kind"] == "value" and row["key"] in _MODEL_KEYS and row["value"] not in names:
-            names.append(row["value"])
-    return names
-
-
-def source_contradiction(source: str, rows: list[dict[str, Any]]) -> str | None:
-    """A declared source the rows plainly contradict, said in one sentence."""
-    sets_base = any(r["key"] in _BASE_URL_KEYS and r["kind"] in ("value", "envref") for r in rows)
-    if source in ("gateway", "self_hosted") and not sets_base:
-        return (f"source {source} needs a base URL row ({' or '.join(_BASE_URL_KEYS)}); "
-                f"without one the session would go to the vendor")
-    if source in ("official_subscription", "official_api") and sets_base:
-        return f"source {source} cannot carry a base URL row; that routes elsewhere"
-    return None
-
-
 # -- the device side: CloudCLI's REST routes on this machine ----------------
 
 def rest_base(mcp_endpoint: str) -> str:
@@ -265,6 +178,58 @@ def write_token(path: Path, token: str) -> None:
     os.replace(tmp, path)
 
 
+#: What CloudCLI says a Skill or command is called with. Anything else is not
+#: an invocation this surface will ever put into a session.
+_INVOCATION = re.compile(r"^[/$][A-Za-z0-9_.:/-]{1,160}$")
+CATALOG_MAX = 500
+
+
+def _text(value: Any, limit: int) -> str:
+    return re.sub(r"\s+", " ", value).strip()[:limit] if isinstance(value, str) else ""
+
+
+def project_skills(provider: str, payload: Any) -> dict[str, Any]:
+    """`GET /api/providers/:provider/skills`, projected: names, invocations, no paths."""
+    data = payload.get("data", payload) if isinstance(payload, dict) else {}
+    rows = data.get("skills") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise FleetRefusal(BAD_REQUEST, "the device's skill listing has no skills list")
+    skills = []
+    for row in rows[:CATALOG_MAX]:
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+            continue
+        invocation = row.get("command")
+        if not isinstance(invocation, str) or not _INVOCATION.match(invocation):
+            continue
+        skills.append({"name": _text(row["name"], 160), "invocation": invocation,
+                       "description": _text(row.get("description"), 300),
+                       "scope": _text(row.get("scope"), 20) or None,
+                       "plugin": _text(row.get("pluginName"), 120) or None})
+    return {"schema": CATALOG_SCHEMA, "kind": "skills", "provider": provider,
+            "items": skills, "truncated": len(rows) > CATALOG_MAX}
+
+
+def project_commands(payload: Any) -> dict[str, Any]:
+    """`POST /api/commands/list`, projected. Built-in ones are CloudCLI's own
+    screen actions (/config, /memory …), listed but not invocable in a session."""
+    if not isinstance(payload, dict):
+        raise FleetRefusal(BAD_REQUEST, "the device's command listing is not an object")
+    commands = []
+    for group, invocable in (("custom", True), ("builtIn", False)):
+        for row in (payload.get(group) or [])[:CATALOG_MAX]:
+            if not isinstance(row, dict):
+                continue
+            name = row.get("name")
+            if not isinstance(name, str) or not _INVOCATION.match(name) or not name.startswith("/"):
+                continue
+            commands.append({"name": name, "invocation": name,
+                             "description": _text(row.get("description"), 300),
+                             "scope": _text(row.get("namespace"), 20) or None,
+                             "invocable": invocable})
+    return {"schema": CATALOG_SCHEMA, "kind": "commands", "provider": "claude",
+            "items": commands}
+
+
 class LocalLibrary:
     """CloudCLI's model routes on this machine, with the owner's token."""
 
@@ -309,6 +274,18 @@ class LocalLibrary:
             return json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             raise FleetRefusal(BAD_REQUEST, "CloudCLI's answer is not JSON") from None
+
+    def skills(self, provider: str, workspace_path: str | None) -> dict[str, Any]:
+        """The Skills the provider's agent sees in this workspace (and globally)."""
+        query = ("?" + urllib.parse.urlencode({"workspacePath": workspace_path})
+                 if workspace_path else "")
+        return project_skills(provider, self._call(
+            "GET", f"/api/providers/{urllib.parse.quote(provider, safe='')}/skills{query}"))
+
+    def commands(self, project_path: str | None) -> dict[str, Any]:
+        """The slash commands: the project's `.claude/commands` and the user's."""
+        return project_commands(self._call("POST", "/api/commands/list",
+                                           {"projectPath": project_path} if project_path else {}))
 
     def raw_list(self, provider: str) -> Any:
         return self._call("GET", f"/api/providers/{provider}/models")

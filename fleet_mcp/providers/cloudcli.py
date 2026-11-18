@@ -186,7 +186,7 @@ class CloudCliProvider(DeviceProvider):
     def upsert_model(self, *, provider: str, model_id: str, label: str,
                      env: list[dict[str, Any]]) -> dict[str, Any]:
         """Create or replace ONE custom entry; the rows were already checked."""
-        from ..cloudcli_models import check_entry
+        from ..model_entries import check_entry
 
         if not self.binding.allow_model_library_write:
             raise refuse("APPROVAL_REQUIRED",
@@ -194,6 +194,68 @@ class CloudCliProvider(DeviceProvider):
                          f"written (allow_model_library_write)")
         rows = check_entry(provider, model_id, label, env)
         return self._model_library().upsert(provider, model_id, label, rows)
+
+    # -- D-2 verbs: catalog, settings, approvals ---------------------------
+
+    def _session_place(self, key: SessionKey) -> tuple[str, str | None]:
+        """(agent provider, project path) of one session, from the gateway.
+
+        The project path is read from THIS device's own project list by the id
+        its `session_get` names; nothing the caller wrote decides which folder
+        is listed.
+        """
+        detail = self.get_session(key)
+        session = detail.get("session") if isinstance(detail.get("session"), dict) else detail
+        agent = session.get("provider") if session.get("provider") in ("claude", "codex") else key.provider
+        agent = agent if agent in ("claude", "codex") else "claude"
+        project_id = session.get("projectId")
+        if not isinstance(project_id, str) or not project_id:
+            return agent, None
+        listing = self._call("projects_list", {})
+        rows = listing.get("projects") if isinstance(listing, dict) else listing
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and row.get("id") == project_id and isinstance(row.get("path"), str):
+                return agent, row["path"]
+        return agent, None
+
+    def list_skills(self, key: SessionKey) -> dict[str, Any]:
+        agent, path = self._session_place(key)
+        out = self._model_library().skills(agent, path)
+        out["session_ref"] = key.ref
+        out["project_known"] = path is not None
+        return out
+
+    def list_commands(self, key: SessionKey) -> dict[str, Any]:
+        agent, path = self._session_place(key)
+        if agent != "claude":
+            from ..cloudcli_models import CATALOG_SCHEMA
+            # Codex has no slash-command files; its Skills are its commands.
+            return {"schema": CATALOG_SCHEMA, "kind": "commands", "provider": agent,
+                    "items": [], "session_ref": key.ref,
+                    "note": "Codex sessions take Skills ($name), not command files"}
+        out = self._model_library().commands(path)
+        out["session_ref"] = key.ref
+        out["project_known"] = path is not None
+        return out
+
+    def reconfigure(self, key: SessionKey, *, model: str | None = None,
+                    effort: str | None = None,
+                    permission_mode: str | None = None) -> dict[str, Any]:
+        arguments: dict[str, Any] = {"session": key.native_session_id}
+        for name, value in (("model", model), ("effort", effort),
+                            ("permissionMode", permission_mode)):
+            if value is not None:
+                arguments[name] = value
+        return self._call("session_reconfigure", arguments, session=key)
+
+    def approve(self, key: SessionKey, request_id: str, *, allow: bool,
+                message: str | None = None, answers: Any = None) -> dict[str, Any]:
+        arguments: dict[str, Any] = {"requestId": request_id, "allow": bool(allow)}
+        if message is not None:
+            arguments["message"] = message
+        if answers is not None:
+            arguments["answers"] = answers
+        return self._call("approval_answer", arguments, session=key)
 
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:
