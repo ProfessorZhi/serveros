@@ -193,10 +193,25 @@ def git_facts(path: str) -> dict[str, Any] | None:
             "worktrees": worktrees}
 
 
-def nested_git(path: str, depth: int = 3) -> list[str]:
+#: How far one search for checkouts inside a directory may go. A cache or data
+#: directory can hold millions of entries; past either bound the search stops
+#: and the item is marked `nested_truncated`, which the plan reads as "unknown"
+#: (it may be moved, never removed).
+NESTED_MAX_DIRS = 5000
+NESTED_MAX_SECONDS = 10.0
+
+
+def nested_git(path: str, depth: int = 3, *, max_dirs: int = NESTED_MAX_DIRS,
+               max_seconds: float = NESTED_MAX_SECONDS) -> tuple[list[str], bool]:
+    """(checkouts found inside `path`, whether the search was cut short)."""
     found: list[str] = []
     base = path.rstrip("\\/").count(os.sep)
+    deadline = time.monotonic() + max_seconds
+    seen = 0
     for root, dirs, _files in os.walk(path):
+        seen += 1
+        if seen > max_dirs or time.monotonic() > deadline:
+            return found, True
         if ".git" in dirs or os.path.isfile(os.path.join(root, ".git")):
             found.append(root)
             dirs[:] = []
@@ -204,7 +219,7 @@ def nested_git(path: str, depth: int = 3) -> list[str]:
         dirs[:] = [d for d in dirs if d not in SKIP_NAMES]
         if root.count(os.sep) - base >= depth:
             dirs[:] = []
-    return found
+    return found, False
 
 
 def last_touched(path: str, facts: dict | None) -> float:
@@ -315,21 +330,30 @@ def _matches(layout: dict, path: str, patterns: list[str]) -> bool:
 
 
 def scan(layout: dict, *, sizes: bool = False, refs: list | None = None,
-         now: float | None = None) -> dict[str, Any]:
+         now: float | None = None, progress: bool = False) -> dict[str, Any]:
     now = now or time.time()
     refs = users_of_paths(layout) if refs is None else refs
     items: list[dict[str, Any]] = []
     claimed: list[str] = []
 
     def record(path: str, cls: str, **extra: Any) -> None:
+        started = time.monotonic()
+        if progress:
+            print(f"[{len(items) + 1}] {path}", file=sys.stderr, flush=True)
         facts = git_facts(path)
-        nested = [] if facts else nested_git(path)
+        nested, truncated = ([], False) if facts else nested_git(path)
         nested_facts = [dict(git_facts(n) or {}, path=n) for n in nested[:50]]
         item = {"path": path, "class": cls, "git": facts, "nested_git": nested_facts,
+                **({"nested_truncated": True} if truncated else {}),
                 "idle_days": int((now - last_touched(path, facts)) // DAY),
                 "in_use": in_use(layout, path, refs), **extra}
         if sizes:
             item["size_kb"] = size_kb(path)
+        item["scan_seconds"] = round(time.monotonic() - started, 1)
+        if progress and item["scan_seconds"] >= 5:
+            print(f"    took {item['scan_seconds']}s"
+                  + (" (search for checkouts inside cut short)" if truncated else ""),
+                  file=sys.stderr, flush=True)
         items.append(item)
         claimed.append(path)
 
@@ -494,6 +518,9 @@ def plan(scan_doc: dict[str, Any]) -> dict[str, Any]:
                       facts["kind"] == "repo" and rule.get("as") in ("repo", "worktree", "repo_or_worktree")):
             continue                                       # handled above
         nested_unique = [n for n in item.get("nested_git") or [] if _unique_work(n) is not False]
+        if item.get("nested_truncated"):
+            # Not every checkout inside was seen: never removed, at most moved.
+            nested_unique = nested_unique or [{"path": item["path"], "unknown": True}]
         if rule.get("as") == "report":
             steps.append(_step("REPORT", item, rule.get("why", "the rule asks for a look first")))
         elif rule.get("to"):
@@ -505,7 +532,9 @@ def plan(scan_doc: dict[str, Any]) -> dict[str, Any]:
                                    f"scratch idle {item['idle_days']} days (limit {scratch_days}); "
                                    f"no repository in it holds anything unique"))
             else:
-                why = (f"holds {len(nested_unique)} checkout(s) with work of their own" if nested_unique
+                why = ("too large to search fully for checkouts inside; moved, never removed"
+                       if item.get("nested_truncated") else
+                       f"holds {len(nested_unique)} checkout(s) with work of their own" if nested_unique
                        else f"scratch, active ({item['idle_days']} days)")
                 steps.append(_step("MOVE_DIR", item, why,
                                    to=target_free(p.join(scratch, _safe_name(p.basename(item["path"]))))))
@@ -568,7 +597,10 @@ def _recheck(step: dict, layout: dict, refs: list) -> str | None:
         facts = git_facts(src)
         if _unique_work(facts) is not False:
             return "it now holds something unique"
-        for nested in nested_git(src):
+        inside, truncated = nested_git(src)
+        if truncated:
+            return "too large to search fully for checkouts inside: not removed"
+        for nested in inside:
             if _unique_work(git_facts(nested)) is not False:
                 return f"{nested} now holds something unique"
     if step.get("to"):
@@ -642,10 +674,10 @@ def apply(plan_doc: dict, *, approve: str, only: set[str] | None = None,
 
 # -- check ------------------------------------------------------------------------
 
-def check(layout: dict, scan_doc: dict | None = None) -> dict[str, Any]:
+def check(layout: dict, scan_doc: dict | None = None, *, progress: bool = False) -> dict[str, Any]:
     """The daily summary (R-1): what the layout does not know, and how much is
     still to migrate or reclaim."""
-    scan_doc = scan_doc or scan(layout)
+    scan_doc = scan_doc or scan(layout, progress=progress)
     made = plan(scan_doc)
     worktree_steps = [s for s in made["steps"] if s["action"] in ("MOVE_WORKTREE", "REMOVE_WORKTREE")]
     return {"schema": "serveros/workspace-check.v1", "device": layout["device"],
@@ -674,6 +706,7 @@ def main(argv: list[str] | None = None) -> int:
         one.add_argument("--device", required=True)
         one.add_argument("--layout", help="a layout file instead of layouts/<device>.json")
         one.add_argument("--out")
+        one.add_argument("--quiet", action="store_true", help="no progress lines on stderr")
         if name == "check":
             one.add_argument("--record", action="store_true",
                              help="write the result where the device's versions record is "
@@ -690,13 +723,20 @@ def main(argv: list[str] | None = None) -> int:
             one.add_argument("--apply", action="store_true", help="really do it (default: say what would happen)")
     args = parser.parse_args(argv)
     try:
+        import faulthandler
+        import signal
+        # `kill -USR1 <pid>` prints where a long scan is, without stopping it.
+        faulthandler.register(signal.SIGUSR1)
+    except (ImportError, AttributeError, ValueError):
+        pass
+    try:
         layout = load_layout(args.device, args.layout)
         if args.command == "scan":
-            out = scan(layout, sizes=args.sizes)
+            out = scan(layout, sizes=args.sizes, progress=not args.quiet)
         elif args.command == "plan":
             out = plan(json.loads(Path(args.scan).read_text(encoding="utf-8")))
         elif args.command == "check":
-            out = check(layout)
+            out = check(layout, progress=not args.quiet)
         else:
             out = apply(json.loads(Path(args.plan).read_text(encoding="utf-8")), approve=args.approve,
                         only=set(args.only.split(",")) if args.only else None,
