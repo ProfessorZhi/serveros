@@ -28,6 +28,7 @@ CC_DEV = ROOT / "integrations" / "fleet-cc-dev-plugin"
 FIRST_INSTALL = ROOT / "integrations" / "fleet-v1-first-install"
 
 EXPECTED_SKILLS = {
+    "fleet-core",
     "fleet-acceptance",
     "fleet-ability-change",
     "fleet-ability-inventory",
@@ -422,3 +423,31 @@ class TheAbilityFamilyClosesTheLoop(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheCommanderReadsOneSmallCore(unittest.TestCase):
+    """Owner, 2026-11-11/18 (D-6): a dispatch made GPT read 4-5 skills, about
+    44 KB, and think one to two minutes; it asked again for a target the owner
+    had named. One small core is read first; the rest say when they are needed."""
+
+    def test_the_core_is_small_and_says_it_is_read_first(self):
+        core = SHARED / "fleet-core" / "SKILL.md"
+        self.assertLessEqual(len(core.read_bytes()), 4096)
+        text = core.read_text(encoding="utf-8")
+        self.assertIn("Read this first", text)
+        for step in ("owner_request", "fleet_batch", "action `reply`", "End your turn",
+                     "that is the authorization"):
+            self.assertIn(step, text)
+
+    def test_the_core_knows_each_devices_use(self):
+        text = (SHARED / "fleet-core" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("production log queries", text)
+        self.assertIn("real-client tests", text)
+
+    def test_the_dispatch_details_say_they_are_not_needed_for_a_plain_dispatch(self):
+        for name in ("fleet-async-dispatch", "fleet-reuse-idle-session", "fleet-commander-orchestration",
+                     "fleet-safety-boundaries", "fleet-device-and-session-discovery",
+                     "fleet-create-with-grants", "fleet-evidence-review"):
+            with self.subTest(skill=name):
+                head = (SHARED / name / "SKILL.md").read_text(encoding="utf-8").split("\n---\n", 1)[0]
+                self.assertIn("read only when", head)

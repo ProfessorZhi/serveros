@@ -1,6 +1,6 @@
 ---
 name: fleet-async-dispatch
-description: Preserve the exact execution coordinates after a Fleet create/send ACK, return promptly, and inspect the run later — a timeout or unknown outcome is not a failure and never authorises a fresh-key resend.
+description: Detail behind fleet-core step 5 — read only when a create/send ACK came back unclear (timeout, unknown outcome) and you must decide whether it was sent.
 ---
 
 # Dispatch is a handoff, not a wait

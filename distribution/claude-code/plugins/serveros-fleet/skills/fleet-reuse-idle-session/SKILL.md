@@ -1,6 +1,6 @@
 ---
 name: fleet-reuse-idle-session
-description: Decide between a new session and one this commander already started, and send to it precisely. A new task gets a new session; only a session Fleet created for this work, or one the owner names, is ever sent to again. Use before any fleet_create_session call, and whenever the task is "carry on with" or "ask the agent on that machine".
+description: Detail behind fleet-core step 1 — read only when you must decide between a new session and an existing one that the owner did not name.
 ---
 
 # New work, new session; reuse only what you started

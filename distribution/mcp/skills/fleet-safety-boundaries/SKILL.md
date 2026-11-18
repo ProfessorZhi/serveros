@@ -1,6 +1,6 @@
 ---
 name: fleet-safety-boundaries
-description: What the Fleet tool list does and does not authorize, which runtime profiles may be mixed, and where the assistant's work ends and the coding agent's begins. Use before any Fleet write, and when deciding which runtime a task belongs on.
+description: Detail behind fleet-core's Never list — read only when a request touches production, credentials, a running service or mixes runtime profiles.
 ---
 
 # A tool list is not a permission

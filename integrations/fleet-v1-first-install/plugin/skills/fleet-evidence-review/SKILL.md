@@ -1,6 +1,6 @@
 ---
 name: fleet-evidence-review
-description: Accept a delegated result only from evidence you actually read — the run, the tests, the diff — and report honestly what was not verified. Use when closing out any Fleet task, and whenever someone says a change "is done".
+description: Detail behind fleet-core's 'judge each run' — read only when a result must be accepted for delivery (tests, diffs), not for a status answer.
 ---
 
 # A message that was accepted is not a result
