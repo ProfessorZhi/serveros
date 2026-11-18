@@ -273,5 +273,39 @@ class TheDevicesHaveLayouts(unittest.TestCase):
         self.assertEqual(ws.main(["check", "--device", "nowhere"]), 2)
 
 
+
+class ALargeDirectoryIsBoundedAndNeverRemoved(unittest.TestCase):
+    def test_a_search_cut_short_is_marked_and_kept(self):
+        ws_b = ws
+        with tempfile.TemporaryDirectory() as tmp:
+            big = Path(tmp) / "big"
+            for i in range(30):
+                (big / f"d{i}" / "x").mkdir(parents=True)
+            found, cut = ws_b.nested_git(str(big), max_dirs=10)
+            self.assertTrue(cut)
+            found, cut = ws_b.nested_git(str(big))
+            self.assertFalse(cut)
+
+    def test_a_cut_short_scratch_dir_is_moved_not_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "tmp" / "a").mkdir(parents=True)
+            old = time.time() - 90 * DAY
+            os.utime(home / "tmp", (old, old))
+            os.utime(home / "tmp" / "a", (old, old))
+            layout = {"schema": "serveros/device-layout.v1", "device": "t", "home": str(home),
+                      "work_root": str(home / "work"), "scan_roots": [str(home)],
+                      "zones": [{"path": "work/scratch"}],
+                      "legacy": [{"from": "tmp", "as": "scratch"}]}
+            original = ws.nested_git
+            ws.nested_git = lambda path, **kw: ([], True)
+            try:
+                made = ws.plan(ws.scan(layout, refs=[]))
+            finally:
+                ws.nested_git = original
+        actions = {s["action"] for s in made["steps"]}
+        self.assertNotIn("REMOVE_DIR", actions)
+        self.assertIn("MOVE_DIR", actions)
+
 if __name__ == "__main__":
     unittest.main()
