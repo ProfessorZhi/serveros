@@ -1,0 +1,54 @@
+{
+  "schema": "serveros/device-layout.v1",
+  "device": "dell",
+  "device_ref": "device:llm-lab-dell",
+  "principal": "fjd",
+  "home": "/home/fjd",
+  "work_root": "/home/fjd/work",
+  "scan_roots": ["/home/fjd"],
+  "zones": [
+    {"path": "work/src", "kind": "managed", "purpose": "每个仓库一份主 clone（Fleet 与开发）"},
+    {"path": "work/worktrees", "kind": "managed", "purpose": "worktrees/<仓库>/<条目编号>", "retain_days": 14},
+    {"path": "work/scratch", "kind": "managed", "purpose": "临时实验，到期清", "retain_days": 30},
+    {"path": "work/artifacts", "kind": "artifact", "purpose": "artifacts/<项目>/<条目编号>/<运行>", "retain_days": 60},
+    {"path": "work/logs", "kind": "managed", "purpose": "生产日志子集 logs/<日期>，分析后到期清", "retain_days": 30}
+  ],
+  "registered": [
+    {"path": "projects", "purpose": "个人项目（只登记，不动）"},
+    {"path": "llm-post-training", "purpose": "个人项目"},
+    {"path": "litellm-data", "purpose": "LiteLLM 日志与 wiki（日志按 R-3 轮转）"},
+    {"path": ".fj-prod-broker", "purpose": "生产只读通道"},
+    {"path": ".llmlab-state", "purpose": "LLM Lab 状态"},
+    {"path": ".cloudcli-runtime", "purpose": "CloudCLI 运行时"},
+    {"path": ".claude", "purpose": "Claude Code 数据"},
+    {"path": ".codex", "purpose": "Codex 数据"},
+    {"path": ".cache", "purpose": "工具缓存"},
+    {"path": ".npm", "purpose": "npm 缓存"},
+    {"path": ".local", "purpose": "本机程序（含 llmlab-dev-worktrees，见 legacy）"},
+    {"path": ".config", "purpose": "配置"},
+    {"path": ".ssh", "purpose": "SSH"},
+    {"path": "runtime-assets", "purpose": "设备插件运行时"},
+    {"path": "build", "purpose": "设备插件构建目录"},
+    {"path": "serveros-secrets", "purpose": "密钥中心"},
+    {"path": "opt", "purpose": "手装程序（chrome-for-testing）"},
+    {"path": "snap", "purpose": "snap"}
+  ],
+  "protected": [
+    {"path": "/srv/llm-lab", "purpose": "LLM Lab 服务与数据：任何治理都不碰"}
+  ],
+  "legacy": [
+    {"from": "worktrees/*", "as": "repo_or_worktree", "why": "旧 worktree 目录"},
+    {"from": ".local/share/llmlab-dev-worktrees/*", "as": "worktree", "why": "LLM Lab 开发 worktree（不是服务本身）"},
+    {"from": "workspaces/*", "as": "repo_or_worktree", "why": "11-08 那批 gwy 检出"},
+    {"from": "artifacts/*", "to": "work/artifacts/{name}", "why": "旧产物（10 月 QA）"},
+    {"from": "ci-repair", "as": "scratch", "why": "一次性 CI 修复目录"},
+    {"from": "devquickstart", "as": "scratch", "why": "一次性快速开始目录（含 hwz-ops 旧 clone，先看未推送）"},
+    {"from": "gwy-audit-*", "as": "scratch", "why": "一次性审计"},
+    {"from": "ffp", "as": "scratch", "why": "浏览器探针"},
+    {"from": "ffprof-test", "as": "scratch", "why": "浏览器探针"},
+    {"from": "prodq", "to": "work/logs/prodq", "why": "生产查询子集"},
+    {"from": "tmp", "as": "scratch", "why": "旧 tmp"},
+    {"from": "archive", "as": "report", "why": "先看内容再定"},
+    {"from": "backups", "as": "report", "why": "迁移备份，先看内容再定"}
+  ]
+}
