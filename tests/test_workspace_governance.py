@@ -286,6 +286,25 @@ class ALargeDirectoryIsBoundedAndNeverRemoved(unittest.TestCase):
             found, cut = ws_b.nested_git(str(big))
             self.assertFalse(cut)
 
+    def test_tens_of_thousands_of_scratch_dirs_scan_in_linear_time(self):
+        """Tokyo's data-disk scratch holds ~49,000 directories; the claim check
+        used to compare each against every other."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home, scratch = Path(tmp) / "home", Path(tmp) / "scratch"
+            home.mkdir()
+            for i in range(20000):
+                (scratch / f"tmp{i:05d}").mkdir(parents=True)
+            layout = {"schema": "serveros/device-layout.v1", "device": "t", "home": str(home),
+                      "work_root": str(home / "work"), "scan_roots": [str(home), str(scratch)],
+                      "zones": [{"path": "work/scratch"}],
+                      "legacy": [{"from": str(scratch / "*"), "as": "scratch"}]}
+            started = time.monotonic()
+            done = ws.scan(layout, refs=[])
+            elapsed = time.monotonic() - started
+        self.assertEqual(len([i for i in done["items"] if i["class"] == "legacy"]), 20000)
+        self.assertEqual([i for i in done["items"] if i["class"] == "unregistered"], [])
+        self.assertLess(elapsed, 60)
+
     def test_a_cut_short_scratch_dir_is_moved_not_removed(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

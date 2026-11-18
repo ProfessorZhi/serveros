@@ -329,12 +329,47 @@ def _matches(layout: dict, path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(n, _norm(layout, absolute(layout, pat))) for pat in patterns)
 
 
+class _Claimed:
+    """The paths a legacy rule already took, answered by lookup rather than by
+    comparing against every one: Tokyo's data-disk scratch alone is ~49,000
+    directories, and a pairwise check was ~2 billion comparisons."""
+
+    def __init__(self, layout: dict) -> None:
+        self.layout = layout
+        self.p = pmod(layout)
+        self.paths: set[str] = set()
+        self.parents: set[str] = set()
+
+    def _ancestors(self, norm: str):
+        current = norm
+        while True:
+            parent = self.p.dirname(current)
+            if not parent or parent == current:
+                return
+            yield parent
+            current = parent
+
+    def add(self, path: str) -> None:
+        norm = _norm(self.layout, path)
+        self.paths.add(norm)
+        self.parents.update(self._ancestors(norm))
+
+    def covers(self, path: str) -> bool:
+        """`path` is a claimed path or lies under one."""
+        norm = _norm(self.layout, path)
+        return norm in self.paths or any(a in self.paths for a in self._ancestors(norm))
+
+    def inside(self, path: str) -> bool:
+        """Some claimed path lies strictly under `path`."""
+        return _norm(self.layout, path) in self.parents
+
+
 def scan(layout: dict, *, sizes: bool = False, refs: list | None = None,
          now: float | None = None, progress: bool = False) -> dict[str, Any]:
     now = now or time.time()
     refs = users_of_paths(layout) if refs is None else refs
     items: list[dict[str, Any]] = []
-    claimed: list[str] = []
+    claimed = _Claimed(layout)
 
     def record(path: str, cls: str, **extra: Any) -> None:
         started = time.monotonic()
@@ -355,11 +390,11 @@ def scan(layout: dict, *, sizes: bool = False, refs: list | None = None,
                   + (" (search for checkouts inside cut short)" if truncated else ""),
                   file=sys.stderr, flush=True)
         items.append(item)
-        claimed.append(path)
+        claimed.add(path)
 
     for rule in layout.get("legacy", []):
         for path in _expand(layout, rule["from"]):
-            if any(under(layout, path, c) for c in claimed):
+            if claimed.covers(path):
                 continue
             if under(layout, path, layout["work_root"]) and any(
                     _norm(layout, path) == _norm(layout, absolute(layout, z["path"])) for z in layout["zones"]):
@@ -376,7 +411,7 @@ def scan(layout: dict, *, sizes: bool = False, refs: list | None = None,
             path = os.path.join(root, name)
             if not os.path.isdir(path) or os.path.islink(path):
                 continue
-            if any(under(layout, path, c) for c in claimed):
+            if claimed.covers(path):
                 continue
             if under(layout, layout["work_root"], path) or under(layout, path, layout["work_root"]):
                 continue                                  # the managed root and its parents
@@ -386,12 +421,12 @@ def scan(layout: dict, *, sizes: bool = False, refs: list | None = None,
             if any(under(layout, path, x) for x in registered):
                 items.append({"path": path, "class": "registered"})
                 continue
-            if any(under(layout, c, path) for c in claimed):
+            if claimed.inside(path):
                 # A container of legacy items: what is left in it is unknown.
                 for sub in sorted(os.listdir(path)):
                     full = os.path.join(path, sub)
                     if os.path.isdir(full) and not os.path.islink(full) and \
-                            not any(under(layout, full, c) or under(layout, c, full) for c in claimed):
+                            not (claimed.covers(full) or claimed.inside(full)):
                         record(full, "unregistered")
                 continue
             if name.startswith("."):
