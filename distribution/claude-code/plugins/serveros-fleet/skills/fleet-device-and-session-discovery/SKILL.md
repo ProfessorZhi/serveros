@@ -1,6 +1,6 @@
 ---
 name: fleet-device-and-session-discovery
-description: Find out which ServerOS device, Linux account, credential profile and runtime actually exist before naming one. Use at the start of any Fleet task, and whenever a device name, session id or "my laptop" appears in a request.
+description: Detail behind fleet-core's device table — read only when the device, Linux account or runtime is not one fleet-core names.
 ---
 
 # Discover the device and the runtime before you name one

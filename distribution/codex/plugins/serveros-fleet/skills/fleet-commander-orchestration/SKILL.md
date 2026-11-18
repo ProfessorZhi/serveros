@@ -1,6 +1,6 @@
 ---
 name: fleet-commander-orchestration
-description: Coordinate several independent tasks without becoming a polling loop — gather only the facts needed, build a dependency graph, dispatch complete long work in parallel or short work as a batch, and keep a slow node from blocking the rest.
+description: Detail beyond fleet-core — read only when one request needs several dependent tasks across devices (a dependency graph), not for a single dispatch.
 ---
 
 # The commander coordinates; it does not sit and wait

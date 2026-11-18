@@ -56,20 +56,21 @@ _spec.loader.exec_module(cc)
 #: deliberate act: change the digest in the same commit as the text, and say in
 #: the message which source the new text was judged against.
 PINNED_SKILLS = {
-    "fleet-acceptance": "2dedbd7ebc9e0ac53c78dc64fde2e321702c7fd12f4a61d6d2a3f4f1847327d9",
     "fleet-ability-change": "74628d452c62b9fa5458305c16949dcf6f1f0c2e2ff40e1b1857ad42f6e031ec",
     "fleet-ability-inventory": "4eca875dd3d11903c4d2f0855dae21ea1015ee9f5fab7c0a553d831adce99e24",
-    "fleet-async-dispatch": "910a1f84c1a9e78968cfdba8c92bf3f33636acef983a781ffca9af0d191e40c9",
-    "fleet-commander-orchestration": "3b97920a1bbd0ab77ce367d9b45e9e33b9ca007422fe5e884d9b49c708a60fe1",
-    "fleet-create-with-grants": "7cc0a83d800677f8ded6a65fca995bddae84f8eb8b0627c090a60add9321b1e9",
-    "fleet-device-and-session-discovery": "eb3046466fefa7acc8080e904c0aa29835b61326252641afd65d55a19bb6b0af",
-    "fleet-evidence-review": "754fa0ab340bfc64fbf76939f8292e99b09ceb0017210bba74b122a428979d69",
+    "fleet-acceptance": "2dedbd7ebc9e0ac53c78dc64fde2e321702c7fd12f4a61d6d2a3f4f1847327d9",
+    "fleet-async-dispatch": "4162f4ac8cef3e88b181d708697dcd35324848428b05d0ba6355c4ab9932e8f6",
+    "fleet-broadcast-tune": "0617e847aa2b920d26878eef443e81a55daa1c51f337430a9cfc8b13a2b21c44",
+    "fleet-commander-orchestration": "4da27c5e37ea23d28a11ad0b23473000566573241ae0189ef8651298d122706d",
+    "fleet-core": "c36d600330228bcec3b740de72b1d68ec304b055198b73bf6f9fda4399cedcc1",
+    "fleet-create-with-grants": "9366032fde118f0250bb5e32b9363a6976ab5cadf3b12eda7c2f97c0c85713d8",
+    "fleet-device-and-session-discovery": "0a29e8c650d612941019eb07ce52ac7869bf855e7ed8a1fba7271b6cf814decc",
+    "fleet-evidence-review": "e1ef83ff984c026c0172dde93999ba641ff621ebd901286b8efbc30bd735c4be",
     "fleet-norm-audit": "56eb61da329b425de0b8d27f817c7d5dfa68f8d668ca414550b304a52adbac98",
     "fleet-plugin-update": "0fb8600f0a9c3225ae5c163241bd5ad8cb12f86c77c2d9ce8ffcb9da566ba001",
-    "fleet-reuse-idle-session": "2e5afba2344ca9bad253af56610b23151e4c84f67260c86f0c29ff6553d98e66",
-    "fleet-broadcast-tune": "0617e847aa2b920d26878eef443e81a55daa1c51f337430a9cfc8b13a2b21c44",
+    "fleet-reuse-idle-session": "5d248ea061e738922e388b5c40076cea79467d4779cb27aa2bad2838ad7e22be",
+    "fleet-safety-boundaries": "372e41db5568b61ab5475ca6d4a1970eba99d70c786b39755f41c88e1907b14b",
     "fleet-self-check": "8866e83dc2f63416abb7e33e034c5fb7a47164cd7bb1e88281fc1e185dc0a53c",
-    "fleet-safety-boundaries": "08b357f013be28ece2d26a564569589e53d93da06eea637f3252db631a8a720e",
     "fleet-work-drive": "560b2246e0c14dda1beab24daa04a85e89dd5d81b12ae9aab2c57ec8e8430105",
 }
 

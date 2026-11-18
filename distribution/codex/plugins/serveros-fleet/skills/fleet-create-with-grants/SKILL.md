@@ -1,6 +1,6 @@
 ---
 name: fleet-create-with-grants
-description: Create a Fleet session inside the owner-configured managed profile — preferring an idle session but treating routine create as pre-authorized — and track it by its returned execution references, including a run id only when one is returned.
+description: Detail behind fleet-core step 1 — read only when a session must be created with a non-default profile, model or grants.
 ---
 
 # Creating a session is routine inside the owner-max profile
