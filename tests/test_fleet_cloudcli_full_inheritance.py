@@ -814,7 +814,7 @@ class SurfaceTest(unittest.TestCase):
         self.assertEqual(len(names), 59)
         self.assertIn("fleet_cloudcli_native_manifest", names)
         self.assertIn("fleet_cloudcli_native_capability", names)
-        self.assertEqual(len(tools_mod.tool_names()), 24)
+        self.assertEqual(len(tools_mod.tool_names()), 26)
 
     def test_mirror_annotations_match_the_manifest(self):
         by_name = {t.name: t for t in tools_mod.NATIVE_MIRROR_TOOLS}

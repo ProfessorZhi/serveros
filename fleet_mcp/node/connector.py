@@ -1004,15 +1004,26 @@ class Connector:
         kind = payload.get("kind")
         if set(payload) - {"kind"} or kind not in ("skills", "commands"):
             raise FleetRefusal("BAD_REQUEST", "catalog takes only kind: skills or commands")
+        self._rest_configured()
         key = self._key(native)
         return (self.provider.list_skills(key) if kind == "skills"
                 else self.provider.list_commands(key))
+
+    def _rest_configured(self) -> None:
+        """CloudCLI's REST routes need the owner's login token on THIS machine."""
+        if self.config.model_library_token_path is None:
+            raise FleetRefusal(
+                "CAPABILITY_UNSUPPORTED",
+                "this machine does not serve CloudCLI's REST routes (model library, "
+                "Skills, slash commands): the connector binding has no "
+                "model_library_token_path")
 
     def _models_list(self, payload: dict[str, Any]) -> dict[str, Any]:
         """This machine's model library, projected: no secret value leaves it."""
         provider = payload.get("provider", "claude")
         if provider not in ("claude", "codex"):
             raise FleetRefusal("BAD_REQUEST", "provider must be claude or codex")
+        self._rest_configured()
         return self.provider.list_models(provider=provider)
 
     def _models_upsert(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1029,6 +1040,7 @@ class Connector:
                 "WRITE_NOT_GRANTED",
                 "this machine does not let its model library be written from the "
                 "fleet: its connector binding does not set allow_model_library_write")
+        self._rest_configured()
         provider = payload.get("provider", "claude")
         rows = check_entry(provider, payload.get("model_id"), payload.get("label"),
                            payload.get("env"))

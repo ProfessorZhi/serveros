@@ -57,7 +57,7 @@ class TheContractDescribesThisCode(unittest.TestCase):
         change to what it read even when the set is identical."""
         declared = list(contract()["tools"])
         self.assertEqual(declared, tools_module.tool_names())
-        self.assertEqual(len(declared), 24)
+        self.assertEqual(len(declared), 26)
 
     def test_each_declared_verb_matches_the_annotation_the_tool_carries(self):
         declared = contract()["tools"]
@@ -76,7 +76,8 @@ class TheContractDescribesThisCode(unittest.TestCase):
                                   "fleet_interrupt_session", "fleet_create_project",
                                   "fleet_delete_project", "fleet_model_upsert",
                                   "fleet_batch", "fleet_tune", "fleet_memory",
-                                  "fleet_work_candidate_add", "fleet_monitor_control"])
+                                  "fleet_work_candidate_add", "fleet_monitor_control",
+                                  "fleet_agent_invoke"])
         for name in writes:
             with self.subTest(tool=name):
                 self.assertEqual(contract()["tools"][name]["verb"], "write")

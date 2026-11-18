@@ -200,6 +200,7 @@ class NodeSignature(unittest.TestCase):
             "GET /v1/device/versions",
             "POST /v1/models",
             "POST /v1/models/upsert",
+            "POST /v1/sessions/{id}/catalog",
         ))
 
 
@@ -380,7 +381,7 @@ class HttpTransport(_HttpHarness):
         tools_out = payload["result"]["tools"]
         # The served surface is the hand-written Fleet tools PLUS the 31
         # inherited CloudCLI verbs — one MCP surface, discoverable whole.
-        self.assertEqual(len(tools_out), 57)
+        self.assertEqual(len(tools_out), 59)
         names = {tool["name"] for tool in tools_out}
         self.assertIn("fleet_list_devices", names)
         writes = [t["name"] for t in tools_out if not t["annotations"]["readOnlyHint"]]
@@ -390,7 +391,7 @@ class HttpTransport(_HttpHarness):
         self.assertEqual(fleet_writes, ["fleet_send_to_session", "fleet_create_session",
                                         "fleet_interrupt_session", "fleet_create_project",
                                         "fleet_delete_project", "fleet_model_upsert", "fleet_batch", "fleet_tune", "fleet_memory", "fleet_work_candidate_add",
-                                  "fleet_monitor_control"])
+                                  "fleet_monitor_control", "fleet_agent_invoke"])
         # ...and the inherited CloudCLI mirror contributes its own fifteen writes,
         # carrying CloudCLI's annotations rather than this surface's opinion.
         self.assertEqual(
@@ -644,7 +645,7 @@ class OAuthFlow(_HttpHarness):
             token=payload["access_token"],
         )
         self.assertEqual(status, 200)
-        self.assertEqual(len(body["result"]["tools"]), 57)  # 22 + 31 + manifest + capability
+        self.assertEqual(len(body["result"]["tools"]), 59)  # 24 + 31 + manifest + capability
 
     def test_a_code_is_single_use(self):
         status, headers, _ = self._approve()

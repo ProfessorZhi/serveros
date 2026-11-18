@@ -195,7 +195,7 @@ class ToolSurface(unittest.TestCase):
         self.assertEqual(writes, ["fleet_send_to_session", "fleet_create_session",
                                   "fleet_interrupt_session", "fleet_create_project",
                                   "fleet_delete_project", "fleet_model_upsert", "fleet_batch", "fleet_tune", "fleet_memory", "fleet_work_candidate_add",
-                                  "fleet_monitor_control", "fleet_agent_catalog", "fleet_agent_invoke"])
+                                  "fleet_monitor_control", "fleet_agent_invoke"])
 
     def test_the_two_destructive_tools_are_named(self):
         """`fleet_interrupt_session` ends work in flight; `fleet_delete_project`

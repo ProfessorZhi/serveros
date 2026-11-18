@@ -157,7 +157,8 @@ class TheConnectorServesTheCatalog(unittest.TestCase):
         from fleet_mcp.node.connector import Connector
 
         connector = Connector.__new__(Connector)
-        connector.config = type("C", (), {"device_ref": TOKYO, "runtime": "claude"})()
+        connector.config = type("C", (), {"device_ref": TOKYO, "runtime": "claude",
+                                       "model_library_token_path": Path("/t")})()
         connector.provider = CatalogProvider(TOKYO)
         status, body = connector._dispatch("POST", "/v1/sessions/abc/catalog",
                                            b'{"kind": "commands"}', TOKYO)

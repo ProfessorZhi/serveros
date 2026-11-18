@@ -2564,7 +2564,7 @@ class FleetService:
         answer.update({**key.as_dict(), "untrusted_content": True,
                        "untrusted_notice": UNTRUSTED_NOTICE})
         self.audit.record("fleet.agent_catalog", principal=principal.name, session_ref=key.ref,
-                          kind=kind, items=len(answer.get("items") or []))
+                          catalog=kind, items=len(answer.get("items") or []))
         return answer
 
     def invoke(self, principal: Principal, key: SessionKey, *, kind: str, name: str,
