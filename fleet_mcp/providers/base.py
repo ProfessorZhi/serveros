@@ -257,3 +257,97 @@ class DeviceProvider(Protocol):
         self, key: SessionKey, run_id: str, *, wait: bool = False, wait_seconds: float = 0.0
     ) -> dict[str, Any]:
         ...
+
+    # -- what the agent in a session can be asked to use (D-2) --------------
+    #
+    # A Skill or a slash command is invoked by putting its invocation text into
+    # the session as a message — that is how the agent itself takes it. So the
+    # catalog is the part an implementation must supply; invoking is "resolve a
+    # name from THIS device's own catalog, then send". Fleet does that itself
+    # (`FleetService.invoke`) so an invocation passes every gate a send passes;
+    # the default bodies below are the same composition for a direct caller.
+
+    def list_skills(self, key: SessionKey) -> dict[str, Any]:
+        """The Skills the agent in `key` can use, as `catalog_document` shapes them.
+
+        Each item: `name`, `invocation` (the exact text the agent takes, e.g.
+        `/fleet-core` for Claude Code, `$name` for Codex), `description`,
+        `scope`. Paths on the device are not part of the answer.
+        """
+        ...
+
+    def list_commands(self, key: SessionKey) -> dict[str, Any]:
+        """The slash commands in `key`'s project and the user's own; each item
+        also says whether it is `invocable` in a session."""
+        ...
+
+    def invoke_skill(self, key: SessionKey, name: str, args: str = "", *,
+                     idempotency_key: str | None = None) -> dict[str, Any]:
+        text = invocation_text(self.list_skills(key), name, args)
+        return {**self.send(key, text, idempotency_key=idempotency_key), "invoked": text}
+
+    def invoke_command(self, key: SessionKey, name: str, args: str = "", *,
+                       idempotency_key: str | None = None) -> dict[str, Any]:
+        text = invocation_text(self.list_commands(key), name, args)
+        return {**self.send(key, text, idempotency_key=idempotency_key), "invoked": text}
+
+    # -- session settings and permission answers ---------------------------
+
+    def reconfigure(self, key: SessionKey, *, model: str | None = None,
+                    effort: str | None = None,
+                    permission_mode: str | None = None) -> dict[str, Any]:
+        """Switch `key`'s model, effort or permission mode for its next run.
+        Fleet has already checked the values against the owner's ceiling."""
+        ...
+
+    def approve(self, key: SessionKey, request_id: str, *, allow: bool,
+                message: str | None = None, answers: Any = None) -> dict[str, Any]:
+        """Answer one permission request the agent in `key` is waiting on.
+        Fleet has already checked that `request_id` belongs to `key`."""
+        ...
+
+    # -- the model library -------------------------------------------------
+
+    def list_models(self, *, provider: str) -> dict[str, Any]:
+        """The device's model entries, in `model_entries.SCHEMA`; no secret value."""
+        ...
+
+    def upsert_model(self, *, provider: str, model_id: str, label: str,
+                     env: list[dict[str, Any]]) -> dict[str, Any]:
+        """Create or replace one entry whose rows `model_entries.check_entry` passed."""
+        ...
+
+
+CATALOG_SCHEMA = "serveros/fleet-agent-catalog.v1"
+_ARGS_MAX = 2000
+
+
+def invocation_text(catalog: dict[str, Any], name: str, args: str = "") -> str:
+    """The message that invokes `name`, taken from the device's OWN catalog.
+
+    The caller names an item; it never writes the invocation. A name the
+    catalog does not list, or lists as not invocable, is refused — so this
+    cannot become a way to type an arbitrary slash command into a session.
+    `args` is free text after the invocation, on one line.
+    """
+    from ..errors import BAD_REQUEST, refuse
+
+    if not isinstance(catalog, dict) or catalog.get("schema") != CATALOG_SCHEMA:
+        raise refuse(BAD_REQUEST, "the device's catalog is not one this build reads")
+    if not isinstance(name, str) or not name.strip():
+        raise refuse(BAD_REQUEST, "name is required")
+    wanted = name.strip()
+    items = [i for i in catalog.get("items") or [] if isinstance(i, dict)]
+    item = next((i for i in items if wanted in (i.get("name"), i.get("invocation"))), None)
+    if item is None:
+        raise refuse(BAD_REQUEST, f"{wanted!r} is not in this session's {catalog.get('kind')} "
+                                  f"list; list them first and use a listed name")
+    if item.get("invocable") is False:
+        raise refuse(BAD_REQUEST, f"{wanted} is a screen action of the client, not "
+                                  f"something the agent in a session can run")
+    if not isinstance(args, str):
+        raise refuse(BAD_REQUEST, "args must be text")
+    extra = " ".join(args.split())
+    if len(extra) > _ARGS_MAX:
+        raise refuse(BAD_REQUEST, f"args is longer than {_ARGS_MAX} characters")
+    return f"{item['invocation']} {extra}".strip()

@@ -843,6 +843,11 @@ class Connector:
                 allow_send=bool(config.allow_send_to or config.allow_all_sessions_for_owner),
                 allow_create=bool(config.allow_create),
                 allow_control=bool(config.allow_control),
+                # The owner's CloudCLI login token on THIS machine, for the REST
+                # routes the gateway has no verb for (model library, Skills,
+                # slash commands). Read here; it never crosses the node channel.
+                model_library_token_path=config.model_library_token_path,
+                allow_model_library_write=bool(config.allow_model_library_write),
             )
         )
 
@@ -972,6 +977,8 @@ class Connector:
             return 200, self._read(parts[2], payload)
         if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "send":
             return 200, self._send(parts[2], payload)
+        if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "catalog":
+            return 200, self._catalog(parts[2], payload)
         if len(parts) == 4 and parts[:2] == ["v1", "sessions"] and parts[3] == "interrupt":
             return 200, self._interrupt(parts[2])
         if len(parts) == 3 and parts[:2] == ["v1", "runs"]:
@@ -990,23 +997,23 @@ class Connector:
             return 200, self._models_upsert(payload)
         return 404, error_payload("UNKNOWN_ROUTE", f"{method} {path} is not routed")
 
-    def _model_library(self):
-        from ..cloudcli_models import LocalLibrary
-
-        if self.config.model_library_token_path is None:
-            raise FleetRefusal(
-                "CAPABILITY_UNSUPPORTED",
-                "this machine does not serve its CloudCLI model library: the "
-                "connector binding has no model_library_token_path")
-        return LocalLibrary(self.config.cloudcli_endpoint, self.config.model_library_token_path,
-                            timeout=self.config.read_timeout)
+    def _catalog(self, native: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """The Skills or slash commands the agent in one session can use (D-2).
+        Read-only; the folder listed is the session's own project, read from
+        this machine's CloudCLI, never a path from the request."""
+        kind = payload.get("kind")
+        if set(payload) - {"kind"} or kind not in ("skills", "commands"):
+            raise FleetRefusal("BAD_REQUEST", "catalog takes only kind: skills or commands")
+        key = self._key(native)
+        return (self.provider.list_skills(key) if kind == "skills"
+                else self.provider.list_commands(key))
 
     def _models_list(self, payload: dict[str, Any]) -> dict[str, Any]:
         """This machine's model library, projected: no secret value leaves it."""
         provider = payload.get("provider", "claude")
         if provider not in ("claude", "codex"):
             raise FleetRefusal("BAD_REQUEST", "provider must be claude or codex")
-        return self._model_library().list(provider)
+        return self.provider.list_models(provider=provider)
 
     def _models_upsert(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Create or replace one entry, re-checked HERE with the hub's own rules.
@@ -1015,7 +1022,7 @@ class Connector:
         no-secret-value rule again itself, because it is the side that holds
         the library and must not take the other end's word for what it writes.
         """
-        from ..cloudcli_models import check_entry
+        from ..model_entries import check_entry
 
         if not self.config.allow_model_library_write:
             raise FleetRefusal(
@@ -1025,8 +1032,8 @@ class Connector:
         provider = payload.get("provider", "claude")
         rows = check_entry(provider, payload.get("model_id"), payload.get("label"),
                            payload.get("env"))
-        return self._model_library().upsert(provider, payload["model_id"],
-                                            payload["label"], rows)
+        return self.provider.upsert_model(provider=provider, model_id=payload["model_id"],
+                                          label=payload["label"], env=rows)
 
     def _device_versions(self) -> dict[str, Any]:
         """What this device runs, as its last update recorded it.

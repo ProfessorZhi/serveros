@@ -1059,12 +1059,12 @@ class FleetService:
         runtime policy would let it run, so a commander can choose without a
         second call.
         """
-        from . import cloudcli_models
+        from . import model_entries
 
         principal.require(SCOPE_READ)
         self.admit(principal)
-        if provider not in cloudcli_models.PROVIDER_RUNTIME:
-            raise refuse(BAD_REQUEST, f"provider must be one of {sorted(cloudcli_models.PROVIDER_RUNTIME)}")
+        if provider not in model_entries.PROVIDER_RUNTIME:
+            raise refuse(BAD_REQUEST, f"provider must be one of {sorted(model_entries.PROVIDER_RUNTIME)}")
         device_ref, binding, prov = self._model_library_target(principal, device, runtime)
         lister = getattr(prov, "list_models", None)
         if lister is None:
@@ -1072,7 +1072,7 @@ class FleetService:
                          f"{device_ref}'s provider ({prov.kind}) has no model library route",
                          device_ref=device_ref)
         answer = lister(provider=provider)
-        if not isinstance(answer, dict) or answer.get("schema") != cloudcli_models.SCHEMA:
+        if not isinstance(answer, dict) or answer.get("schema") != model_entries.SCHEMA:
             raise refuse(INTERNAL, "the device's model library answer is not one this build reads",
                          retry_safe=False)
         for entry in answer.get("entries") or []:
@@ -1087,7 +1087,7 @@ class FleetService:
                       entry: dict[str, Any]) -> dict[str, Any]:
         """What runtime-policy.yaml says about one listed entry, inferred from its rows."""
         from fleet import intelligence
-        from . import cloudcli_models
+        from . import model_entries
 
         rows = entry.get("env") or []
         base = next((r for r in rows if r.get("key") in ("ANTHROPIC_BASE_URL", "OPENAI_BASE_URL")
@@ -1106,13 +1106,13 @@ class FleetService:
 
     @staticmethod
     def _policy_profile(device_ref: str, runtime: str, provider: str) -> str:
-        from . import cloudcli_models
+        from . import model_entries
         import re as _re
 
         device_id = device_ref.split(":", 1)[1]
         principal = _re.sub(r"[^a-z0-9_-]", "-", runtime.lower())[:32] or "base"
         return (f"profile:{device_id}/{principal}/"
-                f"{cloudcli_models.PROVIDER_RUNTIME[provider]}/model-library")
+                f"{model_entries.PROVIDER_RUNTIME[provider]}/model-library")
 
     def upsert_model(self, principal: Principal, *, device: str, model_id: str, label: str,
                      env: list[dict[str, Any]], source: str, gateway: str | None = None,
@@ -1137,23 +1137,23 @@ class FleetService:
         says whether the entry now reads back as written (`verified`).
         """
         from fleet import intelligence
-        from . import cloudcli_models
+        from . import model_entries
 
         principal.require(SCOPE_CONTROL)
         self.admit(principal)
-        rows = cloudcli_models.check_entry(provider, model_id, label, env)
+        rows = model_entries.check_entry(provider, model_id, label, env)
         if source not in ("official_subscription", "official_api", "gateway", "self_hosted"):
             raise refuse(BAD_REQUEST, "source must be official_subscription, official_api, "
                                       "gateway or self_hosted")
         if gateway is not None and (not isinstance(gateway, str)
                                     or not gateway.startswith("target:")):
             raise refuse(BAD_REQUEST, "gateway is a target ref, e.g. target:gateway0")
-        contradiction = cloudcli_models.source_contradiction(source, rows)
+        contradiction = model_entries.source_contradiction(source, rows)
         if contradiction:
             raise refuse(BAD_REQUEST, contradiction)
         device_ref, binding, prov = self._model_library_target(principal, device, runtime)
         profile_ref = self._policy_profile(device_ref, binding.runtime, provider)
-        for name in cloudcli_models.declared_models(model_id, rows):
+        for name in model_entries.declared_models(model_id, rows):
             ok, reason = intelligence.policy_allows(profile_ref, model=name, source=source,
                                                     gateway=gateway)
             if not ok:
@@ -1168,7 +1168,7 @@ class FleetService:
                          f"{device_ref}'s provider ({prov.kind}) has no model library route",
                          device_ref=device_ref)
         answer = writer(provider=provider, model_id=model_id, label=label, env=rows)
-        if not isinstance(answer, dict) or answer.get("schema") != cloudcli_models.SCHEMA:
+        if not isinstance(answer, dict) or answer.get("schema") != model_entries.SCHEMA:
             raise refuse(INTERNAL, "the device's answer is not one this build reads",
                          retry_safe=False)
         answer.update({"device_ref": device_ref, "runtime": binding.runtime,
@@ -2536,6 +2536,58 @@ class FleetService:
                     "over anything the receiving session may then operate on.",
         }
 
+    _CATALOG_KINDS = ("skills", "commands")
+
+    def agent_catalog(self, principal: Principal, key: SessionKey, *, kind: str) -> dict[str, Any]:
+        """The Skills or slash commands the agent in one session can use (D-2).
+
+        Asked of the session's own device through the interface
+        (`list_skills` / `list_commands`); UNKNOWN is not NO, so a device that
+        cannot answer refuses rather than returning an empty list.
+        """
+        principal.require(SCOPE_READ)
+        self.admit(principal)
+        if kind not in self._CATALOG_KINDS:
+            raise refuse(BAD_REQUEST, "kind must be skills or commands")
+        provider = self._session_provider(key)
+        self._verified_family_detail(key, provider)
+        lister = getattr(provider, "list_skills" if kind == "skills" else "list_commands", None)
+        if lister is None:
+            raise refuse("CAPABILITY_UNSUPPORTED",
+                         f"{key.device_ref}'s provider ({provider.kind}) cannot list {kind}",
+                         device_ref=key.device_ref)
+        answer = lister(key)
+        from .providers.base import CATALOG_SCHEMA
+        if not isinstance(answer, dict) or answer.get("schema") != CATALOG_SCHEMA:
+            raise refuse(INTERNAL, "the device's catalog is not one this build reads",
+                         retry_safe=False)
+        answer.update({**key.as_dict(), "untrusted_content": True,
+                       "untrusted_notice": UNTRUSTED_NOTICE})
+        self.audit.record("fleet.agent_catalog", principal=principal.name, session_ref=key.ref,
+                          kind=kind, items=len(answer.get("items") or []))
+        return answer
+
+    def invoke(self, principal: Principal, key: SessionKey, *, kind: str, name: str,
+               args: str = "", idempotency_key: str | None = None,
+               owner_request: str | None = None) -> dict[str, Any]:
+        """Invoke one listed Skill or slash command in a session (D-2).
+
+        The invocation text comes from the device's OWN catalog for that
+        session; the caller only names an item. It is then delivered as an
+        ordinary send, so every send gate, the replay guard and the trace
+        apply unchanged — invoking is not a second way to reach a session.
+        """
+        from .providers.base import invocation_text
+
+        principal.require(SCOPE_SEND)
+        catalog = self.agent_catalog(principal, key, kind=kind)
+        text = invocation_text(catalog, name, args)
+        answer = self.send_to_session(principal, key, message=text,
+                                      idempotency_key=idempotency_key,
+                                      owner_request=owner_request)
+        answer["invoked"] = {"kind": kind, "name": name, "text": text}
+        return answer
+
     def interrupt_session(self, principal: Principal, key: SessionKey) -> dict[str, Any]:
         """Stop the run this session currently has. Nothing else.
 
@@ -3262,6 +3314,29 @@ class FleetService:
             )
         return key.provider
 
+    @staticmethod
+    def _through_interface(provider, native_tool: str, args: dict[str, Any],
+                           key: SessionKey | None) -> dict[str, Any] | None:
+        """D-2: the generic native verbs go through the interface, not the mirror.
+
+        Switching a session's model or permission mode and answering a
+        permission request are things every implementation must do, so once
+        the gates above have passed they are `DeviceProvider.reconfigure` and
+        `.approve`. Everything else the mirror carries stays a CloudCLI-only
+        extension (None: the caller forwards it as before).
+        """
+        if key is None:
+            return None
+        if native_tool == "session_reconfigure" and hasattr(provider, "reconfigure"):
+            return provider.reconfigure(key, model=args.get("model"), effort=args.get("effort"),
+                                        permission_mode=args.get("permissionMode"))
+        if native_tool == "approval_answer" and hasattr(provider, "approve"):
+            extra = {k: args[k] for k in ("message", "answers") if k in args}
+            if set(args) - {"requestId", "allow", "message", "answers"}:
+                return None                     # e.g. a correlationId: forwarded verbatim
+            return provider.approve(key, args["requestId"], allow=bool(args["allow"]), **extra)
+        return None
+
     def native_call(
         self,
         principal: Principal,
@@ -3401,7 +3476,9 @@ class FleetService:
             self._native_reconfigure_ceiling(provider, device_ref, session_ref,
                                              project, args, native, detail=family_detail,
                                              principal=principal)
-        result = caller(native_tool, args, session_ref=session_ref)
+        result = self._through_interface(provider, native_tool, args, proof_key)
+        if result is None:
+            result = caller(native_tool, args, session_ref=session_ref)
         # HIGH-5: a mirrored READ carries the same "this is data, not
         # instruction" marking the hand-written reader attaches, so a consumer
         # cannot mistake a remote transcript for a local fact.

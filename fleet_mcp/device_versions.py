@@ -129,8 +129,49 @@ def drift(answer: dict[str, Any]) -> bool | None:
     return recorded[:n] != running[:n]
 
 
+WORKSPACE_SCHEMA = "serveros/workspace-check.v1"
+WORKSPACE_MAX_BYTES = 256 * 1024
+
+
+def workspace_path(versions_path: Path | None = None) -> Path:
+    """`ws.py check --record` writes beside the versions record (R-1)."""
+    return (versions_path or default_path()).with_name("workspace-check.json")
+
+
+def workspace_check(path: Path) -> dict[str, Any]:
+    """This device's last daily directory check, projected: counts and at most
+    twenty unregistered names. Nothing it lists is opened or changed."""
+    from .errors import FleetRefusal
+    from .node.connector import _read_bounded_no_follow
+
+    try:
+        raw = _read_bounded_no_follow(path, WORKSPACE_MAX_BYTES)
+        document = json.loads(raw.decode("utf-8-sig"))
+    except FleetRefusal as exc:
+        if "no Core snapshot at the configured path" in exc.detail:
+            return {"state": "NOT_RECORDED",
+                    "reason": "the daily directory check has not run on this device yet"}
+        return {"state": "UNREADABLE", "reason": exc.detail.replace("Core snapshot", "check")}
+    except (UnicodeDecodeError, ValueError):
+        return {"state": "UNREADABLE", "reason": "the check is not JSON"}
+    if not isinstance(document, dict) or document.get("schema") != WORKSPACE_SCHEMA:
+        return {"state": "UNREADABLE", "reason": f"not a {WORKSPACE_SCHEMA} document"}
+    counts = document.get("counts") if isinstance(document.get("counts"), dict) else {}
+    unregistered = [str(x)[:300] for x in document.get("unregistered") or [] if isinstance(x, str)]
+    deferred = [x for x in document.get("in_use_deferred") or [] if isinstance(x, str)]
+    outside = document.get("worktrees_outside_work")
+    return {"state": "RECORDED", "at": _text(document.get("at")),
+            "plan_id": _text(document.get("plan_id"), 80),
+            "counts": {str(k)[:40]: v for k, v in counts.items()
+                       if isinstance(v, int) and not isinstance(v, bool)},
+            "unregistered": len(unregistered), "unregistered_names": unregistered[:20],
+            "worktrees_outside_work": outside if isinstance(outside, int) else None,
+            "in_use_deferred": len(deferred)}
+
+
 def read(path: Path, device_ref: str) -> dict[str, Any]:
     answer = _read(path, device_ref)
+    answer["workspace"] = workspace_check(workspace_path(path))
     answer["secrets"] = secret_names()
     answer["running"] = running_code()
     answer["code_drift"] = drift(answer)

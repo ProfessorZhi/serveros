@@ -655,6 +655,15 @@ def check(layout: dict, scan_doc: dict | None = None) -> dict[str, Any]:
             "in_use_deferred": [s["from"] for s in made["steps"] if s["action"] == "DEFER"]}
 
 
+def record_path() -> Path:
+    """Beside `device-versions.json`, where the node connector reads it from
+    (`fleet_mcp.device_versions.workspace_path`). Kept in step by a test."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "ServerOS" / "state" / "workspace-check.json"
+    return Path.home() / ".local" / "state" / "serveros" / "workspace-check.json"
+
+
 # -- cli --------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
@@ -665,6 +674,10 @@ def main(argv: list[str] | None = None) -> int:
         one.add_argument("--device", required=True)
         one.add_argument("--layout", help="a layout file instead of layouts/<device>.json")
         one.add_argument("--out")
+        if name == "check":
+            one.add_argument("--record", action="store_true",
+                             help="write the result where the device's versions record is "
+                                  "served from, for the hub's daily journal (R-1)")
         if name == "scan":
             one.add_argument("--sizes", action="store_true", help="also measure each item (slower)")
         if name == "plan":
@@ -693,6 +706,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
     text = json.dumps(out, ensure_ascii=False, indent=2)
+    if getattr(args, "record", False) and not args.out:
+        target = record_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # 0600 from the first byte: it lists the owner's directories.
+        tmp = target.with_name(f".{target.name}.{os.getpid()}")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text + "\n")
+        os.replace(tmp, target)
+        print(json.dumps({"recorded": str(target), "plan_id": out.get("plan_id"),
+                          "summary": out.get("counts")}, ensure_ascii=False))
+        return 0
     if args.out:
         Path(args.out).write_text(text + "\n", encoding="utf-8")
         summary = out.get("counts") or {k: v for k, v in out.items() if k in ("plan_id", "applied")}

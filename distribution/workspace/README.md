@@ -32,3 +32,27 @@ against the disk (a checkout that gained work since the plan is skipped), never
 crosses a filesystem, leaves a link (symlink / junction) at the old path after a
 move, repairs a moved repository's worktree links, and writes a receipt to
 `work/.governance/receipts/`.
+
+## Daily check → journal → weekly card
+
+Each device runs the check once a day with `--record`, which writes
+`workspace-check.json` beside the device's versions record (Linux
+`~/.local/state/serveros/`, Windows `%LOCALAPPDATA%\ServerOS\state\`). The node
+connector serves it with the versions record, and the hub writes a page per day
+to the journal (`workspace/<yyyy>/<mm>/<dd>.md`, `workspace/history.jsonl`), then
+sends 「目录治理周报」 on Mondays. It is read-only end to end.
+
+```bash
+# Tokyo / A6000 (user units; replace the device name)
+cp distribution/workspace/timers/serveros-ws-check.{service,timer} ~/.config/systemd/user/
+sed -i 's/@DEVICE@/a6000/' ~/.config/systemd/user/serveros-ws-check.service
+systemctl --user daemon-reload && systemctl --user enable --now serveros-ws-check.timer
+```
+
+```powershell
+# FJPCOS
+powershell -ExecutionPolicy Bypass -File distribution\workspace\timers\register-ws-check.ps1 -Repo D:\work\src\serveros
+```
+
+The unit runs from `~/work/src/serveros`; edit `WorkingDirectory` if the checkout
+is still elsewhere before migration.

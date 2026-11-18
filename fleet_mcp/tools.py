@@ -182,6 +182,22 @@ def _send_to_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _agent_catalog(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.agent_catalog(ctx.principal, _session_key(ctx, args),
+                                     kind=args.get("kind") or "skills")
+
+
+def _agent_invoke(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    name = args.get("name")
+    if not isinstance(name, str):
+        raise refuse(BAD_REQUEST, "`name` is required and must be a string")
+    return ctx.service.invoke(ctx.principal, _session_key(ctx, args),
+                              kind=args.get("kind") or "skills", name=name,
+                              args=args.get("args") or "",
+                              idempotency_key=args.get("idempotency_key"),
+                              **_owner_words(args))
+
+
 def _interrupt_session(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     # No argument is read but the session. `_session_key` already refuses a
     # request that names none, and the schema's `additionalProperties: false`
@@ -1266,6 +1282,68 @@ TOOLS: tuple[Tool, ...] = (
         annotations={"readOnlyHint": False, "destructiveHint": False,
                      "idempotentHint": False, "openWorldHint": False},
         handler=_monitor_control,
+    ),
+    Tool(
+        name="fleet_agent_catalog",
+        title="List a session's Skills or slash commands",
+        description=(
+            "What the agent in one session can be asked to use: `kind: skills` "
+            "(Claude Code `/name`, Codex `$name`) or `kind: commands` (the "
+            "project's and the user's slash commands; CloudCLI's own screen "
+            "actions are listed with `invocable: false`). Each item has its "
+            "`name`, the exact `invocation` text and a description, read from "
+            "the session's own device and project. Use a listed name with "
+            "`fleet_agent_invoke`."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_ref": _string(SESSION_REF_DOC),
+                "device": _string(f"{DEVICE_REF_DOC} Use together with `session` instead of `session_ref`."),
+                "session": _string("The provider-native session id."),
+                "provider": _string("Session provider family: `claude` (default) or `codex`."),
+                "kind": {"type": "string", "enum": ["skills", "commands"],
+                         "description": "Defaults to skills."},
+            },
+            "additionalProperties": False,
+        },
+        annotations=_read_only(openWorldHint=True),
+        handler=_agent_catalog,
+    ),
+    Tool(
+        name="fleet_agent_invoke",
+        title="Invoke a Skill or slash command in a session",
+        description=(
+            "Run one Skill or slash command that `fleet_agent_catalog` lists for "
+            "this session, with optional `args` text after it. You name the item; "
+            "the invocation text comes from the device's own list, so nothing "
+            "unlisted can be typed into the session. It is delivered as a send: "
+            "fleet:send, the same grants, `idempotency_key`, `owner_request` and "
+            "`delivery_state` as `fleet_send_to_session`; follow the run with "
+            "`fleet_get_run` and read the reply."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "session_ref": _string(SESSION_REF_DOC),
+                "device": _string(f"{DEVICE_REF_DOC} Use together with `session` instead of `session_ref`."),
+                "session": _string("The provider-native session id."),
+                "provider": _string("Session provider family: `claude` (default) or `codex`."),
+                "kind": {"type": "string", "enum": ["skills", "commands"],
+                         "description": "Defaults to skills."},
+                "name": _string("A `name` (or `invocation`) from fleet_agent_catalog."),
+                "args": _string("Text after the invocation, one line, at most 2000 characters."),
+                "owner_request": _string(
+                    "The owner's message that led to this, verbatim (chat commanders)."),
+                "idempotency_key": _string(
+                    "Stable key scoped to principal, verb and target session, as for a send."),
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+        annotations={"readOnlyHint": False, "destructiveHint": False,
+                     "idempotentHint": False, "openWorldHint": True},
+        handler=_agent_invoke,
     ),
 )
 

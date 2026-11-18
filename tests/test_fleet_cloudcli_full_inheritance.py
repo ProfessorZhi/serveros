@@ -811,7 +811,7 @@ class SurfaceTest(unittest.TestCase):
         mirrored = {t.name for t in tools_mod.NATIVE_MIRROR_TOOLS}
         self.assertEqual(len(mirrored), 31)
         # twelve hand-written + 31 mirrored + manifest reader + capability reader.
-        self.assertEqual(len(names), 57)
+        self.assertEqual(len(names), 59)
         self.assertIn("fleet_cloudcli_native_manifest", names)
         self.assertIn("fleet_cloudcli_native_capability", names)
         self.assertEqual(len(tools_mod.tool_names()), 24)

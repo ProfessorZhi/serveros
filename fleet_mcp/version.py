@@ -56,7 +56,10 @@ SERVER_VERSION = "0.2.0"
 # `fleet-mcp-16`: `fleet_batch` open takes the owner's request (verbatim) and
 # the skills the commander used, kept in the hub's trace beside the prompts
 # sent and the answers. Same 57 tools.
-TOOL_SURFACE_REVISION = "fleet-mcp-16"
+# `fleet-mcp-17`: D-2 — `fleet_agent_catalog` (read: a session's Skills or
+# slash commands) and `fleet_agent_invoke` (fleet:send: one listed item, sent
+# as an ordinary send). Twenty-six authored, 59 total.
+TOOL_SURFACE_REVISION = "fleet-mcp-17"
 
 # RFC 9728 protected-resource metadata, relative to the origin. Advertised in
 # `initialize` so a connector can find the authorization server without being

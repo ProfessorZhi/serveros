@@ -1,0 +1,10 @@
+[Unit]
+Description=ServerOS daily directory check, 07:40 local
+
+[Timer]
+OnCalendar=*-*-* 07:40:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

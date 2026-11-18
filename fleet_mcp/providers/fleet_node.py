@@ -269,7 +269,7 @@ class FleetNodeProvider(DeviceProvider):
 
         nonce = secrets.token_hex(16)
         capture: dict[str, Any] = {}
-        document = self._request("GET", "/v1/device/versions", max_bytes=MAX_BYTES + 4096,
+        document = self._request("GET", "/v1/device/versions", max_bytes=MAX_BYTES + 16384,
                                  nonce=nonce, capture=capture)
         secret = self.binding.credential()
         if not secret:
@@ -353,6 +353,40 @@ class FleetNodeProvider(DeviceProvider):
         return self._request("POST", "/v1/models/upsert",
                              {"provider": provider, "model_id": model_id,
                               "label": label, "env": env})
+
+    # -- D-2 verbs ---------------------------------------------------------
+
+    def _catalog(self, key: SessionKey, kind: str) -> dict[str, Any]:
+        return self._request(
+            "POST", f"/v1/sessions/{urllib.parse.quote(key.native_session_id)}/catalog",
+            {"kind": kind})
+
+    def list_skills(self, key: SessionKey) -> dict[str, Any]:
+        return self._catalog(key, "skills")
+
+    def list_commands(self, key: SessionKey) -> dict[str, Any]:
+        return self._catalog(key, "commands")
+
+    def reconfigure(self, key: SessionKey, *, model: str | None = None,
+                    effort: str | None = None,
+                    permission_mode: str | None = None) -> dict[str, Any]:
+        """Over the signed native route: the connector re-checks the session
+        and its own control grant before CloudCLI sees it."""
+        arguments: dict[str, Any] = {"session": key.native_session_id}
+        for name, value in (("model", model), ("effort", effort),
+                            ("permissionMode", permission_mode)):
+            if value is not None:
+                arguments[name] = value
+        return self.native_call("session_reconfigure", arguments, session_ref=key.ref)
+
+    def approve(self, key: SessionKey, request_id: str, *, allow: bool,
+                message: str | None = None, answers: Any = None) -> dict[str, Any]:
+        arguments: dict[str, Any] = {"requestId": request_id, "allow": bool(allow)}
+        if message is not None:
+            arguments["message"] = message
+        if answers is not None:
+            arguments["answers"] = answers
+        return self.native_call("approval_answer", arguments, session_ref=key.ref)
 
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:

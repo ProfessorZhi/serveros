@@ -93,6 +93,10 @@ ROUTES = (
     "POST /v1/sessions/{id}/read",
     "POST /v1/sessions/{id}/send",
     "POST /v1/sessions/{id}/interrupt",
+    # D-2: the Skills or slash commands the agent in one session can use. A
+    # READ, with only `kind` in the signed body; invoking one is an ordinary
+    # `/send` of the invocation text the catalog itself named.
+    "POST /v1/sessions/{id}/catalog",
     "GET /v1/runs/{run_id}",
     # The one mirrored-native route. The PATH is fixed — the tool is named in the
     # signed body, never in the path — so there is no URL for a caller to shape,

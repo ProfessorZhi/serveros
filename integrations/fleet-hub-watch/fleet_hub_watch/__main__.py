@@ -290,6 +290,15 @@ def main(argv: list[str] | None = None) -> int:
             if getattr(notifier, "alert_transport", None) is not None:
                 notifier.alert_transport = ArchivingTransport(notifier.alert_transport,
                                                               journal.note_card)
+    workspace_report = None
+    if journal is not None:
+        # R-1: each device's daily directory check, into the journal; a weekly card.
+        from .commands import text_card
+        from .workspace import WorkspaceReport
+        workspace_report = WorkspaceReport(
+            journal.root, lambda: service.device_versions(principal),
+            send=notifier.notify_owner if notifier is not None else None, card=text_card,
+            state_path=journal._state_path().with_name("fleet-workspace.json"))
     beat = directory / "watch.heartbeat.json"
     lark_state: dict = {}
     buttons = None
@@ -393,6 +402,8 @@ def main(argv: list[str] | None = None) -> int:
             if journal is not None:
                 try:
                     journal.note_resources(views, now)
+                    if workspace_report is not None and workspace_report.tick(now):
+                        journal._pending += 1
                     journaled = journal.tick(now)
                 except Exception as exc:  # noqa: BLE001 - the journal never stops the watch
                     journaled = {"error": describe(exc)}
