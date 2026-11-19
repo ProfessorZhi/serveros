@@ -351,6 +351,11 @@ class FleetService:
         self.inbox = (inbox if inbox is not None
                       else EventInbox(config.inbox.path) if config.inbox is not None
                       else None)
+        #: The deep memory (OpenViking, loopback) — only beside an inbox, i.e.
+        #: on the hub. Unreachable or unconfigured, it answers [] and costs nothing.
+        from .archive_memory import Archive
+        self.archive = (Archive() if self.inbox is not None
+                        and os.environ.get("SERVEROS_OPENVIKING", "on") != "off" else None)
         #: The hub's requirement board, or None when this surface has none.
         self.work = (work if work is not None
                      else WorkBoard(config.work) if config.work is not None
@@ -954,9 +959,11 @@ class FleetService:
                 self.admit(principal)
                 notes = self.inbox.recall(query, scope=scope,
                                           limit=max(1, min(int(limit or 10), 50)))
+                archive = (self.archive.find(query or "", limit=min(int(limit or 10), 8))
+                           if self.archive is not None and query else [])
                 self.audit.record("fleet.memory_search", principal=principal.name,
-                                  entries=len(notes))
-                return {"memory": "OK", "notes": notes}
+                                  entries=len(notes) + len(archive))
+                return {"memory": "OK", "notes": notes, "archive": archive}
             if action == "add":
                 principal.require(SCOPE_SEND)
                 self.admit(principal)
@@ -2480,9 +2487,17 @@ class FleetService:
             notes = relevant(message, scopes=scopes)
         except Exception:  # noqa: BLE001 - memory never stops a dispatch
             return message
+        lines = "\n".join(f"- {n['topic']}：{n['text']}" for n in notes)
+        if len(notes) < 3 and self.archive is not None:
+            # One passage from the deep memory, when it is close enough and the
+            # fence still has room (≤600 bytes in all).
+            for hit in self.archive.find(message, limit=1, chars=200):
+                extra = f"- 档案（{hit['uri'].rsplit('/', 1)[-1] or 'openviking'}）：{hit['text']}"
+                if len((lines + extra).encode()) <= 600:
+                    lines = f"{lines}\n{extra}" if lines else extra
+                    notes = [*notes, {"id": "ov"}]
         if not notes:
             return message
-        lines = "\n".join(f"- {n['topic']}：{n['text']}" for n in notes)
         try:
             self.inbox.trace("fleet", "memory attached", session_ref=ref, device_ref=device_ref,
                              notes=",".join(str(n["id"]) for n in notes))

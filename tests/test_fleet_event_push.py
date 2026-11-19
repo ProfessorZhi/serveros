@@ -141,8 +141,9 @@ class FakeWatcher:
         self.discovered += 1
         self.devices = devices
 
-    def observe(self):
+    def observe(self, only=None):
         self.observed += 1
+        self.only = only
         return {"recorded": []}
 
     def _trace(self, step, **fields):
@@ -246,6 +247,72 @@ class ThePushedEndDecides(unittest.TestCase):
             self.assertEqual(store.all(), [])
         self.assertEqual([e["kind"] for e in recorded], ["run.completed"])
         self.assertIn("device reported", recorded[0]["summary"])
+
+class TheHubKnowsAtOnce(unittest.TestCase):
+    """11-19: dispatch → "pushed run.started" took 7–19 s. The events were
+    heard in time; they waited for the lane while three runs were read one
+    after another. Now the hearing is traced on the polling thread, the lane
+    reads only what was pushed, and devices are read side by side."""
+
+    def _watcher(self, store, delay=0.0):
+        from fleet_hub_watch import watch as watch_mod
+        watcher = watch_mod.Watcher.__new__(watch_mod.Watcher)
+        watcher.store, watcher.clock = store, time.time
+        watcher.max_age, watcher.stall_after = 3600, 7200
+        watcher.pushed_end = {}
+        watcher.read = []
+        watcher.inbox = type("I", (), {
+            "record": lambda self, e: type("R", (), {"seq": 1, "created": True})(),
+            "trace": lambda self, *a, **k: None,
+            "was_dispatched": lambda self, *a: False})()
+
+        def observe(w):
+            time.sleep(delay)
+            watcher.read.append(w["run_id"])
+            return {"status": watch_mod.STATUS_UNKNOWN, "reason": "NO_NATIVE_ACTIVITY"}
+        watcher._observe = observe
+        watcher.adopt_dispatched = lambda now=None: []
+        return watcher
+
+    def test_heard_is_traced_on_the_polling_thread_with_its_lag(self):
+        traces = []
+        with tempfile.TemporaryDirectory() as tmp:
+            pump = EventPump(FakeService([{"events": [{"seq": 1, "kind": "run.started", "run": "r",
+                                                       "session": "s", "at": iso()}],
+                                           "next": 1}]),
+                             object(), lambda: ["device:a"], Path(tmp) / "c.json", wait=0,
+                             trace=lambda step, **f: traces.append((step, f)))
+            pump.poll_once("device:a")
+        self.assertEqual(traces[0][0], "heard run.started")
+        self.assertLess(traces[0][1]["lag_s"], 2)
+
+    def test_the_lane_reads_only_the_pushed_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WatchStore(Path(tmp) / "w.sqlite3")
+            for run in ("r1", "r2"):
+                store.add(session_ref=f"device:a|claude|{run}", run_id=run, device_ref="device:a",
+                          runtime="claude", project=None, now=time.time())
+            watcher = self._watcher(store)
+            pump = EventPump(FakeService([{"events": [{"seq": 1, "kind": "run.started", "run": "r2",
+                                                       "session": "s", "at": iso()}], "next": 1}]),
+                             object(), lambda: ["device:a"], Path(tmp) / "c.json", wait=0)
+            pump.poll_once("device:a")
+            pump.handle(watcher)
+        self.assertEqual(watcher.read, ["r2"])
+
+    def test_devices_are_read_side_by_side(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WatchStore(Path(tmp) / "w.sqlite3")
+            for device in ("device:a", "device:b", "device:c"):
+                store.add(session_ref=f"{device}|claude|s", run_id=device[-1], device_ref=device,
+                          runtime="claude", project=None, now=time.time() - 1)
+            watcher = self._watcher(store, delay=0.4)
+            started = time.monotonic()
+            watcher.observe()
+            took = time.monotonic() - started
+        self.assertEqual(sorted(watcher.read), ["a", "b", "c"])
+        self.assertLess(took, 1.0)
+
 
 class FakeGateway(BaseHTTPRequestHandler):
     """A CloudCLI MCP gateway that answers initialize and `changes`."""

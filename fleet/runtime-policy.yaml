@@ -30,8 +30,12 @@ tunable:
 # without the writer declaring it (host:port; local overlay adds to these).
 # A6000 reaches gateway 0 through an SSH forward on 26601; Tokyo serves it on
 # 26500 (LiteLLM in container0).
+# The production gateway (FJ 生产服, LiteLLM) serves deepseek-v4-flash-anthropic
+# and deepseek-v4-pro-anthropic; registered 2026-11-19 (owner) so the A6000's
+# 生产服 entries are judged instead of refused as gateway UNKNOWN.
 gateway_hosts:
   target:gateway0: ["127.0.0.1:26601", "127.0.0.1:26500"]
+  target:fj-prod: ["fjbigmodel.fjdac.cn", "fjbigmodel.fjdac.cn:443"]
 
 default:
   runtimes:
@@ -48,7 +52,7 @@ devices:
     runtimes:
       claude-code:
         model_sources: [gateway]
-        gateways: [target:gateway0]
+        gateways: [target:gateway0, target:fj-prod]
         # No model-name pattern here: gateway 0 serves DeepSeek under names that
         # change (e.g. v4.1flash-anthropic). Source and gateway are what the
         # owner fixed; an entry is judged on both when it is written. Add

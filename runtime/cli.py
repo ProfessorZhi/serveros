@@ -2043,6 +2043,34 @@ def _identity_lines(payload: dict) -> list[str]:
     return lines
 
 
+def node_components(home: Path | None = None, now: float | None = None) -> dict:
+    """The node's other two resident parts beside the daemon, in the same
+    status (one name, one answer): the Rust event pusher and the C++ Core-Lite
+    publisher. Read from the files each one keeps; nothing is started or asked.
+    PURE apart from reading those two files."""
+    import time as _time
+    home = Path.home() if home is None else home
+    now = _time.time() if now is None else now
+    state = home / ".local" / "state" / "serveros"
+    out = {}
+    try:
+        doc = json.loads((state / "events.jsonl.status.json").read_text(encoding="utf-8"))
+        last = datetime.datetime.fromisoformat(str(doc.get("last_poll_at")).replace("Z", "+00:00"))
+        age = now - last.timestamp()
+        out["eventd"] = {"state": ("OK" if doc.get("ok") else "DEGRADED") if age <= 30 else "STALE",
+                         "detail": f"v{doc.get('version')} · last poll {int(age)}s ago"
+                                   f" · {doc.get('events', 0)} events"}
+    except (OSError, ValueError, TypeError):
+        out["eventd"] = {"state": "NOT_RUNNING", "detail": "no status file (serveros-eventd)"}
+    try:
+        age = now - (state / "core-lite" / "status.json").stat().st_mtime
+        out["core-lite"] = {"state": "OK" if age <= 900 else "STALE",
+                            "detail": f"published {int(age)}s ago"}
+    except OSError:
+        out["core-lite"] = {"state": "NOT_RUNNING", "detail": "no snapshot (core-lite publish timer)"}
+    return out
+
+
 def cmd_status(args) -> int:
     """The node runtime, as it describes itself. §52.
 
@@ -2096,6 +2124,10 @@ def cmd_status(args) -> int:
     # serve the field is exactly one of the states worth naming, and a KeyError
     # here would be a worse answer than the honest UNKNOWN below.
     lines += _identity_lines(payload)
+    components = node_components()
+    payload = {**payload, "components": components}
+    lines += [f"{name:<11} {row['state']}" + (f" · {row['detail']}" if row.get("detail") else "")
+              for name, row in components.items()]
     lines += [
         "",
         payload["note"],

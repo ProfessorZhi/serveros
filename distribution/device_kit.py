@@ -342,7 +342,30 @@ def hub_journal_args(unit_dir: Path, home: Path) -> str:
     if directory is None:
         return ""
     key = _JOURNAL_KEY_IN_UNIT.search(text)
-    return f" --journal {directory}" + (f" --journal-ssh-key {key.group(1)}" if key else "")
+    return (f" --journal {directory}" + (f" --journal-ssh-key {key.group(1)}" if key else "")
+            + hub_mirror_args(text, home))
+
+
+#: A-4 / R-4: the pages the hub publishes one way into Feishu docs, and the
+#: folder new ones are created in (云盘 › 工作资料, chosen 11-19 from the space
+#: survey: the root holds 33 loose docs; 工作资料 is where the owner keeps work).
+MIRROR_FOLDER = "SZZof6NM4lMLBIdvuLdcpL3snnx"
+_MIRROR_IN_UNIT = re.compile(r"\s--mirror(?:-folder)?\s+\S+")
+
+
+def hub_mirror_args(unit_text: str, home: Path) -> str:
+    """The installed unit's own `--mirror` flags win; with none, the board and
+    the space map, when their files exist on this hub."""
+    line = next((x for x in unit_text.splitlines() if x.startswith("ExecStart=")), "")
+    kept = "".join(_MIRROR_IN_UNIT.findall(line))
+    if kept:
+        return kept
+    home = Path(home)
+    pages = [("board:工作看板（自动生成）", home / "state/serveros/requirement-board/current.md"),
+             ("space-map:飞书空间地图（自动生成）",
+              home / "workspace/records/ops/maps/FEISHU-SPACE-MAP.md")]
+    found = [f" --mirror {name}={path}" for name, path in pages if path.is_file()]
+    return "".join(found) + (f" --mirror-folder {MIRROR_FOLDER}" if found else "")
 
 
 def cloudcli_claude_dirs(home: Path, proc_root: Path = Path("/proc")) -> list[Path]:

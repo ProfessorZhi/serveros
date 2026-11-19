@@ -1,0 +1,12 @@
+{
+  "storage": { "workspace": "@HOME@/runtime-assets/openviking/data" },
+  "embedding": { "dense": { "model": "bge-small-zh-v1.5-f16",
+                            "cache_dir": "@HOME@/toolchains/openviking/models",
+                            "provider": "local" } },
+  "vlm": { "provider": "openai",
+           "api_base": "https://fjbigmodel.fjdac.cn/v1",
+           "api_key": "${FJ_PROD_VINCE_TOKEN}",
+           "model": "deepseek-v4-flash-anthropic" },
+  "server": { "host": "127.0.0.1", "port": 1933, "auth_mode": "api_key",
+              "root_api_key": "${OPENVIKING_ROOT_API_KEY}", "cors_origins": [] }
+}

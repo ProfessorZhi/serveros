@@ -202,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
                              "SERVEROS_FLEET_INTENT_COMMAND. Unset: keywords only")
     parser.add_argument("--intent-timeout", type=float, default=20.0,
                         help="seconds to wait for --intent-command before using keywords")
+    parser.add_argument("--mirror", action="append", default=[], metavar="NAME:TITLE=PATH",
+                        help="a Git-side markdown page published one way to a Feishu doc "
+                             "(repeatable): the board, the space map")
+    parser.add_argument("--mirror-folder", default=None,
+                        help="Feishu folder token new mirror docs are created in")
     parser.add_argument("--journal", metavar="DIR",
                         help="a clone of the private fleet-journal repository: every "
                              "finished batch and task is written there and pushed")
@@ -319,6 +324,8 @@ def main(argv: list[str] | None = None) -> int:
             journal.root, lambda: service.device_versions(principal),
             send=notifier.notify_owner if notifier is not None else None, card=text_card,
             state_path=journal._state_path().with_name("fleet-workspace.json"))
+    from .mirror import DocMirror
+    mirror = DocMirror(args.mirror, args.mirror_folder, directory / "mirror.state.json")
     # D-4: hear of a run the moment its device does (one long-poll per device);
     # the 30-second tick stays as the safety net.
     from .events import EventPump
@@ -338,7 +345,8 @@ def main(argv: list[str] | None = None) -> int:
     pump = EventPump(service, principal,
                      lambda: [e.device_ref.ref for e in service.registry.all()
                               if getattr(e, "ownership", None) == "company"],
-                     directory / "events.cursor.json", on_events=fast_lane)
+                     directory / "events.cursor.json", on_events=fast_lane,
+                     trace=watcher._trace)
     if not args.once:
         pump.start()
     beat = directory / "watch.heartbeat.json"
@@ -453,6 +461,10 @@ def main(argv: list[str] | None = None) -> int:
                     journaled = journal.tick(now)
                 except Exception as exc:  # noqa: BLE001 - the journal never stops the watch
                     journaled = {"error": describe(exc)}
+            try:
+                mirrored = mirror.tick(now)
+            except Exception as exc:  # noqa: BLE001 - a copy never stops the watch
+                mirrored = {"error": describe(exc)}
             with lane:
                 sent = notifier.tick(views, now, rich) if notifier else None
             if buttons is not None and time.time() - last_health > HEALTH_EVERY_SECONDS:
@@ -468,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
                               "notify": sent, "card_spec": specs.state,
                               "journal": journaled,
                               "events": pump.health(),
+                              "mirror": mirrored or mirror.health(),
                               "commands_applied": applied,
                               "feishu": ({**lark_state, "buttons": buttons.state,
                                           "clicks_handled": buttons.handled,
