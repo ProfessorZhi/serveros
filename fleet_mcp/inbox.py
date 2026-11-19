@@ -441,6 +441,48 @@ class EventInbox:
                                 (*args, int(limit))).fetchall()
         return [dict(r) for r in rows]
 
+    #: What a dispatch may carry from memory: a few notes, a small budget, so
+    #: the device agent's context stays clean (FLEET-V1-OVERVIEW §2).
+    RELEVANT_MAX_NOTES = 3
+    RELEVANT_MAX_BYTES = 600
+
+    @staticmethod
+    def _terms(text: str) -> set[str]:
+        """Words (ASCII, 3+ chars) and CJK bigrams: enough to tell a note about
+        the gateway from one about the GPU, without a model."""
+        low = (text or "").lower()
+        words = set(re.findall(r"[a-z0-9_][a-z0-9_.-]{2,}", low))
+        cjk = re.findall(r"[\u4e00-\u9fff]+", low)
+        bigrams = {run[i:i + 2] for run in cjk for i in range(len(run) - 1)}
+        return words | bigrams
+
+    def relevant(self, message: str, *, scopes: list[str]) -> list[dict[str, Any]]:
+        """The notes a dispatch should carry: in one of `scopes` (always with
+        `fleet`), sharing at least two terms with the message, best first,
+        within the note and byte budget. Empty when nothing is relevant."""
+        wanted = self._terms(message)
+        if not wanted:
+            return []
+        scopes = sorted({"fleet", *scopes})
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, scope, topic, text FROM memory WHERE forgotten IS NULL AND scope IN ("
+                + ",".join("?" * len(scopes)) + ") ORDER BY id DESC LIMIT 500", scopes).fetchall()
+        scored = []
+        for row in rows:
+            overlap = len(wanted & self._terms(f"{row['topic']} {row['text']}"))
+            if overlap >= 2:
+                scored.append((overlap, row["id"], dict(row)))
+        scored.sort(key=lambda x: (-x[0], -x[1]))
+        chosen, used = [], 0
+        for _, _, note in scored:
+            size = len(f"{note['topic']}：{note['text']}".encode("utf-8"))
+            if len(chosen) >= self.RELEVANT_MAX_NOTES or used + size > self.RELEVANT_MAX_BYTES:
+                break
+            chosen.append(note)
+            used += size
+        return chosen
+
     def forget(self, memory_id: int, *, by: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute("UPDATE memory SET forgotten=? WHERE id=? AND forgotten IS NULL",

@@ -107,6 +107,43 @@ class TheKitInstallsIt(unittest.TestCase):
         self.assertTrue(dog["timer"]["digest"].startswith("sha256:"))
 
 
+
+class PushAndDeviceCredentials(Harness):
+    """D-4 / D-5: a device whose pusher stopped, or whose CloudCLI no longer
+    accepts the hub's token, is told once and cleared once."""
+
+    def beat_with(self, at, **extra):
+        self.beat.write_text(json.dumps({"last_tick_at": at, "ok": True, **extra}))
+
+    def test_a_stopped_pusher_is_told_after_two_checks_and_cleared(self):
+        bad = {"device:llm-lab-dell": {"state": "OK", "eventd": "STALE"}}
+        self.beat_with(NOW, events=bad)
+        self.check(NOW)
+        self.assertEqual(self.sent, [])                     # one bad check is a restart, not news
+        self.beat_with(NOW + 300, events=bad)
+        self.check(NOW + 300)
+        self.assertEqual(self.sent, ["有设备的事件推送没在工作"])
+        self.beat_with(NOW + 600, events={"device:llm-lab-dell": {"state": "OK", "eventd": "OK"}})
+        self.check(NOW + 600)
+        self.assertEqual(self.sent[-1], "事件推送已恢复")
+
+    def test_an_old_connector_is_named(self):
+        old = {"device:work-fj": {"state": "UNSUPPORTED"}}
+        for at in (NOW, NOW + 300):
+            self.beat_with(at, events=old)
+            self.check(at)
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state["push"]["open"], "push_degraded")
+
+    def test_a_refused_device_token_is_told(self):
+        self.beat_with(NOW, unreachable=[{"device_ref": "device:llm-lab-dell",
+                                          "code": "PROVIDER_UNAUTHORIZED"}])
+        self.check(NOW)
+        self.assertEqual(self.sent, ["有设备的 CloudCLI 令牌失效了"])
+        self.beat_with(NOW + 300, unreachable=[])
+        self.check(NOW + 300)
+        self.assertEqual(self.sent[-1], "设备令牌已恢复")
+
 if __name__ == "__main__":
     unittest.main()
 
