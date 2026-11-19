@@ -87,7 +87,7 @@ Owner 回答 ─A-2─▶ projects/*/requirements（REQ 编号，只收 Owner �
 - `src/<仓库>`：主 clone，**只拉取、不开发**，停在 main，作为基准；提交历史只存这一份。
 - `worktrees/<仓库>/<条目号>`：一个条目一个 worktree、一个分支（分支名同条目号）。多个 agent 并行改同一仓库互不踩；
   Git 不允许同一分支检出两次，正好防撞车。闲置 14 天且无未推送提交、无改动、无 stash 才回收。
-- `envs/<条目号>/`：**测试环境，和代码分开**（§5.2）。
+- `test-envs/<条目号>/`：**测试环境，和代码分开**（§5.2）。
 - `cache/`：pip / uv / pnpm 共享缓存，worktree 不各装一份依赖。
 - `scratch/`：临时，TMPDIR 指这里，30 天自动回收。
 - `artifacts/<项目>/<条目号>/`：截图、日志、构建产物等重型证据；records 只登记指针。
@@ -100,7 +100,7 @@ Owner 回答 ─A-2─▶ projects/*/requirements（REQ 编号，只收 Owner �
 Owner 的测试大多是 E2E 的 A/B：**用同一份输入，先在旧版本上复现 bug（A），修好后在新版本上跑（B），对比结果。**
 
 ```text
-work/envs/<条目号>/
+work/test-envs/<条目号>/
 ├── inputs/     复现输入：请求、prompt、配置、数据样本。录一次，之后只读；A 和 B 用同一份
 ├── A/          旧版本（固定 revision 或旧配置）的运行目录：容器状态、数据、生成的配置
 ├── B/          修复后的运行目录
@@ -120,7 +120,7 @@ work/envs/<条目号>/
 
 ```text
 /data/home/vince/
-├── work/{src,worktrees,envs,cache,scratch,artifacts}
+├── work/{src,worktrees,test-envs,cache,scratch,artifacts}
 ├── work/records/          ★信息流只在这里：hwz-records、fleet-journal、飞书归档工作区
 ├── work/.governance/      迁移计划与执行回执
 ├── .config .local .claude .codex .cloudcli   应用数据（hub 状态在 ~/.local/state/serveros）
@@ -139,7 +139,7 @@ work/envs/<条目号>/
 **A6000（fjd；系统盘 `/` 468 G 用 49%，数据盘 `/data` 1.9 T 用 12%）**
 
 ```text
-/home/fjd/work/{src,worktrees,envs,cache,scratch,artifacts}
+/home/fjd/work/{src,worktrees,test-envs,cache,scratch,artifacts}
 /home/fjd/work/logs/<日期>/    生产日志只读查询的切片与分析；原始日志不出机器，结论交回东京
 /data/home/fjd/                大文件：models / datasets / checkpoints（home 里只放链接）
 /data/models                   LLM Lab 模型仓库 —— 受保护
@@ -153,7 +153,7 @@ work/envs/<条目号>/
 
 ```text
 C:\        只放系统、软件、AppData、.claude、.codex —— 不放任何工作目录
-D:\work\{src,worktrees,envs,cache,scratch,artifacts}
+D:\work\{src,worktrees,test-envs,cache,scratch,artifacts}
 D:\work\client-tests\<条目号>\   真实客户端 E2E 的现场与截图
 D:\work\logs-pull\<日期>\        拉取的日志
 ```
