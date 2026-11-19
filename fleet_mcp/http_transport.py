@@ -688,7 +688,7 @@ class HttpSurface:
                                "error": {"code": -32000, "message": f"{method} is not supported here"}})
 
         version = headers.get("mcp-protocol-version")
-        if version and version not in ("2025-06-18", "2025-03-26", "2024-11-05"):
+        if version and version not in ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"):
             return _json(400, {"jsonrpc": "2.0", "id": None,
                                "error": {"code": -32000,
                                          "message": f"unsupported MCP-Protocol-Version {version!r}"}})

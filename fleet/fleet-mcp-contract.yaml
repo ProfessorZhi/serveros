@@ -46,7 +46,7 @@ schema: serveros/fleet-mcp.v1
 implementation: fleet_mcp/
 implementation_entry: fleet_mcp.runtime:main
 server_name: serveros-fleet-mcp
-tool_surface_revision: fleet-mcp-17
+tool_surface_revision: fleet-mcp-18
 
 # ---------------------------------------------------------------------------
 # Ownership
@@ -570,6 +570,16 @@ tools:
       session.
     effect: one message into the session, as a send
 
+  fleet_guide:
+    verb: read
+    answers: >-
+      without a topic, the commander Skill topics with one line each; with a
+      topic, that SKILL.md's text — for chat clients that speak MCP but cannot
+      load Skills (Grok, Gemini, Muse)
+    answered_by: fleet_mcp/guide.py over distribution/mcp/skills (the same files
+      the plugins ship)
+    authorization: fleet:read. Static text; nothing on any device is read.
+
 
 # ---------------------------------------------------------------------------
 # Addressability
@@ -635,7 +645,7 @@ ingress:
   transport: streamable-http
   default_bind: '127.0.0.1:3401'
   mcp_path: /mcp
-  protocol_versions: ['2025-06-18', '2025-03-26', '2024-11-05']
+  protocol_versions: ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05']
 
   auth:
     scheme: oauth2
@@ -863,7 +873,7 @@ native_mirror:
   # that describe the mirror (`fleet_cloudcli_native_manifest`,
   # `fleet_cloudcli_native_capability`). `tools.SERVED_TOOLS` is the count; this
   # line is a copy of it.
-  served_total: 59
+  served_total: 60
   # The native scope vocabulary, mapped onto Fleet scopes. A native scope Fleet
   # plans but does not implement maps to a PLANNED Fleet scope, so the tools that
   # need it are DENIED rather than inherited.

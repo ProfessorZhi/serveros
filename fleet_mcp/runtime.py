@@ -220,6 +220,55 @@ def clients_command(config: FleetConfig, *, revoke: str | None, as_json: bool) -
     return 0
 
 
+def mint_token_command(config: FleetConfig, *, name: str, scopes: str, days: int,
+                       out=None, err=None) -> int:
+    """`--mint-token NAME --scopes fleet:read[,fleet:send] [--days 90]`.
+
+    A long-lived, scoped, revocable bearer token for one app that takes an API
+    key instead of OAuth (Meta Muse builds its connector from a URL and a key).
+    It is NOT the owner token: that one carries every scope and is the consent
+    anchor, so it never leaves this host. This one is a client of its own —
+    named in the commander log, limited to what the deployment lets OAuth
+    clients have, gone at `exp` or at `--revoke-client`.
+
+    The token is printed once, alone, on stdout (paste it into the app's secure
+    credential box, never into a chat); everything else goes to stderr.
+    """
+    out = out or sys.stdout
+    err = err or sys.stderr
+    wanted = tuple(dict.fromkeys(x.strip() for x in scopes.split(",") if x.strip()))
+    allowed = set(config.auth.grantable_scopes)
+    if not wanted or not set(wanted) <= allowed:
+        err.write(f"{SERVER_NAME}: --scopes must be some of {sorted(allowed)}\n")
+        return 2
+    if not 1 <= days <= TokenStore.TOKEN_MAX_DAYS:
+        err.write(f"{SERVER_NAME}: --days must be 1..{TokenStore.TOKEN_MAX_DAYS}\n")
+        return 2
+    store = TokenStore(default_store_root(config), access_ttl=config.auth.access_token_ttl,
+                       refresh_ttl=config.auth.refresh_token_ttl,
+                       rotate_refresh=config.auth.refresh_rotate,
+                       rotation_grace_seconds=config.auth.refresh_rotation_grace_seconds)
+    base = local_base_url(bind=config.server.bind, port=config.server.port,
+                          public_base_url=config.server.public_base_url)
+    try:
+        client = store.register_token_client(client_name=name)
+    except Exception as exc:  # noqa: BLE001 - a bad name is an operator typo
+        err.write(f"{SERVER_NAME}: {exc}\n")
+        return 2
+    token, ttl = store.mint_access_token(
+        client_id=client.client_id, subject=f"token:{client.client_name}", scopes=wanted,
+        audience=f"{base}{config.server.mcp_path}", issuer=base, ttl=days * 86400)
+    err.write(
+        f"connector token for {client.client_name!r}\n"
+        f"  client_id   {client.client_id}   (revoke: --revoke-client {client.client_id})\n"
+        f"  scopes      {' '.join(wanted)}\n"
+        f"  expires in  {days} days\n"
+        f"  endpoint    {base}{config.server.mcp_path}   (Authorization: Bearer <token>)\n"
+        f"the token follows on stdout, once; it is not stored here and cannot be shown again\n")
+    out.write(token + "\n")
+    return 0
+
+
 def main(argv: list[str] | None = None, *, service_factory=build_service) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     mode = "stdio"
@@ -227,6 +276,9 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
     list_clients = False
     revoke_client: str | None = None
     as_json = False
+    mint_name: str | None = None
+    mint_scopes = "fleet:read"
+    mint_days = 90
     index = 0
     while index < len(argv):
         arg = argv[index]
@@ -248,6 +300,21 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
                 sys.stderr.write("fleet-mcp: --revoke-client needs a client_id\n")
                 return 2
             revoke_client = argv[index]
+        elif arg in ("--mint-token", "--scopes", "--days"):
+            index += 1
+            if index >= len(argv):
+                sys.stderr.write(f"fleet-mcp: {arg} needs a value\n")
+                return 2
+            if arg == "--mint-token":
+                mint_name = argv[index]
+            elif arg == "--scopes":
+                mint_scopes = argv[index]
+            else:
+                try:
+                    mint_days = int(argv[index])
+                except ValueError:
+                    sys.stderr.write("fleet-mcp: --days needs a whole number\n")
+                    return 2
         elif arg == "--json":
             as_json = True
         elif arg in ("--version", "-V"):
@@ -268,6 +335,9 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
         # stderr with the code and a non-zero exit — never a silent empty fleet.
         sys.stderr.write(f"{SERVER_NAME}: {exc.code}: {exc.detail}\n")
         return 3
+
+    if mint_name is not None:
+        return mint_token_command(config, name=mint_name, scopes=mint_scopes, days=mint_days)
 
     if list_clients or revoke_client is not None:
         # These act on state, not on a socket, so they are answered before any
@@ -296,6 +366,9 @@ Usage:
                                              who has been given OAuth access here
   serveros-fleet-mcp --revoke-client ID [-c PATH]
                                              stop a client: its tokens die now
+  serveros-fleet-mcp --mint-token NAME [--scopes fleet:read[,fleet:send]] [--days 90] [-c PATH]
+                                             a scoped, expiring bearer token for one
+                                             app that takes an API key (e.g. Muse)
   serveros-fleet-mcp --version | --help
 
 Environment:

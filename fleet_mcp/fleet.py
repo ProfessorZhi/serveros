@@ -983,6 +983,21 @@ class FleetService:
             raise refuse(BAD_REQUEST, str(exc)) from None
         raise refuse(BAD_REQUEST, "action is search, add or forget")
 
+    def guide(self, principal: Principal, *, topic: str | None = None) -> dict[str, Any]:
+        """The commander Skills, for clients that cannot load them as files."""
+        from . import guide
+        principal.require(SCOPE_READ)
+        self.admit(principal)
+        if not topic:
+            topics = guide.index()
+            return {"guide": "OK" if topics else "NOT_AVAILABLE", "topics": topics,
+                    "next": "read `fleet-core` first; others only when a task needs them"}
+        found = guide.read(topic)
+        if found is None:
+            raise refuse(BAD_REQUEST, f"no guide topic {topic!r}; call fleet_guide without a topic")
+        self.audit.record("fleet.guide", principal=principal.name)
+        return {"guide": "OK", **found}
+
     def trace(self, principal: Principal, *, run_id: str | None = None,
               batch_id: str | None = None, session_ref: str | None = None,
               minutes: int | None = None) -> dict[str, Any]:

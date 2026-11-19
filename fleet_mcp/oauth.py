@@ -321,6 +321,10 @@ class TokenStore:
         self._revocations["tokens"] = {
             jti: exp for jti, exp in self._revocations["tokens"].items() if exp > now
         }
+        # Clients another process added (a connector token minted with
+        # `--mint-token` while this surface runs) are kept, not overwritten.
+        for client_id, client in self._load_state()[0].items():
+            self._clients.setdefault(client_id, client)
         payload = {
             "clients": [c.as_dict() for c in self._clients.values()],
             "refresh": {
@@ -392,9 +396,45 @@ class TokenStore:
             self._save_state()
         return client
 
+    #: Client ID Metadata Documents (MCP 2025-11-25): a client may name itself by
+    #: an https URL instead of registering; the document there is fetched once
+    #: and kept like a registered client. Replaceable in tests.
+    metadata_fetcher = None
+
+    #: A connector token's client: no redirect URI, so it can never start an
+    #: OAuth flow — its only credential is the token minted beside it.
+    TOKEN_CLIENT_PREFIX = "token-"
+    #: The longest a connector token may live (it has no refresh; re-mint).
+    TOKEN_MAX_DAYS = 365
+
+    def register_token_client(self, *, client_name: str) -> RegisteredClient:
+        """A client for one long-lived connector token (Muse and other apps
+        that take an API key instead of OAuth). Listed and revoked like any
+        other client (`--list-clients`, `--revoke-client`)."""
+        name = " ".join(str(client_name or "").split())[:60]
+        if not name:
+            raise OAuthError("invalid_client_metadata", "a connector token needs a name")
+        client = RegisteredClient(
+            client_id=self.TOKEN_CLIENT_PREFIX + secrets.token_urlsafe(12),
+            client_name=name, redirect_uris=(),
+        )
+        with self._lock:
+            self._clients[client.client_id] = client
+            self._save_state()
+        return client
+
     def client(self, client_id: str) -> RegisteredClient:
         self._reload_revocations_if_changed()
         client = self._clients.get(client_id)
+        if client is None and client_id.startswith(self.TOKEN_CLIENT_PREFIX):
+            # Minted by another process (the operator's `--mint-token`) after
+            # this surface loaded its state: read it from the shared file.
+            client = self._load_state()[0].get(client_id)
+            if client is not None:
+                with self._lock:
+                    self._clients.setdefault(client_id, client)
+        if client is None and client_id.startswith("https://"):
+            client = self._client_from_metadata(client_id)
         if client is None:
             raise OAuthError("invalid_client", "unknown client_id", status=401)
         if client_id in self._revocations["clients"]:
@@ -402,6 +442,31 @@ class TokenStore:
             # at the first endpoint that names it, is what makes revocation mean
             # "this client is done" rather than "its old tokens are done".
             raise OAuthError("invalid_client", "this client has been revoked", status=401)
+        return client
+
+    def _client_from_metadata(self, url: str) -> RegisteredClient:
+        fetch = self.metadata_fetcher or fetch_client_metadata
+        doc = fetch(url)
+        if not isinstance(doc, dict) or doc.get("client_id") != url:
+            raise OAuthError("invalid_client",
+                             "the client metadata document must name its own URL as client_id",
+                             status=401)
+        uris = doc.get("redirect_uris")
+        if not isinstance(uris, list) or not uris or len(uris) > 10:
+            raise OAuthError("invalid_client", "the client metadata document has no redirect_uris",
+                             status=401)
+        if (doc.get("token_endpoint_auth_method") or "none") != "none":
+            raise OAuthError("invalid_client", "only public clients are accepted", status=401)
+        for uri in uris:
+            _validate_redirect_uri(str(uri))
+        client = RegisteredClient(
+            client_id=url,
+            client_name=str(doc.get("client_name") or urlparse(url).hostname or "client")[:80],
+            redirect_uris=tuple(str(u) for u in uris),
+        )
+        with self._lock:
+            self._clients[url] = client
+            self._save_state()
         return client
 
     def clients(self) -> list[dict[str, Any]]:
@@ -431,8 +496,9 @@ class TokenStore:
 
     def mint_access_token(self, *, client_id: str, subject: str, scopes: tuple[str, ...],
                           audience: str, issuer: str | None = None,
-                          idp: str | None = None) -> tuple[str, int]:
+                          idp: str | None = None, ttl: int | None = None) -> tuple[str, int]:
         now = int(time.time())
+        ttl = self.access_ttl if ttl is None else int(ttl)
         payload = {
             # `iss` is the authorization server and `aud` is the protected
             # resource. They are different URLs whenever the resource is mounted
@@ -445,7 +511,7 @@ class TokenStore:
             "cid": client_id,
             "scope": " ".join(scopes),
             "iat": now,
-            "exp": now + self.access_ttl,
+            "exp": now + ttl,
             "jti": secrets.token_urlsafe(12),
         }
         # Only emitted when it says something. The owner-PAT path (and every
@@ -461,7 +527,7 @@ class TokenStore:
             + _b64(json.dumps(payload, separators=(",", ":")).encode())
         )
         signature = hmac.new(self._key, signing_input.encode("ascii"), hashlib.sha256).digest()
-        return f"{signing_input}.{_b64(signature)}", self.access_ttl
+        return f"{signing_input}.{_b64(signature)}", ttl
 
     def signed_claims(self, token: str) -> dict[str, Any] | None:
         """The payload of a token whose signature verifies, or None.
@@ -760,6 +826,51 @@ class TokenStore:
 # --------------------------------------------------------------------------
 # Authorization endpoint: the consent gate
 # --------------------------------------------------------------------------
+
+
+METADATA_MAX_BYTES = 5 * 1024
+
+
+def fetch_client_metadata(url: str, *, timeout: float = 5.0,
+                          resolve=None, opener=None) -> dict[str, Any]:
+    """GET a client's metadata document — guarded, because the URL is the
+    caller's choice: https only, a public address only (never loopback, private,
+    link-local), no redirects, at most 5 KB, JSON."""
+    import ipaddress
+    import socket
+    import urllib.request
+
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise OAuthError("invalid_client", "a metadata client_id must be a plain https URL", 401)
+    resolve = resolve or (lambda host: {info[4][0] for info in socket.getaddrinfo(host, 443)})
+    try:
+        addresses = resolve(parsed.hostname)
+    except OSError:
+        raise OAuthError("invalid_client", "the client metadata host does not resolve", 401) from None
+    for address in addresses or ():
+        ip = ipaddress.ip_address(address)
+        if not ip.is_global:
+            raise OAuthError("invalid_client", "the client metadata host is not public", 401)
+    if not addresses:
+        raise OAuthError("invalid_client", "the client metadata host does not resolve", 401)
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    opener = opener or urllib.request.build_opener(_NoRedirect).open
+    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with opener(request, timeout=timeout) as answer:
+            body = answer.read(METADATA_MAX_BYTES + 1)
+    except Exception:  # noqa: BLE001 - any failure is the same refusal
+        raise OAuthError("invalid_client", "the client metadata document could not be read", 401) from None
+    if len(body) > METADATA_MAX_BYTES:
+        raise OAuthError("invalid_client", "the client metadata document is too large", 401)
+    try:
+        return json.loads(body.decode("utf-8"))
+    except ValueError:
+        raise OAuthError("invalid_client", "the client metadata document is not JSON", 401) from None
 
 
 def _validate_redirect_uri(uri: str) -> None:
@@ -1116,6 +1227,8 @@ class AuthorizationServer:
             "token_endpoint_auth_methods_supported": ["none"],
             "revocation_endpoint_auth_methods_supported": ["none"],
             "code_challenge_methods_supported": ["S256"],
+            # MCP 2025-11-25: a client may use an https URL as its client_id.
+            "client_id_metadata_document_supported": True,
             "service_documentation": f"{self.base_url}/docs",
         }
 
