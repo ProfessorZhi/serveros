@@ -10,7 +10,7 @@
 | ① | 通用编码 agent | Claude Code、Codex、Cursor、Gemini CLI、Copilot | 插件 = MCP + `SKILL.md` | OAuth | 插件 / `distribution/mcp/skills/` |
 | ② | 带 Skill 的聊天 | ChatGPT、Claude.ai | 连接器 + 插件里的 Skill | OAuth | 插件 1.13.0 |
 | ③ | 不带 Skill 的聊天 | Grok（grok.com/connectors → Custom）、Gemini（设置 → Connected Apps → 自定义） | 连接器 | OAuth（含 Client ID Metadata Document） | **服务器给**：`instructions` 指路，`fleet_guide` 按需返回 Skill 正文；可再把要点贴进 Gem / Grok Project 指令 |
-| ④ | Muse | Meta Muse | 它在自己的云端虚拟机里写一个 MCP 客户端，存成它自己的 Skill | **连接器 token**（Bearer） | 同 ③，连上后让它读 `fleet-core` 并存进它的 Skill |
+| ④ | Muse | Meta Muse | 它在自己的云端虚拟机里写一个 MCP 客户端，存成它自己的 Skill | **OAuth（账号 + 密码 + 验证码）**，与 ChatGPT 同一授权页；走不通再用连接器 token | 同 ③，连上后让它读 `fleet-core` 并存进它的 Skill |
 | — | 都不行时 | 任何 | 飞书管家 | 主人飞书身份 | — |
 
 **入口地址**：云端和聊天客户端一律用公网 `https://fleet-v1.professorzhi.fun/mcp`。仓库里
@@ -55,15 +55,22 @@ serveros-fleet-mcp --config <binding> --revoke-client token-XXXX
 
 ## 4. Muse 接入步骤
 
-1. **在东京签 token**，权限与 ChatGPT 插件相同：先 `--list-clients` 找到 ChatGPT 那个 active 客户端的 `client_id`，再 `--mint-token Muse --like <它的 client_id> --days 365`，stdout 直接重定向进 0600 文件。**不要贴进任何聊天**。
-2. **在 Muse 里对话**（原话即可）：
-   > 帮我建一个自定义连接器，叫 ServerOS Fleet。它是远程 MCP 服务器，地址 `https://fleet-v1.professorzhi.fun/mcp`，
-   > 传输是 streamable HTTP，认证是 `Authorization: Bearer <token>`。token 我会在安全输入框里给你，不要让我贴在对话里。
-   > 连上以后先列出工具，再调用 `fleet_guide`（topic = `fleet-core`），把它的内容和工具清单一起存成一个 Skill，以后用 Fleet 都先按它来。
-3. **Muse 弹出安全凭据框时**粘贴 token（它存进 Secure Credentials Store，由网关在出网时注入，agent 本身拿不到明文）。
-4. **在 Muse 设置 → Connectors** 把这个连接器设成「需要审批」（派活类操作每次确认）。
-5. **按下面第 5 节验收**。
-6. 不要用 Muse 内置的 Zapier 中转接 Fleet：派活会经过第三方，权限和日志不在我们手里。
+**默认走 OAuth，和 ChatGPT 一样，不用 token。** 授权页要账号 + 密码 + 6 位验证码三样一起，所以即使在
+Muse 的云浏览器里登录、密码经过 Meta 的机器，没有主人手机上的验证器也登不进来。登录后的凭据自动续期。
+
+1. **在 Muse 里对话**（原话即可）：
+   > 按 serveros 仓库根目录 AGENTS.md 接 Fleet，地址 `https://fleet-v1.professorzhi.fun/mcp`（streamable HTTP），
+   > 不要加 Tailscale。认证走 OAuth：打开授权页，我用账号、密码和验证码登录并勾权限，密码和验证码请弹安全卡片让我填，
+   > 不要让我打在对话里。登录成功后先列出工具，再调用 `fleet_guide`（topic = `fleet-core`），把它的内容和工具清单一起存成
+   > 一个 Skill，以后用 Fleet 都先按它来。
+2. **授权页**：登录，勾和 ChatGPT 插件一样的权限，同意。
+3. **在 Muse 设置 → Connectors** 决定这个连接器是「允许」还是「需要审批」（和你对其它插件的习惯一致即可）。
+4. **按下面第 5 节验收**。
+5. 不要用 Muse 内置的 Zapier 中转接 Fleet：派活会经过第三方，权限和日志不在我们手里。
+
+**备用：OAuth 走不通时**（授权页弹不出来、回调跳不回 Muse、反复要求重新登录），改用第 3 节的连接器 token：
+在东京 `--mint-token Muse --like <ChatGPT 的 client_id> --days 365`，stdout 直接重定向进 0600 文件；对 Muse
+说认证改为 `Authorization: Bearer <token>`，它弹安全凭据框时粘贴，**不要贴进聊天**，粘完删掉东京上的文件。
 
 ## 5. 每个客户端的验收（同一套 6 步）
 

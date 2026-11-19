@@ -7,11 +7,12 @@
 - **Do not** use `*.ts.net` addresses (e.g. `serveros-fleet-next.tail3d8b76.ts.net`): those are the
   owner's private Tailscale network, used only by plugins on the owner's own enrolled devices.
   **Never ask to add a cloud machine to the Tailscale network.**
-- **Auth:** OAuth on the Fleet consent page, or — for clients that take an API key (Muse) —
-  `Authorization: Bearer <connector token>`. The owner mints it on the hub with
-  `serveros-fleet-mcp --config <binding> --mint-token <Name> --like <ChatGPT client_id> --days 365`
-  (same identity and scopes as the ChatGPT plugin). The token goes into your **secure credential
-  prompt**, never into the chat.
+- **Auth:** OAuth on the Fleet consent page — the owner signs in with account, password and a one-time
+  code and ticks the scopes, the same as for the ChatGPT plugin (Muse included). Ask for the password
+  and code through your **secure credential prompt**, never in the chat. Only if OAuth cannot complete:
+  `Authorization: Bearer <connector token>`, which the owner mints on the hub
+  (`serveros-fleet-mcp --config <binding> --mint-token <Name> --like <ChatGPT client_id> --days 365`)
+  and pastes into your secure credential prompt.
 - **First call:** `fleet_guide` with `topic: fleet-core`, and follow it (owner's words as
   `owner_request`, batches, results arrive as Feishu cards — do not poll).
 
