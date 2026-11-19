@@ -62,7 +62,7 @@ PINNED_SKILLS = {
     "fleet-async-dispatch": "4162f4ac8cef3e88b181d708697dcd35324848428b05d0ba6355c4ab9932e8f6",
     "fleet-broadcast-tune": "0617e847aa2b920d26878eef443e81a55daa1c51f337430a9cfc8b13a2b21c44",
     "fleet-commander-orchestration": "4da27c5e37ea23d28a11ad0b23473000566573241ae0189ef8651298d122706d",
-    "fleet-core": "21698e9d9c59c1aa25d7a79e65c22307c2aa5ece15f2710ae051aa631ee9840d",
+    "fleet-core": "8aa31d2554450453d8ca20fed3f5368ece749a3d7e37aac285762d86cc640200",
     "fleet-create-with-grants": "9366032fde118f0250bb5e32b9363a6976ab5cadf3b12eda7c2f97c0c85713d8",
     "fleet-device-and-session-discovery": "0a29e8c650d612941019eb07ce52ac7869bf855e7ed8a1fba7271b6cf814decc",
     "fleet-evidence-review": "e1ef83ff984c026c0172dde93999ba641ff621ebd901286b8efbc30bd735c4be",

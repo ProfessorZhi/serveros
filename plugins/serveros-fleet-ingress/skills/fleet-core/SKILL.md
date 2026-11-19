@@ -35,7 +35,7 @@ is to get the request to the right place quickly and get out of the way.
 2. **Prompt.** Short and complete: what to do, the conclusion first in the
    answer, read-only unless the owner asked for a change. Check
    `fleet_memory` `search` first; the dispatch also carries relevant notes.
-   A bug or test task: record the input once in `envs/<ITEM>/inputs`,
+   A bug or test task: record the input once in `test-envs/<ITEM>/inputs`,
    reproduce on A (old), fix, run the same input on B, report A vs B.
    A device skill or slash command: `fleet_agent_catalog`, then
    `fleet_agent_invoke` with a listed name.
