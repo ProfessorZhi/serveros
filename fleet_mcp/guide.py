@@ -13,7 +13,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DIR = Path(__file__).resolve().parents[1] / "distribution" / "mcp" / "skills"
+#: The plugins' own Skill files (distribution/, not the `mcp` package).
+DEFAULT_DIR = Path(__file__).resolve().parents[1] / "distribution/mcp/skills"
 MAX_BYTES = 16 * 1024
 _TOPIC = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _FRONT = re.compile(r"\A---\n(.*?)\n---\n", re.S)
