@@ -434,6 +434,29 @@ class PasswordConsentFlow(unittest.TestCase):
         self.assertIn("Max-Age=0", raw)
         self.assertIn("Path=/oauth", raw)
 
+    def test_logout_returns_to_the_same_authorization_request(self):
+        """11-19, Muse: signing out landed on a bare form ("unknown client")."""
+        import urllib.parse
+        query = urllib.parse.urlencode({"response_type": "code", "client_id": "fleet-x",
+                                        "redirect_uri": "https://agent.example/cb",
+                                        "scope": "fleet:read", "state": "s1",
+                                        "code_challenge": "c" * 43,
+                                        "code_challenge_method": "S256",
+                                        "password": "never-carried"})
+        status, headers, _ = self.client.request("GET", "/oauth/authorize/logout?" + query)
+        self.assertEqual(status, 302)
+        location = headers.get("Location", "")
+        self.assertTrue(location.startswith("/oauth/authorize?"), location)
+        kept = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
+        self.assertEqual(kept["client_id"], ["fleet-x"])
+        self.assertEqual(kept["state"], ["s1"])
+        self.assertNotIn("password", kept)
+
+    def test_the_signed_in_page_links_logout_with_the_request(self):
+        _, headers, _ = self._login()
+        _, _, page = self._get(self._cookie_from(headers))
+        self.assertIn("/logout?", page.decode())
+
     # -- brute force -------------------------------------------------------
 
     def test_five_failures_close_the_door_for_a_while(self):
