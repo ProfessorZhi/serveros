@@ -394,6 +394,7 @@ Usage:
                                              who has been given OAuth access here
   serveros-fleet-mcp --revoke-client ID [-c PATH]
                                              stop a client: its tokens die now
+  serveros-fleet-mcp --mint-token NAME --like CLIENT_ID [--days 365]   (usual: as a plugin)
   serveros-fleet-mcp --mint-token NAME [--scopes fleet:read[,fleet:send]] [--days 90]
                      [--like CLIENT_ID] [-c PATH]
                                              --like: hold exactly what that signed-in

@@ -13,6 +13,10 @@
 | ④ | Muse | Meta Muse | 它在自己的云端虚拟机里写一个 MCP 客户端，存成它自己的 Skill | **连接器 token**（Bearer） | 同 ③，连上后让它读 `fleet-core` 并存进它的 Skill |
 | — | 都不行时 | 任何 | 飞书管家 | 主人飞书身份 | — |
 
+**入口地址**：云端和聊天客户端一律用公网 `https://fleet-v1.professorzhi.fun/mcp`。仓库里
+`plugins/serveros-fleet-ingress/.mcp.json` 写的 `*.ts.net` 是 Tailscale 内网地址，只给装在主人自己设备上的
+Claude Code 插件用；**不要**让任何云端客户端去连它，更不要把云端机器加进 Tailscale。
+
 四种用的是**同一个服务器、同一套工具、同一份 Skill 文件**；差别只在「怎么连」「怎么认证」「规矩怎么到它手里」。
 
 ## 2. 服务器为此做的事
