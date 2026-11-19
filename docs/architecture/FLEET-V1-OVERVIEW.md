@@ -110,8 +110,14 @@ work/envs/<条目号>/
 └── 个人项目               只登记
 ```
 
-待办：`/etc/profile.d/ai.sh` 把 vince 的 TMPDIR 指到 `/data/scratch/vince`，只增不减（11-18 一次删了 3.5 万个）；
-改指 `work/scratch` 需要 Owner 用 sudo。东京只管 vince 自己的目录。
+**东京是共享服务器：Fleet 的一切只在 vince 范围内。** 只扫、只动 `/data/home/vince` 与 `/data/scratch/vince`；
+服务都是 `systemctl --user`；不改任何全局配置（`/etc/*`），不看不动其他账号的目录，需要 sudo 的事不做。
+
+待办：全局的 `/etc/profile.d/ai.sh` 给每个用户设 `TMPDIR=/data/scratch/${USER}`，vince 那份只增不减
+（11-18 一次删了 3.5 万个）。**不改这个全局文件**，只覆盖 vince 自己的：
+- 登录 shell：`~/.profile` 末尾 `export TMPDIR=$HOME/work/scratch/tmp`（在 profile.d 之后执行，只影响 vince）；
+- 用户服务（CloudCLI、Claude Code、hub）：`~/.config/environment.d/50-tmpdir.conf` 写 `TMPDIR=%h/work/scratch/tmp`，
+  之后 `systemctl --user daemon-reload` 并重启这些服务。
 
 **A6000（fjd；系统盘 `/` 468 G 用 49%，数据盘 `/data` 1.9 T 用 12%）**
 
