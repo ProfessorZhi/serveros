@@ -866,6 +866,26 @@ class FleetService:
                    "detail": "this Fleet surface has no hub inbox, so no resident monitor "
                              "reports here; an empty status would read as 'all quiet'"}
 
+    def device_events(self, principal: Principal, *, device: str, after: int = 0,
+                      wait: float = 0.0) -> dict[str, Any]:
+        """One device's run events since `after` (D-4), long-polled up to `wait`
+        seconds: what `serveros-eventd` saw on that machine's CloudCLI. Read
+        scope; the hub's pump is the caller. Ids, kinds and states only."""
+        principal.require(SCOPE_READ)
+        device_ref = resolve_or_refuse(self.registry, device).device_ref.ref
+        runtime = self._own_runtime(device_ref)
+        provider = self._provider(device_ref, runtime)
+        if provider is None or not hasattr(provider, "events"):
+            raise refuse("CAPABILITY_UNSUPPORTED",
+                         f"{device_ref} has no event route on this hub", device_ref=device_ref)
+        answer = provider.events(after=max(0, int(after)), wait=max(0.0, min(float(wait), 25.0)))
+        if not isinstance(answer, dict) or answer.get("schema") != "serveros/device-events.v1":
+            raise refuse(INTERNAL, "the device's events answer is not one this build reads",
+                         retry_safe=False)
+        answer["device_ref"] = device_ref
+        answer["runtime"] = runtime
+        return answer
+
     def device_versions(self, principal: Principal) -> dict[str, Any]:
         """What each device runs, layer by layer, as its last update recorded it.
 

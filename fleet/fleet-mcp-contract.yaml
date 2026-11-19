@@ -941,6 +941,7 @@ node_transport:
     # What the device runs, as its last update recorded it. Named and
     # parameterless like the Core route, and signed over the caller's nonce.
     - 'GET /v1/device/versions'
+    - 'GET /v1/events'
     # CloudCLI's model library on the device: list projected entries, and create
     # or replace ONE entry. Provider and entry ride in the SIGNED body. The
     # connector reaches CloudCLI's REST routes on loopback with its owner's

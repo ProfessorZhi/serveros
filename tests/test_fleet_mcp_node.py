@@ -271,6 +271,7 @@ class RouteClosure(_Base):
             ("GET", "/v1/core/status", None),
             ("GET", "/v1/core/card", None),
             ("GET", "/v1/device/versions", None),
+            ("GET", "/v1/events?after=0&wait=0", None),
             ("POST", "/v1/models", {"provider": "claude"}),
             ("POST", "/v1/models/upsert", {"provider": "claude"}),
         ]

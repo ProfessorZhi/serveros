@@ -119,6 +119,17 @@ class WatchStore:
                 (session_ref, run_id, device_ref, runtime, project, now, now))
             return cursor.rowcount == 1
 
+    def expedite(self, device_ref: str, run_id: str, now: float) -> int:
+        """Look at this run now: a device said it changed (D-4)."""
+        with self._connect() as conn:
+            return conn.execute("UPDATE watches SET next_check_at=? WHERE device_ref=? AND run_id=?",
+                                (now, device_ref, run_id)).rowcount
+
+    def watching(self, device_ref: str, run_id: str) -> bool:
+        with self._connect() as conn:
+            return conn.execute("SELECT 1 FROM watches WHERE device_ref=? AND run_id=?",
+                                (device_ref, run_id)).fetchone() is not None
+
     def due(self, now: float) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM watches WHERE next_check_at <= ? "
@@ -528,11 +539,13 @@ class Watcher:
 
     # -- discovery -----------------------------------------------------------
 
-    def discover(self) -> dict[str, Any]:
+    def discover(self, devices: set[str] | None = None) -> dict[str, Any]:
         now = self.clock()
         added, unreachable, unreadable = [], [], []
         for entry in self.service.registry.all():
             device = entry.device_ref.ref
+            if devices is not None and device not in devices:
+                continue
             # V1 covers company devices only; a personal device is out of scope
             # by rule, the same rule that keeps it out of every grant.
             if getattr(entry, "ownership", None) != "company":
@@ -567,8 +580,14 @@ class Watcher:
                                   runtime=row.get("provider"), project=row.get("project_id"),
                                   now=now):
                     added.append({"session_ref": key.ref, "run_id": run_id})
-        # Runs Fleet dispatched (and open batch members): watched even when they
-        # ended before this tick could see them running.
+        added.extend(self.adopt_dispatched(now))
+        return {"added": added, "unreachable": unreachable, "unreadable": unreadable}
+
+    def adopt_dispatched(self, now: float | None = None) -> list[dict[str, Any]]:
+        """Runs Fleet dispatched (and open batch members): watched even when
+        they ended before a tick could see them running."""
+        now = self.clock() if now is None else now
+        added: list[dict[str, Any]] = []
         to_watch = getattr(self.inbox, "runs_to_watch", None)
         for row in to_watch() if to_watch else []:
             ref = row["session_ref"]
@@ -580,7 +599,7 @@ class Watcher:
                 self._trace("watching", session_ref=ref, run_id=row["run_id"],
                             origin="dispatched")
             self.inbox.forget_dispatch(ref, row["run_id"])
-        return {"added": added, "unreachable": unreachable, "unreadable": unreadable}
+        return added
 
     # -- observation ---------------------------------------------------------
 

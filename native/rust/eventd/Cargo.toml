@@ -1,0 +1,17 @@
+[package]
+name = "serveros-eventd"
+version = "0.1.0"
+edition = "2021"
+description = "ServerOS device event pusher (D-4): turns the local CloudCLI `changes` feed into a bounded event spool the node connector serves."
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

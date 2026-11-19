@@ -128,7 +128,8 @@ class FleetNodeProvider(DeviceProvider):
 
     def _request(self, method: str, path: str, payload: dict[str, Any] | None = None,
                  *, max_bytes: int | None = None, nonce: str | None = None,
-                 capture: dict[str, Any] | None = None) -> dict[str, Any]:
+                 capture: dict[str, Any] | None = None,
+                 timeout: float | None = None) -> dict[str, Any]:
         secret = self.binding.credential()
         if not secret:
             raise refuse(
@@ -150,7 +151,7 @@ class FleetNodeProvider(DeviceProvider):
         url = self.binding.endpoint.rstrip("/") + path
         request = urllib.request.Request(url, data=body or None, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=self.binding.read_timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout or self.binding.read_timeout) as response:
                 if max_bytes is None:
                     blob = response.read()
                     raw = blob.decode("utf-8", "replace")
@@ -285,6 +286,31 @@ class FleetNodeProvider(DeviceProvider):
                 PROVIDER_UNAUTHORIZED,
                 f"the versions answer from {self.binding.endpoint} carries no valid "
                 f"response signature bound to this request's nonce.")
+        return document
+
+    def events(self, *, after: int, wait: float) -> dict[str, Any]:
+        """This device's run events since `after` (D-4), long-polled up to
+        `wait` seconds and verified the way the versions answer is: the
+        connector signs it over THIS call's nonce."""
+        import secrets
+
+        nonce = secrets.token_hex(16)
+        capture: dict[str, Any] = {}
+        query = urllib.parse.urlencode({"after": int(after), "wait": float(wait)})
+        document = self._request("GET", f"/v1/events?{query}", max_bytes=512 * 1024,
+                                 nonce=nonce, capture=capture,
+                                 timeout=float(wait) + float(self.binding.read_timeout))
+        secret = self.binding.credential()
+        if not secret:
+            raise refuse(PROVIDER_UNAUTHORIZED, "no node secret is configured")
+        if not verify_core_response(
+                secret, device_ref=self.device_ref,
+                runtime=getattr(self.binding, "runtime", BASE_RUNTIME),
+                request_nonce=nonce, body=capture.get("body") or b"",
+                signature=capture.get("headers", {}).get(CORE_SIGNATURE_HEADER.lower())):
+            raise refuse(PROVIDER_UNAUTHORIZED,
+                         f"the events answer from {self.binding.endpoint} carries no valid "
+                         f"response signature bound to this request's nonce.")
         return document
 
     def status_card(self) -> dict[str, Any]:

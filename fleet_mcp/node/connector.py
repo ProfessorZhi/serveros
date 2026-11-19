@@ -267,6 +267,9 @@ class NodeConfig:
     # Where `fleet_mcp/node/status_card.py` writes this machine's 资源播报 card.
     # Owner-fixed; unset means that tool's default for this account.
     status_card_path: Path | None = None
+    # Where `serveros-eventd` writes this machine's event spool (D-4,
+    # `fleet_mcp/node/events.py`). Owner-fixed; unset means its default.
+    events_spool_path: Path | None = None
     connect_timeout: float = 5.0
     read_timeout: float = 45.0
     # Native session ids or full `device:<id>|<provider>|<id>` refs. Empty is
@@ -805,6 +808,7 @@ def load_node_config(path: str | Path | None = None) -> NodeConfig:
         device_versions_path=_owner_fixed_path(raw.get("device_versions_path"),
                                                "device_versions_path"),
         status_card_path=_owner_fixed_path(raw.get("status_card_path"), "status_card_path"),
+        events_spool_path=_owner_fixed_path(raw.get("events_spool_path"), "events_spool_path"),
         notes=str(raw.get("notes") or ""),
         model_library_token_path=_owner_fixed_path(raw.get("model_library_token_path"),
                                                    "model_library_token_path"),
@@ -989,6 +993,8 @@ class Connector:
             return 200, self._status_card()
         if parts == ["v1", "device", "versions"]:
             return 200, self._device_versions()
+        if parts == ["v1", "events"]:
+            return 200, self._events(args)
         if parts == ["v1", "native", "call"]:
             return 200, self._native_call(payload)
         if parts == ["v1", "models"]:
@@ -1046,6 +1052,26 @@ class Connector:
                            payload.get("env"))
         return self.provider.upsert_model(provider=provider, model_id=payload["model_id"],
                                           label=payload["label"], env=rows)
+
+    def _events(self, args: dict[str, list[str]]) -> dict[str, Any]:
+        """This machine's run events since `after`, waiting up to `wait` seconds
+        for the first one (D-4). Read-only; the spool is owner-fixed."""
+        from . import events
+
+        def number(name: str, default: float) -> float:
+            values = args.get(name) or []
+            try:
+                return float(values[0]) if values else default
+            except ValueError:
+                raise FleetRefusal("BAD_REQUEST", f"{name} must be a number") from None
+
+        if set(args) - {"after", "wait"}:
+            raise FleetRefusal("BAD_REQUEST", "events takes only after and wait")
+        after = int(number("after", 0))
+        if after < 0:
+            raise FleetRefusal("BAD_REQUEST", "after must be >= 0")
+        path = self.config.events_spool_path or events.default_spool()
+        return events.wait_since(path, after, number("wait", 0))
 
     def _device_versions(self) -> dict[str, Any]:
         """What this device runs, as its last update recorded it.
@@ -1691,7 +1717,8 @@ class _Handler(BaseHTTPRequestHandler):
         # caller's nonce, so neither can be supplied by something else on the URL.
         is_core = split_path_and_query(self.path or "")[0] in ("/v1/core/status",
                                                                 "/v1/core/card",
-                                                                "/v1/device/versions")
+                                                                "/v1/device/versions",
+                                                                "/v1/events")
         self._respond(status, payload, sign_core=is_core)
 
     do_GET = do_POST = _handle
