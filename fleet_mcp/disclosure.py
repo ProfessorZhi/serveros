@@ -273,6 +273,11 @@ KIND_BY_FIELD: dict[str, str] = {
     # A code and not `withheld`, for the same reason `grant_reason` is: the
     # value is written here from a closed set, never taken from the request.
     "login_result": CODE,
+    # Why an authorization request or a bearer was refused, as a closed word this
+    # surface chose (`redirect_mismatch`, `pkce`, `scope`, `unknown_client`,
+    # `expired`, `audience`, `revoked`, …) — never the description, which may
+    # quote what the caller sent. 11-19: Muse's refusals left no reason at all.
+    "refusal": CODE,
     # what came back
     "bytes": COUNT,
     "detail": WITHHELD,  # free text a caller filled
