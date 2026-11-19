@@ -8,6 +8,10 @@
 
 ---
 
+> **要接 Fleet 的客户端（ChatGPT / Claude / Grok / Gemini / Muse / 编码 agent）**：入口是公网
+> `https://fleet-v1.professorzhi.fun/mcp`，不要用任何 `*.ts.net` 内网地址，也不要把云端机器加进 Tailscale。
+> 怎么接、怎么认证、Muse 的步骤见 [AGENTS.md](AGENTS.md) 和 [指挥侧客户端](docs/architecture/commander-clients.md)。
+
 ## 它解决什么问题
 
 日常用 Agent，真正耗神的往往不是写代码，而是另外四件事：
@@ -26,7 +30,7 @@ ServerOS 把这四件事做成常驻的个人基础设施：节点上的 Core �
 | 部分 | 状态 | 说明 |
 |---|---|---|
 | 东京节点日常运行 | 使用中 | Core、插件、MCP、Work Engine 在本机常驻 |
-| Fleet MCP（跨设备会话） | 候选 | 55 个工具（`fleet-mcp-13`）；东京、Dell、Windows 已接入 |
+| Fleet MCP（跨设备会话） | 候选 | 60 个工具（`fleet-mcp-18`）；东京、Dell、Windows 已接入；四种客户端见 [AGENTS.md](AGENTS.md) |
 | 飞书信息面 | 部分可用 | 采集、Follow、Owned 文档维护按能力逐项接入 |
 | 监控与状态卡 | 部分可用 | 资源与运行观察可用；告警与卡片仍在收敛 |
 | Fleet V2（自治组织、身份委派） | 仅设计 | 没有对应的服务或版本，不能当成现有能力 |

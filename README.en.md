@@ -8,6 +8,10 @@ It does not replace the model, and it does not put a scheduler on top of one. It
 
 ---
 
+> **Connecting a client to Fleet (ChatGPT / Claude / Grok / Gemini / Muse / coding agents):** the endpoint is the
+> public `https://fleet-v1.professorzhi.fun/mcp`. Never use a `*.ts.net` address and never add a cloud machine to
+> Tailscale. How to connect and authenticate, and Muse's steps: [AGENTS.md](AGENTS.md).
+
 ## The problem it solves
 
 When you work with an agent every day, the expensive part is rarely the code. It is the other four things:
@@ -26,7 +30,7 @@ It is **not** a new chat client, a new model, or a second task scheduler. The mo
 | Area | Status | Notes |
 |---|---|---|
 | Tokyo node, daily use | In use | Core, plugin, MCPs and Work Engine run on the host |
-| Fleet MCP (cross-device sessions) | Candidate | 55 tools (`fleet-mcp-13`); Tokyo, Dell and Windows enrolled |
+| Fleet MCP (cross-device sessions) | Candidate | 60 tools (`fleet-mcp-18`); Tokyo, Dell and Windows enrolled; four kinds of client in [AGENTS.md](AGENTS.md) |
 | Feishu information plane | Partial | Capture, Follow and Owned-document stewardship are connected ability by ability |
 | Monitoring and status cards | Partial | Resource and runtime observation works; alerts and cards are still converging |
 | Fleet V2 (autonomous organization, delegation) | Design only | No service or revision exists; do not treat it as a current capability |
