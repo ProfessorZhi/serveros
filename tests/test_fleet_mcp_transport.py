@@ -1433,15 +1433,16 @@ class ConnectorTokens(_HttpHarness):
     """Apps that take an API key instead of OAuth (Meta Muse): a scoped,
     expiring, revocable token minted on the host — never the owner token."""
 
-    def _mint(self, scopes="fleet:read", days=90, name="Muse"):
+    def _mint(self, scopes="fleet:read", days=90, name="Muse", as_principal=None, config=None):
         import io
         from unittest import mock
         from fleet_mcp import runtime
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(runtime, "default_store_root",
                                return_value=Path(self._tmp.name) / "oauth"):
-            code = runtime.mint_token_command(self.config, name=name, scopes=scopes,
-                                              days=days, out=out, err=err)
+            code = runtime.mint_token_command(config or self.config, name=name, scopes=scopes,
+                                              days=days, out=out, err=err,
+                                              as_principal=as_principal)
         return code, out.getvalue().strip(), err.getvalue()
 
     def test_a_minted_token_reads_and_cannot_send(self):
@@ -1488,3 +1489,27 @@ class ConnectorTokens(_HttpHarness):
         self.assertEqual(self._mint(days=0)[0], 2)
         self.assertEqual(self._mint(days=400)[0], 2)
         self.assertEqual(self._mint(name="   ")[0], 2)
+
+    def test_as_the_owners_feishu_identity_it_holds_the_same_grants(self):
+        import dataclasses
+        owner = "feishu:ou_owner"
+        config = dataclasses.replace(self.config, policy=dataclasses.replace(
+            self.config.policy, operator_grants={owner: {TOKYO: ("send",)}}))
+        self.assertEqual(self._mint(as_principal="feishu:ou_stranger", config=config)[0], 2)
+        self.assertEqual(self._mint(as_principal="owner-pat", config=config)[0], 2)
+        code, token, err = self._mint(scopes="fleet:read,fleet:send", as_principal=owner,
+                                      config=config)
+        self.assertEqual(code, 0)
+        self.assertIn(f"acts as     {owner}", err)
+        claims = self.oauth.store.signed_claims(token)
+        self.assertEqual((claims["sub"], claims["idp"]), (owner, "feishu"))
+        from fleet_mcp.http_transport import HttpSurface
+        surface = HttpSurface(service=self.service, config=config, oauth=self.oauth,
+                              audit=self.service.audit)
+        principal = surface.principal_for_token(token)
+        self.assertEqual(principal.name, owner)
+        self.assertEqual(set(principal.scopes), {"fleet:read", "fleet:send"})
+        self.oauth.store.revoke_client(claims["cid"])
+        from fleet_mcp.http_transport import HttpAuthError
+        with self.assertRaises(HttpAuthError):
+            surface.principal_for_token(token)

@@ -614,6 +614,12 @@ class TokenStore:
 
     def revoke_client(self, client_id: str) -> dict[str, Any]:
         """Revoke a client: its tokens die and its refresh chains die with it."""
+        if client_id not in self._clients and client_id.startswith(self.TOKEN_CLIENT_PREFIX):
+            # Minted by another process after this one loaded: read it first.
+            found = self._load_state()[0].get(client_id)
+            if found is not None:
+                with self._lock:
+                    self._clients.setdefault(client_id, found)
         with self._lock:
             client = self._clients.get(client_id)
             if client is None:

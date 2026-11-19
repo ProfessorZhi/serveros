@@ -40,19 +40,24 @@ serveros-fleet-mcp --config <binding> --revoke-client token-XXXX
 ```
 
 - `--scopes` 只能是本部署允许给客户端的那些（默认 `fleet:read`、`fleet:send`），`--days` 1–365，默认 90；没有 refresh，到期重新签发。
+- **和其它插件同等权限，不缩水**：派活、建会话、项目权限除了 scope 还看按身份写的
+  `policy.operator_grants` / `policy.owner_max`。主人用飞书登录的插件身份是 `feishu:<open_id>`；
+  签发时加 `--as feishu:<open_id>`，token 就以同一身份出现，拿到完全相同的授权（只接受绑定里
+  已出现的 `feishu:` 身份名）。不加 `--as` 时它是新身份 `oauth:token-…`，只吃 `"*"` 那份授权。
+  吊销照常按 `client_id`，不影响主人其它插件。
 - 签发出的客户端没有回调地址，不能拿它走 OAuth。
 - 服务在跑时签发也立即生效（服务器遇到未知的 `token-` 客户端会从共享 state 文件补读）。
 
 ## 4. Muse 接入步骤
 
-1. **在东京签只读 token**：上面的 `--mint-token Muse --scopes fleet:read --days 90`。把 stdout 那一行拿在手里，**不要贴进任何聊天**。
+1. **在东京签 token**，权限与其它插件相同：`--mint-token Muse --scopes <部署允许的全部 scope> --as feishu:<主人 open_id> --days 365`，stdout 直接重定向进 0600 文件。**不要贴进任何聊天**。
 2. **在 Muse 里对话**（原话即可）：
    > 帮我建一个自定义连接器，叫 ServerOS Fleet。它是远程 MCP 服务器，地址 `https://fleet-v1.professorzhi.fun/mcp`，
    > 传输是 streamable HTTP，认证是 `Authorization: Bearer <token>`。token 我会在安全输入框里给你，不要让我贴在对话里。
    > 连上以后先列出工具，再调用 `fleet_guide`（topic = `fleet-core`），把它的内容和工具清单一起存成一个 Skill，以后用 Fleet 都先按它来。
 3. **Muse 弹出安全凭据框时**粘贴 token（它存进 Secure Credentials Store，由网关在出网时注入，agent 本身拿不到明文）。
 4. **在 Muse 设置 → Connectors** 把这个连接器设成「需要审批」（派活类操作每次确认）。
-5. **按下面第 5 节验收**。只读通过后，签一个带 `fleet:send` 的新 token 替换，旧的 `--revoke-client` 吊销。
+5. **按下面第 5 节验收**。
 6. 不要用 Muse 内置的 Zapier 中转接 Fleet：派活会经过第三方，权限和日志不在我们手里。
 
 ## 5. 每个客户端的验收（同一套 6 步）

@@ -221,7 +221,7 @@ def clients_command(config: FleetConfig, *, revoke: str | None, as_json: bool) -
 
 
 def mint_token_command(config: FleetConfig, *, name: str, scopes: str, days: int,
-                       out=None, err=None) -> int:
+                       out=None, err=None, as_principal: str | None = None) -> int:
     """`--mint-token NAME --scopes fleet:read[,fleet:send] [--days 90]`.
 
     A long-lived, scoped, revocable bearer token for one app that takes an API
@@ -244,6 +244,16 @@ def mint_token_command(config: FleetConfig, *, name: str, scopes: str, days: int
     if not 1 <= days <= TokenStore.TOKEN_MAX_DAYS:
         err.write(f"{SERVER_NAME}: --days must be 1..{TokenStore.TOKEN_MAX_DAYS}\n")
         return 2
+    if as_principal is not None:
+        # The same identity the owner's Feishu-signed-in plugins present, so the
+        # token holds exactly their grants (`operator_grants` / `owner_max` are
+        # keyed by it) — not the `"*"` share a new client name would get.
+        named = set(config.policy.operator_grants) | set(config.policy.owner_max)
+        if not as_principal.startswith("feishu:") or as_principal not in named:
+            err.write(f"{SERVER_NAME}: --as must be a feishu:<id> principal the binding "
+                      f"names in policy.operator_grants or policy.owner_max: "
+                      f"{sorted(n for n in named if n.startswith('feishu:'))}\n")
+            return 2
     store = TokenStore(default_store_root(config), access_ttl=config.auth.access_token_ttl,
                        refresh_ttl=config.auth.refresh_token_ttl,
                        rotate_refresh=config.auth.refresh_rotate,
@@ -256,12 +266,14 @@ def mint_token_command(config: FleetConfig, *, name: str, scopes: str, days: int
         err.write(f"{SERVER_NAME}: {exc}\n")
         return 2
     token, ttl = store.mint_access_token(
-        client_id=client.client_id, subject=f"token:{client.client_name}", scopes=wanted,
-        audience=f"{base}{config.server.mcp_path}", issuer=base, ttl=days * 86400)
+        client_id=client.client_id, subject=as_principal or f"token:{client.client_name}",
+        scopes=wanted, audience=f"{base}{config.server.mcp_path}", issuer=base,
+        ttl=days * 86400, idp="feishu" if as_principal else None)
     err.write(
         f"connector token for {client.client_name!r}\n"
         f"  client_id   {client.client_id}   (revoke: --revoke-client {client.client_id})\n"
         f"  scopes      {' '.join(wanted)}\n"
+        f"  acts as     {as_principal or 'oauth:' + client.client_id}\n"
         f"  expires in  {days} days\n"
         f"  endpoint    {base}{config.server.mcp_path}   (Authorization: Bearer <token>)\n"
         f"the token follows on stdout, once; it is not stored here and cannot be shown again\n")
@@ -279,6 +291,7 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
     mint_name: str | None = None
     mint_scopes = "fleet:read"
     mint_days = 90
+    mint_as: str | None = None
     index = 0
     while index < len(argv):
         arg = argv[index]
@@ -300,7 +313,7 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
                 sys.stderr.write("fleet-mcp: --revoke-client needs a client_id\n")
                 return 2
             revoke_client = argv[index]
-        elif arg in ("--mint-token", "--scopes", "--days"):
+        elif arg in ("--mint-token", "--scopes", "--days", "--as"):
             index += 1
             if index >= len(argv):
                 sys.stderr.write(f"fleet-mcp: {arg} needs a value\n")
@@ -309,6 +322,8 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
                 mint_name = argv[index]
             elif arg == "--scopes":
                 mint_scopes = argv[index]
+            elif arg == "--as":
+                mint_as = argv[index]
             else:
                 try:
                     mint_days = int(argv[index])
@@ -337,7 +352,8 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
         return 3
 
     if mint_name is not None:
-        return mint_token_command(config, name=mint_name, scopes=mint_scopes, days=mint_days)
+        return mint_token_command(config, name=mint_name, scopes=mint_scopes, days=mint_days,
+                                  as_principal=mint_as)
 
     if list_clients or revoke_client is not None:
         # These act on state, not on a socket, so they are answered before any
@@ -366,7 +382,8 @@ Usage:
                                              who has been given OAuth access here
   serveros-fleet-mcp --revoke-client ID [-c PATH]
                                              stop a client: its tokens die now
-  serveros-fleet-mcp --mint-token NAME [--scopes fleet:read[,fleet:send]] [--days 90] [-c PATH]
+  serveros-fleet-mcp --mint-token NAME [--scopes fleet:read[,fleet:send]] [--days 90]
+                     [--as feishu:<id>] [-c PATH]
                                              a scoped, expiring bearer token for one
                                              app that takes an API key (e.g. Muse)
   serveros-fleet-mcp --version | --help
