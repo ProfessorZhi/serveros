@@ -255,7 +255,7 @@ class HttpSurface:
             if route == "/oauth/authorize":
                 return self._oauth_authorize(method, query, body, headers)
             if route == "/oauth/authorize/logout":
-                return self._oauth_logout()
+                return self._oauth_logout(query)
             if route == "/oauth/feishu/start":
                 return self._oauth_feishu_start(method, query)
             if route == "/oauth/feishu/callback":
@@ -516,7 +516,7 @@ class HttpSurface:
             form["redirect_uri"], code, form.get("state"), issuer=self.oauth.base_url,
         ), extra_headers=extra)
 
-    def _oauth_logout(self) -> tuple[int, dict[str, str], bytes]:
+    def _oauth_logout(self, query: str = "") -> tuple[int, dict[str, str], bytes]:
         """Drop the session cookie and send the browser back to the form.
 
         Expiring it is the whole of the operation: the cookie is a signed
@@ -530,7 +530,15 @@ class HttpSurface:
                  "Path=/oauth", "Max-Age=0"]
         if self.oauth.base_url.startswith("https://"):
             attrs.insert(2, "Secure")
-        target = (urlparse(self.oauth.base_url).path or "") + "/oauth/authorize"
+        # Back to the same authorization request (11-19: signing out from
+        # Muse's consent page landed on a bare form — "unknown client", the
+        # request gone). Only the request's own fields, and only to this path.
+        from .oauth import AUTHORIZE_REQUEST_KEYS
+        from urllib.parse import parse_qs, urlencode
+        parsed = parse_qs(query or "")
+        kept = {k: parsed[k][0] for k in AUTHORIZE_REQUEST_KEYS if parsed.get(k)}
+        target = ((urlparse(self.oauth.base_url).path or "") + "/oauth/authorize"
+                  + (("?" + urlencode(kept)) if kept else ""))
         if self.audit:
             self.audit.record("oauth.logout")
         return _redirect(target, extra_headers={"Set-Cookie": "; ".join(attrs)})

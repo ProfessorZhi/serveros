@@ -903,6 +903,19 @@ def fetch_client_metadata(url: str, *, timeout: float = 5.0,
         raise OAuthError("invalid_client", "the client metadata document is not JSON", 401) from None
 
 
+#: The authorization request, as the client sent it — what signing out must
+#: carry back to the form, or the page that follows has no request at all.
+AUTHORIZE_REQUEST_KEYS = ("response_type", "client_id", "redirect_uri", "scope", "state",
+                          "code_challenge", "code_challenge_method", "resource")
+
+
+def _request_query(params: dict[str, str] | None) -> str:
+    """`?…` with the authorization request's own fields, or "" when there are none."""
+    kept = {k: str(params[k]) for k in AUTHORIZE_REQUEST_KEYS
+            if params and params.get(k)}
+    return ("?" + urlencode(kept)) if kept else ""
+
+
 def _validate_redirect_uri(uri: str) -> None:
     """Only https, or http to a loopback address.
 
@@ -1035,7 +1048,8 @@ def consent_page(*, client: RegisteredClient, params: dict[str, str], error: str
                 f'<div class="signed"><span class="avatar">{html.escape(login_user[:1].upper())}</span>'
                 f'<span>Signed in as <b>{html.escape(login_user)}</b><br>'
                 f'<span class="muted">已登录，可直接批准 · '
-                f'<a href="{html.escape(authorize_path)}/logout">退出登录</a></span></span></div>'
+                f'<a href="{html.escape(authorize_path)}/logout{_request_query(params)}">退出登录</a>'
+                f'</span></span></div>'
                 f'<label class="check"><input type="checkbox" name="continue" value="yes" checked>'
                 f'<span>Continue as <b>{html.escape(login_user)}</b></span></label>'
             )
