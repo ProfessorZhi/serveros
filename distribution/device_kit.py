@@ -319,6 +319,32 @@ def installed_alerts(unit_dir: Path) -> str | None:
     return match.group(1) if match else None
 
 
+_JOURNAL_IN_UNIT = re.compile(r"^ExecStart=.*\s--journal\s+(\S+)", re.MULTILINE)
+_JOURNAL_KEY_IN_UNIT = re.compile(r"^ExecStart=.*\s--journal-ssh-key\s+(\S+)", re.MULTILINE)
+
+
+def hub_journal_args(unit_dir: Path, home: Path) -> str:
+    """The `--journal` arguments the hub watcher keeps across updates.
+
+    The installed unit's own `--journal DIR` (and its deploy key) wins; with
+    none, a clone at `~/fleet-journal` is used. An update that re-rendered the
+    unit without it stopped the journal for a week (11-12 → 11-19) with no
+    error anywhere: the watcher was simply never told to write one.
+    """
+    try:
+        text = (Path(unit_dir) / "serveros-fleet-watch.service").read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    found = _JOURNAL_IN_UNIT.search(text)
+    directory = found.group(1) if found and not found.group(1).startswith("@") else None
+    if directory is None and (Path(home) / "fleet-journal" / ".git").is_dir():
+        directory = str(Path(home) / "fleet-journal")
+    if directory is None:
+        return ""
+    key = _JOURNAL_KEY_IN_UNIT.search(text)
+    return f" --journal {directory}" + (f" --journal-ssh-key {key.group(1)}" if key else "")
+
+
 def cloudcli_claude_dirs(home: Path, proc_root: Path = Path("/proc")) -> list[Path]:
     """The Claude config dirs that CloudCLI processes of this user run with.
 
@@ -576,6 +602,7 @@ def linux_steps(k: dict, ctx: Context) -> list[Step]:
             "HUB_NOTIFY": ctx.notify,
             "HUB_ALERTS": (f' --alerts-to "{alerts}"'
                            if (alerts := ctx.alerts_to or installed_alerts(ctx.unit_dir)) else ""),
+            "HUB_JOURNAL": hub_journal_args(ctx.unit_dir, ctx.home),
             "HUB_DOC_URL": "https://github.com/ProfessorZhi/serveros/blob/main/distribution/README.md"})
         steps += [
             Step("monitor", "agent monitor: check the card spec renders",

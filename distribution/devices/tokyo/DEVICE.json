@@ -117,7 +117,7 @@
         "unit": "serveros-fleet-watch.service",
         "template": {
           "path": "integrations/fleet-hub-watch/serveros-fleet-watch.service.template",
-          "digest": "sha256:5f1db731ecbbbcb8d6aae757e910f8044edbae691e36552bf778e6780262b3d6"
+          "digest": "sha256:5b8605cab45d8acdc83cf6a5ff676fabb92d56d18f5de183a746367175fab690"
         },
         "binding": "~/.config/serveros/fleet-v1.yaml",
         "card_spec": {
