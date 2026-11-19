@@ -33,7 +33,12 @@ is to get the request to the right place quickly and get out of the way.
    a task you sent goes to that task's session (`fleet_send_to_session`). Only
    list sessions (`fleet_list_sessions`) when you need one you do not know.
 2. **Prompt.** Short and complete: what to do, the conclusion first in the
-   answer, read-only unless the owner asked for a change.
+   answer, read-only unless the owner asked for a change. Check
+   `fleet_memory` `search` first; the dispatch also carries relevant notes.
+   A bug or test task: record the input once in `test-envs/<ITEM>/inputs`,
+   reproduce on A (old), fix, run the same input on B, report A vs B.
+   A device skill or slash command: `fleet_agent_catalog`, then
+   `fleet_agent_invoke` with a listed name.
 3. **Send**, with `owner_request` = the owner's message, verbatim.
 4. **Batch** every dispatch, even one: `fleet_batch` action `open`, a name the
    owner will recognise, each run's `session_ref` and `run_id` exactly as
@@ -50,6 +55,7 @@ is to get the request to the right place quickly and get out of the way.
   or run id, once, and report its diagnosis. Never re-send on a guess.
 - After you answer, `fleet_batch` action `reply` with your words (with
   `batch_id`, or with `owner_request` when there is no batch).
+- A finding is confirmed: `fleet_memory` `add` one short note (never a value).
 
 ## Never
 
