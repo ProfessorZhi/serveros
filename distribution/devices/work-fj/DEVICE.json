@@ -44,7 +44,7 @@
         ],
         "tool": {
           "path": "distribution/keycenter/serveros_secret.py",
-          "digest": "sha256:679faf93820ac6e2a1c85581470b2c9ccf1b25ab699982ecbe0868685776b6d9"
+          "digest": "sha256:ee1c83bdd92895b522494a4af1e4bde04d4d28a168a4087e2ba0527719d25c41"
         },
         "log": "%LOCALAPPDATA%\\ServerOS\\state\\secrets-sync.log (names only)"
       },
