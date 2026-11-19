@@ -31,7 +31,7 @@ from typing import Any, Callable
 
 Runner = Callable[[list[str]], Any]
 
-ACTIONS = ("mute", "pause_broadcast", "revert_tune")
+ACTIONS = ("mute", "pause_broadcast", "revert_tune", "interrupt")
 
 
 def _cli() -> list[str]:

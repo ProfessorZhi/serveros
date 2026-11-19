@@ -980,6 +980,7 @@ class Notifier:
         self._open({"episode": run_episode, "key": f"run:{event.get('run_id')}", "kind": kind,
                     "device_ref": event.get("device_ref"),
                     "subject": f"{name} · {what}",
+                    "session_ref": event.get("session_ref"), "run_id": event.get("run_id"),
                     "task": label,
                     "text": detail,
                     "level": level,

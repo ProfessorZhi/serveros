@@ -88,14 +88,59 @@ def diagnose(beat: dict | None, state: dict, now: float) -> tuple[str | None, st
     return None, "", {"streak": 0}
 
 
+#: A device's pusher must be bad on this many checks in a row before a card
+#: (a restart or an update is a minute of STALE, not news).
+PUSH_STREAK = 2
+UNAUTHORIZED = ("PROVIDER_UNAUTHORIZED", "UPSTREAM_UNAUTHORIZED")
+
+
+def diagnose_push(beat: dict | None, state: dict) -> tuple[str | None, str, dict]:
+    """The event pushers (D-4): which devices fall back to the slow poll."""
+    pumps = (beat or {}).get("events") or {}
+    bad = {}
+    for device, pump in sorted(pumps.items()):
+        if not isinstance(pump, dict):
+            continue
+        if pump.get("state") == "UNSUPPORTED":
+            bad[device] = "连接器还没有事件接口（需要更新到最新 main 并重启连接器）"
+        elif pump.get("state") == "ERROR" and int(pump.get("failures") or 0) >= 3:
+            bad[device] = "读事件连续失败（%s）" % (pump.get("error") or "未知")
+        elif pump.get("state") == "OK" and pump.get("eventd") in ("STALE", "NOT_RUNNING", "DEGRADED"):
+            bad[device] = {"STALE": "事件推送器停了或卡住了", "NOT_RUNNING": "事件推送器没装或没启动",
+                           "DEGRADED": "事件推送器在跑，但读不到本机 CloudCLI"}[pump["eventd"]]
+    streak = int(state.get("push_streak") or 0) + 1 if bad else 0
+    if bad and streak >= PUSH_STREAK:
+        lines = "；".join("%s：%s" % (d.split(":", 1)[-1], why) for d, why in bad.items())
+        return "push_degraded", ("这些设备的任务完成要等 30 秒轮询才知道（完成卡变慢）：%s。" % lines), \
+            {"push_streak": streak}
+    return None, "", {"push_streak": streak}
+
+
+def diagnose_credentials(beat: dict | None) -> tuple[str | None, str]:
+    """A device whose CloudCLI no longer accepts the hub's credential (D-5)."""
+    refused = sorted({str(row.get("device_ref")) for row in (beat or {}).get("unreachable") or []
+                      if isinstance(row, dict) and row.get("code") in UNAUTHORIZED})
+    if refused:
+        return "device_auth", ("这些设备的 CloudCLI 拒绝了东京持有的令牌：%s。在那台设备上重新生成 CloudCLI "
+                               "令牌并更新东京的绑定（或节点连接器的 cloudcli_credential_anchor）。"
+                               % "、".join(d.split(":", 1)[-1] for d in refused))
+    return None, ""
+
+
 TITLES = {"missing": "Fleet 监控没有心跳", "stopped": "Fleet 监控停了",
+          "push_degraded": "有设备的事件推送没在工作",
+          "device_auth": "有设备的 CloudCLI 令牌失效了",
           "failing": "Fleet 监控每轮都在失败",
           "auth_failing": "Fleet MCP 认证一直失败",
           "key_regenerated": "Fleet 签名密钥被重新生成"}
-RECOVERED = {"watcher": "Fleet 监控已恢复", "auth": "Fleet MCP 认证已恢复"}
+RECOVERED = {"watcher": "Fleet 监控已恢复", "auth": "Fleet MCP 认证已恢复",
+             "push": "事件推送已恢复", "credentials": "设备令牌已恢复"}
 ADVICE = {
     "watcher": ("在东京看：`systemctl --user status serveros-fleet-watch` 和 "
                 "`journalctl --user -u serveros-fleet-watch --since -30min | tail -50`。"),
+    "push": ("在那台设备上：`python3 distribution/eventd/install.py --check`；"
+             "没装就 `--apply`；Linux 看 `systemctl --user status serveros-eventd`。"),
+    "credentials": "令牌只在设备本机生成和存放，不经过聊天。",
     "auth": ("在每个连 Fleet 的客户端重新授权：Claude Code 里 `/mcp` → serveros-fleet → "
              "Authenticate；Codex 里重新登录 serveros-fleet；ChatGPT / claude.ai 的连接器断开后重连。"),
 }
@@ -184,6 +229,13 @@ def run_once(heartbeat: Path, state_path: Path, send, *, now: float | None = Non
         new["auth"] = {**auth_old, **seen}
     else:
         new["auth"] = {**seen, **_step("auth", problem, text, auth_old, send, now)}
+    beat = read_json(heartbeat)
+    push_old = state.get("push") or {}
+    problem, text, extra = diagnose_push(beat, push_old)
+    new["push"] = {**extra, **_step("push", problem, text, push_old, send, now)}
+    cred_old = state.get("credentials") or {}
+    problem, text = diagnose_credentials(beat)
+    new["credentials"] = _step("credentials", problem, text, cred_old, send, now)
     write_json(state_path, new)
     return new
 
