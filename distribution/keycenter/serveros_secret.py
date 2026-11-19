@@ -763,6 +763,58 @@ def scan(paths: list[Path], entries: list[dict[str, str]], *, write: bool = Fals
             "skipped": skipped}
 
 
+# -- strays (S-4) -----------------------------------------------------------------
+
+#: File names that hold a credential by convention. Matched on the NAME only:
+#: this never opens a file, so it cannot read a value.
+_STRAY_NAMES = (".env", ".env.local", ".envrc", ".netrc", ".pgpass", ".git-credentials",
+                "credentials", "credentials.json", "service-account.json", "token.json",
+                ".npmrc", ".pypirc")
+_STRAY_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".kdbx")
+_STRAY_WORDS = ("token", "secret", "apikey", "api_key", "api-key", "password", "passwd")
+_STRAY_SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", ".cache", ".npm",
+               ".cargo", ".rustup", "site-packages", ".local", "snap", "AppData"}
+
+
+def strays(roots: list[Path], *, known: list[Path] | None = None, max_depth: int = 5,
+           max_dirs: int = 20000) -> dict[str, Any]:
+    """Credential-looking files OUTSIDE the key center, by path, size and age —
+    the list S-4 收编 starts from. Names only: no file is opened."""
+    known = [k.expanduser().resolve() for k in (known or [])]
+    found, seen = [], 0
+    for root in roots:
+        root = root.expanduser()
+        base = len(root.parts)
+        for here, dirs, files in os.walk(root):
+            seen += 1
+            if seen > max_dirs:
+                return {"files": found, "truncated": True}
+            depth = len(Path(here).parts) - base
+            dirs[:] = [d for d in dirs if d not in _STRAY_SKIP and depth < max_depth]
+            for name in files:
+                low = name.lower()
+                kind = ("conventional" if low in _STRAY_NAMES else
+                        "key file" if low.endswith(_STRAY_SUFFIXES) else
+                        "ssh private key" if low.startswith("id_") and not low.endswith(".pub") else
+                        "named like a secret" if any(w in low for w in _STRAY_WORDS) else None)
+                if kind is None:
+                    continue
+                path = Path(here) / name
+                try:
+                    resolved = path.resolve()
+                    if any(resolved == k or k in resolved.parents for k in known):
+                        continue
+                    st = path.stat()
+                except OSError:
+                    continue
+                found.append({"path": str(path), "kind": kind, "bytes": st.st_size,
+                              "modified_days_ago": int((time.time() - st.st_mtime) // 86400)})
+    found.sort(key=lambda r: r["path"])
+    return {"files": found, "truncated": False,
+            "note": "names and sizes only; nothing was opened. Import a real one with "
+                    "`serveros-secret import`, then remove the file."}
+
+
 # -- CLI ---------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
@@ -796,6 +848,8 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("sync"); s.add_argument("--no-pull", action="store_true")
     s.add_argument("--no-restart", action="store_true"); s.add_argument("--config", default=str(CONFIG))
     sub.add_parser("names")
+    st = sub.add_parser("strays", help="credential-looking files outside the key center (names only)")
+    st.add_argument("roots", nargs="*", help="where to look (default: home)")
     d = sub.add_parser("doctor"); d.add_argument("--config", default=str(CONFIG))
     for name in ("fingerprint", "scan", "redact"):
         c = sub.add_parser(name)
@@ -868,6 +922,14 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({k: result[k] for k in ("device", "names", "changed", "restarted",
                                                     "errors", "repo_commit")}, ensure_ascii=False))
             return 1 if result["errors"] else 0
+        elif args.cmd == "strays":
+            roots = [Path(r) for r in args.roots] or [Path.home()]
+            known = [DEFAULT_KEY.parent]
+            try:
+                known.append(load_config(Path(CONFIG).expanduser())["repo"])
+            except Exception:  # noqa: BLE001 - no config: nothing to exclude but the key dir
+                pass
+            print(json.dumps(strays(roots, known=known), ensure_ascii=False, indent=2))
         elif args.cmd == "names":
             print(json.dumps(read_names() or {"names": [], "state": "NOT_SYNCED"}, ensure_ascii=False))
         elif args.cmd in ("fingerprint", "scan", "redact"):

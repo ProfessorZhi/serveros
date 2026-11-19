@@ -359,3 +359,23 @@ def test_the_windows_kit_ships_the_sync_task_it_names():
     assert "wscript.exe" in task and "IgnoreNew" in task       # no console window, no pile-up
     update = (ROOT / "distribution/windows/update.ps1").read_text(encoding="utf-8")
     assert "register-sync-task.ps1" in update
+
+
+def test_strays_lists_names_never_opens_and_skips_the_key_center(tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ss_strays", Path(__file__).resolve().parent.parent / "distribution/keycenter/serveros_secret.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    (tmp_path / "proj" / "node_modules").mkdir(parents=True)
+    (tmp_path / "keys").mkdir()
+    (tmp_path / "proj" / ".env").write_text("A=never-read")
+    (tmp_path / "proj" / "node_modules" / ".env").write_text("x")
+    (tmp_path / "proj" / "deploy.pem").write_text("x")
+    (tmp_path / "keys" / "age.key").write_text("x")
+    (tmp_path / "proj" / "id_rsa.pub").write_text("x")
+    got = mod.strays([tmp_path], known=[tmp_path / "keys"])
+    paths = sorted(Path(r["path"]).relative_to(tmp_path).as_posix() for r in got["files"])
+    assert paths == ["proj/.env", "proj/deploy.pem"]
+    assert "never-read" not in str(got)
+

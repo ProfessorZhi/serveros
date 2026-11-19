@@ -136,3 +136,16 @@ folders are left alone. Values shorter than 8 characters are not searched.
 
 Moving to GitHub or OpenBao later changes the remote, or `decrypt_bundle` /
 `encrypt_bundle` — nothing that reads the env files.
+
+## Finding stray credentials (S-4)
+
+```bash
+serveros-secret strays            # home, by default; or name the roots to look in
+```
+
+Lists credential-looking files outside the key center — `.env`, `*.pem`, `id_*`, names
+with token/secret/password — by path, size and age. It never opens a file. Import a real
+one with `serveros-secret import`, then remove the file.
+
+The hub records every device's last sync on the journal's daily page and sends one card a
+day when a sync is older than 36 hours or reported errors.
