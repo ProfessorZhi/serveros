@@ -536,6 +536,11 @@ class Watcher:
         self.max_age = max_age
         self.stall_after = stall_after
         self.session_limit = session_limit
+        #: (device_ref, run_id) -> the status word the device itself pushed
+        #: when the run ended (D-4). The device saw the run end; when the run
+        #: record cannot be read back here, that report decides the outcome
+        #: instead of waiting minutes for the session to settle.
+        self.pushed_end: dict[tuple[str, str], str] = {}
 
     # -- discovery -----------------------------------------------------------
 
@@ -734,6 +739,18 @@ class Watcher:
                                     "completed with readable output")
             elif status == STATUS_FAILED:
                 event = self._event(watch, "run.failed", "notify", f"failed ({reason})")
+            elif status == STATUS_UNKNOWN and (watch["device_ref"], watch["run_id"]) in self.pushed_end:
+                said = self.pushed_end.pop((watch["device_ref"], watch["run_id"]))
+                if said == "completed":
+                    event = self._event(watch, "run.completed", "notify",
+                                        "completed (the device reported it ending); "
+                                        "reply read from the session")
+                elif said in ("failed", "error", "errored"):
+                    event = self._event(watch, "run.failed", "notify",
+                                        f"failed (the device reported {said})")
+                else:
+                    event = self._event(watch, "run.unknown", "decide",
+                                        f"stopped (the device reported {said or 'no status'})")
             elif status == STATUS_UNKNOWN and reason == "NO_NATIVE_ACTIVITY" and self._answered(watch) \
                     and self._finished(watch):
                 # No run receipt, but the session holds the reply: that is output.

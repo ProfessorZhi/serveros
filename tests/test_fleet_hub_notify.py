@@ -701,11 +701,16 @@ class BatchesReportOnce(NotifierTest):
 
         self.run_event("run.completed", run_id="run-2")
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=11))
-        self.assertEqual(len([o for o in self.transport.ops if o[0] == "send"]), 1,
-                         "one message for the whole batch")
-        header = self.transport.headers()[-1]
-        self.assertEqual("回归 x3 · 全部完成", header[3])
-        self.assertEqual(header[2], "green")
+        # Owner, 2026-11-19: a patch is silent in Feishu, so the finished
+        # batch is a SECOND message (it notifies), and the progress card
+        # points to it.
+        sends = [h for h in self.transport.headers() if h[0] == "send"]
+        self.assertEqual(len(sends), 2, "opened, then finished: two messages")
+        self.assertEqual(("green", "回归 x3 · 全部完成"), sends[-1][2:])
+        self.assertEqual("回归 x3 · 已收尾", self.transport.headers()[-1][3])
+        self.notifier.tick([], THURSDAY_10 + timedelta(minutes=12))
+        self.assertEqual(len([h for h in self.transport.headers() if h[0] == "send"]), 2,
+                         "never a third")
 
     def test_a_failed_member_patches_the_card_and_the_last_settle_closes_it(self):
         runs = [{"session_ref": f"{TOKYO}|claude|s-1", "run_id": f"run-{i}"} for i in range(2)]
@@ -718,11 +723,10 @@ class BatchesReportOnce(NotifierTest):
 
         self.run_event("run.completed", run_id="run-1")
         self.notifier.tick([], THURSDAY_10 + timedelta(minutes=1))
-        self.assertEqual(len([o for o in self.transport.ops if o[0] == "send"]), 1,
-                         "still the same one message")
-        header = self.transport.headers()[-1]
-        self.assertEqual(header[3], "部署 x2 · 1 个失败")
-        self.assertEqual(header[2], "red")
+        sends = [h for h in self.transport.headers() if h[0] == "send"]
+        self.assertEqual(len(sends), 2, "the finished batch is its own message")
+        self.assertEqual(sends[-1][3], "部署 x2 · 1 个失败")
+        self.assertEqual(sends[-1][2], "red")
 
 
 class TheBatchCardDoesNotWaitForTheNextTick(NotifierTest):

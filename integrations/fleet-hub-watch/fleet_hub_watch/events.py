@@ -42,6 +42,7 @@ def _age(iso: Any, now: float) -> float | None:
 class EventPump:
     def __init__(self, service: Any, principal: Any, devices: Callable[[], list[str]],
                  state_path: Path, *, wait: float = WAIT_SECONDS,
+                 on_events: Callable[[], None] | None = None,
                  clock: Callable[[], float] = time.time,
                  sleep: Callable[[float], None] = time.sleep) -> None:
         self.service, self.principal = service, principal
@@ -50,6 +51,10 @@ class EventPump:
         self.wait = wait
         self.clock, self.sleep = clock, sleep
         self.wake = threading.Event()
+        #: Called on the polling thread as soon as events are queued: the hub
+        #: passes the fast lane, so a pushed run is observed and its card sent
+        #: at once instead of after the current tick (7–13 s, 11-19).
+        self.on_events = on_events
         self._lock = threading.Lock()
         self._queue: list[dict[str, Any]] = []
         self._threads: dict[str, threading.Thread] = {}
@@ -122,6 +127,11 @@ class EventPump:
                 for event in events:
                     self._queue.append({"device": device, "runtime": runtime, **event})
             self.wake.set()
+            if self.on_events is not None:
+                try:
+                    self.on_events()
+                except Exception:  # noqa: BLE001 - the main loop picks them up instead
+                    pass
         try:
             self._save()
         except OSError:
@@ -153,6 +163,10 @@ class EventPump:
             run = event.get("run")
             if not run or not event.get("kind", "").startswith("run."):
                 continue
+            if event["kind"] == "run.ended" and watcher.store.watching(event["device"], run):
+                pushed = getattr(watcher, "pushed_end", None)
+                if pushed is not None and len(pushed) < 1000:
+                    pushed[(event["device"], run)] = str(event.get("status") or "")
             hit = watcher.store.expedite(event["device"], run, now)
             expedited += hit
             age = _age(event.get("at"), now)

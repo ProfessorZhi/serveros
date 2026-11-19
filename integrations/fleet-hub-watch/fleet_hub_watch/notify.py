@@ -453,6 +453,16 @@ class Notifier:
                          (card_key, message_id, _iso(now), _version(card), slot))
         return True
 
+    def _alias(self, card_key: str, existing: str, now: datetime) -> None:
+        """Record `card_key` as already told, by the message `existing` sent."""
+        row = self._card(existing)
+        if row is None:
+            return
+        with self._connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO cards(card_key, message_id, sent_at, version, slot)"
+                         " VALUES (?,?,?,?,?)",
+                         (card_key, row["message_id"], _iso(now), row["version"], row["slot"]))
+
     def _patch(self, card_key: str, card: dict, now: datetime, *, slot: str | None = None) -> bool:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM cards WHERE card_key=?", (card_key,)).fetchone()
@@ -829,8 +839,26 @@ class Notifier:
         key = f"batch:{event['work_ref']}"
         card = cards.batch_card(event, now=now, runs=runs, opened_at=opened_at,
                                 device_names=self.device_names)
+        done_key = f"{key}:done"
         if self._card(key) is None:
-            return self._send(key, card, now)
+            sent = self._send(key, card, now)
+            if sent and head.get("pending") == 0:
+                # It finished before its first card: that card is the result,
+                # and Feishu already announced it. No second message.
+                self._alias(done_key, key, now)
+            return sent
+        if head.get("pending") == 0 and head.get("total") and self._card(done_key) is None:
+            # Owner, 2026-11-19: a patch is silent in Feishu, so a batch that
+            # finished told nobody. Its result goes out as a NEW card (Feishu
+            # notifies on a send), and the progress card points to it.
+            if self._send(done_key, card, now):
+                self._patch(key, cards._card(
+                    "grey", f"{head['name']} · 已收尾", cards._local(now, with_date=True),
+                    [cards._text("结果见下一条消息")], summary=f"{head['name']} 已收尾"), now)
+                return True
+            return self._patch(key, card, now)
+        if self._card(done_key) is not None:
+            return self._patch(done_key, card, now)
         return self._patch(key, card, now)
 
     def _batch_runs(self, event: dict) -> tuple[list[dict], str | None]:
