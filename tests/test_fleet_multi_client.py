@@ -117,5 +117,19 @@ class TheGuide(unittest.TestCase):
         self.assertLess(len(server._INSTRUCTIONS.encode()), 4096)
 
 
+
+class TwoProcessesOneStateFile(unittest.TestCase):
+    def test_a_client_minted_elsewhere_survives_the_running_surfaces_save(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            running = TokenStore(Path(tmp), access_ttl=3600, refresh_ttl=86400)
+            operator = TokenStore(Path(tmp), access_ttl=3600, refresh_ttl=86400)
+            minted = operator.register_token_client(client_name="Muse")
+            self.assertEqual(running.client(minted.client_id).client_name, "Muse")
+            running.register_client(client_name="Grok", redirect_uris=["https://g.example/cb"])
+            again = TokenStore(Path(tmp), access_ttl=3600, refresh_ttl=86400)
+            names = sorted(c["client_name"] for c in again.clients())
+        self.assertEqual(names, ["Grok", "Muse"])
+
+
 if __name__ == "__main__":
     unittest.main()

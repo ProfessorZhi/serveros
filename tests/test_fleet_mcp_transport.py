@@ -1427,3 +1427,64 @@ class ARefusedRegistrationWithoutAnAudit(unittest.TestCase):
         )
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(body)["error"], "invalid_redirect_uri")
+
+
+class ConnectorTokens(_HttpHarness):
+    """Apps that take an API key instead of OAuth (Meta Muse): a scoped,
+    expiring, revocable token minted on the host — never the owner token."""
+
+    def _mint(self, scopes="fleet:read", days=90, name="Muse"):
+        import io
+        from unittest import mock
+        from fleet_mcp import runtime
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(runtime, "default_store_root",
+                               return_value=Path(self._tmp.name) / "oauth"):
+            code = runtime.mint_token_command(self.config, name=name, scopes=scopes,
+                                              days=days, out=out, err=err)
+        return code, out.getvalue().strip(), err.getvalue()
+
+    def test_a_minted_token_reads_and_cannot_send(self):
+        code, token, err = self._mint()
+        self.assertEqual(code, 0)
+        self.assertNotIn(token, err)                      # the token is only on stdout
+        self.assertIn("--revoke-client token-", err)
+        status, _, body = self.client.rpc({"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                                          token=token)
+        self.assertEqual(status, 200)
+        names = [t["name"] for t in body["result"]["tools"]]
+        self.assertIn("fleet_guide", names)
+        status, _, body = self.client.rpc(
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+             "params": {"name": "fleet_send_to_session",
+                        "arguments": {"session_ref": f"{TOKYO}|claude|abc", "message": "hi"}}},
+            token=token)
+        self.assertEqual(body["result"]["structuredContent"]["code"], "SCOPE_DENIED")
+
+    def test_it_lives_as_long_as_asked_and_dies_on_revoke(self):
+        code, token, err = self._mint(days=30)
+        claims = self.oauth.store.signed_claims(token)
+        self.assertAlmostEqual(claims["exp"] - claims["iat"], 30 * 86400, delta=5)
+        client_id = claims["cid"]
+        self.assertTrue(client_id.startswith("token-"))
+        self.assertEqual(self.oauth.store.client(client_id).redirect_uris, ())
+        self.oauth.store.revoke_client(client_id)
+        status, _, _ = self.client.rpc({"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
+                                       token=token)
+        self.assertEqual(status, 401)
+
+    def test_it_cannot_start_an_oauth_flow(self):
+        _, token, _ = self._mint()
+        client_id = self.oauth.store.signed_claims(token)["cid"]
+        status, _, _ = self.client.request("GET", "/oauth/authorize?" + urllib.parse.urlencode({
+            "response_type": "code", "client_id": client_id, "redirect_uri": CHATGPT_REDIRECT,
+            "scope": "fleet:read", "state": "s", "code_challenge": "x" * 43,
+            "code_challenge_method": "S256"}))
+        self.assertNotEqual(status, 302)
+
+    def test_only_grantable_scopes_and_bounded_days(self):
+        self.assertEqual(self._mint(scopes="fleet:approve")[0], 2)
+        self.assertEqual(self._mint(scopes="")[0], 2)
+        self.assertEqual(self._mint(days=0)[0], 2)
+        self.assertEqual(self._mint(days=400)[0], 2)
+        self.assertEqual(self._mint(name="   ")[0], 2)

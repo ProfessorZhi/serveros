@@ -321,6 +321,10 @@ class TokenStore:
         self._revocations["tokens"] = {
             jti: exp for jti, exp in self._revocations["tokens"].items() if exp > now
         }
+        # Clients another process added (a connector token minted with
+        # `--mint-token` while this surface runs) are kept, not overwritten.
+        for client_id, client in self._load_state()[0].items():
+            self._clients.setdefault(client_id, client)
         payload = {
             "clients": [c.as_dict() for c in self._clients.values()],
             "refresh": {
@@ -397,9 +401,38 @@ class TokenStore:
     #: and kept like a registered client. Replaceable in tests.
     metadata_fetcher = None
 
+    #: A connector token's client: no redirect URI, so it can never start an
+    #: OAuth flow — its only credential is the token minted beside it.
+    TOKEN_CLIENT_PREFIX = "token-"
+    #: The longest a connector token may live (it has no refresh; re-mint).
+    TOKEN_MAX_DAYS = 365
+
+    def register_token_client(self, *, client_name: str) -> RegisteredClient:
+        """A client for one long-lived connector token (Muse and other apps
+        that take an API key instead of OAuth). Listed and revoked like any
+        other client (`--list-clients`, `--revoke-client`)."""
+        name = " ".join(str(client_name or "").split())[:60]
+        if not name:
+            raise OAuthError("invalid_client_metadata", "a connector token needs a name")
+        client = RegisteredClient(
+            client_id=self.TOKEN_CLIENT_PREFIX + secrets.token_urlsafe(12),
+            client_name=name, redirect_uris=(),
+        )
+        with self._lock:
+            self._clients[client.client_id] = client
+            self._save_state()
+        return client
+
     def client(self, client_id: str) -> RegisteredClient:
         self._reload_revocations_if_changed()
         client = self._clients.get(client_id)
+        if client is None and client_id.startswith(self.TOKEN_CLIENT_PREFIX):
+            # Minted by another process (the operator's `--mint-token`) after
+            # this surface loaded its state: read it from the shared file.
+            client = self._load_state()[0].get(client_id)
+            if client is not None:
+                with self._lock:
+                    self._clients.setdefault(client_id, client)
         if client is None and client_id.startswith("https://"):
             client = self._client_from_metadata(client_id)
         if client is None:
@@ -463,8 +496,9 @@ class TokenStore:
 
     def mint_access_token(self, *, client_id: str, subject: str, scopes: tuple[str, ...],
                           audience: str, issuer: str | None = None,
-                          idp: str | None = None) -> tuple[str, int]:
+                          idp: str | None = None, ttl: int | None = None) -> tuple[str, int]:
         now = int(time.time())
+        ttl = self.access_ttl if ttl is None else int(ttl)
         payload = {
             # `iss` is the authorization server and `aud` is the protected
             # resource. They are different URLs whenever the resource is mounted
@@ -477,7 +511,7 @@ class TokenStore:
             "cid": client_id,
             "scope": " ".join(scopes),
             "iat": now,
-            "exp": now + self.access_ttl,
+            "exp": now + ttl,
             "jti": secrets.token_urlsafe(12),
         }
         # Only emitted when it says something. The owner-PAT path (and every
@@ -493,7 +527,7 @@ class TokenStore:
             + _b64(json.dumps(payload, separators=(",", ":")).encode())
         )
         signature = hmac.new(self._key, signing_input.encode("ascii"), hashlib.sha256).digest()
-        return f"{signing_input}.{_b64(signature)}", self.access_ttl
+        return f"{signing_input}.{_b64(signature)}", ttl
 
     def signed_claims(self, token: str) -> dict[str, Any] | None:
         """The payload of a token whose signature verifies, or None.
