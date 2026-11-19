@@ -53,12 +53,34 @@ def rows_from(versions: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-def _stale(at: str | None, now: datetime) -> bool:
+#: A device whose key sync is older than this, or failed, is told (S-3).
+SECRETS_STALE = timedelta(hours=36)
+
+
+def secrets_problems(versions: dict[str, Any], now: datetime) -> list[str]:
+    """One line per device whose key-center sync has stopped or failed. Names
+    and times only — the record never holds a value. PURE."""
+    out = []
+    for device in versions.get("devices") or []:
+        name = device.get("display_name") or device.get("device_ref")
+        secrets = device.get("secrets") if isinstance(device.get("secrets"), dict) else None
+        if device.get("state") != "RECORDED" or secrets is None:
+            continue                       # no record: the directory page already says so
+        if secrets.get("state") != "SYNCED":
+            out.append(f"{name}：密钥从没同步过（{secrets.get('state')}）")
+        elif int(secrets.get("errors") or 0):
+            out.append(f"{name}：最近一次同步有 {secrets['errors']} 个错误")
+        elif _stale(secrets.get("synced_at"), now, SECRETS_STALE):
+            out.append(f"{name}：上次同步在 {secrets.get('synced_at')}，超过 36 小时")
+    return out
+
+
+def _stale(at: str | None, now: datetime, limit: timedelta | None = None) -> bool:
     try:
         when = datetime.fromisoformat(str(at).replace("Z", "+00:00"))
     except ValueError:
         return True
-    return now - when > STALE
+    return now - when > (limit or STALE)
 
 
 def page(rows: list[dict[str, Any]], now: datetime) -> str:
@@ -173,10 +195,21 @@ class WorkspaceReport:
         day = f"{local:%Y-%m-%d}"
         done: dict[str, Any] = {}
         if state.get("day") != day:
-            rows = rows_from(self.versions())
+            versions = self.versions()
+            rows = rows_from(versions)
+            problems = secrets_problems(versions, now)
             path = self._dir / f"{local:%Y}" / f"{local:%m}" / f"{local:%d}.md"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(page(rows, now), encoding="utf-8")
+            text = page(rows, now)
+            text += "\n## 密钥同步（S-3）\n\n" + ("\n".join(f"- {x}" for x in problems)
+                                                if problems else "- 三台都在 36 小时内同步过，没有错误") + "\n"
+            path.write_text(text, encoding="utf-8")
+            if problems and self.send and self.card:
+                self.send(f"keycenter:{day}", self.card(
+                    "密钥同步有问题", problems + ["", "在那台设备上：`serveros-secret doctor`，"
+                                              "再 `serveros-secret sync`。只看名字，不看值。"],
+                    now=now, template="orange"), now)
+                done["secrets"] = len(problems)
             with (self._dir / "history.jsonl").open("a", encoding="utf-8") as handle:
                 for row in rows:
                     slim = {k: v for k, v in row.items() if k != "unregistered_names"}

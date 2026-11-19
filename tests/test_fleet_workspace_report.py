@@ -108,6 +108,37 @@ class TheHubKeepsIt(unittest.TestCase):
         self.assertIn("需要更新", text)
 
 
+
+class KeySyncHealth(unittest.TestCase):
+    def test_stopped_or_failing_sync_is_listed_and_a_fresh_one_is_not(self):
+        now = datetime(2026, 11, 19, 2, tzinfo=timezone.utc)
+        doc = {"devices": [
+            {"display_name": "东京", "state": "RECORDED",
+             "secrets": {"state": "SYNCED", "synced_at": "2026-11-18T23:00:00+00:00", "errors": 0}},
+            {"display_name": "A6000", "state": "RECORDED",
+             "secrets": {"state": "SYNCED", "synced_at": "2026-11-16T23:00:00+00:00", "errors": 0}},
+            {"display_name": "FJPCOS", "state": "RECORDED",
+             "secrets": {"state": "SYNCED", "synced_at": "2026-11-18T23:00:00+00:00", "errors": 2}},
+            {"display_name": "新机", "state": "RECORDED", "secrets": {"state": "NOT_SYNCED"}}]}
+        lines = workspace.secrets_problems(doc, now)
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(any("A6000" in x and "36" in x for x in lines))
+        self.assertTrue(any("FJPCOS" in x and "2 个错误" in x for x in lines))
+
+    def test_the_daily_page_carries_it_and_a_card_goes_out_only_on_trouble(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sent = []
+            doc = versions(device_versions_like())
+            doc["devices"][0]["secrets"] = {"state": "SYNCED", "errors": 1,
+                                            "synced_at": "2026-11-18T23:00:00+00:00"}
+            report = workspace.WorkspaceReport(
+                Path(tmp), lambda: doc, send=lambda k, c, n: sent.append(k) or True,
+                card=lambda title, lines, now, template: {"title": title})
+            done = report.tick(datetime(2026, 11, 18, 2, tzinfo=timezone.utc))
+            text = (Path(tmp) / done["daily"]).read_text(encoding="utf-8")
+        self.assertIn("密钥同步", text)
+        self.assertEqual(sent, ["keycenter:2026-11-18"])
+
 def device_versions_like(**counts) -> dict:
     return {"state": "RECORDED", "at": "2026-11-18T23:40:00Z", "plan_id": "abc123",
             "counts": {**CHECK["counts"], **counts}, "unregistered": 1,
