@@ -131,5 +131,42 @@ class TwoProcessesOneStateFile(unittest.TestCase):
         self.assertEqual(names, ["Grok", "Muse"])
 
 
+class RefusalsSayWhy(unittest.TestCase):
+    """11-19, Muse: 8 approvals, no exchange, 400s and 401s with no reason in
+    the audit. Each refusal now carries a closed word."""
+
+    def test_words(self):
+        from fleet_mcp.oauth import refusal_word
+        cases = {
+            "unknown or already-used authorization code": "code_unknown_or_used",
+            "authorization code expired": "expired",
+            "authorization code was issued to another client": "client_mismatch",
+            "redirect_uri does not match the one registered for this client": "redirect_mismatch",
+            "PKCE with code_challenge_method=S256 is required": "pkce",
+            "unknown client_id": "unknown_client",
+            "this client has been revoked": "revoked",
+            "no Authorization header": "no_header",
+            "token expired": "expired",
+            "something new": "other",
+        }
+        for text, word in cases.items():
+            self.assertEqual(refusal_word(text), word, text)
+
+    def test_the_audit_keeps_the_word(self):
+        from fleet_mcp import disclosure
+        projected, _ = disclosure.project_record({"event": "oauth.authorize.refused",
+                                           "refusal": "redirect_mismatch", "error": "invalid_request",
+                                           "detail": "redirect_uri https://evil/x"})
+        self.assertEqual(projected["refusal"], "redirect_mismatch")
+        self.assertNotIn("evil", str(projected))
+
+    def test_registration_time_is_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = TokenStore(Path(tmp), access_ttl=3600, refresh_ttl=86400)
+            store.register_client(client_name="Grok", redirect_uris=["https://g.example/cb"])
+            row = TokenStore(Path(tmp), access_ttl=3600, refresh_ttl=86400).clients()[0]
+        self.assertNotIn("unknown", row["created_at"])
+
+
 if __name__ == "__main__":
     unittest.main()

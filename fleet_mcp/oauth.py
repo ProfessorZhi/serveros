@@ -100,6 +100,7 @@ class RegisteredClient:
             "client_name": self.client_name,
             "redirect_uris": list(self.redirect_uris),
             "token_endpoint_auth_method": self.token_endpoint_auth_method,
+            "created_at": self.created_at,
         }
 
 
@@ -290,7 +291,9 @@ class TokenStore:
                 client_id=row["client_id"],
                 client_name=row.get("client_name", ""),
                 redirect_uris=tuple(row.get("redirect_uris") or ()),
-                created_at=row.get("created_at", time.time()),
+                # Older state files never stored it (11-19: `--list-clients`
+                # printed the load time for every client); 0 reads as unknown.
+                created_at=float(row.get("created_at") or 0),
                 token_endpoint_auth_method=row.get("token_endpoint_auth_method", "none"),
             )
             for row in raw.get("clients") or []
@@ -501,7 +504,8 @@ class TokenStore:
             )
             rows.append({
                 **client.as_dict(),
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(client.created_at)),
+                "created_at": (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(client.created_at))
+                               if client.created_at else "unknown (registered before 11-20)"),
                 "revoked": revoked_at is not None,
                 "revoked_at": (
                     time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(revoked_at))
@@ -1612,3 +1616,23 @@ __all__ = [
     "store_root_for",
     "_validate_redirect_uri",
 ]
+
+
+def refusal_word(description: str) -> str:
+    """A closed word for why an authorization request or a bearer was refused,
+    for the audit (the description itself may quote the caller). PURE."""
+    text = (description or "").lower()
+    for needle, word in (("already-used", "code_unknown_or_used"),
+                         ("issued to another client", "client_mismatch"),
+                         ("belongs to another client", "client_mismatch"),
+                         ("redirect_uri", "redirect_mismatch"), ("pkce", "pkce"),
+                         ("code_challenge", "pkce"), ("scope", "scope"),
+                         ("unknown client", "unknown_client"), ("unknown_client", "unknown_client"),
+                         ("unknown client_id", "unknown_client"), ("revoked", "revoked"),
+                         ("response_type", "response_type"), ("resource", "target"),
+                         ("expired", "expired"), ("audience", "audience"),
+                         ("signature", "bad_signature"), ("no authorization header", "no_header"),
+                         ("bearer", "not_bearer"), ("acts as is gone", "acted_client_gone")):
+        if needle in text:
+            return word
+    return "other"

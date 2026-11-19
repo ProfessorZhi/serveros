@@ -397,6 +397,10 @@ class HttpSurface:
                 # way to land here, and a page with greyed-out scope boxes reads
                 # to an operator as "permissions are off" rather than "this URL
                 # carries no authorization request".
+                if self.audit:
+                    from .oauth import refusal_word
+                    self.audit.record("oauth.authorize.refused", client_id=params.get("client_id"),
+                                      error=exc.error, refusal=refusal_word(exc.description))
                 return render(exc.status, _placeholder_client(params), form=params,
                               error=f"{exc.error}: {exc.description}", interactive=False)
             return render(200, client, form=params)
@@ -663,8 +667,10 @@ class HttpSurface:
             # in the code. The description is deliberately NOT recorded: it is
             # written for the caller and may quote what they sent.
             if self.audit:
+                from .oauth import refusal_word
                 self.audit.record("oauth.token.refused", grant_type=form.get("grant_type"),
-                                  client_id=form.get("client_id"), error=exc.error)
+                                  client_id=form.get("client_id"), error=exc.error,
+                                  refusal=refusal_word(exc.description))
             raise
         if self.audit:
             self.audit.record("oauth.token", grant_type=form.get("grant_type"),
@@ -751,7 +757,8 @@ class HttpSurface:
         )
         challenge = f'Bearer resource_metadata="{resource_metadata}"'
         if self.audit:
-            self.audit.record("mcp.unauthorized", detail=detail)
+            from .oauth import refusal_word
+            self.audit.record("mcp.unauthorized", detail=detail, refusal=refusal_word(detail))
         return _json(
             401,
             {"error": "invalid_token", "error_description": detail},
