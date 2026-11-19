@@ -210,6 +210,16 @@ class HttpSurface:
                     )
                 return Principal(name=subject, scopes=scopes, credential_kind="feishu")
             name = f"oauth:{claims.get('cid', 'unknown')}"
+            act = str(claims.get("act") or "")
+            if act.startswith("oauth:"):
+                # Minted `like` a signed-in client: the same principal, so the
+                # same grants. That client being revoked ends this one too.
+                try:
+                    self.oauth.store.client(act[len("oauth:"):])
+                except OAuthError as exc:
+                    raise HttpAuthError(f"the client this token acts as is gone: "
+                                        f"{exc.description}") from None
+                return Principal(name=act, scopes=scopes, credential_kind="oauth")
             try:
                 # The client's registered name, beside the principal, for the
                 # commander log (chat vs agent); never a gate.
