@@ -1433,15 +1433,16 @@ class ConnectorTokens(_HttpHarness):
     """Apps that take an API key instead of OAuth (Meta Muse): a scoped,
     expiring, revocable token minted on the host — never the owner token."""
 
-    def _mint(self, scopes="fleet:read", days=90, name="Muse"):
+    def _mint(self, scopes="fleet:read", days=90, name="Muse", like=None, config=None):
         import io
         from unittest import mock
         from fleet_mcp import runtime
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(runtime, "default_store_root",
                                return_value=Path(self._tmp.name) / "oauth"):
-            code = runtime.mint_token_command(self.config, name=name, scopes=scopes,
-                                              days=days, out=out, err=err)
+            code = runtime.mint_token_command(config or self.config, name=name, scopes=scopes,
+                                              days=days, out=out, err=err,
+                                              like=like)
         return code, out.getvalue().strip(), err.getvalue()
 
     def test_a_minted_token_reads_and_cannot_send(self):
@@ -1488,3 +1489,44 @@ class ConnectorTokens(_HttpHarness):
         self.assertEqual(self._mint(days=0)[0], 2)
         self.assertEqual(self._mint(days=400)[0], 2)
         self.assertEqual(self._mint(name="   ")[0], 2)
+
+    def test_like_a_signed_in_client_it_is_that_client_with_its_scopes(self):
+        import dataclasses
+        from fleet_mcp.http_transport import HttpAuthError, HttpSurface
+        store = self.oauth.store
+        chatgpt = store.register_client(client_name="ChatGPT", redirect_uris=[CHATGPT_REDIRECT])
+        self.assertEqual(self._mint(like=chatgpt.client_id)[0], 2)      # not signed in yet
+        store.mint_refresh_token(client_id=chatgpt.client_id, subject="operator",
+                                 scopes=("fleet:read", "fleet:send"))
+        principal_name = f"oauth:{chatgpt.client_id}"
+        config = dataclasses.replace(self.config, policy=dataclasses.replace(
+            self.config.policy, operator_grants={principal_name: {TOKYO: ("send",)}}))
+        code, token, err = self._mint(scopes=None, like=chatgpt.client_id, config=config)
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"acts as     {principal_name}", err)
+        self.assertIn("scopes      fleet:read fleet:send", err)
+        surface = HttpSurface(service=self.service, config=config, oauth=self.oauth,
+                              audit=self.service.audit)
+        principal = surface.principal_for_token(token)
+        self.assertEqual(principal.name, principal_name)         # the same grants
+        self.assertEqual(set(principal.scopes), {"fleet:read", "fleet:send"})
+        muse = store.signed_claims(token)["cid"]
+        self.assertNotEqual(muse, chatgpt.client_id)
+        store.revoke_client(muse)                                 # Muse alone
+        with self.assertRaises(HttpAuthError):
+            surface.principal_for_token(token)
+        self.assertEqual(store.client(chatgpt.client_id).client_name, "ChatGPT")
+
+    def test_revoking_the_client_it_is_like_ends_it_too(self):
+        from fleet_mcp.http_transport import HttpAuthError, HttpSurface
+        store = self.oauth.store
+        codex = store.register_client(client_name="Codex", redirect_uris=[CHATGPT_REDIRECT])
+        store.mint_refresh_token(client_id=codex.client_id, subject="operator",
+                                 scopes=("fleet:read",))
+        _, token, _ = self._mint(scopes=None, like=codex.client_id)
+        surface = HttpSurface(service=self.service, config=self.config, oauth=self.oauth,
+                              audit=self.service.audit)
+        self.assertEqual(surface.principal_for_token(token).name, f"oauth:{codex.client_id}")
+        store.revoke_client(codex.client_id)
+        with self.assertRaises(HttpAuthError):
+            surface.principal_for_token(token)

@@ -220,9 +220,13 @@ def clients_command(config: FleetConfig, *, revoke: str | None, as_json: bool) -
     return 0
 
 
-def mint_token_command(config: FleetConfig, *, name: str, scopes: str, days: int,
-                       out=None, err=None) -> int:
-    """`--mint-token NAME --scopes fleet:read[,fleet:send] [--days 90]`.
+def mint_token_command(config: FleetConfig, *, name: str, scopes: str | None, days: int,
+                       out=None, err=None, like: str | None = None) -> int:
+    """`--mint-token NAME [--like CLIENT_ID | --scopes fleet:read[,fleet:send]] [--days 90]`.
+
+    `--like` is the usual form: the token holds exactly what that signed-in
+    client (ChatGPT, Claude Code, Codex …) holds — its principal, so the same
+    per-principal grants, and the scopes of its live sign-in.
 
     A long-lived, scoped, revocable bearer token for one app that takes an API
     key instead of OAuth (Meta Muse builds its connector from a URL and a key).
@@ -236,11 +240,6 @@ def mint_token_command(config: FleetConfig, *, name: str, scopes: str, days: int
     """
     out = out or sys.stdout
     err = err or sys.stderr
-    wanted = tuple(dict.fromkeys(x.strip() for x in scopes.split(",") if x.strip()))
-    allowed = set(config.auth.grantable_scopes)
-    if not wanted or not set(wanted) <= allowed:
-        err.write(f"{SERVER_NAME}: --scopes must be some of {sorted(allowed)}\n")
-        return 2
     if not 1 <= days <= TokenStore.TOKEN_MAX_DAYS:
         err.write(f"{SERVER_NAME}: --days must be 1..{TokenStore.TOKEN_MAX_DAYS}\n")
         return 2
@@ -250,18 +249,43 @@ def mint_token_command(config: FleetConfig, *, name: str, scopes: str, days: int
                        rotation_grace_seconds=config.auth.refresh_rotation_grace_seconds)
     base = local_base_url(bind=config.server.bind, port=config.server.port,
                           public_base_url=config.server.public_base_url)
+    standing = None
+    if like is not None:
+        # Exactly what that signed-in client holds: its identity (so the same
+        # per-principal grants) and its scopes — nothing narrower, nothing more.
+        try:
+            standing = store.standing_of(like)
+        except Exception as exc:  # noqa: BLE001 - an unknown id is an operator typo
+            err.write(f"{SERVER_NAME}: --like {like!r}: {exc}\n")
+            return 2
+    allowed = set(config.auth.grantable_scopes)
+    if standing is not None and scopes is None:
+        wanted = standing["scopes"]
+    else:
+        wanted = tuple(dict.fromkeys(x.strip() for x in (scopes if scopes is not None else "fleet:read").split(",")
+                                     if x.strip()))
+        if not wanted or not set(wanted) <= allowed:
+            err.write(f"{SERVER_NAME}: --scopes must be some of {sorted(allowed)}\n")
+            return 2
     try:
         client = store.register_token_client(client_name=name)
     except Exception as exc:  # noqa: BLE001 - a bad name is an operator typo
         err.write(f"{SERVER_NAME}: {exc}\n")
         return 2
+    acts_as = standing["principal"] if standing else f"oauth:{client.client_id}"
     token, ttl = store.mint_access_token(
-        client_id=client.client_id, subject=f"token:{client.client_name}", scopes=wanted,
-        audience=f"{base}{config.server.mcp_path}", issuer=base, ttl=days * 86400)
+        client_id=client.client_id,
+        subject=acts_as if standing and standing["idp"] else f"token:{client.client_name}",
+        scopes=wanted, audience=f"{base}{config.server.mcp_path}", issuer=base,
+        ttl=days * 86400, idp=standing["idp"] if standing else None,
+        act=acts_as if standing and not standing["idp"] else None)
     err.write(
         f"connector token for {client.client_name!r}\n"
         f"  client_id   {client.client_id}   (revoke: --revoke-client {client.client_id})\n"
         f"  scopes      {' '.join(wanted)}\n"
+        f"  acts as     {acts_as}"
+        + (f"   (like {standing['client_name']!r}; revoking that client ends this token too)"
+           if standing else "") + "\n"
         f"  expires in  {days} days\n"
         f"  endpoint    {base}{config.server.mcp_path}   (Authorization: Bearer <token>)\n"
         f"the token follows on stdout, once; it is not stored here and cannot be shown again\n")
@@ -277,8 +301,9 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
     revoke_client: str | None = None
     as_json = False
     mint_name: str | None = None
-    mint_scopes = "fleet:read"
+    mint_scopes: str | None = None
     mint_days = 90
+    mint_like: str | None = None
     index = 0
     while index < len(argv):
         arg = argv[index]
@@ -300,7 +325,7 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
                 sys.stderr.write("fleet-mcp: --revoke-client needs a client_id\n")
                 return 2
             revoke_client = argv[index]
-        elif arg in ("--mint-token", "--scopes", "--days"):
+        elif arg in ("--mint-token", "--scopes", "--days", "--like"):
             index += 1
             if index >= len(argv):
                 sys.stderr.write(f"fleet-mcp: {arg} needs a value\n")
@@ -309,6 +334,8 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
                 mint_name = argv[index]
             elif arg == "--scopes":
                 mint_scopes = argv[index]
+            elif arg == "--like":
+                mint_like = argv[index]
             else:
                 try:
                     mint_days = int(argv[index])
@@ -337,7 +364,8 @@ def main(argv: list[str] | None = None, *, service_factory=build_service) -> int
         return 3
 
     if mint_name is not None:
-        return mint_token_command(config, name=mint_name, scopes=mint_scopes, days=mint_days)
+        return mint_token_command(config, name=mint_name, scopes=mint_scopes, days=mint_days,
+                                  like=mint_like)
 
     if list_clients or revoke_client is not None:
         # These act on state, not on a socket, so they are answered before any
@@ -366,7 +394,10 @@ Usage:
                                              who has been given OAuth access here
   serveros-fleet-mcp --revoke-client ID [-c PATH]
                                              stop a client: its tokens die now
-  serveros-fleet-mcp --mint-token NAME [--scopes fleet:read[,fleet:send]] [--days 90] [-c PATH]
+  serveros-fleet-mcp --mint-token NAME [--scopes fleet:read[,fleet:send]] [--days 90]
+                     [--like CLIENT_ID] [-c PATH]
+                                             --like: hold exactly what that signed-in
+                                             client holds (identity and scopes)
                                              a scoped, expiring bearer token for one
                                              app that takes an API key (e.g. Muse)
   serveros-fleet-mcp --version | --help

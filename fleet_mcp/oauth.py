@@ -423,6 +423,25 @@ class TokenStore:
             self._save_state()
         return client
 
+    def standing_of(self, client_id: str) -> dict[str, Any]:
+        """What a signed-in client holds right now — its identity and the
+        scopes of its live grants — so a connector token can be minted `like`
+        it (`--mint-token … --like <client_id>`). Refuses a client with no live
+        grant: there is nothing to copy until it has signed in."""
+        client = self.client(client_id)
+        now = time.time()
+        live = [r for r in self._refresh.values()
+                if r.client_id == client_id and not r.revoked and r.rotated_to is None
+                and r.expires_at > now]
+        if not live:
+            raise OAuthError("invalid_client",
+                             f"{client.client_name!r} has no live sign-in to copy; sign it in first")
+        scopes = tuple(dict.fromkeys(x for r in live for x in r.scopes))
+        feishu = next((r.subject for r in live if r.idp == "feishu"), None)
+        return {"client_id": client_id, "client_name": client.client_name, "scopes": scopes,
+                "principal": feishu or f"oauth:{client_id}",
+                "idp": "feishu" if feishu else None}
+
     def client(self, client_id: str) -> RegisteredClient:
         self._reload_revocations_if_changed()
         client = self._clients.get(client_id)
@@ -496,7 +515,8 @@ class TokenStore:
 
     def mint_access_token(self, *, client_id: str, subject: str, scopes: tuple[str, ...],
                           audience: str, issuer: str | None = None,
-                          idp: str | None = None, ttl: int | None = None) -> tuple[str, int]:
+                          idp: str | None = None, ttl: int | None = None,
+                          act: str | None = None) -> tuple[str, int]:
         now = int(time.time())
         ttl = self.access_ttl if ttl is None else int(ttl)
         payload = {
@@ -520,6 +540,10 @@ class TokenStore:
         # equivalent.
         if idp and idp != "oauth":
             payload["idp"] = idp
+        # A connector token minted `like` another client acts as that client's
+        # principal (`oauth:<its id>`); its own `cid` still decides revocation.
+        if act:
+            payload["act"] = act
         header = {"alg": "HS256", "typ": "at+jwt"}
         signing_input = (
             _b64(json.dumps(header, separators=(",", ":")).encode())
@@ -614,6 +638,12 @@ class TokenStore:
 
     def revoke_client(self, client_id: str) -> dict[str, Any]:
         """Revoke a client: its tokens die and its refresh chains die with it."""
+        if client_id not in self._clients and client_id.startswith(self.TOKEN_CLIENT_PREFIX):
+            # Minted by another process after this one loaded: read it first.
+            found = self._load_state()[0].get(client_id)
+            if found is not None:
+                with self._lock:
+                    self._clients.setdefault(client_id, found)
         with self._lock:
             client = self._clients.get(client_id)
             if client is None:
