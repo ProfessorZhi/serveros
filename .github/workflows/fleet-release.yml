@@ -7,6 +7,8 @@
 #   serveros-fleet-mcp-v<ver>.zip          any other MCP agent (mcp.json + skills/)
 #   install.sh / install.ps1               one-command install / update on a machine
 #   serveros-core-lite-windows-x64.zip     the Windows collector + status builder (MSVC, static)
+#   serveros-eventd-linux-x64(.sha256)     the event pusher (D-4), static musl
+#   serveros-eventd-windows-x64.exe(.sha256)  the event pusher for Windows
 #
 # Two releases: `fleet-v<ver>` is created once per version and never replaced;
 # `fleet-latest` is replaced on every run and also carries unversioned
@@ -27,6 +29,7 @@ on:
       - "distribution/**"
       - "integrations/fleet-v1-first-install/plugin/**"
       - "native/node-core/**"
+      - "native/rust/eventd/**"
       - ".github/workflows/fleet-release.yml"
   workflow_dispatch:
 
@@ -97,10 +100,53 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
+  eventd:
+    name: Event pusher (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            asset: serveros-eventd-linux-x64
+            built: serveros-eventd
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: serveros-eventd-windows-x64.exe
+            built: serveros-eventd.exe
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        shell: bash
+        run: |
+          rustup target add ${{ matrix.target }}
+          if [ "${{ runner.os }}" = "Linux" ]; then sudo apt-get update -q && sudo apt-get install -yq musl-tools; fi
+      - name: Test and build
+        shell: bash
+        working-directory: native/rust/eventd
+        run: |
+          cargo test --release
+          cargo build --release --target ${{ matrix.target }}
+          mkdir -p ../../../dist
+          cp target/${{ matrix.target }}/release/${{ matrix.built }} ../../../dist/${{ matrix.asset }}
+          ../../../dist/${{ matrix.asset }} --version
+          cd ../../../dist
+          if command -v sha256sum >/dev/null; then sha256sum ${{ matrix.asset }} > ${{ matrix.asset }}.sha256
+          else certutil -hashfile ${{ matrix.asset }} SHA256 | sed -n 2p | tr -d ' \r' | awk -v f=${{ matrix.asset }} '{print $1"  "f}' > ${{ matrix.asset }}.sha256; fi
+          cat ${{ matrix.asset }}.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eventd-${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}
+            dist/${{ matrix.asset }}.sha256
+          if-no-files-found: error
+
   release:
     name: Publish fleet-latest
     if: github.event_name != 'pull_request'
-    needs: [plugins, windows-collector]
+    needs: [plugins, windows-collector, eventd]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -132,6 +178,7 @@ jobs:
             echo "| \`serveros-fleet-mcp-v${version}.zip\` | any other MCP agent: \`mcp.json\` + \`skills/\` |"
             echo "| \`install.sh\` / \`install.ps1\` | one-command install / update |"
             echo "| \`serveros-core-lite-windows-x64.zip\` | Windows devices: \`distribution/windows/update.ps1 -FromRelease -Apply\` |"
+            echo "| \`serveros-eventd-linux-x64\` / \`serveros-eventd-windows-x64.exe\` (+ \`.sha256\`) | event pusher (D-4): \`python3 distribution/eventd/install.py --apply\` |"
             echo
             echo "MCP server: https://fleet-v1.professorzhi.fun/mcp — sign in with account, password and one-time code. SHA-256:"
             echo

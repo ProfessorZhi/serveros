@@ -122,6 +122,12 @@ ROUTES = (
     # parameterless for the same reason as the Core route above, and signed the
     # same way: the connector reads its own owner-fixed record and projects it.
     "GET /v1/device/versions",
+    # D-4: this machine's run events (started / ended / waiting for a person),
+    # as `serveros-eventd` spooled them. A read with two numbers in the query
+    # (`after`, `wait`); it waits up to 25 s for the first new event, which is
+    # what lets the hub hear of a finished run in seconds. Signed like the
+    # other answers that describe this machine.
+    "GET /v1/events",
     # CloudCLI's model library on this machine: list projected entries, and
     # create or replace ONE custom entry. Named routes with the provider and the
     # entry in the SIGNED body. The connector reaches CloudCLI's REST routes on

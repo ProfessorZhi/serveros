@@ -257,6 +257,20 @@ class CloudCliProvider(DeviceProvider):
             arguments["answers"] = answers
         return self._call("approval_answer", arguments, session=key)
 
+    def events(self, *, after: int, wait: float) -> dict[str, Any]:
+        """This device's run events (D-4) when its CloudCLI is on THIS machine:
+        the spool `serveros-eventd` writes for this account, read directly."""
+        import urllib.parse
+
+        from ..node import events as spool
+
+        if urllib.parse.urlsplit(self.binding.endpoint).hostname not in ("127.0.0.1", "localhost", "::1"):
+            raise refuse("CAPABILITY_UNSUPPORTED",
+                         f"{self.device_ref}'s CloudCLI is not on this machine; its events "
+                         f"come over the node channel")
+        path = getattr(self.binding, "events_spool_path", None) or spool.default_spool()
+        return spool.wait_since(path, int(after), wait)
+
     def native_call(self, tool: str, arguments: dict[str, Any], *,
                     session_ref: str | None = None) -> dict[str, Any]:
         """Call ONE native tool by a name this build records. Never a proxy.

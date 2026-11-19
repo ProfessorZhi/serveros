@@ -299,6 +299,15 @@ def main(argv: list[str] | None = None) -> int:
             journal.root, lambda: service.device_versions(principal),
             send=notifier.notify_owner if notifier is not None else None, card=text_card,
             state_path=journal._state_path().with_name("fleet-workspace.json"))
+    # D-4: hear of a run the moment its device does (one long-poll per device);
+    # the 30-second tick stays as the safety net.
+    from .events import EventPump
+    pump = EventPump(service, principal,
+                     lambda: [e.device_ref.ref for e in service.registry.all()
+                              if getattr(e, "ownership", None) == "company"],
+                     directory / "events.cursor.json")
+    if not args.once:
+        pump.start()
     beat = directory / "watch.heartbeat.json"
     lark_state: dict = {}
     buttons = None
@@ -420,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
                               "devices": {v["device_ref"]: v["level"] for v in views},
                               "notify": sent, "card_spec": specs.state,
                               "journal": journaled,
+                              "events": pump.health(),
                               "commands_applied": applied,
                               "feishu": ({**lark_state, "buttons": buttons.state,
                                           "clicks_handled": buttons.handled,
@@ -441,7 +451,13 @@ def main(argv: list[str] | None = None) -> int:
             remaining = deadline - time.time()
             if remaining <= 0:
                 break
-            time.sleep(min(remaining, PULSE_SECONDS))
+            if pump.wake.wait(min(remaining, PULSE_SECONDS)):
+                # A device said a run started or ended: observe it now.
+                pump.wake.clear()
+                try:
+                    pump.handle(watcher)
+                except Exception as exc:  # noqa: BLE001 - the tick will catch up
+                    print(f"pushed events failed: {describe(exc)}", file=sys.stderr)
             if notifier is None:
                 continue
             try:

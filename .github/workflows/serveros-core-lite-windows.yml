@@ -16,6 +16,9 @@ on:
       - "native/node-core/contract/**"
       - "fleet_mcp/node/win_file.py"
       - "fleet_mcp/node/connector.py"
+      - "fleet_mcp/node/events.py"
+      - "native/rust/eventd/**"
+      - "distribution/eventd/**"
       - "tests/test_fleet_node_win_file.py"
       - "distribution/windows/**"
       - "distribution/install/**"
@@ -119,6 +122,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 -DryRun failed ($LASTEXITCODE)" }
           if ($out -notmatch 'ProfessorZhi/serveros @ main') { throw "install.ps1 does not install from GitHub main" }
           if ($out -notmatch 'fleet-latest/serveros-fleet-openai.zip') { throw "install.ps1 lost the ChatGPT link" }
+
+      - name: Event pusher builds and passes its tests on Windows
+        shell: pwsh
+        working-directory: native/rust/eventd
+        run: |
+          cargo test --release
+          if ($LASTEXITCODE -ne 0) { throw "eventd tests failed" }
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) { throw "eventd build failed" }
+          & target/release/serveros-eventd.exe --version | Out-String | Write-Host
+          if ($LASTEXITCODE -ne 0) { throw "eventd does not run" }
 
       - name: Connector reader tests with the real owner check
         shell: pwsh
