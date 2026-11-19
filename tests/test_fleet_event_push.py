@@ -201,6 +201,52 @@ class TheHubPump(unittest.TestCase):
         self.assertEqual(waits, [5, 10, 30])
 
 
+
+class ThePushedEndDecides(unittest.TestCase):
+    """11-19: work-fj pushed run.ended (completed) at 15:12:25, the hub's own
+    run read said UNKNOWN, and the batch closed at 15:17:57 — 5.5 minutes."""
+
+    def test_the_fast_lane_runs_on_the_event_thread(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            pump = EventPump(FakeService([{"events": [{"seq": 1, "kind": "run.ended", "run": "r",
+                                                       "session": "s", "at": iso()}],
+                                           "next": 1, "runtime": "claude"}]),
+                             object(), lambda: ["device:a"], Path(tmp) / "c.json", wait=0,
+                             on_events=lambda: calls.append(1))
+            pump.poll_once("device:a")
+        self.assertEqual(calls, [1])
+
+    def test_a_watched_run_the_device_reported_completed_is_completed(self):
+        from fleet_hub_watch import watch as watch_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = WatchStore(Path(tmp) / "w.sqlite3")
+            store.add(session_ref="device:a|claude|s", run_id="r1", device_ref="device:a",
+                      runtime="claude", project=None, now=time.time())
+            recorded = []
+            watcher = watch_mod.Watcher.__new__(watch_mod.Watcher)
+            watcher.store, watcher.clock = store, time.time
+            watcher.max_age, watcher.stall_after = 3600, 7200
+            watcher.pushed_end = {}
+            watcher.inbox = type("I", (), {
+                "record": lambda self, e: recorded.append(e) or type("R", (), {"seq": 1, "created": True})(),
+                "trace": lambda self, *a, **k: None,
+                "was_dispatched": lambda self, *a: False})()
+            watcher._observe = lambda w: {"status": watch_mod.STATUS_UNKNOWN,
+                                          "reason": "NO_NATIVE_ACTIVITY"}
+            pump = EventPump(FakeService([{"events": [{"seq": 1, "kind": "run.ended", "run": "r1",
+                                                       "session": "s", "status": "completed",
+                                                       "at": iso()}],
+                                           "next": 1, "runtime": "claude"}]),
+                             object(), lambda: ["device:a"], Path(tmp) / "c.json", wait=0)
+            pump.poll_once("device:a")
+            watcher.adopt_dispatched = lambda now=None: []
+            pump.handle(watcher)
+            self.assertEqual(store.all(), [])
+        self.assertEqual([e["kind"] for e in recorded], ["run.completed"])
+        self.assertIn("device reported", recorded[0]["summary"])
+
 class FakeGateway(BaseHTTPRequestHandler):
     """A CloudCLI MCP gateway that answers initialize and `changes`."""
     seen_auth: list = []

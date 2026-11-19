@@ -322,10 +322,23 @@ def main(argv: list[str] | None = None) -> int:
     # D-4: hear of a run the moment its device does (one long-poll per device);
     # the 30-second tick stays as the safety net.
     from .events import EventPump
+    import threading
+    #: One lock around what changes state — observing runs and sending cards —
+    #: shared by the main loop and the event threads. Device discovery (tens of
+    #: seconds of network reads) runs outside it, so a pushed event never waits
+    #: for a tick to finish.
+    lane = threading.Lock()
+
+    def fast_lane() -> None:
+        with lane:
+            pump.handle(watcher)
+            if notifier is not None:
+                notifier.pulse(datetime.now(timezone.utc))
+
     pump = EventPump(service, principal,
                      lambda: [e.device_ref.ref for e in service.registry.all()
                               if getattr(e, "ownership", None) == "company"],
-                     directory / "events.cursor.json")
+                     directory / "events.cursor.json", on_events=fast_lane)
     if not args.once:
         pump.start()
     beat = directory / "watch.heartbeat.json"
@@ -407,7 +420,10 @@ def main(argv: list[str] | None = None) -> int:
             applied = apply_commands(control, notifier, specs)
             if specs.refresh() and notifier is not None:
                 notifier.spec = specs.spec
-            result = watcher.tick()
+            discovered = watcher.discover()
+            with lane:
+                result = {"discover": discovered, "observe": watcher.observe(),
+                          "watching": len(watcher.store.all())}
             now = datetime.now(timezone.utc)
             views = resources.sweep(service, principal, watcher.inbox, levels, thresholds,
                                     now_iso=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
@@ -437,7 +453,8 @@ def main(argv: list[str] | None = None) -> int:
                     journaled = journal.tick(now)
                 except Exception as exc:  # noqa: BLE001 - the journal never stops the watch
                     journaled = {"error": describe(exc)}
-            sent = notifier.tick(views, now, rich) if notifier else None
+            with lane:
+                sent = notifier.tick(views, now, rich) if notifier else None
             if buttons is not None and time.time() - last_health > HEALTH_EVERY_SECONDS:
                 lark_state, last_health = feishu.health(), time.time()
             if buttons is not None and not _ready(lark_state.get("user")):
@@ -473,16 +490,19 @@ def main(argv: list[str] | None = None) -> int:
             if remaining <= 0:
                 break
             if pump.wake.wait(min(remaining, PULSE_SECONDS)):
-                # A device said a run started or ended: observe it now.
+                # Normally the fast lane already did this on the event thread;
+                # anything it could not take is handled here.
                 pump.wake.clear()
                 try:
-                    pump.handle(watcher)
+                    with lane:
+                        pump.handle(watcher)
                 except Exception as exc:  # noqa: BLE001 - the tick will catch up
                     print(f"pushed events failed: {describe(exc)}", file=sys.stderr)
             if notifier is None:
                 continue
             try:
-                notifier.pulse(datetime.now(timezone.utc))
+                with lane:
+                    notifier.pulse(datetime.now(timezone.utc))
             except Exception as exc:  # noqa: BLE001 - the next tick reads again
                 print(f"inbox pulse failed: {describe(exc)}", file=sys.stderr)
 
