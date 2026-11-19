@@ -11,7 +11,9 @@
     {"path": "work/worktrees", "kind": "managed", "purpose": "worktrees/<仓库>/<条目编号>", "retain_days": 14},
     {"path": "work/scratch", "kind": "managed", "purpose": "临时实验，到期清", "retain_days": 30},
     {"path": "work/artifacts", "kind": "artifact", "purpose": "artifacts/<项目>/<条目编号>/<运行>", "retain_days": 60},
-    {"path": "work/records", "kind": "managed", "purpose": "hwz-records 与 fleet-journal 的工作 clone"}
+    {"path": "work/records", "kind": "managed", "purpose": "hwz-records 与 fleet-journal 的工作 clone"},
+    {"path": "work/envs", "kind": "managed", "purpose": "测试环境 envs/<条目编号>/{inputs,A,B,results}：A=复现（旧版本），B=修复，同一份 inputs；条目关闭后到期清", "retain_days": 30},
+    {"path": "work/cache", "kind": "managed", "purpose": "pip / uv / pnpm 等共享缓存：所有 worktree 共用一份，不各装各的"}
   ],
   "registered": [
     {"path": ".cache", "purpose": "工具缓存（uv、pip、playwright）"},

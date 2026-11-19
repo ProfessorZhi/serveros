@@ -12,7 +12,9 @@
     {"path": "D:\\work\\scratch", "kind": "managed", "purpose": "临时实验，到期清", "retain_days": 30},
     {"path": "D:\\work\\artifacts", "kind": "artifact", "purpose": "artifacts\\<项目>\\<条目编号>\\<运行>", "retain_days": 60},
     {"path": "D:\\work\\client-tests", "kind": "artifact", "purpose": "真实客户端测试的截图、录屏：client-tests\\<条目编号>", "retain_days": 60},
-    {"path": "D:\\work\\logs-pull", "kind": "managed", "purpose": "拉下来的日志子集 logs-pull\\<日期>，转交 A6000 后到期清", "retain_days": 14}
+    {"path": "D:\\work\\logs-pull", "kind": "managed", "purpose": "拉下来的日志子集 logs-pull\\<日期>，转交 A6000 后到期清", "retain_days": 14},
+    {"path": "D:\\work\\envs", "kind": "managed", "purpose": "测试环境 envs/<条目编号>/{inputs,A,B,results}：A=复现（旧版本），B=修复，同一份 inputs；条目关闭后到期清", "retain_days": 30},
+    {"path": "D:\\work\\cache", "kind": "managed", "purpose": "pip / uv / pnpm 等共享缓存：所有 worktree 共用一份，不各装各的"}
   ],
   "registered": [
     {"path": "D:\\projects", "purpose": "个人项目（只登记，不动；其中 Fleet 的 serveros 检出见 legacy）"},

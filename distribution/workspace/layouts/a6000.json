@@ -11,7 +11,9 @@
     {"path": "work/worktrees", "kind": "managed", "purpose": "worktrees/<仓库>/<条目编号>", "retain_days": 14},
     {"path": "work/scratch", "kind": "managed", "purpose": "临时实验，到期清", "retain_days": 30},
     {"path": "work/artifacts", "kind": "artifact", "purpose": "artifacts/<项目>/<条目编号>/<运行>", "retain_days": 60},
-    {"path": "work/logs", "kind": "managed", "purpose": "生产日志子集 logs/<日期>，分析后到期清", "retain_days": 30}
+    {"path": "work/logs", "kind": "managed", "purpose": "生产日志子集 logs/<日期>，分析后到期清", "retain_days": 30},
+    {"path": "work/envs", "kind": "managed", "purpose": "测试环境 envs/<条目编号>/{inputs,A,B,results}：A=复现（旧版本），B=修复，同一份 inputs；条目关闭后到期清", "retain_days": 30},
+    {"path": "work/cache", "kind": "managed", "purpose": "pip / uv / pnpm 等共享缓存：所有 worktree 共用一份，不各装各的"}
   ],
   "registered": [
     {"path": "projects", "purpose": "个人项目（只登记，不动）"},
@@ -31,10 +33,12 @@
     {"path": "build", "purpose": "设备插件构建目录"},
     {"path": "serveros-secrets", "purpose": "密钥中心"},
     {"path": "opt", "purpose": "手装程序（chrome-for-testing）"},
-    {"path": "snap", "purpose": "snap"}
+    {"path": "snap", "purpose": "snap"},
+    {"path": "/data/home/fjd", "purpose": "数据盘上 fjd 的大文件区：models / datasets / checkpoints（home 里只放链接）"}
   ],
   "protected": [
-    {"path": "/srv/llm-lab", "purpose": "LLM Lab 服务与数据：任何治理都不碰"}
+    {"path": "/srv/llm-lab", "purpose": "LLM Lab 服务与数据：任何治理都不碰"},
+    {"path": "/data/models", "purpose": "LLM Lab 的模型仓库（strata 等）：任何治理都不碰"}
   ],
   "legacy": [
     {"from": "worktrees/*", "as": "repo_or_worktree", "why": "旧 worktree 目录"},
