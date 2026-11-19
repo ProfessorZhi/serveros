@@ -51,9 +51,15 @@
 # `embedding.dense.provider: local` keeps a 47.9 MB GGUF on this disk and
 # stands in front of the model cache under `toolchains/`, so neither a remote
 # call nor a vendor credential is needed for the retrieval half. No VLM is
-# configured: `vlm` is what turns captured material into memory, and capture is
-# OFF by policy until its scope and its cost are decided, so a deployment that
-# configured one would be spending a quota nobody chose.
+# configured: `vlm` is what turns captured material into memory, and capture was
+# OFF by policy until its scope and its cost were decided.
+#
+# DECIDED 2026-11-19 (owner): capture is ON and broad — the journal, records
+# understanding/projects and every whitelisted Feishu chat
+# (`openviking-capture.service.unit`), with the production gateway's small
+# model as the VLM (`ov.conf.template`; its token is a vault variable, added to
+# `openviking.env` by name). Embeddings stay local. Backups are daily and
+# verified (`openviking-backup.*.unit`).
 #
 # THE WORKSPACE THIS SERVES, AND WHO BACKS IT UP
 # ---------------------------------------------
@@ -61,9 +67,8 @@
 # volume, NOT in Git. `memory/openviking/backup.py` is its backup and restore:
 # a tar.gz carrying a manifest of every file's length and sha256, with `verify`
 # recomputing those hashes from the archive's own stream, and `restore`
-# refusing a target that is not empty. Nothing schedules it; a backup that runs
-# on a timer this repository does not own is a backup whose freshness nobody
-# can state.
+# refusing a target that is not empty. `openviking-backup.timer.unit` (in this
+# directory, so this repository owns its schedule) runs it daily.
 
 [Unit]
 Description=OpenViking memory provider (ServerOS Layer C) — independent of serverosd

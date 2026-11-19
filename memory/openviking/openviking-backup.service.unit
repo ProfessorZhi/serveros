@@ -1,0 +1,19 @@
+# openviking-backup — daily verified archive of the OpenViking workspace (V1).
+# Installed as ~/.config/systemd/user/openviking-backup.service (the `.unit`
+# suffix keeps it out of the node runtime's unit surface; see openviking.unit).
+# `backup.py` refuses a live store, so the provider is stopped for the copy
+# (a few seconds at 04:10) and started again whatever the backup's outcome.
+# Keeps 14 archives under ~/backups/openviking/.
+[Unit]
+Description=Back up the OpenViking workspace (stop, archive + verify, start)
+
+[Service]
+Type=oneshot
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStartPre=/usr/bin/systemctl --user stop openviking.service
+ExecStart=/bin/sh -c 'mkdir -p %h/backups/openviking && out=%h/backups/openviking/ov-$(date +%%Y%%m%%d).tar.gz && /usr/bin/python3 @SERVEROS@/memory/openviking/backup.py backup --workspace %h/runtime-assets/openviking/data --out "$out" && /usr/bin/python3 @SERVEROS@/memory/openviking/backup.py verify --archive "$out"'
+ExecStopPost=/usr/bin/systemctl --user start openviking.service
+ExecStopPost=/usr/bin/find %h/backups/openviking -name 'ov-*.tar.gz' -mtime +14 -delete
+TimeoutStartSec=900
+UMask=0077
+Nice=10

@@ -1,0 +1,10 @@
+[Unit]
+Description=Capture into OpenViking daily at 03:30 and 13:30 China time
+
+[Timer]
+OnCalendar=*-*-* 03,13:30:00 Asia/Shanghai
+Persistent=true
+Unit=openviking-capture.service
+
+[Install]
+WantedBy=timers.target

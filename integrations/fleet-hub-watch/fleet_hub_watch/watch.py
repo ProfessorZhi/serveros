@@ -724,11 +724,37 @@ class Watcher:
                     run_id=watch["run_id"], shape=found)
         return False
 
-    def observe(self) -> dict[str, Any]:
+    def _read_all(self, due: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Each due run's reading. Devices are read side by side (one worker per
+        device, its own runs in order), so one slow device no longer holds the
+        others back: 11-19, three runs read one after another took 7 s and the
+        pushed events behind them waited that long."""
+        if len({w["device_ref"] for w in due}) <= 1:
+            return [self._observe(w) for w in due]
+        from concurrent.futures import ThreadPoolExecutor
+        by_device: dict[str, list[int]] = {}
+        for i, watch in enumerate(due):
+            by_device.setdefault(watch["device_ref"], []).append(i)
+        out: list[Any] = [None] * len(due)
+
+        def read(indexes: list[int]) -> None:
+            for i in indexes:
+                try:
+                    out[i] = self._observe(due[i])
+                except Exception as exc:  # noqa: BLE001 - one device must not cost the rest
+                    out[i] = {"status": STATUS_UNKNOWN, "reason": f"READ_FAILED:{type(exc).__name__}"}
+        with ThreadPoolExecutor(max_workers=min(8, len(by_device))) as pool:
+            list(pool.map(read, by_device.values()))
+        return out
+
+    def observe(self, only: set[tuple[str, str]] | None = None) -> dict[str, Any]:
+        """Read every due run (`only`: just these (device, run) pairs — the
+        event lane reads what was pushed, not the whole due list)."""
         now = self.clock()
         recorded, still = [], 0
-        for watch in self.store.due(now):
-            observation = self._observe(watch)
+        due = [w for w in self.store.due(now)
+               if only is None or (w["device_ref"], w["run_id"]) in only]
+        for watch, observation in zip(due, self._read_all(due)):
             status, reason = observation["status"], observation.get("reason")
             age = now - watch["discovered_at"]
             self._trace("observed", session_ref=watch["session_ref"], run_id=watch["run_id"],

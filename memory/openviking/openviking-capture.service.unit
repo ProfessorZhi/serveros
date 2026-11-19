@@ -1,0 +1,20 @@
+# openviking-capture — the hub's material into OpenViking, broadly (owner, 11-19).
+# Installed as ~/.config/systemd/user/openviking-capture.service on the hub only.
+# Reads the key from the vault through EnvironmentFile; prints names and counts only.
+[Unit]
+Description=Capture the journal, records and Feishu chats into OpenViking
+After=openviking.service
+Wants=openviking.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.secrets/vault/openviking.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 @SERVEROS@/memory/openviking/capture.py \
+  --dir journal=@JOURNAL@ \
+  --dir records-understanding=%h/workspace/records/information/understanding \
+  --dir records-projects=%h/workspace/records/projects \
+  --feishu %h/workspace/records/information/raw/feishu/chats
+TimeoutStartSec=1800
+UMask=0077
+Nice=10

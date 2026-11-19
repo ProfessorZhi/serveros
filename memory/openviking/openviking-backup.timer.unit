@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up OpenViking daily at 04:10 China time
+
+[Timer]
+OnCalendar=*-*-* 04:10:00 Asia/Shanghai
+Persistent=true
+Unit=openviking-backup.service
+
+[Install]
+WantedBy=timers.target

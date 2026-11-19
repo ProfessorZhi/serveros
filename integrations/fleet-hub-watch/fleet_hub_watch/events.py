@@ -43,6 +43,7 @@ class EventPump:
     def __init__(self, service: Any, principal: Any, devices: Callable[[], list[str]],
                  state_path: Path, *, wait: float = WAIT_SECONDS,
                  on_events: Callable[[], None] | None = None,
+                 trace: Callable[..., None] | None = None,
                  clock: Callable[[], float] = time.time,
                  sleep: Callable[[float], None] = time.sleep) -> None:
         self.service, self.principal = service, principal
@@ -55,6 +56,9 @@ class EventPump:
         #: passes the fast lane, so a pushed run is observed and its card sent
         #: at once instead of after the current tick (7–13 s, 11-19).
         self.on_events = on_events
+        #: The moment the hub hears of a run is traced on the polling thread
+        #: itself ("heard"), before any lock: that is "the hub knows" (≤2 s).
+        self.trace = trace
         self._lock = threading.Lock()
         self._queue: list[dict[str, Any]] = []
         self._threads: dict[str, threading.Thread] = {}
@@ -125,7 +129,19 @@ class EventPump:
             runtime = answer.get("runtime")
             with self._lock:
                 for event in events:
-                    self._queue.append({"device": device, "runtime": runtime, **event})
+                    self._queue.append({"device": device, "runtime": runtime,
+                                        "heard_at": now, **event})
+            if self.trace is not None:
+                for event in events:
+                    if not str(event.get("kind", "")).startswith("run."):
+                        continue
+                    age = _age(event.get("at"), now)
+                    try:
+                        self.trace("heard " + event["kind"], run_id=event.get("run"),
+                                   session=event.get("session"), device=device,
+                                   lag_s=None if age is None else round(age, 1))
+                    except Exception:  # noqa: BLE001 - the trace never stops the pump
+                        pass
             self.wake.set()
             if self.on_events is not None:
                 try:
@@ -157,8 +173,10 @@ class EventPump:
         events = self.drain()
         if not events:
             return {"events": 0}
-        watcher.adopt_dispatched(now)
+        adopted = watcher.adopt_dispatched(now)
         expedited, rediscover = 0, set()
+        named: set[tuple[str, str]] | None = {
+            (row["session_ref"].split("|")[0], row["run_id"]) for row in adopted or []}
         for event in events:
             run = event.get("run")
             if not run or not event.get("kind", "").startswith("run."):
@@ -169,16 +187,23 @@ class EventPump:
                     pushed[(event["device"], run)] = str(event.get("status") or "")
             hit = watcher.store.expedite(event["device"], run, now)
             expedited += hit
+            named.add((event["device"], run))
             age = _age(event.get("at"), now)
+            heard = event.get("heard_at")
             if not hit and event["kind"] == "run.started" and age is not None and age <= FRESH_SECONDS:
                 rediscover.add(event["device"])
             watcher._trace("pushed " + event["kind"], run_id=run,
                            session=event.get("session"), device=event["device"],
                            status=event.get("status"),
-                           lag_s=None if age is None else round(age, 1))
+                           lag_s=None if age is None else round(age, 1),
+                           waited_s=None if heard is None else round(now - heard, 1))
         if rediscover:
             watcher.discover(devices=rediscover)
-        observed = watcher.observe()
+            named = None           # what discovery just added is due too
+        try:
+            observed = watcher.observe(only=named)
+        except TypeError:          # a watcher without the filter (tests' fakes)
+            observed = watcher.observe()
         return {"events": len(events), "expedited": expedited,
                 "rediscovered": sorted(rediscover), "observe": observed}
 
