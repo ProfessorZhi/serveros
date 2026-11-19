@@ -673,6 +673,12 @@ def alert_card(episode: dict, *, now: datetime, sample: bool = False,
         from .feishu import button
         elements.append(button("这件事 1 小时内别再提醒", {"fleet": "mute", "subject": episode["episode"],
                                                      "minutes": 60}))
+        if episode.get("kind") == "run.stalled" and episode.get("session_ref") and episode.get("run_id"):
+            # Owner, 2026-11-19: a stuck task's card can stop it. Only the
+            # owner's click counts (`feishu.decide`), and it stops this run only.
+            elements.append(button("中断这个任务", {"fleet": "interrupt",
+                                                    "session_ref": episode["session_ref"],
+                                                    "run_id": episode["run_id"]}, kind="danger"))
     return _card(template, head, subtitle, elements, tags=[tag],
                  summary=f"{tag[0]} · {subject}：{episode['text']}", width="compact")
 
