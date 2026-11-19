@@ -296,3 +296,30 @@ def test_alerts_can_go_to_a_named_group_and_an_update_keeps_it(tmp_path):
     _, again = dk.plan(_args(home=str(tmp_path), notify=None))
     unit = next(s.write[1] for s in again if s.write and s.write[0].name == "serveros-fleet-watch.service")
     assert '--alerts-to "lark:chat-name:ServerOS 播报"' in unit
+
+
+def _hub_unit(steps):
+    return next(s.write[1] for s in steps if s.write and s.write[0].name == "serveros-fleet-watch.service")
+
+
+def test_an_update_keeps_the_installed_journal(tmp_path):
+    """11-12 → 11-19: a re-rendered unit dropped --journal and the journal
+    silently stopped for a week."""
+    unit_dir = tmp_path / ".config/systemd/user"
+    unit_dir.mkdir(parents=True)
+    (unit_dir / "serveros-fleet-watch.service").write_text(
+        "ExecStart=/usr/bin/python3 -m fleet_hub_watch --config x --interval 30 --notify lark:owner"
+        " --journal /srv/j --journal-ssh-key /k/deploy\n", encoding="utf-8")
+    _, steps = dk.plan(_args(home=str(tmp_path), notify=None))
+    assert "--journal /srv/j --journal-ssh-key /k/deploy" in _hub_unit(steps)
+
+
+def test_a_fleet_journal_clone_in_home_is_used(tmp_path):
+    (tmp_path / "fleet-journal" / ".git").mkdir(parents=True)
+    _, steps = dk.plan(_args(home=str(tmp_path), notify=None))
+    assert f"--journal {tmp_path / 'fleet-journal'}" in _hub_unit(steps)
+
+
+def test_no_clone_no_journal(tmp_path):
+    _, steps = dk.plan(_args(home=str(tmp_path), notify=None))
+    assert "--journal" not in _hub_unit(steps)
