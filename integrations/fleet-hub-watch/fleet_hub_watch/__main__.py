@@ -105,9 +105,29 @@ def _ready(state) -> bool:
     return str(state or "").lower() in ("ready", "ok", "valid", "needs_refresh")
 
 
-def act_on_button(value: dict, control: MonitorControl, inbox) -> str:
+def act_on_button(value: dict, control: MonitorControl, inbox, *, service=None,
+                  principal=None) -> str:
     """The one action an owner's click on a hub card may cause."""
     by = "feishu:owner-button"
+    if value["fleet"] == "interrupt":
+        # Stop the ONE run a 任务跑了很久 card names, through Fleet's own
+        # interrupt (its grants and audit), and only if that run is still the
+        # session's current one — a click on an old card never stops new work.
+        if service is None:
+            return "NOT_WIRED"
+        from fleet_mcp.errors import FleetRefusal
+        from fleet_mcp.identity import SessionKey
+        try:
+            key = SessionKey.parse(str(value.get("session_ref")))
+            detail = service.get_session(principal, key)
+            current = (detail.get("current_run") or {}).get("run_id") if isinstance(detail, dict) else None
+            if current != value.get("run_id"):
+                return "NOT_CURRENT"
+            service.interrupt_session(principal, key)
+        except (FleetRefusal, ValueError) as exc:
+            return f"REFUSED:{getattr(exc, 'code', type(exc).__name__)}"
+        inbox.trace("notify", "owner interrupted from the card", ref=f"run:{value.get('run_id')}")
+        return "INTERRUPTED"
     if value["fleet"] == "mute":
         control.queue("mute", {"subject": str(value.get("subject")),
                                "minutes": int(value.get("minutes") or 60),
@@ -315,7 +335,8 @@ def main(argv: list[str] | None = None) -> int:
         lark_state = feishu.health()
         buttons = feishu.ButtonListener(
             feishu.owner_open_id(),
-            lambda value: act_on_button(value, control, watcher.inbox))
+            lambda value: act_on_button(value, control, watcher.inbox, service=service,
+                                        principal=principal))
         buttons.start()
     answerer = messages = None
     if notifier is not None and args.notify.startswith("lark:"):

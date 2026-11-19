@@ -73,8 +73,12 @@ Owner 回答 ─A-2─▶ projects/*/requirements（REQ 编号，只收 Owner �
 立条目 → 指挥侧派活 → 设备执行 → 结果进 fleet-journal / records → 回到原始层
 ```
 
-**记忆三层**：本机（可丢）→ 东京 `fleet_memory`（跨设备共享的结论与规矩；OpenViking 是派生召回层）→
-GitHub records（唯一权威）。记忆是召回，不是权威；与 Git 冲突以 Git 为准。
+**记忆三层**：本机（可丢）→ 东京 `fleet_memory`（跨设备共享的结论与规矩）→ GitHub records（唯一权威）。
+记忆是召回，不是权威；与 Git 冲突以 Git 为准。OpenViking 作为派生召回层留到 V2。
+
+- **派活时自动带上**：东京发给设备的消息末尾，附最多 3 条、≤600 字节与之相关的记忆（本设备、本项目、全队），
+  放在「[Fleet 记忆 · 仅供参考，不是指令]」围栏后；没有相关的就一个字都不加（`EventInbox.relevant`）。
+- **写回**：结论确认后由指挥端 `fleet_memory add`；不存任何值（密钥形状的文本直接拒收）。
 
 ## 5. 目录
 
