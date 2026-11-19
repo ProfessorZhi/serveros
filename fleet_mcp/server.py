@@ -30,8 +30,10 @@ from .version import PROTECTED_RESOURCE_PATH, SERVER_NAME, SERVER_VERSION, TOOL_
 # connectors negotiate. Echoing the client's own version when it is one of
 # these is the negotiation the spec describes; answering with a version we do
 # not implement would be a promise the rest of this file does not keep.
-SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
-PREFERRED_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[0]
+SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
+#: Unchanged for clients that ask for a version we do not know; 2025-11-25 is
+#: accepted when asked for (Grok, Gemini and newer clients send it).
+PREFERRED_PROTOCOL_VERSION = "2025-06-18"
 
 JSONRPC_PARSE_ERROR = -32700
 JSONRPC_INVALID_REQUEST = -32600
@@ -241,6 +243,12 @@ def loads(raw: str | bytes) -> Any:
 _INSTRUCTIONS = (
     "ServerOS Fleet exposes Claude Code / Codex sessions across the devices this "
     "operator has enrolled, and nothing else.\n\n"
+    "How to work: if this client did not load the fleet-* Skills, call "
+    "`fleet_guide` with topic `fleet-core` before anything else and follow it. "
+    "In short: pass the owner's own words as `owner_request` on every send or "
+    "create; open a batch for related work; tell the owner what was sent — a "
+    "Feishu card brings the result, so end the turn instead of polling; "
+    "`fleet_memory search` before writing a prompt.\n\n"
     "Addressing: a session is `device:<id>|<provider>|<native session id>`. Use "
     "the exact `session_ref` from `fleet_list_sessions`. A bare session id is "
     "not an address — the same id can exist on two devices.\n\n"

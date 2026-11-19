@@ -212,7 +212,8 @@ def generate_mcp(doc: dict, out: Path) -> None:
         f"2. On first use the agent opens the Fleet consent page; sign in with your account, "
         f"password and one-time code, and tick only the permissions it needs.\n"
         f"3. Give the agent the Skills in `skills/` (each is one `SKILL.md`), in whatever form "
-        f"it loads instructions from.\n\n"
+        f"it loads instructions from. A chat app that cannot load Skills (Grok, Gemini, …) "
+        f"needs nothing more: the server tells it to read them with the `fleet_guide` tool.\n\n"
         f"Health: {doc['server'].get('health_url', '')}\n", encoding="utf-8")
 
 

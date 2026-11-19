@@ -241,6 +241,10 @@ def _memory(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
                               limit=args.get("limit", 10))
 
 
+def _guide(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
+    return ctx.service.guide(ctx.principal, topic=args.get("topic"))
+
+
 def _trace(ctx: ToolContext, args: dict[str, Any]) -> dict[str, Any]:
     return ctx.service.trace(ctx.principal, run_id=args.get("run_id"),
                              batch_id=args.get("batch_id"), session_ref=args.get("session_ref"),
@@ -1344,6 +1348,23 @@ TOOLS: tuple[Tool, ...] = (
         annotations={"readOnlyHint": False, "destructiveHint": False,
                      "idempotentHint": False, "openWorldHint": True},
         handler=_agent_invoke,
+    ),
+    Tool(
+        name="fleet_guide",
+        title="How to command the fleet (the Skills, for clients without them)",
+        description=(
+            "The Fleet commander Skills as text. If this client did not load the "
+            "fleet-* Skills (Grok, Gemini, Muse and other chat apps), call this "
+            "first: without `topic` it lists the topics; then read `fleet-core` "
+            "and follow it. Other topics only when a task needs them. fleet:read."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {"topic": _string("A topic from the list, e.g. fleet-core.")},
+            "additionalProperties": False,
+        },
+        annotations=_read_only(),
+        handler=_guide,
     ),
 )
 

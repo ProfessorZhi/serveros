@@ -52,7 +52,7 @@
 | ① **serverosd** | 每台设备、每个账号一个常驻进程：硬件监控（CPU/内存/交换/磁盘/GPU/网络）、**agent 监控**（run 开始/完成，目标由设备主动推送，D-4）、本机受控自愈、每日目录检查、版本记录 | [FLEET-FOUR-LAYERS.md](FLEET-FOUR-LAYERS.md) §3 L1 |
 | ② **serveros 设备插件与能力族** | 每台设备每种 agent 一个插件：核心 Skill + `serveros-node` MCP（serverosd 的薄适配）+ hooks；其余能力登记在 ability-management，用到时搜索、按 pin 安装、读回；目标「核心包 + 角色包」（C-6）与每台「本机说明」（C-3） | [fleet-v1-device-plugin.md](../archive/plans/fleet-v1-device-plugin.md) |
 | ③ **连接层**（今天是 CloudCLI 穿透） | 建会话、发消息、读回复、中断、切模型/权限、审批、列出并调用 Skill 和斜杠命令；接口与实现分开，CloudCLI 可替换 | [agent-access.md](agent-access.md) |
-| ④ **指挥侧** | 一个小的核心 Skill + Fleet MCP 工具；派活带 Owner 原话，可追溯 | `integrations/fleet-v1-first-install/plugin/` |
+| ④ **指挥侧** | 一个小的核心 Skill + Fleet MCP 工具；派活带 Owner 原话，可追溯。客户端不限：编码 agent、ChatGPT/Claude、只认 MCP 的 Grok/Gemini（Skill 经 `fleet_guide` 下发） | `integrations/fleet-v1-first-install/plugin/`、[commander-clients.md](commander-clients.md) |
 
 **Rust**：新的性能敏感组件默认用 Rust。按实测收益排序：① 设备→东京的事件推送 ② Windows 读数发布链
 ③ 节点连接器 ④ 密钥同步 ⑤ 采集器本身。见 [rust-evaluation-2026-11-13.md](../requirements/rust-evaluation-2026-11-13.md)。
