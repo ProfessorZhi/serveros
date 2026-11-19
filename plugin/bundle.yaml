@@ -261,6 +261,8 @@ mcp:
       entry: bin/serveros-agent-mcp
       env:
         PYTHONDONTWRITEBYTECODE: "1"
+        # Reads only for a device agent; sessions are controlled through Fleet.
+        SERVEROS_AGENT_MCP_TOOLSET: core
 
 # Default prompts surfaced by the runtime plugin UI.
 default_prompt:

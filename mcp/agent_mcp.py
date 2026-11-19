@@ -1383,9 +1383,28 @@ def _service(daemon, providers, device_ref: str):
 # The protocol surface.
 # ---------------------------------------------------------------------------
 
+#: What a device agent is served by default (2026-11-19, FLEET-V1-OVERVIEW §2):
+#: reads only. Creating, sending to and stopping sessions is the commander's
+#: job, through Fleet; a device agent that could do it too would be a second
+#: control path with its own context cost (~15 KB of tool descriptions). `ops`
+#: serves everything, for an operator or a test.
+CORE_TOOLS: tuple[str, ...] = ("agent.session.list",)
+TOOLSET_ENV = "SERVEROS_AGENT_MCP_TOOLSET"
+
+
+def served_names(toolset: str | None = None) -> tuple[str, ...]:
+    toolset = toolset or node_mcp.env(TOOLSET_ENV, "ops")
+    if toolset == "core":
+        return tuple(n for n in tool_names() if n in CORE_TOOLS)
+    if toolset == "ops":
+        return tool_names()
+    raise ValueError(f"unknown toolset {toolset!r}; known: core, ops")
+
+
 class AgentMcpServer:
-    def __init__(self, client=None) -> None:
+    def __init__(self, client=None, *, toolset: str | None = None) -> None:
         self.client = client or build()
+        self.served = served_names(toolset)
 
     def handle(self, request: dict) -> dict | None:
         method = request.get("method")
@@ -1409,7 +1428,8 @@ class AgentMcpServer:
         if method in ("notifications/initialized", "initialized"):
             return None
         if method == "tools/list":
-            return node_mcp._result(request_id, {"tools": [dict(t) for t in TOOLS]})
+            return node_mcp._result(request_id, {"tools": [dict(t) for t in TOOLS
+                                                           if t["name"] in self.served]})
         if method == "tools/call":
             return self._call_tool(request_id, params)
         if method == "ping":
@@ -1421,11 +1441,13 @@ class AgentMcpServer:
     def _call_tool(self, request_id, params: dict) -> dict:
         name = params.get("name")
         arguments = params.get("arguments") or {}
-        if name not in tool_names():
+        if name not in self.served:
+            elsewhere = (f" It is in the ops toolset ({TOOLSET_ENV}=ops); a device agent "
+                         f"controls sessions through Fleet." if name in tool_names() else "")
             return node_mcp._result(request_id, {
                 "isError": True,
                 "content": [{"type": "text", "text":
-                             f"Unknown tool {name!r}. Available: {list(tool_names())}"}],
+                             f"Unknown tool {name!r}. Available: {list(self.served)}.{elsewhere}"}],
             })
         spec = tool(name)
         allowed = set(spec["inputSchema"]["properties"])

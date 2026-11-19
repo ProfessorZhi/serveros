@@ -103,14 +103,7 @@ TOOLS: tuple[dict, ...] = (
     },
     {
         "name": "context.current",
-        "description": (
-            "The ServerOS roots, and the Item inferred from a working "
-            "directory YOU state. Roots come from the root contract and never "
-            "from a directory. The Item is UNKNOWN unless `cwd` is given: this "
-            "surface will not infer one from the daemon's own directory, "
-            "because an artifact written to a guessed Item is the failure this "
-            "answer exists to prevent. Pass your cwd to get your Item."
-        ),
+        "description": "The ServerOS roots, and the Item for a working directory you pass as `cwd` (UNKNOWN without it; never guessed).",
         "inputSchema": {
             "type": "object",
             "properties": {"cwd": {"type": "string",
@@ -273,17 +266,7 @@ TOOLS: tuple[dict, ...] = (
     # loads the catalogue into the caller's context.
     {
         "name": "ability.search",
-        "description": (
-            "Find the few abilities a task needs, by substring, in this "
-            "node's projection and catalogue, including product roles and trigger hints "
-            "(not avoid hints). Returns compact rows and says how many "
-            "matched beside how many it returned, so a truncated list never "
-            "reads as a complete one. `matched` is null — not 0 — for an empty "
-            "query and for no readable source: neither is a search that came back "
-            "empty. Ask a question; this surface deliberately does not serve "
-            "the whole catalogue, because loading it is the cost this exists "
-            "to remove."
-        ),
+        "description": "Find the few abilities a task needs, by substring. Says how many matched beside how many it returned; `matched` is null when nothing could be searched.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -298,13 +281,7 @@ TOOLS: tuple[dict, ...] = (
     },
     {
         "name": "ability.resolve",
-        "description": (
-            "Read-only assessment for one ability/runtime using this node's pinned catalogue. "
-            "Optional request supplies bounded evaluation inputs (64 KiB); these are caller "
-            "claims, not verified observations or grants. Missing inputs remain unknown. "
-            "The result never authorizes execution, and native tools do not require this call. "
-            "Use ability:<name>#<verb> for an operation; runtime is explicit."
-        ),
+        "description": "Read-only assessment of one ability/runtime against this node's pinned catalogue. Never authorizes execution. Use ability:<name>#<verb>.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -504,18 +481,7 @@ TOOLS: tuple[dict, ...] = (
     # `DENY / OWNER_UNKNOWN` for every resource on the node.
     {
         "name": "environment.leases",
-        "description": (
-            "Every resource in this node's `state/serveros/resource-leases/` "
-            "namespace with something recorded against it: the desirable "
-            "references (who wants it, in which scope, until when), and — where "
-            "a release has happened — the verdict on whether the last reference "
-            "out may let it go. A resource with no record is NO_LEASES_HELD. "
-            "`recorded` is the number of records and NOT the number in use: a "
-            "record exists for a crashed holder's expired claim and for a "
-            "shared resource nobody currently wants, so read the references "
-            "rather than the count. Nothing here stops, removes or restarts "
-            "anything."
-        ),
+        "description": "Resource leases recorded on this node: who holds what, in which scope, until when, and whether a released resource may go. Read the references, not the count. Changes nothing.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
@@ -680,15 +646,24 @@ def tool_names() -> tuple[str, ...]:
 # from the daemon by narrowing what an agent is shown.
 # ---------------------------------------------------------------------------
 
+#: 2026-11-19 (FLEET-V1-OVERVIEW §2, session start ≤ ~8 KB): eight tools. The
+#: ability tree/list/status/inspect, runtime status/explain and port ownership
+#: moved to `ops` — still answered by the daemon, no longer in every agent's
+#: context. What stays answers: where am I, where may I write, what can I use,
+#: how loaded is this machine, which test environment holds what.
 CORE_TOOLS: tuple[str, ...] = (
     "device.show", "context.current", "path.resolve", "path.admit",
-    "ability.list", "ability.status", "ability.tree", "ability.inspect",
     "ability.search", "ability.resolve",
-    "resource.summary", "runtime.status", "runtime.explain",
-    "environment.leases", "ports.ownership",
+    "resource.summary", "environment.leases",
 )
 TOOLSETS: dict[str, tuple[str, ...]] = {"core": CORE_TOOLS, "ops": tool_names()}
 TOOLSET_ENV = "SERVEROS_NODE_MCP_TOOLSET"
+
+
+def env(name: str, default: str) -> str:
+    """One environment setting, for the sibling surfaces that keep their own
+    import list closed (`agent_mcp` reaches only what it is allowed to)."""
+    return os.environ.get(name, default)
 
 
 def served_tools(toolset: str = "ops") -> tuple[dict, ...]:
