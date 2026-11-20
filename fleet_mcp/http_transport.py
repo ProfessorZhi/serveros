@@ -261,7 +261,7 @@ class HttpSurface:
             if route == "/oauth/feishu/callback":
                 return self._oauth_feishu_callback(method, query)
             if route == "/oauth/token":
-                return self._oauth_token(method, body)
+                return self._oauth_token(method, body, headers)
             if route == "/oauth/revoke":
                 return self._oauth_revoke(method, body)
             if route == self.mcp_path:
@@ -650,13 +650,14 @@ class HttpSurface:
             txn.redirect_uri, fleet_code, txn.client_state, issuer=self.oauth.base_url,
         ))
 
-    def _oauth_token(self, method: str, body: bytes) -> tuple[int, dict[str, str], bytes]:
+    def _oauth_token(self, method: str, body: bytes,
+                     headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
         if self.oauth is None:
             return _json(404, {"error": "not_found",
                                "error_description": "this deployment does not run an OAuth issuer"})
         if method != "POST":
             return _json(405, {"error": "invalid_request", "error_description": "token requires POST"})
-        form = {k: v[0] for k, v in parse_qs(body.decode("utf-8", "replace")).items()}
+        form = token_form(body, headers or {})
         try:
             issued = self.oauth.token(form)
         except OAuthError as exc:
@@ -1111,6 +1112,42 @@ def build_oauth(config, *, base_url: str, store_root,
         store=store, auth=config.auth, base_url=base_url, pat_reader=read_pat,
         mcp_path=mcp_path or str(getattr(config.server, "mcp_path", "/mcp")),
     )
+
+
+def token_form(body: bytes, headers: dict[str, str]) -> dict[str, str]:
+    """The token request's fields, however a public client sends them.
+
+    RFC 6749 says form-encoded with `client_id` in the body for a public
+    client, and that is what ChatGPT and Claude Code send. Other OAuth
+    libraries (11-19: Meta Muse's connector never completed an exchange) put
+    the client id in `Authorization: Basic base64(client_id:)` with an empty
+    secret, or post JSON. Both are read here; nothing else changes — a
+    secret, if one is sent, is ignored, because this server issues none. PURE."""
+    import base64
+    import json as _json_mod
+    text = body.decode("utf-8", "replace")
+    kind = (headers.get("content-type") or headers.get("Content-Type") or "").lower()
+    form: dict[str, str] = {}
+    if "json" in kind or text.lstrip().startswith("{"):
+        try:
+            doc = _json_mod.loads(text)
+            if isinstance(doc, dict):
+                form = {str(k): str(v) for k, v in doc.items() if isinstance(v, (str, int))}
+        except ValueError:
+            form = {}
+    if not form:
+        form = {k: v[0] for k, v in parse_qs(text).items()}
+    auth = headers.get("authorization") or headers.get("Authorization") or ""
+    if not form.get("client_id") and auth[:6].lower() == "basic ":
+        try:
+            decoded = base64.b64decode(auth[6:].strip()).decode("utf-8")
+            from urllib.parse import unquote
+            client_id = unquote(decoded.split(":", 1)[0])
+            if client_id:
+                form["client_id"] = client_id
+        except (ValueError, UnicodeDecodeError):
+            pass
+    return form
 
 
 def local_base_url(*, bind: str, port: int, public_base_url: str | None) -> str:
