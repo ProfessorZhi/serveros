@@ -566,6 +566,40 @@ class OAuthFlow(_HttpHarness):
         self.assertEqual(status, 200, body)
         return json.loads(body)
 
+    def _fresh_code(self) -> str:
+        status, headers, _ = self._approve(scope="fleet:read", granted=["fleet:read"])
+        self.assertEqual(status, 302)
+        return urllib.parse.parse_qs(urllib.parse.urlparse(headers["Location"]).query)["code"][0]
+
+    def test_a_client_id_in_a_basic_header_is_read(self):
+        """11-19, Muse: the exchange never completed. Libraries that put the
+        public client's id in `Authorization: Basic base64(id:)` are served."""
+        import base64
+        basic = base64.b64encode(f"{type(self).client_id}:".encode()).decode()
+        status, _, body = self.client.request(
+            "POST", "/oauth/token", headers={"Authorization": f"Basic {basic}"},
+            form={"grant_type": "authorization_code", "code": self._fresh_code(),
+                  "redirect_uri": CHATGPT_REDIRECT, "code_verifier": self.VERIFIER})
+        self.assertEqual(status, 200, body)
+        self.assertIn("access_token", json.loads(body))
+
+    def test_a_json_token_request_is_read(self):
+        status, _, body = self.client.request("POST", "/oauth/token", body=json.dumps({
+            "grant_type": "authorization_code", "code": self._fresh_code(),
+            "client_id": type(self).client_id, "redirect_uri": CHATGPT_REDIRECT,
+            "code_verifier": self.VERIFIER}).encode())
+        self.assertEqual(status, 200, body)
+
+    def test_a_basic_header_never_overrides_the_body(self):
+        import base64
+        basic = base64.b64encode(b"someone-else:").decode()
+        status, _, body = self.client.request(
+            "POST", "/oauth/token", headers={"Authorization": f"Basic {basic}"},
+            form={"grant_type": "authorization_code", "code": self._fresh_code(),
+                  "client_id": type(self).client_id, "redirect_uri": CHATGPT_REDIRECT,
+                  "code_verifier": self.VERIFIER})
+        self.assertEqual(status, 200, body)
+
     # -- consent -----------------------------------------------------------
 
     def test_the_consent_form_is_shown_and_asks_for_the_owner_token(self):
