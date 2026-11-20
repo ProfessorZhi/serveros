@@ -168,5 +168,32 @@ class RefusalsSayWhy(unittest.TestCase):
         self.assertNotIn("unknown", row["created_at"])
 
 
+class RevocationsSurviveTheOtherProcess(unittest.TestCase):
+    """11-20: the operator revoked six clients with --revoke-client; a client
+    then registered on the running surface, whose save wrote back its stale
+    revocation list, and all six were active again."""
+
+    def test_a_registration_on_the_running_surface_keeps_the_operators_revocations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            running = TokenStore(Path(tmp), access_ttl=3600, refresh_ttl=86400)
+            muse = running.register_client(client_name="Muse",
+                                           redirect_uris=["https://agent.example/cb"])
+            refresh = running.mint_refresh_token(client_id=muse.client_id, subject="operator",
+                                                 scopes=("fleet:read",))
+            operator = TokenStore(Path(tmp), access_ttl=3600, refresh_ttl=86400)
+            operator.revoke_client(muse.client_id)
+            # The running surface has not re-read the file; a new client registers.
+            running.register_client(client_name="Muse again",
+                                    redirect_uris=["https://agent.example/cb"])
+            after = TokenStore(Path(tmp), access_ttl=3600, refresh_ttl=86400)
+            rows = {c["client_id"]: c for c in after.clients()}
+            self.assertTrue(rows[muse.client_id]["revoked"])
+            with self.assertRaises(OAuthError):
+                after.client(muse.client_id)
+            with self.assertRaises(OAuthError):
+                after.consume_refresh_token(refresh, client_id=muse.client_id)
+            self.assertEqual(len(rows), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

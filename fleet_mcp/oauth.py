@@ -324,10 +324,25 @@ class TokenStore:
         self._revocations["tokens"] = {
             jti: exp for jti, exp in self._revocations["tokens"].items() if exp > now
         }
-        # Clients another process added (a connector token minted with
-        # `--mint-token` while this surface runs) are kept, not overwritten.
-        for client_id, client in self._load_state()[0].items():
+        # Two processes write this file: the running surface, and the
+        # operator's `--revoke-client` / `--mint-token`. What the other one
+        # wrote is merged, never overwritten. 11-20: a client registering on the
+        # running surface wrote back its stale in-memory revocation list and six
+        # clients the operator had just revoked came back to life.
+        disk_clients, disk_refresh, disk_revocations = self._load_state()
+        for client_id, client in disk_clients.items():
             self._clients.setdefault(client_id, client)
+        for bucket, entries in disk_revocations.items():
+            mine = self._revocations.setdefault(bucket, {})
+            for key, value in entries.items():
+                if key not in mine or value > mine[key]:
+                    mine[key] = value
+        for token, record in disk_refresh.items():
+            if record.revoked and token in self._refresh:
+                self._refresh[token].revoked = True
+        self._revocations["tokens"] = {
+            jti: exp for jti, exp in self._revocations["tokens"].items() if exp > now
+        }
         payload = {
             "clients": [c.as_dict() for c in self._clients.values()],
             "refresh": {
